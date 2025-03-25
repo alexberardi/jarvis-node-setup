@@ -40,6 +40,24 @@ fi
 
 echo "🎧 [5/7] Setting default audio output..."
 
+# 🔧 Lock HifiBerry DAC as card 0, USB mic as card 1
+sudo tee /etc/modprobe.d/alsa-base.conf > /dev/null <<EOF
+options snd_soc_hifiberry_dac index=0
+options snd_usb_audio index=1
+EOF
+
+# 🔊 Set /etc/asound.conf with correct playback and capture config
+sudo tee /etc/asound.conf > /dev/null <<EOF
+# Output (speaker)
+defaults.pcm.card 0
+defaults.pcm.device 0
+defaults.ctl.card 0
+
+# Input (microphone)
+defaults.capture.card 1
+defaults.capture.device 0
+EOF
+
 cat <<EOF > /home/pi/.asoundrc
 defaults.pcm.card 0
 defaults.pcm.device 0
@@ -67,7 +85,6 @@ EOF
 else
   echo "⚠️ No USB mic found — skipping capture default setup"
 fi
-
 
 chown pi:pi /home/pi/.asoundrc
 
@@ -116,6 +133,8 @@ EOF
 sudo systemctl daemon-reexec
 sudo systemctl enable voice-listener.service
 sudo systemctl restart voice-listener.service
+
+
 
 
 
