@@ -10,7 +10,7 @@ with open(CONFIG_PATH) as f:
 
 def speak(text):
     print(f"Speaking: {text}")
-    subprocess.run(["espeak", text])
+    subprocess.run(["espeak", "--v", "en-uk", text], stderr=subprocess.DEVNULL)
 
 if __name__ == "__main__":
     speak("Hello! I am ready.")
