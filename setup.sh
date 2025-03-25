@@ -27,7 +27,7 @@ fi
 
 source ~/projects/jarvis-node-setup/venv/bin/activate
 pip install --upgrade pip
-pip install paho-mqtt httpx pvporcupine pyaudio vosk sounddevice
+pip install paho-mqtt httpx pvporcupine pyaudio vosk sounddevice nump scipy
 
 echo "📝 [4/7] Preparing config..."
 if [ ! -f ~/projects/jarvis-node-setup/config.json ]; then

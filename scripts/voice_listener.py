@@ -5,6 +5,8 @@ import subprocess
 import voice_sender
 import os
 import json
+import numpy as np
+from scipy.signal import resample
 from speech_to_text import listen_and_transcribe
 from text_to_speech import speak
 
@@ -16,14 +18,15 @@ with open(CONFIG_PATH) as f:
 
 
 access_key = config["porcupine_key"]
-porcupine = pvporcupine.create(access_key=access_key, keywords=["jarvis"])
+porcupine = pvporcupine.create(access_key=access_key, keywords=["jarvis"], sample_rate=16000)
 pa = pyaudio.PyAudio()
 audio_stream = pa.open(
-        rate=porcupine.sample_rate,
+        rate=48000,
         channels=1,
         format=pyaudio.paInt16,
         input=True,
-        frames_per_buffer=porcupine.frame_length
+        input_device_index=1,
+        frames_per_buffer=int(48000 / 100)
         )
 
 print("👂 Waiting for wake word...")
@@ -31,8 +34,13 @@ print("👂 Waiting for wake word...")
 try: 
     while True:
         pcm = audio_stream.read(porcupine.frame_length, exception_on_overflow=False)
-        pcm = [int.from_bytes(pcm[i:i+2], byteorder='little', signed=True) for i in range(0, len(pcm), 2)]
-        keyword_index = porcupine.process(pcm)
+        raw_data = audio_stream.read(audio_stream._frames_per_buffer, exception_on_overflow=False)
+        samples = np.frombuffer(raw_data, dtype=np.int16)
+
+        # Resample from 48000 → 16000 Hz
+        resampled = resample(samples, porcupine.frame_length).astype(np.int16)
+
+        keyword_index = porcupine.process(resampled.tolist())
         if keyword_index >= 0:
             print("🟢 Wake word detected! Listening for command...")
             speak("Yes?")
