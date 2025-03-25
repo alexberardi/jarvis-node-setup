@@ -7,7 +7,7 @@
   "play_chime": true,
   "voice": "en (language code used for espeak or future TTS config)",
   "mqtt_broker": "broker url",
-  "mqtt_port": "port the broker is running on",
+  "mqtt_port": 1111,
   "mqtt_topic": "topic the broker is responding on"
 }
 

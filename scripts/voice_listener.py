@@ -2,7 +2,7 @@ import pvporcupine
 import pyaudio
 import struct
 import subprocess
-from scripts import voice_sender
+import voice_sender
 
 CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
 
