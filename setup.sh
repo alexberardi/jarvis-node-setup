@@ -6,7 +6,7 @@ echo "🔧 [1/5] Updating system..."
 sudo apt update && sudo apt upgrade -y
 
 echo "📦 [2/5] Installing dependencies..."
-sudo apt install -y python3 python3-pip python3-venv git aplay espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev
+sudo apt install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev
 
 echo "🐍 [3/5] Creating Python venv and installing requirements..."
 if [ ! -d ~/projects/jarvis-node-setup/venv ]; then
