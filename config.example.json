@@ -8,6 +8,7 @@
   "voice": "en (language code used for espeak or future TTS config)",
   "mqtt_broker": "broker url",
   "mqtt_port": 1111,
-  "mqtt_topic": "topic the broker is responding on"
+  "mqtt_topic": "topic the broker is responding on",
+  "porcupine_key": "key from console.picovoice.ai"
 }
 

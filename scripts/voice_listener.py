@@ -3,8 +3,16 @@ import pyaudio
 import struct
 import subprocess
 import voice_sender
+import os
+import json
 
 CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
+CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
+
+with open(CONFIG_PATH) as f:
+    config = json.load(f)
+
+PORCUPINE_KEY = config["porcupine_key"]
 
 def play_chime():
     subprocess.run(["aplay", CHIME_PATH])
@@ -15,7 +23,7 @@ def simulate_transcribe():
 
 def main():
     print("👂 Starting Porcupine wake word engine...")
-    porcupine = pvporcupine.create(keywords=["jarvis"])
+    porcupine = pvporcupine.create(access_key=PORCUPINE_KEY,keywords=["jarvis"])
 
     pa = pyaudio.PyAudio()
     audio_stream = pa.open(
