@@ -6,6 +6,7 @@ import voice_sender
 import os
 import json
 from speech_to_text import listen_and_transcribe
+from text_to_speech import speak
 
 CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
 CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
@@ -34,6 +35,7 @@ try:
         keyword_index = porcupine.process(pcm)
         if keyword_index >= 0:
             print("🟢 Wake word detected! Listening for command...")
+            speak("Yes?")
             result = listen_and_transcribe()
             print("📝 Transcription result:", result)
 except KeyboardInterrupt:
