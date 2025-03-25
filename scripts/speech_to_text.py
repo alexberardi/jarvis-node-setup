@@ -14,7 +14,7 @@ def callback(indata, frames, time, status):
     audio_queue.put(bytes(indata))
 
 def listen_and_transcribe():
-    with sd.RawInpurtStream(samplerate=16000, blocksize=8000, dtype='int16', channels=1, callback=callback):
+    with sd.RawInputStream(samplerate=16000, blocksize=8000, dtype='int16', channels=1, callback=callback):
         print("Listening...")
         while True:
             data = audio_queue.get()
