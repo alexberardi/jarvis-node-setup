@@ -34,7 +34,8 @@ try:
         keyword_index = porcupine.process(pcm)
         if keyword_index >= 0:
             print("🟢 Wake word detected! Listening for command...")
-            listen_and_transcribe()
+            result = listen_and_transcribe()
+            print("📝 Transcription result:", result)
 except KeyboardInterrupt:
     print("Stopping...")
 finally:

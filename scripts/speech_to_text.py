@@ -21,6 +21,7 @@ def listen_and_transcribe():
             if rec.AcceptWaveform(data):
                 result = rec.Result()
                 print(result)
+                return
             else:
                 print(rec.PartialResult())
 
