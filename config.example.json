@@ -1,0 +1,13 @@
+{
+  "node_id": "node id (string)",
+  "api_key": "api key from rest api",
+  "server_url": "url the rest api lives at",
+  "room": "room node will live",
+  "user": "username",
+  "play_chime": true,
+  "voice": "en (language code used for espeak or future TTS config)",
+  "mqtt_broker": "broker url",
+  "mqtt_port": "port the broker is running on",
+  "mqtt_topic": "topic the broker is responding on"
+}
+
