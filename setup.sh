@@ -2,7 +2,7 @@
 
 set -e
 
-echo "🔊 [0/6] Configuring I2S DAC (speaker bonnet)..."
+echo "🔊 [0/7] Configuring I2S DAC (speaker bonnet)..."
 
 CONFIG_FILE="/boot/firmware/config.txt"
 if ! grep -q "dtoverlay=hifiberry-dac" "$CONFIG_FILE"; then
@@ -14,13 +14,13 @@ else
 fi
 
 
-echo "🔧 [1/6] Updating system..."
+echo "🔧 [1/7] Updating system..."
 sudo apt update && sudo apt upgrade -y
 
-echo "📦 [2/6] Installing dependencies..."
+echo "📦 [2/7] Installing dependencies..."
 sudo apt install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev
 
-echo "🐍 [3/6] Creating Python venv and installing requirements..."
+echo "🐍 [3/7] Creating Python venv and installing requirements..."
 if [ ! -d ~/projects/jarvis-node-setup/venv ]; then
   python3 -m venv ~/projects/jarvis-node-setup/venv
 fi
@@ -29,7 +29,7 @@ source ~/projects/jarvis-node-setup/venv/bin/activate
 pip install --upgrade pip
 pip install paho-mqtt httpx pvporcupine pyaudio
 
-echo "📝 [4/6] Preparing config..."
+echo "📝 [4/7] Preparing config..."
 if [ ! -f ~/projects/jarvis-node-setup/config.json ]; then
   cp ~/projects/jarvis-node-setup/config.example.json ~/projects/jarvis-node-setup/config.json
   echo "📁 config.json created from example — be sure to update it."
@@ -38,7 +38,7 @@ else
 fi
 
 
-echo "🎧 [5/6] Setting default audio output..."
+echo "🎧 [5/7] Setting default audio output..."
 
 cat <<EOF > /home/pi/.asoundrc
 defaults.pcm.card 0
@@ -46,10 +46,33 @@ defaults.pcm.device 0
 defaults.ctl.card 0
 EOF
 
+echo "🎙️ Detecting USB microphone..."
+
+# Try to find the first USB audio card ID
+USB_MIC_CARD=$(arecord -l | grep -i "usb" | awk -F'[][]' '/card [0-9]+:/ {print $2}' | head -n 1)
+
+if [[ -n "$USB_MIC_CARD" ]]; then
+  echo "✅ USB mic detected as card $USB_MIC_CARD"
+
+  echo "🔧 Updating .asoundrc with USB mic as input default..."
+
+  cat <<EOF >> /home/pi/.asoundrc
+
+# Input (mic)
+defaults.capture.card $USB_MIC_CARD
+defaults.capture.device 0
+EOF
+
+  chown pi:pi /home/pi/.asoundrc
+else
+  echo "⚠️ No USB mic found — skipping capture default setup"
+fi
+
+
 chown pi:pi /home/pi/.asoundrc
 
 
-echo "🔁 [6/6] Creating systemd service..."
+echo "🔁 [6/7] Creating systemd service..."
 
 cat <<EOF | sudo tee /etc/systemd/system/mqtt-tts.service
 [Unit]
