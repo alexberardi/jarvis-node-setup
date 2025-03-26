@@ -9,6 +9,7 @@
   "mqtt_broker": "broker url",
   "mqtt_port": 1111,
   "mqtt_topic": "topic the broker is responding on",
-  "porcupine_key": "key from console.picovoice.ai"
+  "porcupine_key": "key from console.picovoice.ai",
+  "mic_sample_rate": 48000
 }
 
