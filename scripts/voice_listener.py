@@ -18,7 +18,7 @@ with open(CONFIG_PATH) as f:
 
 
 access_key = config["porcupine_key"]
-mic_sample_rate = config["mic_sample_rate"]
+mic_sample_rate = config.get("mic_sample_rate", 48000)
 # The setup script forces USB mics to always be card 1, if your setup is different, you may have to add a config entry and pull it in here as a variable
 porcupine = pvporcupine.create(access_key=access_key, keywords=["jarvis"])
 pa = pyaudio.PyAudio()
