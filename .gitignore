@@ -3,3 +3,4 @@ venv/
 ___pycache__/
 *.pyc
 .DS_STORE
+models/
