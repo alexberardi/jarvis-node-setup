@@ -51,6 +51,11 @@ try:
         if keyword_index >= 0:
             print("🟢 Wake word detected! Listening for command...")
             speak("Yes?")
+
+            audio_stream.stop_stream()
+            audio_stream.close()
+            pa.terminate()
+
             result = listen_and_transcribe()
             print("📝 Transcription result:", result)
 except KeyboardInterrupt:
