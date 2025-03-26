@@ -19,6 +19,12 @@ with open(CONFIG_PATH) as f:
 
 access_key = config["porcupine_key"]
 mic_sample_rate = config.get("mic_sample_rate", 48000)
+frames_per_buffer = int(mic_sample_rate * 0.032) # ~32ms chunk
+mic_device_index = 1 # this is setup through the setup.sh script
+
+
+
+
 # The setup script forces USB mics to always be card 1, if your setup is different, you may have to add a config entry and pull it in here as a variable
 porcupine = pvporcupine.create(access_key=access_key, keywords=["jarvis"])
 pa = pyaudio.PyAudio()
@@ -27,7 +33,8 @@ audio_stream = pa.open(
         channels=1,
         format=pyaudio.paInt16,
         input=True,
-        frames_per_buffer=int(mic_sample_rate / 100)
+        frames_per_buffer=frames_per_buffer,
+        input_device_index=mic_device_index
         )
 
 print("👂 Waiting for wake word...")
