@@ -5,10 +5,13 @@ import subprocess
 import voice_sender
 import os
 import json
+import requests
 import numpy as np
 from scipy.signal import resample
-from speech_to_text import listen_and_transcribe
+from speech_to_text import listen
 from text_to_speech import speak
+import time
+import os
 
 CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
 CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
@@ -21,6 +24,7 @@ access_key = config["porcupine_key"]
 mic_sample_rate = config.get("mic_sample_rate", 48000)
 frames_per_buffer = int(mic_sample_rate * 0.032) # ~32ms chunk
 mic_device_index = 1 # this is setup through the setup.sh script
+API_URL = config.get("api_url", "http://10.0.0.173:9999")
 
 
 def create_audio_stream():
@@ -32,6 +36,18 @@ def create_audio_stream():
         frames_per_buffer=frames_per_buffer,
         input_device_index=mic_device_index
         )
+
+def send_for_transcription(filename):
+    with open(filename, 'rb') as f:
+        files = {'file': ('command.wav', f, 'audio/wav') }
+        try:
+            print("📡 Sending to transcription server...")
+            response = requests.post(f"{API_URL}/transcribe", files=files, timeout=30)
+            command = response.json().get("text", "No text found")
+            print("📝 Transcription:", command)
+            return command
+        except Exception as e:
+            print("❌ Transcription failed:", e)
 
 
 
@@ -58,13 +74,19 @@ try:
             audio_stream.close()
             pa.terminate()
 
-            result = listen_and_transcribe()
+            audio_file = listen()
+
+            start = time.perf_counter()
+            command = send_for_transcription(audio_file)
+            end = time.perf_counter()
+
+            print(f"⏱️ Transcription took {end - start:.2f} seconds")
+            
 
             # reinitialize porcupine + pyaudio
             pa = pyaudio.PyAudio()
             audio_stream = create_audio_stream()
 
-            print("📝 Transcription result:", result)
 except KeyboardInterrupt:
     print("Stopping...")
 finally:

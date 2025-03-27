@@ -8,7 +8,7 @@ CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
 with open(CONFIG_PATH) as f:
     config = json.load(f)
 
-SERVER_URL = config["server_url"]
+SERVER_URL = config["api_url"]
 API_KEY = config["api_key"]
 
 def send_voice(text: str):

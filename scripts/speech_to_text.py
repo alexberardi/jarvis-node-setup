@@ -3,6 +3,8 @@ import wave
 import os
 import json
 
+import os
+
 CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
 
 with open(CONFIG_PATH) as f:
@@ -16,7 +18,7 @@ frames_per_buffer = int(mic_sample_rate * 0.032) # 32ms
 RECORD_SECONDS = 5
 OUTPUT_FILENAME = "/tmp/command.wav"
 
-def listen_and_transcribe():
+def listen():
     print("🎙️ Listening for speech...")
 
     audio = pyaudio.PyAudio()
@@ -52,5 +54,3 @@ def listen_and_transcribe():
     # 🔁 You can plug in Whisper, SpeechRecognition, etc. here:
     # For now, return the file path
     return OUTPUT_FILENAME
-
-
