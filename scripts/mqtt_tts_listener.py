@@ -12,16 +12,19 @@ with open(CONFIG_PATH) as f:
 TOPIC = config["mqtt_topic"]
 MQTT_BROKER = config["mqtt_broker"]
 MQTT_PORT = config.get("mqtt_port", 1883)
-MQTT_USERNAME = config.get("mqtt_username") # unused right now
-MQTT_PASSWORD = config.get("mqtt_password") # unused right now
+MQTT_USERNAME = config.get("mqtt_username")  # unused right now
+MQTT_PASSWORD = config.get("mqtt_password")  # unused right now
 
-CHIME_PATH = os.path.expanduser("~/projects/jarvis-node-setup/sounds/chime.wav")
+PATH_TO_PROJECT = "~/projects/jarvis-node-setup"
+CHIME_PATH = os.path.expanduser(f"{PATH_TO_PROJECT}/sounds/chime.wav")
 PLAY_CHIME = config.get("play_chime", True)
+
 
 def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] Connected with result code {rc}")
     client.subscribe(TOPIC)
     print(f"[MQTT] Subscribed to topic: {TOPIC}")
+
 
 def on_message(client, userdata, msg):
     try:
@@ -35,6 +38,7 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print(f"[ERROR] {e}")
 
+
 def main():
     client = mqtt.Client()
 
@@ -47,6 +51,6 @@ def main():
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_forever()
 
+
 if __name__ == "__main__":
     main()
-
