@@ -2,16 +2,13 @@ import pyaudio
 import wave
 import os
 import json
+from utils.config_loader import Config
 
-CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
 
-with open(CONFIG_PATH) as f:
-    config = json.load(f)
-
-mic_sample_rate = int(config.get("mic_sample_rate", 48000))
+mic_sample_rate = int(Config.get("mic_sample_rate", 48000))
 mic_channels = 1
-mic_device_index = int(config.get("mic_device_index", 1))
-frames_per_buffer = int(mic_sample_rate * 0.032)   # 32ms
+mic_device_index = int(Config.get("mic_device_index", 1))
+frames_per_buffer = int(mic_sample_rate * 0.032)  # 32ms
 
 RECORD_SECONDS = 5
 OUTPUT_FILENAME = "/tmp/command.wav"
@@ -23,13 +20,13 @@ def listen():
     audio = pyaudio.PyAudio()
 
     stream = audio.open(
-            format=pyaudio.paInt16,
-            channels=mic_channels,
-            rate=mic_sample_rate,
-            input=True,
-            input_device_index=mic_device_index,
-            frames_per_buffer=frames_per_buffer
-            )
+        format=pyaudio.paInt16,
+        channels=mic_channels,
+        rate=mic_sample_rate,
+        input=True,
+        input_device_index=mic_device_index,
+        frames_per_buffer=frames_per_buffer,
+    )
 
     frames = []
 
@@ -45,11 +42,11 @@ def listen():
     audio.terminate()
 
     # Save to WAV
-    with wave.open(OUTPUT_FILENAME, 'wb') as wf:
+    with wave.open(OUTPUT_FILENAME, "wb") as wf:
         wf.setnchannels(mic_channels)
         wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
         wf.setframerate(mic_sample_rate)
-        wf.writeframes(b''.join(frames))
+        wf.writeframes(b"".join(frames))
 
     # 🔁 You can plug in Whisper, SpeechRecognition, etc. here:
     # For now, return the file path

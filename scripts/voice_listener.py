@@ -1,65 +1,69 @@
+import numpy as np
 import pvporcupine
 import pyaudio
-import struct
-import subprocess
-import voice_sender
-import os
-import json
-import requests
-import numpy as np
 from scipy.signal import resample
-from speech_to_text import listen
-from text_to_speech import speak
 import time
-import os
+
+from scripts.speech_to_text import listen
+from scripts.text_to_speech import speak
+from clients.jarvis_whisper_client import JarvisWhisperClient
+from utils.config_loader import Config
 
 CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
-CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
-
-with open(CONFIG_PATH) as f:
-    config = json.load(f)
 
 
-access_key = config["porcupine_key"]
-mic_sample_rate = config.get("mic_sample_rate", 48000)
-frames_per_buffer = int(mic_sample_rate * 0.032) # ~32ms chunk
-mic_device_index = 1 # this is setup through the setup.sh script
-API_URL = config.get("api_url", "http://10.0.0.173:9999")
+PORCUPINE_KEY = Config.get("porcupine_key", "")
+MIC_SAMPLE_RATE = Config.get("mic_sample_rate", 48000)
+FRAMES_PER_BUFFER = int(MIC_SAMPLE_RATE * 0.032)  # ~32ms chunk
+
+# This is setup through the setup.sh script but if you have a different
+# default mic index, set it through config
+MIC_DEVICE_INDEX = Config.get("mic_device_index", 1)
 
 
 def create_audio_stream():
     return pa.open(
-        rate=mic_sample_rate,
+        rate=MIC_SAMPLE_RATE,
         channels=1,
         format=pyaudio.paInt16,
         input=True,
-        frames_per_buffer=frames_per_buffer,
-        input_device_index=mic_device_index
-        )
+        frames_per_buffer=FRAMES_PER_BUFFER,
+        input_device_index=MIC_DEVICE_INDEX,
+    )
+
+
+def handle_keyword_detected():
+    print("🟢 Wake word detected! Listening for command...")
+    speak("Yes?")
+
+
+def close_audio():
+    audio_stream.stop_stream()
+    audio_stream.close()
+    pa.terminate()
+
 
 def send_for_transcription(filename):
-    with open(filename, 'rb') as f:
-        files = {'file': ('command.wav', f, 'audio/wav') }
-        try:
-            print("📡 Sending to transcription server...")
-            response = requests.post(f"{API_URL}/transcribe", files=files, timeout=30)
-            command = response.json().get("text", "No text found")
-            print("📝 Transcription:", command)
-            return command
-        except Exception as e:
-            print("❌ Transcription failed:", e)
+    print("📡 Sending to transcription server...")
+    response = JarvisWhisperClient.transcribe(filename)
+    if response is not None:
+        print("📝 Transcription:", response["text"])
+        speak(response["text"])
+    else:
+        speak("An error occurred")
 
 
-
-# The setup script forces USB mics to always be card 1, if your setup is different, you may have to add a config entry and pull it in here as a variable
-porcupine = pvporcupine.create(access_key=access_key, keywords=["jarvis"])
+porcupine = pvporcupine.create(access_key=PORCUPINE_KEY, keywords=["jarvis"])
 pa = pyaudio.PyAudio()
 audio_stream = create_audio_stream()
+
 print("👂 Waiting for wake word...")
 
-try: 
+try:
     while True:
-        raw_data = audio_stream.read(audio_stream._frames_per_buffer, exception_on_overflow=False)
+        raw_data = audio_stream.read(
+            audio_stream._frames_per_buffer, exception_on_overflow=False
+        )
         samples = np.frombuffer(raw_data, dtype=np.int16)
 
         # Resample from 48000 → 16000 Hz
@@ -67,12 +71,9 @@ try:
 
         keyword_index = porcupine.process(resampled.tolist())
         if keyword_index >= 0:
-            print("🟢 Wake word detected! Listening for command...")
-            speak("Yes?")
+            handle_keyword_detected()
 
-            audio_stream.stop_stream()
-            audio_stream.close()
-            pa.terminate()
+            close_audio()
 
             audio_file = listen()
 
@@ -81,7 +82,6 @@ try:
             end = time.perf_counter()
 
             print(f"⏱️ Transcription took {end - start:.2f} seconds")
-            
 
             # reinitialize porcupine + pyaudio
             pa = pyaudio.PyAudio()
@@ -94,4 +94,3 @@ finally:
     audio_stream.close()
     pa.terminate()
     porcupine.delete()
-

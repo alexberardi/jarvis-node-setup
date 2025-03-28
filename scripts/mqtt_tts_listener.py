@@ -2,22 +2,18 @@ import json
 import os
 import paho.mqtt.client as mqtt
 import subprocess
+from utils.config_loader import Config
 
-CONFIG_PATH = os.path.expanduser("~/projects/jarvis-node-setup/config.json")
 
-# Load config
-with open(CONFIG_PATH) as f:
-    config = json.load(f)
-
-TOPIC = config["mqtt_topic"]
-MQTT_BROKER = config["mqtt_broker"]
-MQTT_PORT = config.get("mqtt_port", 1883)
-MQTT_USERNAME = config.get("mqtt_username")  # unused right now
-MQTT_PASSWORD = config.get("mqtt_password")  # unused right now
+TOPIC = Config.get("mqtt_topic", "home/nodes/zero-office/tts")
+MQTT_BROKER = Config("mqtt_broker", "10.0.0.173")
+MQTT_PORT = Config.get("mqtt_port", 1883)
+MQTT_USERNAME = Config.get("mqtt_username", "")  # unused right now
+MQTT_PASSWORD = Config.get("mqtt_password", "")  # unused right now
 
 PATH_TO_PROJECT = "~/projects/jarvis-node-setup"
 CHIME_PATH = os.path.expanduser(f"{PATH_TO_PROJECT}/sounds/chime.wav")
-PLAY_CHIME = config.get("play_chime", True)
+PLAY_CHIME = Config.get("play_chime", True)
 
 
 def on_connect(client, userdata, flags, rc):
