@@ -58,12 +58,6 @@ defaults.capture.card 1
 defaults.capture.device 0
 EOF
 
-cat <<EOF > /home/pi/.asoundrc
-defaults.pcm.card 0
-defaults.pcm.device 0
-defaults.ctl.card 0
-EOF
-
 echo "🎙️ Detecting USB microphone..."
 
 # Try to find the first USB audio card ID
