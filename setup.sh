@@ -16,6 +16,7 @@ fi
 
 echo "🔧 [1/7] Updating system..."
 sudo apt update && sudo apt upgrade -y
+sudo apt install libopenblas-dev
 
 echo "📦 [2/7] Installing dependencies..."
 sudo apt install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev sox ffmpeg
@@ -27,7 +28,7 @@ fi
 
 source ~/projects/jarvis-node-setup/venv/bin/activate
 pip install --upgrade pip
-pip install paho-mqtt httpx pvporcupine pyaudio vosk sounddevice nump scipy
+pip install paho-mqtt httpx pvporcupine pyaudio vosk sounddevice numpy scipy
 
 echo "📝 [4/7] Preparing config..."
 if [ ! -f ~/projects/jarvis-node-setup/config.json ]; then
