@@ -2,9 +2,9 @@
 
 set -e
 
-echo "🔁 Refreshing Jarvis node services..."
+echo "🔁 Refreshing Jarvis node service..."
 
-SERVICES=("voice-listener.service" "mqtt-tts.service")
+SERVICES=("jarvis-node.service")
 
 for service in "${SERVICES[@]}"; do
 	echo "🧼 Removing old $service..."
@@ -14,31 +14,14 @@ done
 echo "📦 Re-registering services from latest script..."
 
 # Re-create mqtt-tts.service
-cat <<EOF | sudo tee /etc/systemd/system/mqtt-tts.service >/dev/null
+cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service >/dev/null
 [Unit]
-Description=MQTT Listener for TTS Confirmation
+Description=Jarvis Node Service
 After=network.target
 
 [Service]
 WorkingDirectory=/home/pi/projects/jarvis-node-setup
-ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python3 -m scripts.mqtt_tts_listener.py
-Restart=always
-User=pi
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Re-create voice-listener.service
-cat <<EOF | sudo tee /etc/systemd/system/voice-listener.service >/dev/null
-[Unit]
-Description=Jarvis Voice Wake Word Listener
-After=network.target sound.target
-
-[Service]
-WorkingDirectory=/home/pi/projects/jarvis-node-setup
-ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python3 -m scripts.voice_listener.py
+ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python3 -m scripts.main
 Restart=always
 User=pi
 Environment=PYTHONUNBUFFERED=1

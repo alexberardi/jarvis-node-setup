@@ -1,0 +1,1012 @@
+{
+  "zeroconf": {
+    "smlight": [
+      {
+        "type": "_slzb-06._tcp.local."
+      }
+    ],
+    "deako": [
+      "_deako._tcp.local."
+    ],
+    "soundtouch": [
+      "_soundtouch._tcp.local."
+    ],
+    "philips_js": [
+      "_philipstv_s_rpc._tcp.local.",
+      "_philipstv_rpc._tcp.local."
+    ],
+    "brother": [
+      {
+        "type": "_printer._tcp.local.",
+        "name": "brother*"
+      }
+    ],
+    "altruist": [
+      "_altruist._tcp.local."
+    ],
+    "daikin": [
+      "_dkapi._tcp.local."
+    ],
+    "homekit": [
+      "_homekit._tcp.local."
+    ],
+    "home_connect": [
+      "_homeconnect._tcp.local."
+    ],
+    "eheimdigital": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "eheimdigital._http._tcp.local."
+      }
+    ],
+    "elgato": [
+      "_elg._tcp.local."
+    ],
+    "vizio": [
+      "_viziocast._tcp.local."
+    ],
+    "system_bridge": [
+      "_system-bridge._tcp.local."
+    ],
+    "lutron_caseta": [
+      {
+        "type": "_lutron._tcp.local.",
+        "properties": {
+          "SYSTYPE": "hwqs*"
+        }
+      },
+      {
+        "type": "_lutron._tcp.local.",
+        "properties": {
+          "SYSTYPE": "radiora3*"
+        }
+      },
+      {
+        "type": "_lutron._tcp.local.",
+        "properties": {
+          "SYSTYPE": "smartbridge*"
+        }
+      },
+      {
+        "type": "_lutron._tcp.local.",
+        "properties": {
+          "SYSTYPE": "ra2select*"
+        }
+      }
+    ],
+    "apple_tv": [
+      "_mediaremotetv._tcp.local.",
+      "_companion-link._tcp.local.",
+      "_airport._tcp.local.",
+      "_sleep-proxy._udp.local.",
+      "_touch-able._tcp.local.",
+      "_appletv-v2._tcp.local.",
+      "_hscp._tcp.local.",
+      {
+        "type": "_airplay._tcp.local.",
+        "properties": {
+          "model": "appletv*"
+        }
+      },
+      {
+        "type": "_airplay._tcp.local.",
+        "properties": {
+          "model": "audioaccessory*"
+        }
+      },
+      {
+        "type": "_airplay._tcp.local.",
+        "properties": {
+          "am": "airport*"
+        }
+      },
+      {
+        "type": "_raop._tcp.local.",
+        "properties": {
+          "am": "appletv*"
+        }
+      },
+      {
+        "type": "_raop._tcp.local.",
+        "properties": {
+          "am": "audioaccessory*"
+        }
+      },
+      {
+        "type": "_raop._tcp.local.",
+        "properties": {
+          "am": "airport*"
+        }
+      }
+    ],
+    "wled": [
+      "_wled._tcp.local."
+    ],
+    "volumio": [
+      "_Volumio._tcp.local."
+    ],
+    "cast": [
+      "_googlecast._tcp.local."
+    ],
+    "lektrico": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "lektrico*"
+      }
+    ],
+    "technove": [
+      "_technove-stations._tcp.local."
+    ],
+    "bond": [
+      "_bond._tcp.local."
+    ],
+    "devialet": [
+      "_devialet-http._tcp.local."
+    ],
+    "vegehub": [
+      "_vege._tcp.local."
+    ],
+    "rainmachine": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "rainmachine*"
+      }
+    ],
+    "homewizard": [
+      "_hwenergy._tcp.local.",
+      "_homewizard._tcp.local."
+    ],
+    "motionmount": [
+      "_tvm._tcp.local."
+    ],
+    "xiaomi_aqara": [
+      "_miio._udp.local."
+    ],
+    "zwave_me": [
+      {
+        "type": "_hap._tcp.local.",
+        "name": "*z.wave-me*"
+      }
+    ],
+    "homekit_controller": [
+      "_hap._tcp.local.",
+      "_hap._udp.local."
+    ],
+    "hunterdouglas_powerview": [
+      "_powerview._tcp.local.",
+      "_PowerView-G3._tcp.local."
+    ],
+    "enphase_envoy": [
+      {
+        "type": "_enphase-envoy._tcp.local."
+      }
+    ],
+    "music_assistant": [
+      "_mass._tcp.local."
+    ],
+    "kodi": [
+      "_xbmc-jsonrpc-h._tcp.local."
+    ],
+    "bluesound": [
+      {
+        "type": "_musc._tcp.local."
+      }
+    ],
+    "doorbird": [
+      {
+        "type": "_axis-video._tcp.local.",
+        "properties": {
+          "macaddress": "1ccae3*"
+        }
+      }
+    ],
+    "samsungtv": [
+      {
+        "type": "_airplay._tcp.local.",
+        "properties": {
+          "manufacturer": "samsung*"
+        }
+      }
+    ],
+    "heos": [
+      "_heos-audio._tcp.local."
+    ],
+    "blebox": [
+      "_bbxsrv._tcp.local."
+    ],
+    "matter": [
+      "_matter._tcp.local.",
+      "_matterc._udp.local."
+    ],
+    "russound_rio": [
+      "_rio._tcp.local."
+    ],
+    "devolo_home_network": [
+      {
+        "type": "_dvl-deviceapi._tcp.local.",
+        "properties": {
+          "MT": "*"
+        }
+      }
+    ],
+    "iometer": [
+      "_iometer._tcp.local."
+    ],
+    "tailwind": [
+      {
+        "type": "_http._tcp.local.",
+        "properties": {
+          "vendor": "tailwind"
+        }
+      }
+    ],
+    "plugwise": [
+      "_plugwise._tcp.local."
+    ],
+    "awair": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "awair*"
+      }
+    ],
+    "pure_energie": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "smartbridge*"
+      }
+    ],
+    "bang_olufsen": [
+      "_bangolufsen._tcp.local."
+    ],
+    "octoprint": [
+      "_octoprint._tcp.local."
+    ],
+    "androidtv_remote": [
+      "_androidtvremote2._tcp.local."
+    ],
+    "wyoming": [
+      "_wyoming._tcp.local."
+    ],
+    "airgradient": [
+      "_airgradient._tcp.local."
+    ],
+    "elmax": [
+      {
+        "type": "_elmax-ssl._tcp.local."
+      }
+    ],
+    "ipp": [
+      "_ipps._tcp.local.",
+      "_ipp._tcp.local."
+    ],
+    "nanoleaf": [
+      "_nanoleafms._tcp.local.",
+      "_nanoleafapi._tcp.local."
+    ],
+    "axis": [
+      {
+        "type": "_axis-video._tcp.local.",
+        "properties": {
+          "macaddress": "00408c*"
+        }
+      },
+      {
+        "type": "_axis-video._tcp.local.",
+        "properties": {
+          "macaddress": "accc8e*"
+        }
+      },
+      {
+        "type": "_axis-video._tcp.local.",
+        "properties": {
+          "macaddress": "b8a44f*"
+        }
+      },
+      {
+        "type": "_axis-video._tcp.local.",
+        "properties": {
+          "macaddress": "e82725*"
+        }
+      }
+    ],
+    "cambridge_audio": [
+      "_stream-magic._tcp.local.",
+      "_smoip._tcp.local."
+    ],
+    "miele": [
+      "_mieleathome._tcp.local."
+    ],
+    "linkplay": [
+      "_linkplay._tcp.local."
+    ],
+    "ecobee": [
+      {
+        "type": "_ecobee._tcp.local."
+      },
+      {
+        "type": "_sideplay._tcp.local.",
+        "properties": {
+          "mdl": "eb-*"
+        }
+      },
+      {
+        "type": "_sideplay._tcp.local.",
+        "properties": {
+          "mdl": "ecobee*"
+        }
+      }
+    ],
+    "roomba": [
+      {
+        "type": "_amzn-alexa._tcp.local.",
+        "name": "irobot-*"
+      },
+      {
+        "type": "_amzn-alexa._tcp.local.",
+        "name": "roomba-*"
+      }
+    ],
+    "bsblan": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "bsb-lan*"
+      }
+    ],
+    "plex": [
+      "_plexmediasvr._tcp.local."
+    ],
+    "lookin": [
+      "_lookin._tcp.local."
+    ],
+    "powerfox": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "powerfox*"
+      }
+    ],
+    "esphome": [
+      "_esphomelib._tcp.local."
+    ],
+    "zwave_js": [
+      "_zwave-js-server._tcp.local."
+    ],
+    "nam": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "nam-*"
+      },
+      {
+        "type": "_http._tcp.local.",
+        "properties": {
+          "manufacturer": "nettigo"
+        }
+      }
+    ],
+    "onewire": [
+      "_owserver._tcp.local."
+    ],
+    "devolo_home_control": [
+      "_dvl-deviceapi._tcp.local."
+    ],
+    "baf": [
+      {
+        "type": "_api._tcp.local.",
+        "properties": {
+          "model": "haiku*"
+        }
+      },
+      {
+        "type": "_api._tcp.local.",
+        "properties": {
+          "model": "i6*"
+        }
+      }
+    ],
+    "loqed": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "loqed*"
+      }
+    ],
+    "freebox": [
+      "_fbx-api._tcp.local."
+    ],
+    "guardian": [
+      "_api._udp.local."
+    ],
+    "modern_forms": [
+      {
+        "type": "_easylink._tcp.local.",
+        "name": "wac*"
+      }
+    ],
+    "rabbitair": [
+      "_rabbitair._udp.local."
+    ],
+    "peblar": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "pblr-*"
+      }
+    ],
+    "romy": [
+      "_aicu-http._tcp.local."
+    ],
+    "shelly": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "shelly*"
+      },
+      {
+        "type": "_shelly._tcp.local."
+      }
+    ],
+    "smappee": [
+      {
+        "type": "_ssh._tcp.local.",
+        "name": "smappee1*"
+      },
+      {
+        "type": "_ssh._tcp.local.",
+        "name": "smappee2*"
+      },
+      {
+        "type": "_ssh._tcp.local.",
+        "name": "smappee50*"
+      }
+    ],
+    "thread": [
+      "_meshcop._udp.local."
+    ],
+    "yeelight": [
+      {
+        "type": "_miio._udp.local.",
+        "name": "yeelink-*"
+      }
+    ],
+    "sonos": [
+      "_sonos._tcp.local."
+    ],
+    "hue": [
+      "_hue._tcp.local."
+    ],
+    "bosch_shc": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "bosch shc*"
+      }
+    ],
+    "forked_daapd": [
+      "_daap._tcp.local."
+    ],
+    "overkiz": [
+      {
+        "type": "_kizbox._tcp.local.",
+        "name": "gateway*"
+      },
+      {
+        "type": "_kizboxdev._tcp.local.",
+        "name": "gateway*"
+      }
+    ],
+    "xiaomi_miio": [
+      "_miio._udp.local."
+    ],
+    "slide_local": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "slide*"
+      }
+    ],
+    "zha": [
+      {
+        "type": "_esphomelib._tcp.local.",
+        "name": "tube*"
+      },
+      {
+        "type": "_zigate-zigbee-gateway._tcp.local.",
+        "name": "*zigate*"
+      },
+      {
+        "type": "_zigstar_gw._tcp.local.",
+        "name": "*zigstar*"
+      },
+      {
+        "type": "_uzg-01._tcp.local.",
+        "name": "uzg-01*"
+      },
+      {
+        "type": "_slzb-06._tcp.local.",
+        "name": "slzb-06*"
+      },
+      {
+        "type": "_xzg._tcp.local.",
+        "name": "xzg*"
+      },
+      {
+        "type": "_czc._tcp.local.",
+        "name": "czc*"
+      },
+      {
+        "type": "_zigbee-coordinator._tcp.local.",
+        "name": "*"
+      }
+    ],
+    "nut": [
+      "_nut._tcp.local."
+    ],
+    "rachio": [
+      {
+        "type": "_http._tcp.local.",
+        "name": "rachio*"
+      }
+    ],
+    "synology_dsm": [
+      {
+        "type": "_http._tcp.local.",
+        "properties": {
+          "vendor": "synology*"
+        }
+      }
+    ]
+  },
+  "dhcp": {
+    "smlight": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "powerwall": {
+      "macaddress": [],
+      "hostname": [
+        ".upper()\n        # The hostname is the gateway_din (unique_id)\n        await self.async_set_unique_id(gateway_din)\n        for entry in self._async_current_entries(include_ignore=False):\n            if entry.data[CONF_IP_ADDRESS] == discovery_info.ip:\n                if entry.unique_id is not None and is_ip_address(entry.unique_id):\n                    if self.hass.config_entries.async_update_entry(\n                        entry, unique_id=gateway_din\n                    ):\n                        self.hass.config_entries.async_schedule_reload(entry.entry_id)\n                return self.async_abort(reason=\"already_configured\")\n            if entry.unique_id == gateway_din:\n                if await self._async_powerwall_is_offline(entry):\n                    if self.hass.config_entries.async_update_entry(\n                        entry, data={**entry.data, CONF_IP_ADDRESS: self.ip_address"
+      ]
+    },
+    "fully_kiosk": {
+      "macaddress": [
+        ")\n\n        for entry in self._async_current_entries():\n            if entry.data[CONF_MAC] == mac:\n                self.hass.config_entries.async_update_entry(\n                    entry,\n                    data=entry.data | {CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "ruuvi_gateway": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "dlink": {
+      "macaddress": [
+        ")\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "home_connect": {
+      "macaddress": [],
+      "hostname": [
+        "),\n                (DOMAIN, discovery_info.hostname.split(\"-\")[-1]),\n            "
+      ]
+    },
+    "lamarzocco": {
+      "macaddress": [
+        ",\n            "
+      ],
+      "hostname": [
+        ".upper()\n\n        await self.async_set_unique_id(serial)\n        self._abort_if_unique_id_configured(\n            updates={\n                CONF_ADDRESS: discovery_info.macaddress,\n            "
+      ]
+    },
+    "airzone": {
+      "macaddress": [
+        "\n\n        _LOGGER.debug(\n            \"DHCP discovery detected Airzone WebServer: %s\", self._discovered_mac\n        )\n\n        self._async_abort_entries_match({CONF_HOST: self._discovered_ip"
+      ],
+      "hostname": []
+    },
+    "sma": {
+      "macaddress": [
+        ")\n        self._discovery_data[CONF_NAME] = discovery_info.hostname\n        self._data[CONF_HOST] = discovery_info.ip\n        self._data[CONF_MAC] = format_mac(self._discovery_data[CONF_MAC])\n\n        _LOGGER.debug(\n            \"DHCP discovery detected SMA device: %s, IP: %s, MAC: %s\",\n            self._discovery_data[CONF_NAME],\n            self._discovery_data[CONF_HOST],\n            self._discovery_data[CONF_MAC],\n        )\n\n        existing_entries_with_host = [\n            entry\n            for entry in self._async_current_entries(include_ignore=False)\n            if entry.data.get(CONF_HOST) == self._data[CONF_HOST]\n            and not entry.data.get(CONF_MAC)\n        ]\n\n        # If we have an existing entry with the same host but no MAC address,\n        # we update the entry with the MAC address and reload it.\n        if existing_entries_with_host:\n            entry = existing_entries_with_host[0]\n            self.async_update_reload_and_abort(\n                entry, data_updates={CONF_MAC: self._data[CONF_MAC]"
+      ],
+      "hostname": [
+        "\n        self._data[CONF_HOST] = discovery_info.ip\n        self._data[CONF_MAC] = format_mac(self._discovery_data[CONF_MAC])\n\n        _LOGGER.debug(\n            \"DHCP discovery detected SMA device: %s, IP: %s, MAC: %s\",\n            self._discovery_data[CONF_NAME],\n            self._discovery_data[CONF_HOST],\n            self._discovery_data[CONF_MAC],\n        )\n\n        existing_entries_with_host = [\n            entry\n            for entry in self._async_current_entries(include_ignore=False)\n            if entry.data.get(CONF_HOST) == self._data[CONF_HOST]\n            and not entry.data.get(CONF_MAC)\n        ]\n\n        # If we have an existing entry with the same host but no MAC address,\n        # we update the entry with the MAC address and reload it.\n        if existing_entries_with_host:\n            entry = existing_entries_with_host[0]\n            self.async_update_reload_and_abort(\n                entry, data_updates={CONF_MAC: self._data[CONF_MAC]"
+      ]
+    },
+    "lametric": {
+      "macaddress": [
+        ")\n        for entry in self._async_current_entries():\n            if format_mac(entry.data[CONF_MAC]) == mac:\n                self.hass.config_entries.async_update_entry(\n                    entry,\n                    data=entry.data | {CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "broadlink": {
+      "macaddress": [
+        ".lower().replace(\":\", \"\")\n        await self.async_set_unique_id(unique_id)\n        self._abort_if_unique_id_configured(updates={CONF_HOST: host"
+      ],
+      "hostname": []
+    },
+    "elkm1": {
+      "macaddress": [
+        ", discovery_info.ip, 0\n        )\n        _LOGGER.debug(\"Elk discovered from dhcp: %s\", self._discovered_device)\n        return await self._async_handle_discovery()\n\n    async def async_step_integration_discovery(\n        self, discovery_info: DiscoveryInfoType\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        self._discovered_device = ElkSystem(\n            discovery_info[\"mac_address\"],\n            discovery_info[\"ip_address\"],\n            discovery_info[\"port\"],\n        )\n        _LOGGER.debug(\n            \"Elk discovered from integration discovery: %s\", self._discovered_device\n        )\n        return await self._async_handle_discovery()\n\n    async def _async_handle_discovery(self) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        device = self._discovered_device\n        assert device is not None\n        mac = dr.format_mac(device.mac_address)\n        host = device.ip_address\n        await self.async_set_unique_id(mac)\n        for entry in self._async_current_entries(include_ignore=False):\n            if (\n                entry.unique_id == mac\n                or hostname_from_url(entry.data[CONF_HOST]) == host\n            ):\n                if async_update_entry_from_discovery(self.hass, entry, device):\n                    self.hass.config_entries.async_schedule_reload(entry.entry_id)\n                return self.async_abort(reason=\"already_configured\")\n        self.host = host\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n        # Handled ignored case since _async_current_entries\n        # is called with include_ignore=False\n        self._abort_if_unique_id_configured()\n        if not device.port:\n            if discovered_device := await async_discover_device(self.hass, host):\n                self._discovered_device = discovered_device\n            else:\n                return self.async_abort(reason=\"cannot_connect\")\n        return await self.async_step_discovery_confirm()\n\n    def is_matching(self, other_flow: Self) -> bool:\n        \"\"\"Return True if other_flow is matching this flow.\"\"\"\n        return other_flow.host == self.host\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovered_device is not None\n        self.context[\"title_placeholders\"] = _placeholders_from_device(\n            self._discovered_device\n        )\n        return await self.async_step_discovered_connection()\n\n    async def async_step_user(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Handle the initial step.\"\"\"\n        if user_input is not None:\n            if mac := user_input[CONF_DEVICE]:\n                await self.async_set_unique_id(mac, raise_on_progress=False)\n                self._discovered_device = self._discovered_devices[mac]\n                return await self.async_step_discovered_connection()\n            return await self.async_step_manual_connection()\n\n        current_unique_ids = self._async_current_ids()\n        current_hosts = {\n            hostname_from_url(entry.data[CONF_HOST])\n            for entry in self._async_current_entries(include_ignore=False)\n        "
+      ],
+      "hostname": [
+        "_from_url(entry.data[CONF_HOST]) == host\n            ):\n                if async_update_entry_from_discovery(self.hass, entry, device):\n                    self.hass.config_entries.async_schedule_reload(entry.entry_id)\n                return self.async_abort(reason=\"already_configured\")\n        self.host = host\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n        # Handled ignored case since _async_current_entries\n        # is called with include_ignore=False\n        self._abort_if_unique_id_configured()\n        if not device.port:\n            if discovered_device := await async_discover_device(self.hass, host):\n                self._discovered_device = discovered_device\n            else:\n                return self.async_abort(reason=\"cannot_connect\")\n        return await self.async_step_discovery_confirm()\n\n    def is_matching(self, other_flow: Self) -> bool:\n        \"\"\"Return True if other_flow is matching this flow.\"\"\"\n        return other_flow.host == self.host\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovered_device is not None\n        self.context[\"title_placeholders\"] = _placeholders_from_device(\n            self._discovered_device\n        )\n        return await self.async_step_discovered_connection()\n\n    async def async_step_user(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Handle the initial step.\"\"\"\n        if user_input is not None:\n            if mac := user_input[CONF_DEVICE]:\n                await self.async_set_unique_id(mac, raise_on_progress=False)\n                self._discovered_device = self._discovered_devices[mac]\n                return await self.async_step_discovered_connection()\n            return await self.async_step_manual_connection()\n\n        current_unique_ids = self._async_current_ids()\n        current_hosts = {\n            hostname_from_url(entry.data[CONF_HOST])\n            for entry in self._async_current_entries(include_ignore=False)\n        "
+      ]
+    },
+    "wmspro": {
+      "macaddress": [
+        ")\n        await self.async_set_unique_id(unique_id)\n\n        entry = self.hass.config_entries.async_entry_for_domain_unique_id(\n            DOMAIN, unique_id\n        )\n        if entry:\n            try:  # Check if current host is a valid IP address\n                ipaddress.ip_address(entry.data[CONF_HOST])\n            except ValueError:  # Do not touch name-based host\n                return self.async_abort(reason=\"already_configured\")\n            else:  # Update existing host with new IP address\n                self._abort_if_unique_id_configured(\n                    updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "vicare": {
+      "macaddress": [
+        ")\n        _LOGGER.debug(\"Found device with mac %s\", formatted_mac)\n\n        await self.async_set_unique_id(formatted_mac)\n        self._abort_if_unique_id_configured()\n\n        if self._async_current_entries():\n            return self.async_abort(reason=\"single_instance_allowed\")\n\n        return await self.async_step_user()\n"
+      ],
+      "hostname": []
+    },
+    "bond": {
+      "macaddress": [],
+      "hostname": [
+        ".partition(\"-\")[2].upper()\n        await self.async_set_unique_id(bond_id)\n        return await self.async_step_any_discovery(bond_id, host)\n\n    async def async_step_zeroconf(\n        self, discovery_info: ZeroconfServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle a flow initialized by zeroconf discovery.\"\"\"\n        name: str = discovery_info.name\n        host: str = discovery_info.host\n        bond_id = name.partition(\".\")[0]\n        await self.async_set_unique_id(bond_id)\n        return await self.async_step_any_discovery(bond_id, host)\n\n    async def async_step_any_discovery(\n        self, bond_id: str, host: str\n    ) -> ConfigFlowResult:\n        \"\"\"Handle a flow initialized by discovery.\"\"\"\n        for entry in self._async_current_entries():\n            if entry.unique_id != bond_id:\n                continue\n            updates = {CONF_HOST: host"
+      ]
+    },
+    "wiz": {
+      "macaddress": [
+        "\n        )\n        return await self._async_handle_discovery()\n\n    async def async_step_integration_discovery(\n        self, discovery_info: dict[str, str]\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        self._discovered_device = DiscoveredBulb(\n            discovery_info[\"ip_address\"], discovery_info[\"mac_address\"]\n        )\n        return await self._async_handle_discovery()\n\n    async def _async_handle_discovery(self) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        device = self._discovered_device\n        _LOGGER.debug(\"Discovered device: %s\", device)\n        ip_address = device.ip_address\n        mac = device.mac_address\n        await self.async_set_unique_id(mac)\n        self._abort_if_unique_id_configured(updates={CONF_HOST: ip_address"
+      ],
+      "hostname": []
+    },
+    "velux": {
+      "macaddress": [
+        ")\n        self.discovery_data[CONF_NAME] = discovery_info.hostname.upper().replace(\n            \"LAN_\", \"\"\n        )\n\n        await self.async_set_unique_id(self.discovery_data[CONF_NAME])\n        self._abort_if_unique_id_configured(\n            updates={CONF_HOST: self.discovery_data[CONF_HOST]"
+      ],
+      "hostname": [
+        " ends with the last 4 digits of the device MAC address.\n        self.discovery_data[CONF_HOST] = discovery_info.ip\n        self.discovery_data[CONF_MAC] = format_mac(discovery_info.macaddress)\n        self.discovery_data[CONF_NAME] = discovery_info.hostname.upper().replace(\n            \"LAN_\", \"\"\n        )\n\n        await self.async_set_unique_id(self.discovery_data[CONF_NAME])\n        self._abort_if_unique_id_configured(\n            updates={CONF_HOST: self.discovery_data[CONF_HOST]"
+      ]
+    },
+    "flux_led": {
+      "macaddress": [
+        "),\n            model_num=None,\n            version_num=None,\n            firmware_date=None,\n            model_info=None,\n            model_description=None,\n            remote_access_enabled=None,\n            remote_access_host=None,\n            remote_access_port=None,\n        )\n        return await self._async_handle_discovery()\n\n    async def async_step_integration_discovery(\n        self, discovery_info: DiscoveryInfoType\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        self._allow_update_mac = True\n        self._discovered_device = cast(FluxLEDDiscovery, discovery_info)\n        return await self._async_handle_discovery()\n\n    async def _async_set_discovered_mac(\n        self, device: FluxLEDDiscovery, allow_update_mac: bool\n    ) -> None:\n        \"\"\"Set the discovered mac.\n\n        We only allow it to be updated if it comes from udp\n        discovery since the dhcp mac can be one digit off from\n        the udp discovery mac for devices with multiple network interfaces\n        \"\"\"\n        mac_address = device[ATTR_ID]\n        assert mac_address is not None\n        mac = dr.format_mac(mac_address)\n        await self.async_set_unique_id(mac)\n        for entry in self._async_current_entries(include_ignore=True):\n            if not (\n                entry.data.get(CONF_HOST) == device[ATTR_IPADDR]\n                or (\n                    entry.unique_id\n                    and \":\" in entry.unique_id\n                    and mac_matches_by_one(entry.unique_id, mac)\n                )\n            ):\n                continue\n            if entry.source == SOURCE_IGNORE:\n                raise AbortFlow(\"already_configured\")\n            if (\n                async_update_entry_from_discovery(\n                    self.hass, entry, device, None, allow_update_mac\n                )\n                and entry.state\n                not in (\n                    ConfigEntryState.SETUP_IN_PROGRESS,\n                    ConfigEntryState.NOT_LOADED,\n                )\n            ) or entry.state == ConfigEntryState.SETUP_RETRY:\n                self.hass.config_entries.async_schedule_reload(entry.entry_id)\n            else:\n                async_dispatcher_send(\n                    self.hass,\n                    FLUX_LED_DISCOVERY_SIGNAL.format(entry_id=entry.entry_id),\n                )\n            raise AbortFlow(\"already_configured\")\n\n    async def _async_handle_discovery(self) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        device = self._discovered_device\n        assert device is not None\n        await self._async_set_discovered_mac(device, self._allow_update_mac)\n        host = device[ATTR_IPADDR]\n        self.host = host\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n        if not device[ATTR_MODEL_DESCRIPTION]:\n            mac_address = device[ATTR_ID]\n            assert mac_address is not None\n            mac = dr.format_mac(mac_address)\n            try:\n                device = await self._async_try_connect(host, device)\n            except FLUX_LED_EXCEPTIONS:\n                return self.async_abort(reason=\"cannot_connect\")\n\n            discovered_mac = device[ATTR_ID]\n            if device[ATTR_MODEL_DESCRIPTION] or (\n                discovered_mac is not None\n                and (formatted_discovered_mac := dr.format_mac(discovered_mac))\n                and formatted_discovered_mac != mac\n                and mac_matches_by_one(discovered_mac, mac)\n            ):\n                self._discovered_device = device\n                await self._async_set_discovered_mac(device, True)\n        return await self.async_step_discovery_confirm()\n\n    def is_matching(self, other_flow: Self) -> bool:\n        \"\"\"Return True if other_flow is matching this flow.\"\"\"\n        return other_flow.host == self.host\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovered_device is not None\n        device = self._discovered_device\n        mac_address = device[ATTR_ID]\n        assert mac_address is not None\n        if user_input is not None:\n            return self._async_create_entry_from_device(self._discovered_device)\n\n        self._set_confirm_only()\n        placeholders = {\n            \"model\": device[ATTR_MODEL_DESCRIPTION]\n            or device[ATTR_MODEL]\n            or \"Magic Home\",\n            \"id\": mac_address[-6:],\n            \"ipaddr\": device[ATTR_IPADDR],\n        "
+      ],
+      "hostname": []
+    },
+    "hunterdouglas_powerview": {
+      "macaddress": [],
+      "hostname": [
+        "\n        return await self.async_step_discovery_confirm()\n\n    async def async_step_zeroconf(\n        self, discovery_info: ZeroconfServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle zeroconf discovery.\"\"\"\n        self.discovered_ip = discovery_info.host\n        name = discovery_info.name.removesuffix(POWERVIEW_G2_SUFFIX)\n        name = name.removesuffix(POWERVIEW_G3_SUFFIX)\n        self.discovered_name = name\n        return await self.async_step_discovery_confirm()\n\n    async def async_step_homekit(\n        self, discovery_info: ZeroconfServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle HomeKit discovery.\"\"\"\n        self.discovered_ip = discovery_info.host\n        name = discovery_info.name.removesuffix(HAP_SUFFIX)\n        self.discovered_name = name\n        return await self.async_step_discovery_confirm()\n\n    async def async_step_discovery_confirm(self) -> ConfigFlowResult:\n        \"\"\"Confirm dhcp or homekit discovery.\"\"\"\n        # If we already have the host configured do\n        # not open connections to it if we can avoid it.\n        assert self.discovered_ip and self.discovered_name is not None\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n\n        self._async_abort_entries_match({CONF_HOST: self.discovered_ip"
+      ]
+    },
+    "nuki": {
+      "macaddress": [],
+      "hostname": [
+        "[12:].upper())\n\n        self._abort_if_unique_id_configured()\n\n        self.discovery_schema = vol.Schema(\n            {\n                vol.Required(CONF_HOST, default=discovery_info.ip): str,\n                vol.Required(CONF_PORT, default=DEFAULT_PORT): int,\n                vol.Required(CONF_TOKEN): str,\n            "
+      ]
+    },
+    "samsungtv": {
+      "macaddress": [
+        ")\n        self._host = discovery_info.ip\n        self._async_start_discovery_with_mac_address()\n        await self._async_set_device_unique_id()\n        self.context[\"title_placeholders\"] = {\"device\": self._title"
+      ],
+      "hostname": []
+    },
+    "tolo": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured({CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "lifx": {
+      "macaddress": [
+        "\n        host = discovery_info.ip\n        hass = self.hass\n        for entry in self._async_current_entries():\n            if (\n                entry.unique_id\n                and not async_entry_is_legacy(entry)\n                and mac_matches_serial_number(mac, entry.unique_id)\n            ):\n                if entry.data[CONF_HOST] != host:\n                    hass.config_entries.async_update_entry(\n                        entry, data={**entry.data, CONF_HOST: host"
+      ],
+      "hostname": []
+    },
+    "isy994": {
+      "macaddress": [],
+      "hostname": [
+        "\n        if friendly_name.startswith((\"polisy\", \"eisy\")):\n            url = f\"http://{discovery_info.ip"
+      ]
+    },
+    "bosch_alarm": {
+      "macaddress": [
+        ")\n        self.host = discovery_info.ip\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n\n        for entry in self.hass.config_entries.async_entries(DOMAIN):\n            if entry.data.get(CONF_MAC) == self.mac:\n                result = self.hass.config_entries.async_update_entry(\n                    entry,\n                    data={\n                        **entry.data,\n                        CONF_HOST: discovery_info.ip,\n                    "
+      ],
+      "hostname": []
+    },
+    "tailwind": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "emonitor": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: self.discovered_ip"
+      ],
+      "hostname": []
+    },
+    "gogogate2": {
+      "macaddress": [
+        ")\n        return await self._async_discovery_handler(discovery_info.ip)\n\n    async def _async_discovery_handler(self, ip_address: str) -> ConfigFlowResult:\n        \"\"\"Start the user flow from any discovery.\"\"\"\n        self._abort_if_unique_id_configured({CONF_IP_ADDRESS: ip_address"
+      ],
+      "hostname": []
+    },
+    "squeezebox": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured()\n\n        _LOGGER.debug(\"Configuring dhcp player with unique id: %s\", self.unique_id)\n\n        registry = er.async_get(self.hass)\n\n        if TYPE_CHECKING:\n            assert self.unique_id\n        # if we have detected this player, do nothing. if not, there must be a server out there for us to configure, so start the normal user flow (which tries to autodetect server)\n        if registry.async_get_entity_id(MP_DOMAIN, DOMAIN, self.unique_id) is not None:\n            # this player is already known, so do nothing other than mark as configured\n            raise AbortFlow(\"already_configured\")\n\n        # if the player is unknown, then we likely need to configure its server\n        return await self.async_step_user()\n\n\nOPTIONS_SCHEMA = vol.Schema(\n    {\n        vol.Required(CONF_BROWSE_LIMIT): vol.All(\n            NumberSelector(\n                NumberSelectorConfig(min=1, max=65534, mode=NumberSelectorMode.BOX)\n            ),\n            vol.Coerce(int),\n        ),\n        vol.Required(CONF_VOLUME_STEP): vol.All(\n            NumberSelector(\n                NumberSelectorConfig(min=1, max=20, mode=NumberSelectorMode.SLIDER)\n            ),\n            vol.Coerce(int),\n        ),\n    "
+      ],
+      "hostname": []
+    },
+    "roborock": {
+      "macaddress": [
+        "))\n            "
+      ],
+      "hostname": []
+    },
+    "balboa": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "palazzetti": {
+      "macaddress": [
+        "\n        )\n\n        await self.async_set_unique_id(dr.format_mac(discovery_info.macaddress))\n        self._abort_if_unique_id_configured()\n        self._discovered_device = PalazzettiClient(hostname=discovery_info.ip)\n        try:\n            await self._discovered_device.connect()\n        except CommunicationError:\n            return self.async_abort(reason=\"cannot_connect\")\n\n        return await self.async_step_discovery_confirm()\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        if user_input is not None:\n            return self.async_create_entry(\n                title=self._discovered_device.name,\n                data={CONF_HOST: self._discovered_device.host"
+      ],
+      "hostname": [
+        "=discovery_info.ip)\n        try:\n            await self._discovered_device.connect()\n        except CommunicationError:\n            return self.async_abort(reason=\"cannot_connect\")\n\n        return await self.async_step_discovery_confirm()\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        if user_input is not None:\n            return self.async_create_entry(\n                title=self._discovered_device.name,\n                data={CONF_HOST: self._discovered_device.host"
+      ]
+    },
+    "axis": {
+      "macaddress": [
+        "),\n                CONF_NAME: discovery_info.hostname,\n                CONF_PORT: 80,\n            "
+      ],
+      "hostname": [
+        ",\n                CONF_PORT: 80,\n            "
+      ]
+    },
+    "screenlogic": {
+      "macaddress": [
+        ")\n        await self.async_set_unique_id(mac)\n        self._abort_if_unique_id_configured(\n            updates={CONF_IP_ADDRESS: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "knocki": {
+      "macaddress": [],
+      "hostname": [
+        ")"
+      ]
+    },
+    "steamist": {
+      "macaddress": [
+        "),\n            hostname=discovery_info.hostname,\n        )\n        return await self._async_handle_discovery()\n\n    async def async_step_integration_discovery(\n        self, discovery_info: DiscoveryInfoType\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        self._discovered_device = Device30303(\n            ipaddress=discovery_info[\"ipaddress\"],\n            name=discovery_info[\"name\"],\n            mac=discovery_info[\"mac\"],\n            hostname=discovery_info[\"hostname\"],\n        )\n        return await self._async_handle_discovery()\n\n    async def _async_handle_discovery(self) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        device = self._discovered_device\n        assert device is not None\n        mac_address = device.mac\n        mac = dr.format_mac(mac_address)\n        host = device.ipaddress\n        await self.async_set_unique_id(mac)\n        for entry in self._async_current_entries(include_ignore=False):\n            if entry.unique_id == mac or entry.data[CONF_HOST] == host:\n                if (\n                    async_update_entry_from_discovery(self.hass, entry, device)\n                    and entry.state is not ConfigEntryState.SETUP_IN_PROGRESS\n                ):\n                    self.hass.config_entries.async_schedule_reload(entry.entry_id)\n                return self.async_abort(reason=\"already_configured\")\n        self.host = host\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n        if not device.name:\n            discovery = await async_discover_device(self.hass, device.ipaddress)\n            if not discovery:\n                return self.async_abort(reason=\"cannot_connect\")\n            self._discovered_device = discovery\n        assert self._discovered_device is not None\n        if not async_is_steamist_device(self._discovered_device):\n            return self.async_abort(reason=\"not_steamist_device\")\n        return await self.async_step_discovery_confirm()\n\n    def is_matching(self, other_flow: Self) -> bool:\n        \"\"\"Return True if other_flow is matching this flow.\"\"\"\n        return other_flow.host == self.host\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovered_device is not None\n        device = self._discovered_device\n        if user_input is not None:\n            return self._async_create_entry_from_device(self._discovered_device)\n        self._set_confirm_only()\n        placeholders = {\n            \"name\": device.name,\n            \"ipaddress\": device.ipaddress,\n        "
+      ],
+      "hostname": [
+        "=discovery_info.hostname,\n        )\n        return await self._async_handle_discovery()\n\n    async def async_step_integration_discovery(\n        self, discovery_info: DiscoveryInfoType\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        self._discovered_device = Device30303(\n            ipaddress=discovery_info[\"ipaddress\"],\n            name=discovery_info[\"name\"],\n            mac=discovery_info[\"mac\"],\n            hostname=discovery_info[\"hostname\"],\n        )\n        return await self._async_handle_discovery()\n\n    async def _async_handle_discovery(self) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        device = self._discovered_device\n        assert device is not None\n        mac_address = device.mac\n        mac = dr.format_mac(mac_address)\n        host = device.ipaddress\n        await self.async_set_unique_id(mac)\n        for entry in self._async_current_entries(include_ignore=False):\n            if entry.unique_id == mac or entry.data[CONF_HOST] == host:\n                if (\n                    async_update_entry_from_discovery(self.hass, entry, device)\n                    and entry.state is not ConfigEntryState.SETUP_IN_PROGRESS\n                ):\n                    self.hass.config_entries.async_schedule_reload(entry.entry_id)\n                return self.async_abort(reason=\"already_configured\")\n        self.host = host\n        if self.hass.config_entries.flow.async_has_matching_flow(self):\n            return self.async_abort(reason=\"already_in_progress\")\n        if not device.name:\n            discovery = await async_discover_device(self.hass, device.ipaddress)\n            if not discovery:\n                return self.async_abort(reason=\"cannot_connect\")\n            self._discovered_device = discovery\n        assert self._discovered_device is not None\n        if not async_is_steamist_device(self._discovered_device):\n            return self.async_abort(reason=\"not_steamist_device\")\n        return await self.async_step_discovery_confirm()\n\n    def is_matching(self, other_flow: Self) -> bool:\n        \"\"\"Return True if other_flow is matching this flow.\"\"\"\n        return other_flow.host == self.host\n\n    async def async_step_discovery_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovered_device is not None\n        device = self._discovered_device\n        if user_input is not None:\n            return self._async_create_entry_from_device(self._discovered_device)\n        self._set_confirm_only()\n        placeholders = {\n            \"name\": device.name,\n            \"ipaddress\": device.ipaddress,\n        "
+      ]
+    },
+    "roomba": {
+      "macaddress": [],
+      "hostname": [
+        "\n        )\n\n    async def _async_step_discovery(\n        self, ip_address: str, hostname: str\n    ) -> ConfigFlowResult:\n        \"\"\"Handle any discovery.\"\"\"\n        self._async_abort_entries_match({CONF_HOST: ip_address"
+      ]
+    },
+    "esphome": {
+      "macaddress": [
+        ")\n        await self.async_set_unique_id(format_mac(mac_address))\n        await self._async_validate_mac_abort_configured(\n            mac_address, discovery_info.ip, None\n        )\n        # This should never happen since we only listen to DHCP requests\n        # for configured devices.\n        return self.async_abort(reason=\"already_configured\")\n\n    async def async_step_hassio(\n        self, discovery_info: HassioServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle Supervisor service discovery.\"\"\"\n        await async_set_dashboard_info(\n            self.hass,\n            discovery_info.slug,\n            discovery_info.config[\"host\"],\n            discovery_info.config[\"port\"],\n        )\n        return self.async_abort(reason=\"service_received\")\n\n    async def async_step_name_conflict(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Handle name conflict resolution.\"\"\"\n        assert self._entry_with_name_conflict is not None\n        assert self._entry_with_name_conflict.unique_id is not None\n        assert self.unique_id is not None\n        assert self._device_name is not None\n        return self.async_show_menu(\n            step_id=\"name_conflict\",\n            menu_options=[\"name_conflict_migrate\", \"name_conflict_overwrite\"],\n            description_placeholders={\n                \"existing_mac\": format_mac(self._entry_with_name_conflict.unique_id),\n                \"existing_title\": self._entry_with_name_conflict.title,\n                \"mac\": format_mac(self.unique_id),\n                \"name\": self._device_name,\n            "
+      ],
+      "hostname": []
+    },
+    "onvif": {
+      "macaddress": [
+        "\n        registry = dr.async_get(self.hass)\n        if not (\n            device := registry.async_get_device(\n                connections={(dr.CONNECTION_NETWORK_MAC, mac)"
+      ],
+      "hostname": []
+    },
+    "tplink": {
+      "macaddress": [
+        ")\n        )\n\n    async def async_step_integration_discovery(\n        self, discovery_info: DiscoveryInfoType\n    ) -> ConfigFlowResult:\n        \"\"\"Handle integration discovery.\"\"\"\n        return await self._async_handle_discovery(\n            discovery_info[CONF_HOST],\n            discovery_info[CONF_MAC],\n            discovery_info[CONF_DEVICE],\n        )\n\n    @callback\n    def _get_config_updates(\n        self, entry: ConfigEntry, host: str, device: Device | None\n    ) -> dict | None:\n        \"\"\"Return updates if the host or device config has changed.\"\"\"\n        entry_data = entry.data\n        updates: dict[str, Any] = {"
+      ],
+      "hostname": []
+    },
+    "ring": {
+      "macaddress": [
+        ")"
+      ],
+      "hostname": []
+    },
+    "obihai": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured()\n\n        if user_input is None:\n            credentials = {\n                CONF_HOST: self._dhcp_discovery_info.ip,\n                CONF_PASSWORD: DEFAULT_PASSWORD,\n                CONF_USERNAME: DEFAULT_USERNAME,\n            "
+      ],
+      "hostname": []
+    },
+    "incomfort": {
+      "macaddress": [
+        ")\n        existing_entries_without_unique_id = [\n            entry\n            for entry in self._async_current_entries(include_ignore=False)\n            if entry.unique_id is None\n            and entry.data.get(CONF_HOST) == self._discovered_host\n            and entry.state is ConfigEntryState.LOADED\n        ]\n        if existing_entries_without_unique_id:\n            self.hass.config_entries.async_update_entry(\n                existing_entries_without_unique_id[0], unique_id=unique_id\n            )\n            self.hass.config_entries.async_schedule_reload(\n                existing_entries_without_unique_id[0].entry_id\n            )\n            raise AbortFlow(\"already_configured\")\n\n        await self.async_set_unique_id(unique_id)\n        self._abort_if_unique_id_configured(updates={CONF_HOST: self._discovered_host"
+      ],
+      "hostname": []
+    },
+    "goalzero": {
+      "macaddress": [
+        "))\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "fronius": {
+      "macaddress": [],
+      "hostname": [
+        ",\n            ):\n                return self.async_abort(reason=\"already_configured\")\n        # Symo Datalogger devices need up to 1 minute at boot from DHCP request\n        # to respond to API requests (connection refused until then)\n        await asyncio.sleep(DHCP_REQUEST_DELAY)\n        try:\n            unique_id, self.info = await validate_host(self.hass, discovery_info.ip)\n        except CannotConnect:\n            return self.async_abort(reason=\"invalid_host\")\n\n        await self.async_set_unique_id(unique_id, raise_on_progress=False)\n        self._abort_if_unique_id_configured(updates=dict(self.info))\n\n        return await self.async_step_confirm_discovery()\n\n    async def async_step_confirm_discovery(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Attempt to confirm.\"\"\"\n        title = create_title(self.info)\n        if user_input is not None:\n            return self.async_create_entry(title=title, data=self.info)\n\n        self._set_confirm_only()\n        self.context.update({\"title_placeholders\": {\"device\": title"
+      ]
+    },
+    "reolink": {
+      "macaddress": [
+        ")\n        existing_entry = await self.async_set_unique_id(mac_address)\n        if (\n            existing_entry\n            and CONF_PASSWORD in existing_entry.data\n            and existing_entry.data[CONF_HOST] != discovery_info.ip\n        ):\n            if is_connected(self.hass, existing_entry):\n                _LOGGER.debug(\n                    \"Reolink DHCP reported new IP '%s', \"\n                    \"but connection to camera seems to be okay, so sticking to IP '%s'\",\n                    discovery_info.ip,\n                    existing_entry.data[CONF_HOST],\n                )\n                raise AbortFlow(\"already_configured\")\n\n            # check if the camera is reachable at the new IP\n            new_config = dict(existing_entry.data)\n            new_config[CONF_HOST] = discovery_info.ip\n            host = ReolinkHost(self.hass, new_config, existing_entry.options)\n            try:\n                await host.api.get_state(\"GetLocalLink\")\n                await host.api.logout()\n            except ReolinkError as err:\n                _LOGGER.debug(\n                    \"Reolink DHCP reported new IP '%s', \"\n                    \"but got error '%s' trying to connect, so sticking to IP '%s'\",\n                    discovery_info.ip,\n                    err,\n                    existing_entry.data[CONF_HOST],\n                )\n                raise AbortFlow(\"already_configured\") from err\n            if format_mac(host.api.mac_address) != mac_address:\n                _LOGGER.debug(\n                    \"Reolink mac address '%s' at new IP '%s' from DHCP, \"\n                    \"does not match mac '%s' of config entry, so sticking to IP '%s'\",\n                    format_mac(host.api.mac_address),\n                    discovery_info.ip,\n                    mac_address,\n                    existing_entry.data[CONF_HOST],\n                )\n                raise AbortFlow(\"already_configured\")\n\n        if existing_entry and existing_entry.data[CONF_HOST] != discovery_info.ip:\n            _LOGGER.debug(\n                \"Reolink DHCP reported new IP '%s', updating from old IP '%s'\",\n                discovery_info.ip,\n                existing_entry.data[CONF_HOST],\n            )\n\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    },
+    "overkiz": {
+      "macaddress": [],
+      "hostname": [
+        " = discovery_info.hostname\n        gateway_id = hostname[8:22]\n        self._host = f\"gateway-{gateway_id"
+      ]
+    },
+    "motion_blinds": {
+      "macaddress": [
+        ").replace(\":\", \"\")\n        await self.async_set_unique_id(mac_address)\n        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.ip"
+      ],
+      "hostname": []
+    }
+  },
+  "ssdp": {
+    "hyperion": {
+      "device_types": [
+        "urn:schemas-upnp-org:device:Basic:1',\n        #   'friendlyName': 'Hyperion (192.168.0.1)',\n        #   'manufacturer': 'Hyperion Open Source Ambient Lighting',\n        #   'manufacturerURL': 'https://www.hyperion-project.org',\n        #   'modelDescription': 'Hyperion Open Source Ambient Light',\n        #   'modelName': 'Hyperion',\n        #   'modelNumber': '2.0.0-alpha.8',\n        #   'modelURL': 'https://www.hyperion-project.org',\n        #   'serialNumber': 'f9aab089-f85a-55cf-b7c1-222a72faebe9',\n        #   'UDN': 'uuid:f9aab089-f85a-55cf-b7c1-222a72faebe9',\n        #   'ports': {\n        #       'jsonServer': '19444',\n        #       'sslServer': '8092',\n        #       'protoBuffer': '19445',\n        #       'flatBuffer': '19400'\n        #   },\n        #   'presentationURL': 'index.html',\n        #   'iconList': {\n        #       'icon': {\n        #           'mimetype': 'image/png',\n        #           'height': '100',\n        #           'width': '100',\n        #           'depth': '32',\n        #           'url': 'img/hyperion/ssdp_icon.png'\n        #       }\n        #   },\n        #   'ssdp_usn': 'uuid:f9aab089-f85a-55cf-b7c1-222a72faebe9',\n        #   'ssdp_ext': '',\n        #   'ssdp_server': 'Raspbian GNU/Linux 10 (buster)/10 UPnP/1.0 Hyperion/2.0.0-alpha.8'}\n\n        # SSDP requires user confirmation.\n        self._require_confirm = True\n        self._data[CONF_HOST] = urlparse(discovery_info.ssdp_location).hostname\n        try:\n            self._port_ui = (\n                urlparse(discovery_info.ssdp_location).port or const.DEFAULT_PORT_UI\n            )\n        except ValueError:\n            self._port_ui = const.DEFAULT_PORT_UI\n\n        try:\n            self._data[CONF_PORT] = int(\n                discovery_info.upnp.get("
+      ],
+      "manufacturers": [
+        "': 'Hyperion Open Source Ambient Lighting',\n        #   'manufacturerURL': 'https://www.hyperion-project.org',\n        #   'modelDescription': 'Hyperion Open Source Ambient Light',\n        #   'modelName': 'Hyperion',\n        #   'modelNumber': '2.0.0-alpha.8',\n        #   'modelURL': 'https://www.hyperion-project.org',\n        #   'serialNumber': 'f9aab089-f85a-55cf-b7c1-222a72faebe9',\n        #   'UDN': 'uuid:f9aab089-f85a-55cf-b7c1-222a72faebe9',\n        #   'ports': {\n        #       'jsonServer': '19444',\n        #       'sslServer': '8092',\n        #       'protoBuffer': '19445',\n        #       'flatBuffer': '19400'\n        #   "
+      ]
+    },
+    "dsmr": {
+      "device_types": [],
+      "manufacturers": [
+        " else \"\")\n            for port in ports\n        "
+      ]
+    },
+    "yalexs_ble": {
+      "device_types": [],
+      "manufacturers": [
+        "_data\n                ):\n                    continue\n                self._discovered_devices[discovery.address] = discovery\n\n        if not self._discovered_devices:\n            return self.async_abort(reason=\"no_devices_found\")\n\n        data_schema = vol.Schema(\n            {\n                vol.Required(CONF_ADDRESS): vol.In(\n                    {\n                        service_info.address: (\n                            f\"{service_info.name"
+      ]
+    },
+    "aranet": {
+      "device_types": [],
+      "manufacturers": [
+        "_data or adv.manufacturer_data.version < MIN_VERSION:\n            raise AbortFlow(\"outdated_version\")\n\n        # If integrations are disabled, we get no sensor data.\n        if not adv.manufacturer_data.integrations:\n            raise AbortFlow(\"integrations_disabled\")\n\n    async def async_step_bluetooth(\n        self, discovery_info: BluetoothServiceInfoBleak\n    ) -> ConfigFlowResult:\n        \"\"\"Handle the Bluetooth discovery step.\"\"\"\n        await self.async_set_unique_id(discovery_info.address)\n        self._abort_if_unique_id_configured()\n        adv = Aranet4Advertisement(discovery_info.device, discovery_info.advertisement)\n        self._raise_for_advertisement_errors(adv)\n\n        self._discovery_info = discovery_info\n        self._discovered_device = adv\n        return await self.async_step_bluetooth_confirm()\n\n    async def async_step_bluetooth_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self._discovery_info is not None\n        title = _title(self._discovery_info)\n        if user_input is not None:\n            return self.async_create_entry(title=title, data={",
+        "_data:\n                self._discovered_devices[address] = (_title(discovery_info), adv)\n\n        if not self._discovered_devices:\n            return self.async_abort(reason=\"no_devices_found\")\n\n        return self.async_show_form(\n            step_id=\"user\",\n            data_schema=vol.Schema(\n                {\n                    vol.Required(CONF_ADDRESS): vol.In(\n                        {\n                            addr: dev[0]\n                            for (addr, dev) in self._discovered_devices.items()\n                        "
+      ]
+    },
+    "modem_callerid": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n                port.description,\n                port.vid,\n                port.pid,\n            )\n            for port in ports\n            if port.device not in existing_devices\n        ]\n        if not unused_ports:\n            return self.async_abort(reason=\"no_devices_found\")\n\n        if user_input is not None:\n            port = ports[unused_ports.index(str(user_input.get(CONF_DEVICE)))]\n            dev_path = await self.hass.async_add_executor_job(\n                usb.get_serial_by_id, port.device\n            )\n            errors = await self.validate_device_errors(\n                dev_path=dev_path, unique_id=_generate_unique_id(port)\n            )\n            if errors is None:\n                return self.async_create_entry(\n                    title=user_input.get(CONF_NAME, DEFAULT_NAME),\n                    data={CONF_DEVICE: dev_path"
+      ]
+    },
+    "homekit_controller": {
+      "device_types": [],
+      "manufacturers": [
+        "_data import (  # noqa: PLC0415\n            HomeKitAdvertisement,\n        )\n\n        mfr_data = discovery_info.manufacturer_data\n\n        try:\n            device = HomeKitAdvertisement.from_manufacturer_data(\n                discovery_info.name, discovery_info.address, mfr_data\n            )\n        except ValueError:\n            return self.async_abort(reason=\"ignored_model\")\n\n        await self.async_set_unique_id(normalize_hkid(device.id))\n        self._abort_if_unique_id_configured()\n\n        if not (device.status_flags & StatusFlags.UNPAIRED):\n            return self.async_abort(reason=\"already_paired\")\n\n        if self.controller is None:\n            await self._async_setup_controller()\n            assert self.controller is not None\n\n        try:\n            discovery = await self.controller.async_find(device.id)\n        except aiohomekit.AccessoryNotFoundError:\n            return self.async_abort(reason=\"accessory_not_found_error\")\n\n        if TYPE_CHECKING:\n            discovery = cast(BleDiscovery, discovery)\n\n        self.name = discovery.description.name\n        self.model = BLE_DEFAULT_NAME\n        self.category = discovery.description.category\n        self.hkid = discovery.description.id\n\n        return self._async_step_pair_show_form()\n\n    async def async_step_pair(\n        self, pair_info: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Pair with a new HomeKit accessory.\"\"\"\n        # If async_step_pair is called with no pairing code then we do the M1\n        # phase of pairing. If this is successful the device enters pairing\n        # mode.\n\n        # If it doesn't have a screen then the pin is static.\n\n        # If it has a display it will display a pin on that display. In\n        # this case the code is random. So we have to call the async_start_pairing\n        # API before the user can enter a pin. But equally we don't want to\n        # call async_start_pairing when the device is discovered, only when they\n        # click on 'Configure' in the UI.\n\n        # async_start_pairing will make the device show its pin and return a\n        # callable. We call the callable with the pin that the user has typed\n        # in.\n\n        # Should never call this step without setting self.hkid\n        assert self.hkid\n        description_placeholders = {"
+      ]
+    },
+    "rainforest_raven": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n                port.description,\n                port.vid,\n                port.pid,\n            )\n            for port in ports\n            if port.device not in existing_devices\n        ]\n        if not unused_ports:\n            return self.async_abort(reason=\"no_devices_found\")\n\n        errors = {"
+      ]
+    },
+    "samsungtv": {
+      "device_types": [],
+      "manufacturers": [
+        ": str | None = None\n        self._model: str | None = None\n        self._connect_result: str | None = None\n        self._method: str | None = None\n        self._port: int | None = None\n        self._name: str | None = None\n        self._title: str = \"\"\n        self._id: int | None = None\n        self._device_info: dict[str, Any] | None = None\n        self._authenticator: SamsungTVEncryptedWSAsyncAuthenticator | None = None\n\n    def _base_config_entry(self) -> dict[str, Any]:\n        \"\"\"Generate the base config entry without the method.\"\"\"\n        return {\n            CONF_HOST: self._host,\n            CONF_MAC: self._mac,\n            CONF_MANUFACTURER: self._manufacturer or DEFAULT_MANUFACTURER,\n            CONF_METHOD: self._bridge.method,\n            CONF_MODEL: self._model,\n            CONF_PORT: self._bridge.port,\n            CONF_SSDP_RENDERING_CONTROL_LOCATION: self._ssdp_rendering_control_location,\n            CONF_SSDP_MAIN_TV_AGENT_LOCATION: self._ssdp_main_tv_agent_location,\n        ",
+        "_is_not_samsung(self) -> None:\n        if not self._manufacturer or not self._manufacturer.lower().startswith(\n            \"samsung\"\n        ):\n            raise AbortFlow(RESULT_NOT_SUPPORTED)\n\n    async def async_step_ssdp(\n        self, discovery_info: SsdpServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle a flow initialized by ssdp discovery.\"\"\"\n        LOGGER.debug(\"Samsung device found via SSDP: %s\", discovery_info)\n        model_name: str = discovery_info.upnp.get(ATTR_UPNP_MODEL_NAME) or \"\"\n        if discovery_info.ssdp_st == UPNP_SVC_RENDERING_CONTROL:\n            self._ssdp_rendering_control_location = discovery_info.ssdp_location\n            LOGGER.debug(\n                \"Set SSDP RenderingControl location to: %s\",\n                self._ssdp_rendering_control_location,\n            )\n        elif discovery_info.ssdp_st == UPNP_SVC_MAIN_TV_AGENT:\n            self._ssdp_main_tv_agent_location = discovery_info.ssdp_location\n            LOGGER.debug(\n                \"Set SSDP MainTvAgent location to: %s\",\n                self._ssdp_main_tv_agent_location,\n            )\n        self._udn = self._upnp_udn = _strip_uuid(discovery_info.upnp[ATTR_UPNP_UDN])\n        if hostname := urlparse(discovery_info.ssdp_location or \"\").hostname:\n            self._host = hostname\n        self._manufacturer = discovery_info.upnp.get(ATTR_UPNP_MANUFACTURER)\n        self._abort_if_manufacturer_is_not_samsung()\n\n        # Set defaults, in case they cannot be extracted from device_info\n        self._name = self._title = self._model = model_name\n        # Update from device_info (if accessible)\n        await self._async_get_and_check_device_info()\n\n        # The UDN provided by the ssdp discovery doesn't always match the UDN\n        # from the device_info, used by the other methods so we need to\n        # ensure the device_info is loaded before setting the unique_id\n        await self._async_set_unique_id_from_udn()\n        self._async_update_and_abort_for_matching_unique_id()\n        self._async_abort_if_host_already_in_progress()\n        if self._method == METHOD_LEGACY and discovery_info.ssdp_st in (\n            UPNP_SVC_RENDERING_CONTROL,\n            UPNP_SVC_MAIN_TV_AGENT,\n        ):\n            # The UDN we use for the unique id cannot be determined\n            # from device_info for legacy devices\n            return self.async_abort(reason=\"not_supported\")\n        self.context[\"title_placeholders\"] = {\"device\": self._title"
+      ]
+    },
+    "velbus": {
+      "device_types": [],
+      "manufacturers": [
+        " else \"\")\n            for p in ports\n        ]\n\n        if user_input is not None:\n            self._title = \"Velbus USB\"\n            self._device = ports[list_of_ports.index(user_input[CONF_PORT])].device\n            self._async_abort_entries_match({CONF_PORT: self._device"
+      ]
+    },
+    "homeassistant_sky_connect": {
+      "device_types": [],
+      "manufacturers": [
+        " = discovery_info.manufacturer\n        description = discovery_info.description\n        unique_id = f\"{vid",
+        ",\n                DESCRIPTION: self._usb_info.description,  # For backwards compatibility\n                PRODUCT: self._usb_info.description,\n                DEVICE: self._usb_info.device,\n                FIRMWARE: self._probed_firmware_info.firmware_type.value,\n                FIRMWARE_VERSION: self._probed_firmware_info.firmware_version,\n            "
+      ]
+    },
+    "denonavr": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n                CONF_SERIAL_NUMBER: self.serial_number,\n            ",
+        "\")\n\n        # Check if required information is present to set the unique_id\n        if (\n            ATTR_UPNP_MODEL_NAME not in discovery_info.upnp\n            or ATTR_UPNP_SERIAL not in discovery_info.upnp\n        ):\n            return self.async_abort(reason=\"not_denonavr_missing\")\n\n        self.model_name = discovery_info.upnp[ATTR_UPNP_MODEL_NAME].replace(\"*\", \"\")\n        self.serial_number = discovery_info.upnp[ATTR_UPNP_SERIAL]\n        assert discovery_info.ssdp_location is not None\n        self.host = urlparse(discovery_info.ssdp_location).hostname\n\n        if self.model_name in IGNORED_MODELS:\n            return self.async_abort(reason=\"not_denonavr_manufacturer\")\n\n        unique_id = self.construct_unique_id(self.model_name, self.serial_number)\n        await self.async_set_unique_id(unique_id)\n        self._abort_if_unique_id_configured({CONF_HOST: self.host"
+      ]
+    },
+    "bluetooth": {
+      "device_types": [],
+      "manufacturers": [
+        " = details[ADAPTER_MANUFACTURER] or \"Unknown\"\n    return f\"{name",
+        " = details[ADAPTER_MANUFACTURER]\n        self._placeholders = {\n            \"name\": name,\n            \"model\": model,\n            \"manufacturer\": manufacturer or \"Unknown\",\n        "
+      ]
+    },
+    "insteon": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n            discovery_info.description,\n            discovery_info.vid,\n            discovery_info.pid,\n        )\n        self._set_confirm_only()\n        self.context[\"title_placeholders\"] = {\n            CONF_NAME: f\"Insteon PLM {self._device_name"
+      ]
+    },
+    "rfxtrx": {
+      "device_types": [],
+      "manufacturers": [
+        " else \"\")\n            )\n        list_of_ports[CONF_MANUAL_PATH] = CONF_MANUAL_PATH\n\n        schema = vol.Schema({vol.Required(CONF_DEVICE): vol.In(list_of_ports)"
+      ]
+    },
+    "zwave_js": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n            port.description,\n            vid,\n            pid,\n        )\n        port_descriptions[dev_path] = human_name\n\n    # Filter out \"n/a\" descriptions only if there are other ports available\n    non_na_ports = {\n        path: desc\n        for path, desc in port_descriptions.items()\n        if not desc.lower().startswith(\"n/a\")\n    ",
+        " = discovery_info.manufacturer\n        description = discovery_info.description\n        # Zooz uses this vid/pid, but so do 2652 sticks\n        if vid == \"10C4\" and pid == \"EA60\" and description and \"2652\" in description:\n            return self.async_abort(reason=\"not_zwave_device\")\n\n        discovery_info.device = await self.hass.async_add_executor_job(\n            usb.get_serial_by_id, discovery_info.device\n        )\n\n        addon_info = await self._async_get_addon_info()\n        if (\n            addon_info.state not in (AddonState.NOT_INSTALLED, AddonState.INSTALLING)\n            and (addon_device := addon_info.options.get(CONF_ADDON_DEVICE)) is not None\n            and await self.hass.async_add_executor_job(\n                usb.get_serial_by_id, addon_device\n            )\n            == discovery_info.device\n        ):\n            return self.async_abort(reason=\"already_configured\")\n\n        await self.async_set_unique_id(\n            f\"{vid",
+        " == \"Nabu Casa\" and description == \"ZWA-2 - Nabu Casa ZWA-2\":\n            title = \"Home Assistant Connect ZWA-2\"\n        else:\n            human_name = usb.human_readable_device_name(\n                dev_path,\n                serial_number,\n                manufacturer,\n                description,\n                vid,\n                pid,\n            )\n            title = human_name.split(\" - \")[0].strip()\n        self.context[\"title_placeholders\"] = {CONF_NAME: title"
+      ]
+    },
+    "dlna_dmr": {
+      "device_types": [],
+      "manufacturers": [
+        " = (discovery_info.upnp.get(ATTR_UPNP_MANUFACTURER) or \"\").lower()\n    model = (discovery_info.upnp.get(ATTR_UPNP_MODEL_NAME) or \"\").lower()\n\n    if manufacturer.startswith(\"xbmc\") or model == \"kodi\":\n        # kodi\n        return True\n    if \"philips\" in manufacturer and \"tv\" in model:\n        # philips_js\n        # These TVs don't have a stable UDN, so also get discovered as a new\n        # device every time they are turned on.\n        return True\n    if manufacturer.startswith(\"samsung\") and \"tv\" in model:\n        # samsungtv\n        return True\n    if manufacturer.startswith(\"lg\") and \"tv\" in model:\n        # webostv\n        return True\n\n    return False\n\n\ndef _is_dmr_device(discovery_info: SsdpServiceInfo) -> bool:\n    \"\"\"Determine if discovery is a complete DLNA DMR device.\n\n    Use the discovery_info instead of DmrDevice.is_profile_device to avoid\n    contacting the device again.\n    \"\"\"\n    # Abort if the device doesn't support all services required for a DmrDevice.\n    discovery_service_list = discovery_info.upnp.get(ATTR_UPNP_SERVICE_LIST)\n    if not discovery_service_list:\n        return False\n\n    services = discovery_service_list.get(\"service\")\n    if not services:\n        discovery_service_ids: set[str] = set()\n    elif isinstance(services, list):\n        discovery_service_ids = {service.get(\"serviceId\") for service in services"
+      ]
+    },
+    "airthings_ble": {
+      "device_types": [],
+      "manufacturers": [
+        "_data:\n                continue\n\n            if not any(uuid in SERVICE_UUIDS for uuid in discovery_info.service_uuids):\n                continue\n\n            try:\n                device = await self._get_device_data(discovery_info)\n            except AirthingsDeviceUpdateError:\n                return self.async_abort(reason=\"cannot_connect\")\n            except Exception:\n                _LOGGER.exception(\"Unknown error occurred\")\n                return self.async_abort(reason=\"unknown\")\n            name = get_name(device)\n            self._discovered_devices[address] = Discovery(name, discovery_info, device)\n\n        if not self._discovered_devices:\n            return self.async_abort(reason=\"no_devices_found\")\n\n        titles = {\n            address: discovery.device.name\n            for (address, discovery) in self._discovered_devices.items()\n        "
+      ]
+    },
+    "huawei_lte": {
+      "device_types": [],
+      "manufacturers": [
+        ": str | None = None\n    upnp_udn: str | None = None\n    url: str | None = None\n\n    @staticmethod\n    @callback\n    def async_get_options_flow(\n        config_entry: ConfigEntry,\n    ) -> HuaweiLteOptionsFlow:\n        \"\"\"Get options flow.\"\"\"\n        return HuaweiLteOptionsFlow()\n\n    async def _async_show_user_form(\n        self,\n        user_input: dict[str, Any] | None = None,\n        errors: dict[str, str] | None = None,\n    ) -> ConfigFlowResult:\n        if user_input is None:\n            user_input = {",
+        ",\n                CONF_UPNP_UDN: self.upnp_udn,\n            ",
+        " = discovery_info.upnp.get(ATTR_UPNP_MANUFACTURER)\n        self.upnp_udn = upnp_udn\n        self.url = url\n        return await self._async_show_user_form()\n\n    async def async_step_reauth(\n        self, entry_data: Mapping[str, Any]\n    ) -> ConfigFlowResult:\n        \"\"\"Perform reauth upon an API authentication error.\"\"\"\n        return await self.async_step_reauth_confirm()\n\n    async def async_step_reauth_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Dialog that informs the user that reauth is required.\"\"\"\n        entry = self._get_reauth_entry()\n        if not user_input:\n            return await self._async_show_reauth_form(\n                user_input={\n                    CONF_USERNAME: entry.data[CONF_USERNAME],\n                    CONF_PASSWORD: entry.data[CONF_PASSWORD],\n                "
+      ]
+    },
+    "gardena_bluetooth": {
+      "device_types": [],
+      "manufacturers": [
+        "_data.get(ManufacturerData.company)):\n        _LOGGER.debug(\"Missing manufacturer data: %s\", discovery_info)\n        return False\n\n    manufacturer_data = ManufacturerData.decode(data)\n    product_type = ProductType.from_manufacturer_data(manufacturer_data)\n\n    if product_type not in (\n        ProductType.PUMP,\n        ProductType.VALVE,\n        ProductType.WATER_COMPUTER,\n        ProductType.AUTOMATS,\n        ProductType.PRESSURE_TANKS,\n    ):\n        _LOGGER.debug(\"Unsupported device: %s\", manufacturer_data)\n        return False\n\n    return True\n\n\ndef _get_name(discovery_info: BluetoothServiceInfo):\n    data = discovery_info.manufacturer_data[ManufacturerData.company]\n    manufacturer_data = ManufacturerData.decode(data)\n    product_type = ProductType.from_manufacturer_data(manufacturer_data)\n\n    return PRODUCT_NAMES.get(product_type, \"Gardena Device\")\n\n\nclass GardenaBluetoothConfigFlow(ConfigFlow, domain=DOMAIN):\n    \"\"\"Handle a config flow for Gardena Bluetooth.\"\"\"\n\n    VERSION = 1\n\n    def __init__(self) -> None:\n        \"\"\"Initialize the config flow.\"\"\"\n        self.devices: dict[str, str] = {"
+      ]
+    },
+    "husqvarna_automower_ble": {
+      "device_types": [],
+      "manufacturers": [
+        " data: %s\",\n        discovery_info.address,\n        discovery_info.manufacturer_data,\n    )\n\n    manufacturer = any(key == 1062 for key in discovery_info.manufacturer_data)\n    service_husqvarna = any(\n        service == \"98bd0001-0b0e-421a-84e5-ddbf75dc6de4\"\n        for service in discovery_info.service_uuids\n    )\n    service_generic = any(\n        service == \"00001800-0000-1000-8000-00805f9b34fb\"\n        for service in discovery_info.service_uuids\n    )\n\n    return manufacturer and service_husqvarna and service_generic\n\n\nclass HusqvarnaAutomowerBleConfigFlow(ConfigFlow, domain=DOMAIN):\n    \"\"\"Handle a config flow for Husqvarna Bluetooth.\"\"\"\n\n    VERSION = 1\n\n    def __init__(self) -> None:\n        \"\"\"Initialize the config flow.\"\"\"\n        self.address: str | None\n\n    async def async_step_bluetooth(\n        self, discovery_info: BluetoothServiceInfo\n    ) -> ConfigFlowResult:\n        \"\"\"Handle the bluetooth discovery step.\"\"\"\n\n        LOGGER.debug(\"Discovered device: %s\", discovery_info)\n        if not _is_supported(discovery_info):\n            return self.async_abort(reason=\"no_devices_found\")\n\n        self.address = discovery_info.address\n        await self.async_set_unique_id(self.address)\n        self._abort_if_unique_id_configured()\n        return await self.async_step_confirm()\n\n    async def async_step_confirm(\n        self, user_input: dict[str, Any] | None = None\n    ) -> ConfigFlowResult:\n        \"\"\"Confirm discovery.\"\"\"\n        assert self.address\n\n        device = bluetooth.async_ble_device_from_address(\n            self.hass, self.address, connectable=True\n        )\n        channel_id = random.randint(1, 0xFFFFFFFF)\n\n        try:\n            (manufacturer, device_type, model) = await Mower(\n                channel_id, self.address\n            ).probe_gatts(device)\n        except (BleakError, TimeoutError) as exception:\n            LOGGER.exception(\"Failed to connect to device: %s\", exception)\n            return self.async_abort(reason=\"cannot_connect\")\n\n        title = manufacturer + \" \" + device_type\n\n        LOGGER.debug(\"Found device: %s\", title)\n\n        if user_input is not None:\n            return self.async_create_entry(\n                title=title,\n                data={CONF_ADDRESS: self.address, CONF_CLIENT_ID: channel_id"
+      ]
+    },
+    "melnor": {
+      "device_types": [],
+      "manufacturers": [
+        "_id == MANUFACTURER_ID and any(\n                manufacturer_data.startswith(MANUFACTURER_DATA_START)\n                for manufacturer_data in discovery_info.manufacturer_data.values()\n            ):\n                address = discovery_info.address\n                if (\n                    address not in current_addresses\n                    and address not in self._discovered_addresses\n                ):\n                    self._discovered_addresses.append(address)\n\n        addresses = {\n            address\n            for address in self._discovered_addresses\n            if address not in current_addresses\n        "
+      ]
+    },
+    "landisgyr_heat_meter": {
+      "device_types": [],
+      "manufacturers": [
+        ",\n                usb_device.description,\n                usb_device.vid,\n                usb_device.pid,\n            )\n            port_descriptions[dev_path] = human_name\n\n    return port_descriptions\n\n\nclass CannotConnect(HomeAssistantError):\n    \"\"\"Error to indicate we cannot connect.\"\"\"\n"
+      ]
+    },
+    "zha": {
+      "device_types": [],
+      "manufacturers": [
+        " = \"Nabu Casa\"\n\n        ports = [p for p in ports if not p.device.startswith(\"/dev/ttyAMA\")]\n        ports.insert(0, port)\n\n    if is_hassio(hass):\n        # Present the multi-PAN addon as a setup option, if it's available\n        multipan_manager = (\n            await silabs_multiprotocol_addon.get_multiprotocol_addon_manager(hass)\n        )\n\n        try:\n            addon_info = await multipan_manager.async_get_addon_info()\n        except (AddonError, KeyError):\n            addon_info = None\n\n        if addon_info is not None and addon_info.state != AddonState.NOT_INSTALLED:\n            addon_port = ListPortInfo(\n                device=silabs_multiprotocol_addon.get_zigbee_socket(),\n                skip_link_detection=True,\n            )\n\n            addon_port.description = \"Multiprotocol add-on\"\n            addon_port.manufacturer = \"Nabu Casa\"\n            ports.append(addon_port)\n\n    return ports\n\n\nclass BaseZhaFlow(ConfigEntryBaseFlow):\n    \"\"\"Mixin for common ZHA flow steps and forms.\"\"\"\n\n    _hass: HomeAssistant\n    _title: str\n\n    def __init__(self) -> None:\n        \"\"\"Initialize flow instance.\"\"\"\n        super().__init__()\n\n        self._hass = None  # type: ignore[assignment]\n        self._radio_mgr = ZhaRadioManager()\n\n    @property\n    def hass(self) -> HomeAssistant:\n        \"\"\"Return hass.\"\"\"\n        return self._hass\n\n    @hass.setter\n    def hass(self, hass: HomeAssistant) -> None:\n        \"\"\"Set hass.\"\"\"\n        self._hass = hass\n        self._radio_mgr.hass = hass\n\n    async def _async_create_radio_entry(self) -> ConfigFlowResult:\n        \"\"\"Create a config entry with the current flow state.\"\"\"\n        assert self._radio_mgr.radio_type is not None\n        assert self._radio_mgr.device_path is not None\n        assert self._radio_mgr.device_settings is not None\n\n        device_settings = self._radio_mgr.device_settings.copy()\n        device_settings[CONF_DEVICE_PATH] = await self.hass.async_add_executor_job(\n            usb.get_serial_by_id, self._radio_mgr.device_path\n        )\n\n        return self.async_create_entry(\n            title=self._title,\n            data={\n                CONF_DEVICE: DEVICE_SCHEMA(device_settings),\n                CONF_RADIO_TYPE: self._radio_mgr.radio_type.name,\n            ",
+        " else \"\")\n            for p in ports\n        ]\n\n        if not list_of_ports:\n            return await self.async_step_manual_pick_radio_type()\n\n        list_of_ports.append(CONF_MANUAL_PATH)\n\n        if user_input is not None:\n            user_selection = user_input[CONF_DEVICE_PATH]\n\n            if user_selection == CONF_MANUAL_PATH:\n                return await self.async_step_manual_pick_radio_type()\n\n            port = ports[list_of_ports.index(user_selection)]\n            self._radio_mgr.device_path = port.device\n\n            probe_result = await self._radio_mgr.detect_radio_type()\n            if probe_result == ProbeResult.WRONG_FIRMWARE_INSTALLED:\n                return self.async_abort(\n                    reason=\"wrong_firmware_installed\",\n                    description_placeholders={\"repair_url\": REPAIR_MY_URL",
+        "\n                else \"\"\n            )\n\n            return await self.async_step_verify_radio()\n\n        # Pre-select the currently configured port\n        default_port: vol.Undefined | str = vol.UNDEFINED\n\n        if self._radio_mgr.device_path is not None:\n            for description, port in zip(list_of_ports, ports, strict=False):\n                if port.device == self._radio_mgr.device_path:\n                    default_port = description\n                    break\n            else:\n                default_port = CONF_MANUAL_PATH\n\n        schema = vol.Schema(\n            {\n                vol.Required(CONF_DEVICE_PATH, default=default_port): vol.In(\n                    list_of_ports\n                )\n            ",
+        " = discovery_info.manufacturer\n        description = discovery_info.description\n        dev_path = discovery_info.device\n\n        await self._set_unique_id_and_update_ignored_flow(\n            unique_id=f\"{vid",
+        ",\n            description,\n            vid,\n            pid,\n        )\n        self.context[\"title_placeholders\"] = {CONF_NAME: self._title"
+      ]
+    }
+  }
+}

@@ -1,31 +1,28 @@
 import json
 import requests
+from typing import Any, Dict, Optional, Union
+from utils.config_service import Config
 
 
 class RestClient:
-    _config = None
-
     @staticmethod
-    def _load_config():
-        with open("config.json", "r") as f:
-            RestClient._config = json.load(f)
-
-    @staticmethod
-    def post(url: str, data=None, files=None, timeout=10):
-        RestClient._load_config()
-        headers = {
-            "X-Node-ID": RestClient._config.get("node_id", ""),
-            "X-API-Key": RestClient._config.get("api_key", ""),
+    def post(
+        url: str, 
+        data: Optional[Dict[str, Any]] = None, 
+        files: Optional[Dict[str, Any]] = None, 
+        timeout: int = 10
+    ) -> Optional[Dict[str, Any]]:
+        headers: Dict[str, str] = {
+            "X-Node-ID": Config.get_str("node_id", "") or "",
+            "X-API-Key": Config.get_str("api_key", "") or "",
         }
 
-        request_args = {"headers": headers, "timeout": timeout}
+        request_args: Dict[str, Any] = {"headers": headers, "timeout": timeout}
 
         if data is not None:
-            print("THERE IS JSON")
             request_args["json"] = data
 
         if files is not None:
-            print("THERE ARE FILES")
             request_args["files"] = files
 
         try:

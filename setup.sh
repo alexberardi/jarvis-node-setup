@@ -15,11 +15,11 @@ fi
 
 
 echo "🔧 [1/7] Updating system..."
-sudo apt update && sudo apt upgrade -y
-sudo apt install libopenblas-dev
+sudo apt-get update && sudo apt-get upgrade -y
+sudo apt-get install libopenblas-dev 
 
 echo "📦 [2/7] Installing dependencies..."
-sudo apt install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev sox ffmpeg
+sudo apt-get install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev sox ffmpeg flake8 avahi-utils 
 
 echo "🐍 [3/7] Creating Python venv and installing requirements..."
 if [ ! -d ~/projects/jarvis-node-setup/venv ]; then
@@ -28,7 +28,7 @@ fi
 
 source ~/projects/jarvis-node-setup/venv/bin/activate
 pip install --upgrade pip
-pip install paho-mqtt httpx pvporcupine pyaudio vosk sounddevice numpy scipy
+pip install -r ~/projects/jarvis-node-setup/requirements.txt
 
 echo "📝 [4/7] Preparing config..."
 if [ ! -f ~/projects/jarvis-node-setup/config.json ]; then
@@ -54,15 +54,28 @@ defaults.pcm.card 0
 defaults.pcm.device 0
 defaults.ctl.card 0
 
-# Input (microphone)
-defaults.capture.card 1
-defaults.capture.device 0
+# Input (microphone) via dsnoop
+pcm.dsnoopmic {
+  type dsnoop
+  ipc_key 87654321
+  slave {
+    pcm "hw:1,0"
+    channels 1
+  }
+}
+
+pcm.!default {
+  type asym
+  playback.pcm "hw:0,0"
+  capture.pcm "dsnoopmic"
+}
+
 EOF
 
 echo "🎙️ Detecting USB microphone..."
 
 # Try to find the first USB audio card ID
-USB_MIC_CARD=$(arecord -l | grep -i "usb" | awk -F'[][]' '/card [0-9]+:/ {print $2}' | head -n 1)
+USB_MIC_CARD=$(arecord -l | grep -i "usb" | sed -n 's/.*card \([0-9]*\):.*/\1/p' | head -n 1)
 
 if [[ -n "$USB_MIC_CARD" ]]; then
   echo "✅ USB mic detected as card $USB_MIC_CARD"
@@ -86,13 +99,13 @@ chown pi:pi /home/pi/.asoundrc
 
 echo "🔁 [6/7] Creating systemd service..."
 
-cat <<EOF | sudo tee /etc/systemd/system/mqtt-tts.service
+cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
 [Unit]
-Description=Jarvis MQTT TTS Listener
+Description=Jarvis Node Service
 After=network.target
 
 [Service]
-ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python /home/pi/projects/jarvis-node-setup/scripts/mqtt_tts_listener.py
+ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python /home/pi/projects/jarvis-node-setup/scripts/main.py
 Restart=always
 User=pi
 Environment=PYTHONUNBUFFERED=1
@@ -103,34 +116,8 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reexec
-sudo systemctl enable mqtt-tts.service
-sudo systemctl restart mqtt-tts.service
-
-
-echo "🔁 Creating voice listener systemd service..."
-
-cat <<EOF | sudo tee /etc/systemd/system/voice-listener.service
-[Unit]
-Description=Jarvis Voice Wake Word Listener
-After=network.target sound.target
-
-[Service]
-ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python /home/pi/projects/jarvis-node-setup/scripts/voice_listener.py
-Restart=always
-User=pi
-WorkingDirectory=/home/pi/projects/jarvis-node-setup
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reexec
-sudo systemctl enable voice-listener.service
-sudo systemctl restart voice-listener.service
-
-
-
+sudo systemctl enable jarvis-node.service
+sudo systemctl restart jarvis-node.service
 
 
 echo "📡 Local IP address: $(hostname -I | cut -d' ' -f1)"

@@ -1,0 +1,12 @@
+paho-mqtt
+httpx
+pvporcupine
+pyaudio
+vosk
+sounddevice
+numpy
+scipy
+requests
+aiodiscover
+pytest
+pytest-asyncio 
