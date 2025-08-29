@@ -1,0 +1,90 @@
+name: Jarvis-Node-Prompt
+version: 0.0.1
+schema: v1
+prompts:
+  - name: Jarvis-Node-Initial-Prompt
+    description: initial prompt for jarvis node
+    prompt: |
+      ### Project Overview
+      Jarvis Node is a lightweight agent that runs on Raspberry Pi Zero devices (or similar edge nodes). These nodes act as voice interaction endpoints for the Jarvis ecosystem, which is orchestrated by a central Command Center running on a more powerful machine (e.g., Mac Studio or Mac mini).
+
+      Each node:
+      - Listens for a wake word using a Wake Response Provider.
+      - Captures audio input after the wake word is detected.
+      - Converts speech to text using a Speech-to-Text Provider (Whisper wrapper).
+      - Sends the transcribed text and context to the Jarvis Command Center API.
+      - The Command Center processes the text through an LLM and returns one or more structured commands.
+      - The node executes these commands locally (or delegates them to integrations).
+
+      ### Development Workflow
+      - Code changes are made on the Mac (primary development environment).
+      - To test on the Pi Zero:
+        - Use `sync_files_to_zero.sh` for fast file sync (preferred when dependencies have not changed).
+        - Use `sync_to_zero.sh` for full deployment, which:
+          - Updates OS-level dependencies via `setup.sh`.
+          - Installs Python dependencies from `requirements.txt`.
+      - Add new OS dependencies to `setup.sh`.
+      - Add Python packages to `requirements.txt`.
+
+      ### Key Components and Interfaces
+
+      #### IJarvisCommand
+      - Represents a command that the node can execute.
+      - Responsibilities:
+        - Defines `run()` method for execution.
+        - Defines `description()` for human-readable summary.
+        - Provides parameter schema for LLM validation.
+
+      #### IJarvisIntegration
+      - Represents an integration with a specific service or system.
+      - Responsibilities:
+        - Exposes available commands to the Command Center.
+        - Handles communication with external systems.
+
+      #### IJarvisParameter
+      - Represents metadata for command parameters.
+      - Responsibilities:
+        - Defines type, allowed values, default values.
+        - Provides validation logic for parameters.
+
+      #### IJarvisSpeechToTextProvider
+      - Interface for converting audio input to text.
+      - Current Implementation: Whisper wrapper.
+      - Responsibilities:
+        - `transcribe(audio_file_path) → str`.
+
+      #### IJarvisTextToSpeechProvider
+      - Converts text responses into audio for playback.
+      - Responsibilities:
+        - `speak(text) → plays audio locally`.
+
+      #### IJarvisWakeResponseProvider
+      - Detects the wake word (e.g., "Jarvis").
+      - Responsibilities:
+        - Runs continuously in low-power mode.
+        - Triggers STT pipeline when wake word is detected.
+
+      ### System Flow
+      1. Wake word detection via Wake Response Provider.
+      2. Capture audio → Whisper wrapper → text.
+      3. Send text + context to Command Center API.
+      4. Command Center uses LLM → generates structured command(s).
+      5. Node executes IJarvisCommand locally or via integration.
+      6. Optionally, returns spoken confirmation via TTS provider.
+
+      ### Development Notes
+      - Assume this is a Python project running on Pi Zero.
+      - Use `sync_files_to_zero.sh` for quick tests; `sync_to_zero.sh` for full rebuilds.
+      - Keep interfaces clean and modular.
+      - Command logic should live in commands, not in the LLM prompt.
+
+      ### Future Enhancements
+      - Add streaming STT instead of full post-recording processing.
+      - Add offline fallback when Command Center is down.
+      - Improve error handling for network failures.
+
+      ### LLM Task Context
+      When starting each day, assume:
+      - You’re working inside the `jarvis-node` codebase.
+      - Maintain the structure and interfaces described above.
+      - Implement new features or bug fixes while respecting the workflow and file organization.

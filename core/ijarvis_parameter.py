@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
+from datetime import datetime, date, time, timedelta
 
 
 class IJarvisParameter(ABC):
@@ -17,7 +18,7 @@ class IJarvisParameter(ABC):
 
     @property
     @abstractmethod
-    def description(self) -> str:
+    def description(self) -> Optional[str]:
         """Human-readable description of this parameter"""
         pass
 
@@ -40,6 +41,11 @@ class IJarvisParameter(ABC):
     def validation_error_message(self) -> str:
         """Error message to show when validation fails"""
         return f"Invalid value for parameter '{self.name}'"
+
+    @property
+    def enum_values(self) -> Optional[List[str]]:
+        """Optional list of allowed values if this parameter is an enum"""
+        return None
 
     def validate(self, value: Any) -> tuple[bool, Optional[str]]:
         """
@@ -66,16 +72,21 @@ class IJarvisParameter(ABC):
         if value is None:
             return not self.required
             
-        type_mapping = {
-            'str': str,
-            'int': int,
+        # Handle type aliases and map to actual types
+        type_aliases = {
+            'str': str, 'string': str,
+            'int': int, 'integer': int,
             'float': float,
-            'bool': bool,
-            'list': list,
-            'dict': dict
+            'bool': bool, 'boolean': bool,
+            'list': list, 'array': list,
+            'dict': dict,
+            'datetime': datetime,
+            'date': date,
+            'time': time,
+            'timedelta': timedelta
         }
         
-        expected_type = type_mapping.get(self.param_type)
+        expected_type = type_aliases.get(self.param_type)
         if expected_type is None:
             return True  # Unknown type, assume valid
             
@@ -88,5 +99,56 @@ class IJarvisParameter(ABC):
             "type": self.param_type,
             "description": self.description,
             "required": self.required,
-            "default_value": self.default_value
-        } 
+            "default_value": self.default_value,
+            "enum_values": self.enum_values
+        }
+
+class JarvisParameter(IJarvisParameter):
+
+    def __init__(self, name: str, param_type: str, required: bool = False, description: Optional[str]=None, default: Optional[str]=None, enum_values: Optional[List[str]]=None):
+        # Validate that param_type is allowed
+        allowed_types = {
+            # Primitive types
+            'str', 'string', 'int', 'integer', 'float', 'bool', 'boolean', 'list', 'array', 'dict',
+            # Datetime types
+            'datetime', 'date', 'time', 'timedelta', 'array[datetime]', 'array[date]', 'array[time]', 'array[timedelta]'
+        }
+        
+        if param_type not in allowed_types:
+            raise ValueError(
+                f"Parameter type '{param_type}' is not allowed. "
+                f"Only primitive types and datetime types are supported. "
+                f"Allowed types: {', '.join(sorted(allowed_types))}"
+            )
+        
+        self._name = name
+        self._param_type = param_type
+        self._required = required
+        self._description = description
+        self._default = default
+        self._enum_values = enum_values
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def param_type(self) -> str:
+        return self._param_type
+
+    @property
+    def description(self) -> Optional[str]:
+        return self._description
+
+    @property
+    def required(self) -> bool:
+        return self._required
+
+    @property
+    def default_value(self) -> Optional[str]:
+        return self._default
+
+    @property
+    def enum_values(self) -> Optional[List[str]]:
+        return self._enum_values
+

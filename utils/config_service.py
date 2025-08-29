@@ -8,13 +8,12 @@ class Config:
 
     @staticmethod
     def _load_config() -> None:
-        CONFIG_PATH: str = os.path.expanduser(
-            "~/projects/jarvis-node-setup/config.json"
-        )
+        config_path: str = os.environ.get('CONFIG_PATH')
         try:
-            with open(CONFIG_PATH) as f:
+            with open(config_path) as f:
                 Config._config_json = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
+            print(f"Error loading config: {config_path}")
             Config._config_json = None
 
     @staticmethod

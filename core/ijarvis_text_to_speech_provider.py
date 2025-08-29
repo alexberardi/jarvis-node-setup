@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 import os
 import subprocess
+from core.platform_audio import platform_audio
 
-PATH_TO_PROJECT = "~/projects/jarvis-node-setup"
-CHIME_PATH = os.path.expanduser(f"{PATH_TO_PROJECT}/sounds/chime.wav")
+# Use relative path for better cross-platform compatibility
+CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 
 class IJarvisTextToSpeechProvider(ABC):
     @property
@@ -18,4 +19,4 @@ class IJarvisTextToSpeechProvider(ABC):
         pass
 
     def play_chime(self):
-        subprocess.run(["aplay", CHIME_PATH])
+        platform_audio.play_chime(CHIME_PATH)

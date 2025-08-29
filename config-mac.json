@@ -1,0 +1,20 @@
+{
+  "node_id": "node-123",
+  "api_key": "1",
+  "jarvis_whisper_api_url": "https://whisper.jarvisautomation.io",
+  "jarvis_command_center_api_url": "http://10.0.0.103:9998",
+  "room": "office",
+  "user": "username",
+  "voice": "en",
+  "mqtt_broker": "raspberrypi.local",
+  "mqtt_port": 1884,
+  "mqtt_topic": "home/nodes/zero-office/#",
+  "porcupine_key": "CGVPh0WzhQmakfMN3DVQQ8KX/WEuyvf459Mz37vXmEQkq+vfTrKEUg==",
+  "mic_sample_rate": 48000,
+  "stt_provider": "jarvis-whisper-api",
+  "tts_provider": "jarvis-tts-api",
+  "jarvis_tts_api_url": "http://raspberrypi.local:8001",
+  "jarvis_tts_generate_wake_response_url": "http://raspberrypi.local:8001/generate-wake-response",
+  "music_assistant_enabled": true,
+  "music_assistant_player_id": "ma_2ccf67b25567"
+}

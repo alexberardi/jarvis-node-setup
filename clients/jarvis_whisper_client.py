@@ -1,4 +1,3 @@
-import os
 from .rest_client import RestClient
 from utils.config_loader import Config
 

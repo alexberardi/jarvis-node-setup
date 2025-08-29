@@ -30,22 +30,16 @@ class CommandExecutionService:
             Execution result dictionary
         """
         try:
-            # Get available commands schema
-            available_commands = self.command_discovery.get_available_commands_schema()
-            print(f"🔍 Available commands: {len(available_commands)} commands found")
-            
             # Prepare request payload
             payload = {
                 "voice_command": voice_command,
                 "node_context": {
                     "room": self.room,
                     "node_id": self.node_id
-                },
-                "available_commands": available_commands
+                }
             }
             
             print(f"📡 Sending to Command Center: {voice_command}")
-            print(f"📦 Payload available_commands: {available_commands}")
             
             # Send to Jarvis Command Center
             response = RestClient.post(

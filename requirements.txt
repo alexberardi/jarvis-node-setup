@@ -9,4 +9,15 @@ scipy
 requests
 aiodiscover
 pytest
-pytest-asyncio 
+pytest-asyncio
+websockets 
+aiohttp
+tqdm
+zeroconf
+manuf
+cryptography>=3.4,<4.0
+pysqlcipher3
+sqlalchemy
+alembic
+pytz
+pydantic

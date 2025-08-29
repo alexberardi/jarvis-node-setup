@@ -1,9 +1,11 @@
+import json
+import os
+from typing import List, Any
+
+import numpy as np
 import pyaudio
 import wave
-import os
-import json
-import numpy as np
-from typing import List, Any
+
 from utils.config_service import Config
 
 

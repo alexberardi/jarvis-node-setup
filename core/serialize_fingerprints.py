@@ -1,4 +1,5 @@
 import json
+
 from core.integration_loader import load_all_integrations
 
 fingerprints = []
