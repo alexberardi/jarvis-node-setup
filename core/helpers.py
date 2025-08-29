@@ -1,16 +1,18 @@
 import importlib
 import pkgutil
 from functools import lru_cache
-from typing import Optional, Any, Type
-from utils.config_service import Config
-from core.ijarvis_text_to_speech_provider import IJarvisTextToSpeechProvider
-from core.ijarvis_speech_to_text_provider import IJarvisSpeechToTextProvider
-from core.ijarvis_wake_response_provider import IJarvisWakeResponseProvider
+from typing import Optional, Any, Type, List
 
+from core.ijarvis_integration import IJarvisIntegration
+from core.ijarvis_speech_to_text_provider import IJarvisSpeechToTextProvider
+from core.ijarvis_text_to_speech_provider import IJarvisTextToSpeechProvider
+from core.ijarvis_wake_response_provider import IJarvisWakeResponseProvider
+from utils.config_service import Config
 
 @lru_cache()
 def get_tts_provider() -> IJarvisTextToSpeechProvider:
     provider_name = Config.get_str("tts_provider")
+    print(f"TTS provider: {provider_name}")
     if not provider_name:
         raise ValueError("TTS provider not configured")
     import tts_providers
@@ -69,4 +71,16 @@ def get_wake_response_provider() -> Optional[IJarvisWakeResponseProvider]:
                 if instance.provider_name == provider_name:
                     return instance
     raise ValueError(f"Wake response provider '{provider_name}' not found.")
+
+
+def get_integrations() -> List[IJarvisIntegration]:
+    import integrations
+    integrations_list = []
+    for _, module_name, _ in pkgutil.iter_modules(integrations.__path__):  # type: ignore
+        module = importlib.import_module(f"integrations.{module_name}")
+        for attr in dir(module):
+            cls: Any = getattr(module, attr)
+            if isinstance(cls, type) and issubclass(cls, IJarvisIntegration) and cls is not IJarvisIntegration:
+                integrations_list.append(cls())
+    return integrations_list
 

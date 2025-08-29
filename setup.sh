@@ -19,11 +19,14 @@ sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install libopenblas-dev 
 
 echo "📦 [2/7] Installing dependencies..."
-sudo apt-get install -y python3 python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev sox ffmpeg flake8 avahi-utils 
+sudo apt-get install -y python3.11 python3.11-venv python3-pip python3-venv git alsa-utils espeak mosquitto-clients neovim python3-pyaudio portaudio19-dev sox ffmpeg flake8 avahi-utils sqlcipher libsqlcipher-dev
+
+# Verify Python 3.11 is available
+echo "✅ Python 3.11 version: $(python3.11 --version)" 
 
 echo "🐍 [3/7] Creating Python venv and installing requirements..."
 if [ ! -d ~/projects/jarvis-node-setup/venv ]; then
-  python3 -m venv ~/projects/jarvis-node-setup/venv
+  python3.11 -m venv ~/projects/jarvis-node-setup/venv
 fi
 
 source ~/projects/jarvis-node-setup/venv/bin/activate

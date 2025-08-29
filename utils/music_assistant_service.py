@@ -1,9 +1,11 @@
 import asyncio
 import json
-import websockets
 import threading
 import time
 from typing import Any, Dict, Optional, List
+
+import websockets
+
 from utils.config_service import Config
 
 
