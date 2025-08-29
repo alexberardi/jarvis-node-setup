@@ -1,16 +1,18 @@
 import os
 import json
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class Config:
     _config_json = None
 
     @staticmethod
     def _load_config():
-        CONFIG_PATH = os.path.expanduser(
-            "~/projects/jarvis-node-setup/config.json"
-        )
-        with open(CONFIG_PATH) as f:
+        config_path = os.getenv("CONFIG_PATH")
+        with open(config_path) as f:
             Config._config_json = json.load(f)
 
     @staticmethod

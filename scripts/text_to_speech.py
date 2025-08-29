@@ -1,12 +1,12 @@
 import subprocess
+from core.helpers import get_tts_provider
 
 
-def speak(text):
+def speak(text: str):
     print(f"Speaking: {text}")
-    subprocess.run(
-        f'espeak -a 20 -v en-us -s 130 "{text}" --stdout | aplay -r 44100',
-        shell=True,
-    )
+    tts_provider = get_tts_provider()
+    tts_provider.speak(False, text)
+
 
 
 if __name__ == "__main__":

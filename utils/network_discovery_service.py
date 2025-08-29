@@ -1,16 +1,18 @@
+import json
+import select
 import socket
+import struct
+import subprocess
 import threading
 import time
-import subprocess
-import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional, Set
+
+import ipaddress
 import requests
 import urllib3
-import struct
-import select
-from typing import List, Dict, Any, Optional, Set
-from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import ipaddress
+
 from utils.config_service import Config
 
 # Suppress SSL warnings for local network scanning
@@ -633,141 +635,59 @@ class NetworkDiscoveryService:
         try:
             print("🔍 Starting advanced mDNS discovery (Home Assistant style)...")
             
-            # Home Assistant style mDNS service discovery
-            mdns_services = [
-                # Apple devices
-                "_airplay._tcp.local",
-                "_raop._tcp.local",
-                "_homekit._tcp.local",
-                "_apple-mobdev2._tcp.local",
-                
-                # Google devices
-                "_googlecast._tcp.local",
-                "_googlezone._tcp.local",
-                "_nest._tcp.local",
-                
-                # Smart TVs
-                "_webostv._tcp.local",
-                "_roku._tcp.local",
-                "_samsungtv._tcp.local",
-                "_lgwebostv._tcp.local",
-                
-                # Smart speakers
-                "_sonos._tcp.local",
-                "_spotify-connect._tcp.local",
-                
-                # IoT devices
-                "_hap._tcp.local",  # HomeKit Accessory Protocol
-                "_zigbee._tcp.local",
-                "_zwave._tcp.local",
-                "_thread._tcp.local",
-                "_matter._tcp.local",
-                
-                # Media servers
-                "_plex._tcp.local",
-                "_jellyfin._tcp.local",
-                "_emby._tcp.local",
-                "_musicassistant._tcp.local",
-                
-                # Network devices
-                "_http._tcp.local",
-                "_https._tcp.local",
-                "_ssh._tcp.local",
-                "_ftp._tcp.local",
-                "_sftp._tcp.local",
-                
-                # Printers
-                "_ipp._tcp.local",
-                "_printer._tcp.local",
-                "_pdl-datastream._tcp.local",
-                
-                # General discovery
-                "_services._dns-sd._udp.local"
-            ]
+            # Use platform abstraction for mDNS discovery
+            from core.platform_abstraction import get_network_discovery_provider
+            network_provider = get_network_discovery_provider()
             
-            # Try multiple mDNS discovery methods
-            mdns_methods = [
-                # Method 1: avahi-browse (most comprehensive)
-                ["avahi-browse", "-at", "-r"],
-                # Method 2: systemd-resolve
-                ["systemd-resolve", "--mdns=yes", "--interface=eth0"],
-                # Method 3: dig for specific services
-                ["dig", "+short", "_services._dns-sd._udp.local", "PTR"],
-                # Method 4: nslookup for .local domains
-                ["nslookup", "*.local"]
-            ]
+            mdns_services = network_provider.discover_mdns_services()
             
-            for method in mdns_methods:
-                try:
-                    result = subprocess.run(
-                        method,
-                        capture_output=True,
-                        text=True,
-                        timeout=15
-                    )
-                    
-                    if result.returncode == 0 and result.stdout.strip():
-                        print(f"🔍 mDNS method {method[0]} found data")
-                        lines = result.stdout.strip().split('\n')
-                        
-                        for line in lines:
-                            line = line.strip()
-                            if not line:
-                                continue
-                                
-                            # Parse avahi-browse output
-                            if method[0] == "avahi-browse" and ";" in line:
-                                parts = line.split(";")
-                                if len(parts) >= 4:
-                                    service_type = parts[2]
-                                    hostname = parts[3]
-                                    ip = parts[7] if len(parts) > 7 else None
-                                    
-                                    if ip and ip != "127.0.0.1":
-                                        device_info = {
-                                            "hostname": hostname,
-                                            "services": ["mDNS"],
-                                            "mdns_services": [service_type],
-                                            "device_type": self._classify_mdns_service(service_type),
-                                            "confidence": 0.8
-                                        }
-                                        
-                                        # Add manufacturer info based on service type
-                                        manufacturer_info = self._get_manufacturer_from_service(service_type)
-                                        if manufacturer_info:
-                                            device_info.update(manufacturer_info)
-                                        
-                                        discovered[ip] = device_info
-                                        print(f"🔍 mDNS: {ip} - {service_type} - {device_info['device_type']}")
+            # Process discovered services
+            for service_type, service_data in mdns_services.items():
+                if isinstance(service_data, list):
+                    for service in service_data:
+                        if isinstance(service, dict):
+                            # Handle structured service data
+                            ip = service.get("address", "")
+                            hostname = service.get("hostname", "")
+                            service_name = service.get("service_name", service_type)
                             
-                            # Parse other method outputs
-                            elif '.local' in line:
-                                hostname = line.split('.local')[0] + '.local'
-                                try:
-                                    ip = socket.gethostbyname(hostname)
-                                    if ip not in discovered and ip != "127.0.0.1":
-                                        discovered[ip] = {
-                                            "hostname": hostname.replace('.local', ''),
-                                            "services": ["mDNS"],
-                                            "mdns_services": ["_http._tcp"],
-                                            "device_type": "mdns_device",
-                                            "confidence": 0.6
-                                        }
-                                except Exception:
-                                    pass
-                        
-                        if discovered:
-                            break  # Use first successful method
-                        
-                except Exception as e:
-                    print(f"❌ mDNS method {method[0]} failed: {e}")
-                    continue
+                            if ip and ip not in discovered:
+                                discovered[ip] = {
+                                    "hostname": hostname,
+                                    "device_type": self._classify_mdns_service(service_type),
+                                    "manufacturer": self._get_manufacturer_from_service(service_type),
+                                    "model": service_name,
+                                    "services": [service_type],
+                                    "confidence_score": 0.8
+                                }
+                        elif isinstance(service, str):
+                            # Handle simple string data
+                            if service and service not in discovered:
+                                discovered[service] = {
+                                    "hostname": service,
+                                    "device_type": self._classify_mdns_service(service_type),
+                                    "manufacturer": self._get_manufacturer_from_service(service_type),
+                                    "model": service,
+                                    "services": [service_type],
+                                    "confidence_score": 0.7
+                                }
+                elif isinstance(service_data, str):
+                    # Handle string data directly
+                    if service_data and service_data not in discovered:
+                        discovered[service_data] = {
+                            "hostname": service_data,
+                            "device_type": self._classify_mdns_service(service_type),
+                            "manufacturer": self._get_manufacturer_from_service(service_type),
+                            "model": service_data,
+                            "services": [service_type],
+                            "confidence_score": 0.6
+                        }
             
-            print(f"🔍 Advanced mDNS discovery found {len(discovered)} devices")
+            print(f"✅ mDNS discovery found {len(discovered)} devices")
             return discovered
             
         except Exception as e:
-            print(f"❌ mDNS discovery error: {e}")
+            print(f"❌ Error in mDNS discovery: {e}")
             return {}
     
     def _classify_mdns_service(self, service_type: str) -> str:
@@ -875,11 +795,12 @@ class NetworkDiscoveryService:
         try:
             print("🔍 Starting device-specific API discovery...")
             
-            # Get network range for scanning
-            network_ips = self.get_network_range()
-            print(f"  🔍 Scanning {len(network_ips)} IPs for device APIs...")
+            # Get network range for scanning - limit to first 50 IPs to avoid hanging
+            network_ips = self.get_network_range()[:50]  # Limit to first 50 IPs
+            print(f"  🔍 Scanning {len(network_ips)} IPs for device APIs (limited to avoid hanging)...")
             
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            # Use shorter timeouts and fewer workers to prevent hanging
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 # LG TV WebOS API discovery
                 print("    🔍 Scanning for LG TV WebOS APIs...")
                 lg_futures = {executor.submit(self._discover_lg_tv, ip): ip for ip in network_ips}
@@ -896,57 +817,69 @@ class NetworkDiscoveryService:
                 print("    🔍 Scanning for Music Assistant APIs...")
                 ma_futures = {executor.submit(self._discover_music_assistant, ip): ip for ip in network_ips}
                 
-                # Process LG TV results
+                # Process results with shorter timeouts
                 lg_found = 0
-                for future in as_completed(lg_futures, timeout=30):
-                    ip = lg_futures[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            discovered[ip] = result
-                            lg_found += 1
-                            print(f"    ✅ LG TV found: {ip}")
-                    except Exception:
-                        pass
+                try:
+                    for future in as_completed(lg_futures, timeout=15):  # Reduced timeout
+                        ip = lg_futures[future]
+                        try:
+                            result = future.result(timeout=5)  # Individual result timeout
+                            if result:
+                                discovered[ip] = result
+                                lg_found += 1
+                                print(f"    ✅ LG TV found: {ip}")
+                        except Exception:
+                            pass
+                except Exception:
+                    print("    ⏰ LG TV discovery timed out")
                 
                 # Process Google Cast results
                 cast_found = 0
-                for future in as_completed(cast_futures, timeout=30):
-                    ip = cast_futures[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            discovered[ip] = result
-                            cast_found += 1
-                            print(f"    ✅ Google Cast found: {ip}")
-                    except Exception:
-                        pass
+                try:
+                    for future in as_completed(cast_futures, timeout=15):  # Reduced timeout
+                        ip = cast_futures[future]
+                        try:
+                            result = future.result(timeout=5)  # Individual result timeout
+                            if result:
+                                discovered[ip] = result
+                                cast_found += 1
+                                print(f"    ✅ Google Cast found: {ip}")
+                        except Exception:
+                            pass
+                except Exception:
+                    print("    ⏰ Google Cast discovery timed out")
                 
                 # Process HomeKit results
                 homekit_found = 0
-                for future in as_completed(homekit_futures, timeout=30):
-                    ip = homekit_futures[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            discovered[ip] = result
-                            homekit_found += 1
-                            print(f"    ✅ HomeKit found: {ip}")
-                    except Exception:
-                        pass
+                try:
+                    for future in as_completed(homekit_futures, timeout=15):  # Reduced timeout
+                        ip = homekit_futures[future]
+                        try:
+                            result = future.result(timeout=5)  # Individual result timeout
+                            if result:
+                                discovered[ip] = result
+                                homekit_found += 1
+                                print(f"    ✅ HomeKit found: {ip}")
+                        except Exception:
+                            pass
+                except Exception:
+                    print("    ⏰ HomeKit discovery timed out")
                 
                 # Process Music Assistant results
                 ma_found = 0
-                for future in as_completed(ma_futures, timeout=30):
-                    ip = ma_futures[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            discovered[ip] = result
-                            ma_found += 1
-                            print(f"    ✅ Music Assistant found: {ip}")
-                    except Exception:
-                        pass
+                try:
+                    for future in as_completed(ma_futures, timeout=15):  # Reduced timeout
+                        ip = ma_futures[future]
+                        try:
+                            result = future.result(timeout=5)  # Individual result timeout
+                            if result:
+                                discovered[ip] = result
+                                ma_found += 1
+                                print(f"    ✅ Music Assistant found: {ip}")
+                        except Exception:
+                            pass
+                except Exception:
+                    print("    ⏰ Music Assistant discovery timed out")
             
             print(f"  📊 API discovery results: LG TV={lg_found}, Cast={cast_found}, HomeKit={homekit_found}, MA={ma_found}")
             print(f"🔍 Device-specific API discovery found {len(discovered)} devices")
@@ -1763,6 +1696,38 @@ class NetworkDiscoveryService:
                                 if device not in jarvis_nodes and device not in smart_devices]
             }
         }
+    
+    def save_discovery_results_to_json(self, filename: str = "discovered_devices.json") -> str:
+        """Save discovered devices to a JSON file for inspection"""
+        import json
+        from datetime import datetime
+        
+        try:
+            # Create a comprehensive discovery report
+            discovery_report = {
+                "scan_timestamp": datetime.now().isoformat(),
+                "scan_summary": self.get_discovery_summary(),
+                "all_devices": {
+                    ip: device.to_dict() for ip, device in self.discovered_devices.items()
+                },
+                "raw_discovery_data": {
+                    "mdns_discovered": self.mdns_discovered,
+                    "upnp_discovered": self.upnp_discovered,
+                    "dhcp_discovered": self.dhcp_discovered
+                }
+            }
+            
+            # Save to file
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(discovery_report, f, indent=2, ensure_ascii=False)
+            
+            print(f"💾 Discovery results saved to: {filename}")
+            print(f"📊 File contains {len(self.discovered_devices)} devices")
+            return filename
+            
+        except Exception as e:
+            print(f"❌ Error saving discovery results to JSON: {e}")
+            return ""
 
 
 # Global instance

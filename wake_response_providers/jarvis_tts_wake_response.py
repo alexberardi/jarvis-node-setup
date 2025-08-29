@@ -1,5 +1,7 @@
-import httpx
 from typing import Optional
+
+import httpx
+
 from core.ijarvis_wake_response_provider import IJarvisWakeResponseProvider
 from utils.config_service import Config
 

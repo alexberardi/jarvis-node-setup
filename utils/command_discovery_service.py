@@ -3,10 +3,8 @@ import pkgutil
 import threading
 import time
 from typing import Dict, List, Optional
-from functools import lru_cache
 
 from core.ijarvis_command import IJarvisCommand
-from utils.config_service import Config
 
 
 class CommandDiscoveryService:
@@ -67,10 +65,10 @@ class CommandDiscoveryService:
         with self._lock:
             return self._commands_cache.copy()
 
-    def get_available_commands_schema(self) -> List[Dict]:
-        """Get the schema for all available commands (for LLM)"""
+    def get_available_commands_schema(self) -> List[IJarvisCommand]:
+        """Get all available commands as objects (for LLM)"""
         with self._lock:
-            return [cmd.get_command_schema() for cmd in self._commands_cache.values()]
+            return list(self._commands_cache.values())
 
     def refresh_now(self):
         """Force an immediate refresh of commands"""

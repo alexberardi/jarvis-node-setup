@@ -1,16 +1,18 @@
+import os
+import threading
+import time
+from pathlib import Path
+
 import numpy as np
 import pvporcupine
 import pyaudio
 from scipy.signal import resample
-import time
-import threading
-from pathlib import Path
 
+from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from scripts.speech_to_text import listen
 from utils.config_service import Config
-from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 
-CHIME_PATH = "/home/pi/projects/jarvis-node-setup/sounds/chime.wav"
+CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
 
 

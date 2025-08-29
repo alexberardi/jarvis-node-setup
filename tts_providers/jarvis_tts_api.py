@@ -1,8 +1,11 @@
-import httpx
-import tempfile
 import subprocess
+import tempfile
 from typing import Optional
+
+import httpx
+
 from core.ijarvis_text_to_speech_provider import IJarvisTextToSpeechProvider
+from core.platform_audio import platform_audio
 from utils.config_service import Config
 
 
@@ -32,8 +35,5 @@ class JarvisTTS(IJarvisTextToSpeechProvider):
         if include_chime:
             self.play_chime()
 
-        subprocess.run(
-            f"sox {audio_path} -t wav - vol 0.2 | aplay -D output",
-            shell=True,
-            check=True
-        )
+        # Use platform-agnostic audio playback
+        platform_audio.play_audio_file(audio_path, volume=0.2)
