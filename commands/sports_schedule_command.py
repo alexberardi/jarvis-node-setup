@@ -1,16 +1,12 @@
-import json
-import time
-from typing import List, Any, Optional
+from typing import List
 
-from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
-from core.ijarvis_secret import IJarvisSecret, JarvisSecret
+from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
-from jarvis_services.espn_sports_service import ESPNSportsService, League
-from clients.jarvis_command_center_client import JarvisCommandCenterClient
+from jarvis_services.espn_sports_service import ESPNSportsService
 
 
 class SportsScheduleCommand(IJarvisCommand):
@@ -26,43 +22,52 @@ class SportsScheduleCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return [
-            "schedule", "when", "next game", "play", "upcoming", "game time", "what time",
-            "nfl", "nba", "mlb", "nhl", "college football", "college basketball"
+            "schedule", "when", "next game", "play next", "upcoming", "game time", "what time", 
+            "when do they play", "when is the game", "next opponent", "who do they play next"
         ]
     
     @property
     def description(self) -> str:
-        return "Get sports schedules, find when teams play next, check upcoming games, and get game times for NFL, NBA, MLB, NHL, and college sports."
+        return "Get sports schedules and upcoming games. Use this for questions about future games, when teams play next, upcoming matchups, or game times. This is for FUTURE events only, not past results. Covers NFL, NBA, MLB, NHL, and college sports."
     
-    def generate_examples(self, date_context: DateContext) -> str:
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports schedule command with varied verbiage"""
-        return f"""
-        Voice Command: "When do the Giants play next?"
-        → Output:
-        {{{{"s":true,"n":"sports_schedule_command","p":{{{{"nickname":"Giants","datetimes":["{date_context.current.utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "What's the New York Giants schedule for this weekend?"
-        → Output:
-        {{{{"s":true,"n":"sports_schedule_command","p":{{{{"nickname":"Giants","location":"New York","datetimes":["{date_context.weekend.this_weekend[0].utc_start_of_day}","{date_context.weekend.this_weekend[1].utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "Show me the Panthers upcoming games for next week"
-        → Output:
-        {{{{"s":true,"n":"sports_schedule_command","p":{{{{"nickname":"Panthers","datetimes":["{date_context.weeks.next_week[0].utc_start_of_day}","{date_context.weeks.next_week[1].utc_start_of_day}","{date_context.weeks.next_week[2].utc_start_of_day}","{date_context.weeks.next_week[3].utc_start_of_day}","{date_context.weeks.next_week[4].utc_start_of_day}","{date_context.weeks.next_week[5].utc_start_of_day}","{date_context.weeks.next_week[6].utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "What time is the Carolina Panthers game tomorrow?"
-        → Output:
-        {{{{"s":true,"n":"sports_schedule_command","p":{{{{"nickname":"Panthers","location":"Carolina","datetimes":["{date_context.relative_dates.tomorrow.utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "When's the next Giants game?"
-        → Output:
-        {{{{"s":true,"n":"sports_schedule_command","p":{{{{"nickname":"Giants","datetimes":["{date_context.current.utc_start_of_day}"]}}}},"e":null}}}}
-        """
+        return [
+            CommandExample(
+                voice_command="When do the Giants play next?",
+                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="What's the New York Giants schedule for this weekend?",
+                expected_parameters={"team_name": "New York Giants", "datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="Show me the Panthers upcoming games for next week",
+                expected_parameters={"team_name": "Panthers", "datetimes": [
+                    date_context.weeks.next_week[0].utc_start_of_day,
+                    date_context.weeks.next_week[1].utc_start_of_day,
+                    date_context.weeks.next_week[2].utc_start_of_day,
+                    date_context.weeks.next_week[3].utc_start_of_day,
+                    date_context.weeks.next_week[4].utc_start_of_day,
+                    date_context.weeks.next_week[5].utc_start_of_day,
+                    date_context.weeks.next_week[6].utc_start_of_day
+                ]}
+            ),
+            CommandExample(
+                voice_command="What time is the Carolina Panthers game tomorrow?",
+                expected_parameters={"team_name": "Carolina Panthers", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="When's the next Giants game?",
+                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]}
+            )
+        ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("nickname", "string", required=True, description="Team name, nickname, or college name the user spoke. Examples: 'Giants', 'Yanks', 'Ohio State', 'Bama', 'Vols'. "),
-            JarvisParameter("location", "string", required=False, description="Geographic identifier that appears BEFORE the team name in the voice command. Examples: 'New York' from 'New York Giants', 'Carolina' from 'Carolina Panthers', 'Golden State' from 'Golden State Warriors', 'New England' from 'New England Patriots'. Extract this when a geographic identifier precedes the team name to avoid ambiguity."),
+            JarvisParameter("team_name", "string", required=True, description="The complete team name as spoken by the user. Examples: 'Giants', 'New York Giants', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'. Include city/state when mentioned."),
             JarvisParameter("datetimes", "datetime", required=True, description="Array of ISO datetime strings to check for schedules. If no specific date is mentioned, use today's date: [date_context.current.utc_start_of_day]. For relative dates like 'this weekend' or 'next week', convert them to actual ISO datetime values using the DateContext.")
         ]
     
@@ -70,20 +75,22 @@ class SportsScheduleCommand(IJarvisCommand):
     def required_secrets(self) -> List[IJarvisSecret]:
         return []
     
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "Use this command for questions about FUTURE games, schedules, and upcoming events only",
+            "Questions asking 'how did [team] do' should use sports_score_command, NOT this command",
+            "This command is for 'when do they play next', 'what time is the game', 'who do they play', etc."
+        ]
+    
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
-        team_name = kwargs.get("nickname")
-        location = kwargs.get("location")
+        team_name = kwargs.get("team_name")
         datetimes = kwargs.get("datetimes", [])
         
         # Extract voice command
         voice_command = request_info.voice_command
         
-        print(f"🔍 Sports Schedule Command - Voice: '{voice_command}'")
-        print(f"🔍 Parameters: team_name={team_name}, location={location}, datetimes={datetimes}")
-        if datetimes:
-            print(f"🔍 Raw datetimes: {datetimes}")
-            print(f"🔍 Datetime type: {type(datetimes[0]) if datetimes else 'None'}")
         
         # Validate team name
         if not team_name:
@@ -114,21 +121,7 @@ class SportsScheduleCommand(IJarvisCommand):
                     }
                 )
             
-            print(f"🔍 Found {len(teams)} team(s) for '{team_name}':")
-            for team in teams:
-                print(f"   • {team.full_name} ({team.league.value.upper()})")
             
-            # If multiple teams and city provided, filter by city
-            if len(teams) > 1 and location:
-                print(f"🔍 Filtering by location: {location}")
-                pro_teams = [t for t in teams if t.league in [League.NFL, League.NBA, League.MLB, League.NHL]]
-                filtered_teams = [t for t in pro_teams if location.lower() in t.city.lower()]
-                
-                if filtered_teams:
-                    teams = filtered_teams
-                    print(f"✅ Filtered to {len(teams)} team(s) in {location}")
-                else:
-                    print(f"⚠️  No teams found in {location}, using all {len(teams)} teams")
             
             # Find the next upcoming event for the team
             next_event = self._find_next_event(teams, espn_service)
@@ -146,7 +139,6 @@ class SportsScheduleCommand(IJarvisCommand):
                 )
                 
         except Exception as e:
-            print(f"❌ Error in sports schedule command: {e}")
             return CommandResponse.error_response(
                 speak_message=f"I'm sorry, but I encountered an error while looking up the schedule for {team_name}. Please try again.",
                 error_details=str(e),

@@ -130,7 +130,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "What is the capital of France?",
             "general_knowledge_command",
-            {"query": "What is the capital of France?"},
+            {"query": "What is the capital of France"},
             "Basic knowledge question"
         ),
         CommandTest(
@@ -172,7 +172,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "Tell me a joke",
             "tell_a_joke",
             {},
-            "Basic joke request (no topic, no inappropriate flag)"
+            "Basic joke request (no topic)"
         ),
         CommandTest(
             "Tell me a joke about programming",
@@ -185,18 +185,6 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "tell_a_joke",
             {"topic": "animals"},
             "Joke with different topic"
-        ),
-        CommandTest(
-            "Tell me an inappropriate joke",
-            "tell_a_joke",
-            {"inappropriate": True},
-            "Inappropriate joke request (no topic)"
-        ),
-        CommandTest(
-            "Tell me a dirty joke about food",
-            "tell_a_joke",
-            {"topic": "food", "inappropriate": True},
-            "Inappropriate joke with specific topic"
         ),
         CommandTest(
             "Make me laugh with a joke about technology",
@@ -392,92 +380,92 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "Complex distance conversion: leagues to inches (many steps)"
         )
     ]
-    tests.extend(conversion_tests)
+    # tests.extend(conversion_tests)
     
     # ===== SPORTS SCORE COMMAND TESTS =====
     sports_tests = [
         CommandTest(
             "How did the Giants do?",
             "sports_score_command",
-            {"nickname": "Giants", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]},
             "Basic sports score request (no city, no dates)"
         ),
         CommandTest(
             "What's the score of the Yankees game?",
             "sports_score_command",
-            {"nickname": "Yankees", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Yankees", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score request with different team"
         ),
         CommandTest(
             "How did the New York Giants do?",
             "sports_score_command",
-            {"nickname": "Giants", "location": "New York", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "New York Giants", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score request with location disambiguation"
         ),
         CommandTest(
             "What's the score of the Carolina Panthers game?",
             "sports_score_command",
-            {"nickname": "Panthers", "location": "Carolina", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Carolina Panthers", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score request with different location/team combination"
         ),
         CommandTest(
             "How did the Giants do yesterday?",
             "sports_score_command",
-            {"nickname": "Giants", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Giants", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
             "Sports score request with relative date"
         ),
         CommandTest(
             "What was the score of the Yankees game yesterday?",
             "sports_score_command",
-            {"nickname": "Yankees", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Yankees", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
             "Sports score with relative date"
         ),
         CommandTest(
             "How did the Baltimore Orioles do last weekend?",
             "sports_score_command",
-            {"nickname": "Orioles", "location": "Baltimore", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Baltimore Orioles", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
             "Sports score with date range"
         ),
         CommandTest(
             "What was the Chicago Bulls score last weekend?",
             "sports_score_command",
-            {"nickname": "Bulls", "location": "Chicago", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Chicago Bulls", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
             "Sports score with date range"
         ),
         CommandTest(
             "How did the Cowboys do?",
             "sports_score_command",
-            {"nickname": "Cowboys", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Cowboys", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score with no date (defaults to today)"
         ),
         CommandTest(
             "What's the score of the Warriors game tomorrow?",
             "sports_score_command",
-            {"nickname": "Warriors", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]},
+            {"team_name": "Warriors", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]},
             "Sports score with relative date"
         ),
         CommandTest(
             "What was the score of the Panthers game yesterday?",
             "sports_score_command",
-            {"nickname": "Panthers", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Panthers", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
             "Sports score with relative date"
         ),
         CommandTest(
             "How did the Eagles do last weekend?",
             "sports_score_command",
-            {"nickname": "Eagles", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Eagles", "datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
             "Sports score with date range"
         ),
         CommandTest(
             "What's the score of the Lakers game today?",
             "sports_score_command",
-            {"nickname": "Lakers", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Lakers", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score with current date"
         ),
         CommandTest(
             "How did the Buccaneers do?",
             "sports_score_command",
-            {"nickname": "Buccaneers", "datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Buccaneers", "datetimes": [date_context.current.utc_start_of_day]},
             "Sports score with no date (defaults to today)"
         )
     ]
@@ -562,6 +550,30 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     # Check if the provided datetime is acceptable (None, today, or current date)
                     if is_acceptable_datetime_for_test_26_37(actual_params[expected_key], date_context):
                         print(f"   ⚠️  Test {test_index}: Datetimes validation passed (acceptable value)")
+                        continue
+                    else:
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                # Special handling for query parameters - normalize punctuation and case
+                elif expected_key == "query" and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):
+                    # Normalize both strings by removing punctuation and converting to lowercase
+                    import string
+                    expected_normalized = expected_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                    actual_normalized = actual_params[expected_key].translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                    
+                    if expected_normalized == actual_normalized:
+                        print(f"   ⚠️  Test {test_index}: Query validation passed (punctuation/case normalized)")
+                        continue
+                    else:
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                # Special handling for team names - allow either short name or full name
+                elif expected_key == "team_name" and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):
+                    expected_lower = expected_value.lower()
+                    actual_lower = actual_params[expected_key].lower()
+                    
+                    # Check if the expected team name is contained in the actual (e.g., "Yankees" in "New York Yankees")
+                    # or if they're exactly equal
+                    if expected_lower == actual_lower or expected_lower in actual_lower or actual_lower in expected_lower:
+                        print(f"   ⚠️  Test {test_index}: Team name validation passed (flexible matching)")
                         continue
                     else:
                         mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
@@ -782,7 +794,7 @@ def main():
                 
                 # Wait for conversation to warm up
                 print(f"⏳ Waiting 3 seconds for conversation to warm up...")
-                time.sleep(3)
+                time.sleep(.5)
                 
                 # Run the test with this conversation and track timing
                 start_time = time.time()

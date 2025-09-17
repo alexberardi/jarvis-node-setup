@@ -17,7 +17,7 @@ def get_user_timezone() -> str:
         offset_hours = abs(local_offset) // 3600
         offset_minutes = (abs(local_offset) % 3600) // 60
         
-        print(f"🔍 Timezone detection: local_offset={local_offset}, offset_hours={offset_hours}, offset_minutes={offset_minutes}")
+        # print(f"🔍 Timezone detection: local_offset={local_offset}, offset_hours={offset_hours}, offset_minutes={offset_minutes}")
         
         # Determine if it's ahead or behind UTC
         # Negative offset means ahead of UTC, positive means behind UTC
@@ -60,7 +60,7 @@ def get_user_timezone() -> str:
                 sign = "-"
                 result = f"UTC{sign}{offset_hours:02d}:{offset_minutes:02d}"
         
-        print(f"🔍 Timezone detection result: {result}")
+        # print(f"🔍 Timezone detection result: {result}")
         return result
         
     except Exception as e:
@@ -170,7 +170,7 @@ def convert_utc_to_local(utc_datetime_str: str, fallback_to_utc: bool = True):
         
         # Always convert UTC times to local timezone - don't make assumptions about what's already local
         user_tz = get_user_timezone()
-        print(f"🔍 Converting UTC time {parsed_time} to timezone: {user_tz}")
+        # print(f"🔍 Converting UTC time {parsed_time} to timezone: {user_tz}")
         
         try:
             import pytz
@@ -181,13 +181,13 @@ def convert_utc_to_local(utc_datetime_str: str, fallback_to_utc: bool = True):
             if parsed_time.tzinfo is not None:
                 # If it's already timezone-aware, just convert to local time
                 local_time = parsed_time.astimezone(local_tz)
-                print(f"🔍 Conversion successful: {parsed_time} → {local_time} {user_tz}")
+                # print(f"🔍 Conversion successful: {parsed_time} → {local_time} {user_tz}")
                 return local_time
             else:
                 # If it's naive, localize it first then convert
                 utc_aware = utc_tz.localize(parsed_time)
                 local_time = utc_aware.astimezone(local_tz)
-                print(f"🔍 Conversion successful: {parsed_time} UTC → {local_time} {user_tz}")
+                # print(f"🔍 Conversion successful: {parsed_time} UTC → {local_time} {user_tz}")
                 return local_time
             
         except Exception as tz_error:
