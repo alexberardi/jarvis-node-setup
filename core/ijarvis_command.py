@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 
 from exceptions.missing_secrets_error import MissingSecretsError
 from services.secret_service import get_secret_value
@@ -8,6 +9,14 @@ from .ijarvis_secret import IJarvisSecret
 from .request_information import RequestInformation
 from .command_response import CommandResponse
 from clients.responses.jarvis_command_center import DateContext
+
+
+@dataclass
+class CommandExample:
+    """Represents a voice command example with expected parameters"""
+    voice_command: str
+    expected_parameters: Dict[str, Any]
+    is_primary: bool = False
 
 class JarvisCommandBase(ABC):
     def execute(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
@@ -61,8 +70,8 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         pass
 
     @abstractmethod
-    def generate_examples(self, date_context: DateContext) -> str:
-        """Generate example utterances and how they get parsed into parameters using date context"""
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
+        """Generate example utterances with expected parameters using date context"""
         pass
 
     @property
@@ -81,6 +90,16 @@ class IJarvisCommand(JarvisCommandBase, ABC):
     def keywords(self) -> List[str]:
         """List of keywords that can be used to identify this command (for fuzzy matching)"""
         pass
+
+    @property
+    def rules(self) -> List[str]:
+        """Optional list of general rules for this command"""
+        return []
+
+    @property
+    def critical_rules(self) -> List[str]:
+        """Optional list of critical rules that must be followed for this command"""
+        return []
 
     @abstractmethod
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
@@ -101,15 +120,57 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         """
         pass
 
+    def _validate_examples(self, examples: List[CommandExample]) -> None:
+        """Validate that examples follow the rules"""
+        primary_count = sum(1 for ex in examples if ex.is_primary)
+        if primary_count > 1:
+            raise ValueError(f"Command '{self.command_name}' has {primary_count} primary examples. Only 0 or 1 allowed.")
+    
     def get_command_schema(self, date_context: DateContext) -> Dict[str, Any]:
         """Generate the command schema for the LLM"""
-        return {
+        examples = self.generate_examples(date_context)
+        self._validate_examples(examples)
+        
+        schema = {
             "command_name": self.command_name,
             "description": self.description,
-            "example": self.generate_examples(date_context),
+            "examples": [
+                {
+                    "voice_command": ex.voice_command,
+                    "expected_parameters": ex.expected_parameters,
+                    "is_primary": ex.is_primary
+                }
+                for ex in examples
+            ],
             "keywords": self.keywords,
             "parameters": [param.to_dict() for param in self.parameters]
         }
+        
+        # Add rules if they exist
+        if self.rules:
+            schema["rules"] = self.rules
+        
+        # Add critical rules if they exist
+        if self.critical_rules:
+            schema["critical_rules"] = self.critical_rules
+            
+        return schema
+    
+    def get_primary_example(self, date_context: DateContext) -> CommandExample:
+        """Get the primary example for command inference (or first if none marked primary)"""
+        examples = self.generate_examples(date_context)
+        self._validate_examples(examples)
+        
+        # Find primary example
+        primary_examples = [ex for ex in examples if ex.is_primary]
+        if primary_examples:
+            return primary_examples[0]
+        
+        # If no primary, return first example
+        if examples:
+            return examples[0]
+        
+        raise ValueError(f"Command '{self.command_name}' has no examples")
 
     def validate_secrets(self):
         missing = []

@@ -2,7 +2,7 @@ from typing import List, Any, Optional
 from pydantic import BaseModel
 
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
@@ -35,63 +35,67 @@ class SportsScoreCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return [
-            "scores", "won", "lost", "win", "lose", "result", "game result", "how did", "what was the score"
+            "scores", "won", "lost", "win", "lose", "result", "game result", "how did", "what was the score",
+            "final score", "who won", "did they win", "did they lose", "how did they do"
         ]
     
     @property
     def description(self) -> str:
-        return "Get sports scores and results for NFL, NBA, MLB, NHL, and college sports. "
+        return "Get sports scores and results for past/completed games. Use this for questions about how teams performed, what scores were, who won/lost, or any results from games that have already happened. Covers NFL, NBA, MLB, NHL, and college sports."
     
-    def generate_examples(self, date_context: DateContext) -> str:
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports score command with varied verbiage"""
-        return f"""
-        Voice Command: "What's the score of the Giants game?"
-        → Output:
-        {{{{"s":true,"n":"sports_score_command","p":{{{{"nickname":"Giants","datetimes":["{date_context.current.utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "How did the Seattle Mariners do yesterday?"
-        → Output:
-        {{{{"s":true,"n":"sports_score_command","p":{{{{"nickname":"Mariners","location":"Seattle","datetimes":["{date_context.relative_dates.yesterday.utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "What was the Panthers score last weekend?"
-        → Output:
-        {{{{"s":true,"n":"sports_score_command","p":{{{{"nickname":"Panthers","datetimes":["{date_context.weekend.last_weekend[0].utc_start_of_day}","{date_context.weekend.last_weekend[1].utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "Show me the Baltimore Orioles game result from last weekend"
-        → Output:
-        {{{{"s":true,"n":"sports_score_command","p":{{{{"nickname":"Orioles","location":"Baltimore","datetimes":["{date_context.weekend.last_weekend[0].utc_start_of_day}","{date_context.weekend.last_weekend[1].utc_start_of_day}"]}}}},"e":null}}}}
-
-        Voice Command: "What's the Minnesota Twins score?"
-        → Output:
-        {{{{"s":true,"n":"sports_score_command","p":{{{{"nickname":"Twins", "location": "Minnesota", "datetimes":["{date_context.current.utc_start_of_day}"]}}}},"e":null}}}}
-        """
+        return [
+            CommandExample(
+                voice_command="How did the Giants do last weekend?",
+                expected_parameters={"team_name": "Giants", "datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="What's the score of the Giants game?",
+                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="How did the Seattle Mariners do yesterday?",
+                expected_parameters={"team_name": "Seattle Mariners", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="Show me the Baltimore Orioles game result from last weekend",
+                expected_parameters={"team_name": "Baltimore Orioles", "datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="What was the final score of the Minnesota Twins game?",
+                expected_parameters={"team_name": "Minnesota Twins", "datetimes": [date_context.current.utc_start_of_day]}
+            )
+        ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("nickname", "string", required=True, description="Team name, nickname, or college name the user spoke. Examples: 'Giants', 'Yanks', 'Ohio State', 'Bama', 'Vols'. "),
-            JarvisParameter("location", "string", required=False, description="[CONDITIONALLY REQUIRED]: If the voice command contains a geographic identifier before the team nickname (e.g., “Chicago Bulls”, “New York Giants”, “Golden State Warriors”), you must include it in location verbatim as spoken, even if the nickname alone is unambiguous. Do not drop it."),
+            JarvisParameter("team_name", "string", required=True, description="The complete team name as spoken by the user. Examples: 'Giants', 'Seattle Mariners', 'New York Yankees', 'Ohio State Buckeyes', 'Carolina Panthers'. Include city/state when mentioned."),
             JarvisParameter("datetimes", "array[datetime]", required=False, description="Array of ISO datetime strings to check for scores. ")
         ]
     
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return []
+
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "If no date is specified in the voice command, default to today's start of day (current.utc_start_of_day from date context)",
+            "Use this command for questions about PAST performance, results, scores, or 'how did [team] do'",
+            "Questions asking 'how did [team] do [past time period]' should ALWAYS use sports_score_command, not sports_schedule_command"
+        ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
-        team_name = kwargs.get("nickname")
-        location = kwargs.get("location")
+        team_name = kwargs.get("team_name")
         datetimes = kwargs.get("datetimes", [])
         
         # Extract voice command
         voice_command = request_info.voice_command
         
-        print(f"🔍 Sports Score Command - Voice: '{voice_command}'")
-        print(f"🔍 Parameters: team_name={team_name}, location={location}, datetimes={datetimes}")
-        if datetimes:
-            print(f"🔍 Raw datetimes: {datetimes}")
-            print(f"🔍 Datetime type: {type(datetimes[0]) if datetimes else 'None'}")
         
         # Validate team name
         if not team_name:
@@ -122,21 +126,7 @@ class SportsScoreCommand(IJarvisCommand):
                     }
                 )
             
-            print(f"🔍 Found {len(teams)} team(s) for '{team_name}':")
-            for team in teams:
-                print(f"   • {team.full_name} ({team.league.value.upper()})")
             
-            # If multiple teams and city provided, filter by city
-            if len(teams) > 1 and location:
-                print(f"🔍 Filtering by location: {location}")
-                pro_teams = [t for t in teams if t.league in [League.NFL, League.NBA, League.MLB, League.NHL]]
-                filtered_teams = [t for t in pro_teams if location.lower() in t.city.lower()]
-                
-                if filtered_teams:
-                    teams = filtered_teams
-                    print(f"✅ Filtered to {len(teams)} team(s) in {location}")
-                else:
-                    print(f"⚠️  No teams found in {location}, using all {len(teams)} teams")
             
             # Handle different actions
             # Get scores for the resolved teams (existing logic for get_scores action)
@@ -146,33 +136,24 @@ class SportsScoreCommand(IJarvisCommand):
             if datetimes and len(datetimes) > 0:
                 try:
                     dates_to_check = extract_dates_from_datetimes(datetimes)
-                    print(f"🔍 Extracted dates to check: {dates_to_check}")
                 except Exception as e:
-                    print(f"⚠️  Error extracting dates from datetimes '{datetimes}': {e}")
-                    print(f"⚠️  Falling back to today's date")
                     dates_to_check = []
             
             # If no dates specified, default to today
             if not dates_to_check:
                 from datetime import datetime
                 dates_to_check = [datetime.now().strftime('%Y-%m-%d')]
-                print(f"🔍 No dates specified, defaulting to today: {dates_to_check}")
             
             # Loop through each date and get scores for all teams
             for date in dates_to_check:
                 # Convert YYYY-MM-DD format to YYYYMMDD format for ESPN API
                 espn_date = date.replace('-', '')
-                print(f"🔍 Checking scores for date: {date} (ESPN format: {espn_date})")
                 for team in teams:
                     try:
                         team_games = espn_service.get_team_scores(team_name, espn_date)
                         if team_games:
-                            print(f"✅ Found {len(team_games)} games for {team.full_name} on {date}")
                             all_games.extend(team_games)
-                        else:
-                            print(f"ℹ️  No games found for {team.full_name} on {date}")
                     except Exception as e:
-                        print(f"❌ Error getting scores for {team.league.value} on {date}: {e}")
                         continue
             
             # If no games found
@@ -238,7 +219,6 @@ class SportsScoreCommand(IJarvisCommand):
 USER REQUEST: {voice_command}
 
 TEAM: {team_name}
-CITY: {location if location else 'Not specified'}
 
 SPORTS DATA:
 - Teams: {[t.full_name for t in teams]}
@@ -272,11 +252,9 @@ ONLY RETURN THIS EXACT FORMAT:
                 
                 # Get LLM response
                 # llm_response = jcc_client.chat(prompt, SportsResponse)
-                # print(f"LLM response: {llm_response}")
                 
                 # if llm_response and hasattr(llm_response, 'response'):
                 #     message = llm_response.response.strip()
-                #     print(f"LLM crafted response: {message}")
                 # else:
                 #     # Fallback response
                 #     message = f"I found {len(all_games)} game(s) for {team_name}. "
@@ -304,7 +282,6 @@ ONLY RETURN THIS EXACT FORMAT:
                 )
                 
             except Exception as e:
-                print(f"❌ Error getting LLM response: {e}")
                 # Fallback to simple response
                 message = f"I found {len(all_games)} game(s) for {team_name}."
                 return CommandResponse.follow_up_response(
@@ -333,14 +310,11 @@ ONLY RETURN THIS EXACT FORMAT:
         """Find the next upcoming event for the given teams by checking the next 10 days"""
         from datetime import datetime, timedelta
         
-        print(f"🔍 Searching for next event for {len(teams)} team(s) over the next 10 days...")
-        
         # Check the next 10 days
         today = datetime.now()
         for day_offset in range(1, 11):  # 1 to 10 days from now
             check_date = today + timedelta(days=day_offset)
             date_str = check_date.strftime('%Y%m%d')
-            print(f"🔍 Checking {check_date.strftime('%Y-%m-%d')} (ESPN format: {date_str})")
             
             for team in teams:
                 try:
@@ -349,7 +323,6 @@ ONLY RETURN THIS EXACT FORMAT:
                     if games:
                         # Find the earliest game (first one in the list)
                         next_game = games[0]
-                        print(f"✅ Found next event: {next_game.away_team} @ {next_game.home_team} on {check_date.strftime('%Y-%m-%d')}")
                         return {
                             'game': next_game,
                             'team': team,
@@ -357,10 +330,8 @@ ONLY RETURN THIS EXACT FORMAT:
                             'days_from_now': day_offset
                         }
                 except Exception as e:
-                    print(f"❌ Error checking {team.league.value} on {date_str}: {e}")
                     continue
         
-        print(f"❌ No upcoming events found in the next 10 days")
         return None
     
     def _craft_next_event_response(self, next_event, voice_command, team_name, teams):
@@ -430,7 +401,6 @@ Return this exact JSON format and nothing else:
             
             if llm_response and hasattr(llm_response, 'response'):
                 message = llm_response.response.strip()
-                print(f"LLM crafted next event response: {message}")
             else:
                 # Fallback response
                 date_display = "tomorrow" if days_from_now == 1 else f"in {days_from_now} days"
@@ -459,7 +429,6 @@ Return this exact JSON format and nothing else:
             )
             
         except Exception as e:
-            print(f"❌ Error crafting next event response: {e}")
             # Fallback response
             date_display = "tomorrow" if next_event['days_from_now'] == 1 else f"in {next_event['days_from_now']} days"
             message = f"The next {team_name} game is {date_display} on {next_event['date'].strftime('%A, %B %d')}."
