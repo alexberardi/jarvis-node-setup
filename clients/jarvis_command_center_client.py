@@ -165,7 +165,18 @@ class JarvisCommandCenterClient:
         available_commands = []
         for cmd in commands.values():
             print(cmd.command_name)
-            available_commands.append({
+            # Get examples and convert CommandExample objects to dictionaries
+            examples = cmd.generate_examples(date_context)
+            examples_dict = [
+                {
+                    "voice_command": ex.voice_command,
+                    "expected_parameters": ex.expected_parameters,
+                    "is_primary": ex.is_primary
+                }
+                for ex in examples
+            ]
+            
+            command_schema = {
                 "command_name": cmd.command_name,
                 "description": cmd.description,
                 "keywords": cmd.keywords,
@@ -179,8 +190,18 @@ class JarvisCommandCenterClient:
                     }
                     for p in cmd.parameters
                 ],
-                "example": cmd.generate_examples(date_context)
-            })
+                "examples": examples_dict
+            }
+            
+            # Add rules if they exist
+            if cmd.rules:
+                command_schema["rules"] = cmd.rules
+            
+            # Add critical rules if they exist
+            if cmd.critical_rules:
+                command_schema["critical_rules"] = cmd.critical_rules
+            
+            available_commands.append(command_schema)
         
         payload = {
             "node_context": node_context,

@@ -420,9 +420,10 @@ class TeamNameResolver:
     def resolve_team(self, user_input: str) -> List[Team]:
         """
         Resolve a user input to matching teams across all leagues
+        Handles both simple nicknames and full team names with locality
         
         Args:
-            user_input: User's team name input (e.g., "Giants", "Panthers", "Yanks")
+            user_input: User's team name input (e.g., "Giants", "Seattle Mariners", "New York Yankees")
             
         Returns:
             List of matching Team objects
@@ -433,6 +434,47 @@ class TeamNameResolver:
         # Normalize input
         normalized_input = user_input.lower().strip()
         
+        # Try smart parsing first for multi-word team names
+        if ' ' in normalized_input:
+            matches = self._resolve_multi_word_team(normalized_input)
+            if matches:
+                return matches
+        
+        # Fall back to original logic for single words or if multi-word parsing fails
+        return self._resolve_single_word_team(normalized_input)
+    
+    def _resolve_multi_word_team(self, team_input: str) -> List[Team]:
+        """
+        Resolve multi-word team names like "Seattle Mariners", "New York Yankees"
+        """
+        parts = team_input.split()
+        
+        # Try different combinations of locality + nickname
+        for i in range(1, len(parts)):
+            locality_part = ' '.join(parts[:i])
+            nickname_part = ' '.join(parts[i:])
+            
+            # Look for teams that match this locality + nickname combination
+            matches = []
+            for team in self._teams:
+                team_city_lower = team.city.lower()
+                team_nickname_lower = team.nickname.lower()
+                
+                # Check if locality matches city and nickname matches
+                if (locality_part in team_city_lower or team_city_lower in locality_part) and \
+                   (nickname_part == team_nickname_lower or team_nickname_lower in nickname_part):
+                    matches.append(team)
+            
+            if matches:
+                return matches
+        
+        # If no locality/nickname split worked, try full name matching
+        return self._resolve_single_word_team(team_input)
+    
+    def _resolve_single_word_team(self, normalized_input: str) -> List[Team]:
+        """
+        Original team resolution logic for single words or full names
+        """
         # Check nickname aliases first
         if normalized_input in self._nickname_aliases:
             target_nicknames = self._nickname_aliases[normalized_input]
@@ -556,7 +598,6 @@ class ESPNSportsService:
         }
         
         try:
-            print(f"🔍 Fetching {sport.value.upper()} scores for {date} from ESPN API...")
             response = self.session.get(url, params=params, timeout=10)
             response.raise_for_status()
             
@@ -564,10 +605,8 @@ class ESPNSportsService:
             return self._parse_scoreboard_response(data, sport)
             
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching scores from ESPN API: {e}")
             return []
         except Exception as e:
-            print(f"❌ Unexpected error: {e}")
             return []
     
     def get_team_scores(self, team_input: str, date: Optional[str] = None) -> List[Game]:
@@ -585,12 +624,7 @@ class ESPNSportsService:
         teams = self.team_resolver.resolve_team(team_input)
         
         if not teams:
-            print(f"❌ No teams found for '{team_input}'")
             return []
-        
-        print(f"🔍 Found {len(teams)} team(s) for '{team_input}':")
-        for team in teams:
-            print(f"   • {team.full_name} ({team.league.value.upper()})")
         
         # Get scores for each league where the team exists
         all_games = []
@@ -603,13 +637,10 @@ class ESPNSportsService:
                     is_home = team.nickname in game.home_team
                     is_away = team.nickname in game.away_team
                     if is_home or is_away:
-                        print(f"🔍 Found game: {game.away_team} @ {game.home_team} - Score: {game.away_score} to {game.home_score}")
-                        print(f"   Team '{team.nickname}' is {'HOME' if is_home else 'AWAY'}")
                         team_games.append(game)
                 
                 all_games.extend(team_games)
             except Exception as e:
-                print(f"❌ Error getting scores for {team.league.value}: {e}")
                 continue
         
         return all_games
@@ -644,7 +675,6 @@ class ESPNSportsService:
                         score = competitor.get("score", "")
                         home_away = competitor.get("homeAway", "")
                         
-                        print(f"🔍 Parsing competitor: {team_name} ({home_away}) - Score: {score}")
                         
                         if home_away == "home":
                             home_team = team_name
@@ -663,13 +693,7 @@ class ESPNSportsService:
                         try:
                             from utils.timezone_util import convert_utc_to_local
                             start_time = convert_utc_to_local(date_obj)
-                            
-                            if start_time:
-                                print(f"🔍 Time conversion: {date_obj} (UTC) → {start_time.strftime('%Y-%m-%d %I:%M %p')} (local)")
-                            else:
-                                print(f"⚠️  Time conversion failed for: {date_obj}")
                         except Exception as parse_error:
-                            print(f"⚠️  Date parsing failed: {parse_error}")
                             pass
                     
                     # Get venue and broadcast info
@@ -695,12 +719,9 @@ class ESPNSportsService:
                     games.append(game)
                     
                 except Exception as e:
-                    print(f"❌ Error parsing game: {e}")
                     continue
             
-            print(f"✅ Parsed {len(games)} games from ESPN API")
-            
         except Exception as e:
-            print(f"❌ Error parsing scoreboard response: {e}")
+            pass
         
         return games

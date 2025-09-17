@@ -6,7 +6,7 @@ Performs basic arithmetic operations on two numbers.
 
 from typing import List
 from enum import Enum
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -54,49 +54,58 @@ class CalculatorCommand(IJarvisCommand):
     def required_secrets(self) -> List[IJarvisSecret]:
         return []
     
-    def generate_examples(self, date_context: DateContext) -> str:
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "Map common operation terms to exact values: 'sum'/'plus'/'+' → 'add', 'minus'/'-' → 'subtract', 'times'/'*' → 'multiply', 'divided by'/'/' → 'divide'",
+            "The operation parameter must be exactly one of: 'add', 'subtract', 'multiply', 'divide'"
+        ]
+    
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the calculator command"""
-        return f"""
-Voice Command: "What's 5 plus 3?"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":5,"num2":3,"operation":"add"}}}},"e":null}}}}
-
-Voice Command: "Calculate 10 minus 4"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":10,"num2":4,"operation":"subtract"}}}},"e":null}}}}
-
-Voice Command: "What is 6 times 7?"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":6,"num2":7,"operation":"multiply"}}}},"e":null}}}}
-
-Voice Command: "Divide 20 by 5"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":20,"num2":5,"operation":"divide"}}}},"e":null}}}}
-
-Voice Command: "Add 15 and 25 together"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":15,"num2":25,"operation":"add"}}}},"e":null}}}}
-
-Voice Command: "What's five plus 3?"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":5,"num2":3,"operation":"add"}}}},"e":null}}}}
-
-Voice Command: "Calculate ten minus four"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":10,"num2":4,"operation":"subtract"}}}},"e":null}}}}
-
-Voice Command: "What's 15 percent of 200?"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":0.15,"num2":200,"operation":"multiply"}}}},"e":null}}}}
-
-Voice Command: "Calculate 25% of 80"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":0.25,"num2":80,"operation":"multiply"}}}},"e":null}}}}
-
-Voice Command: "What is 10% of 150?"
-→ Output:
-{{{{"s":true,"n":"calculator_command","p":{{{{"num1":0.1,"num2":150,"operation":"multiply"}}}},"e":null}}}}
-"""
+        return [
+            CommandExample(
+                voice_command="What's 5 plus 3?",
+                expected_parameters={"num1": 5, "num2": 3, "operation": "add"},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="Calculate 10 minus 4",
+                expected_parameters={"num1": 10, "num2": 4, "operation": "subtract"}
+            ),
+            CommandExample(
+                voice_command="What is 6 times 7?",
+                expected_parameters={"num1": 6, "num2": 7, "operation": "multiply"}
+            ),
+            CommandExample(
+                voice_command="Divide 20 by 5",
+                expected_parameters={"num1": 20, "num2": 5, "operation": "divide"}
+            ),
+            CommandExample(
+                voice_command="Add 15 and 25 together",
+                expected_parameters={"num1": 15, "num2": 25, "operation": "add"}
+            ),
+            CommandExample(
+                voice_command="What's five plus 3?",
+                expected_parameters={"num1": 5, "num2": 3, "operation": "add"}
+            ),
+            CommandExample(
+                voice_command="Calculate ten minus four",
+                expected_parameters={"num1": 10, "num2": 4, "operation": "subtract"}
+            ),
+            CommandExample(
+                voice_command="What's 15 percent of 200?",
+                expected_parameters={"num1": 0.15, "num2": 200, "operation": "multiply"}
+            ),
+            CommandExample(
+                voice_command="Calculate 25% of 80",
+                expected_parameters={"num1": 0.25, "num2": 80, "operation": "multiply"}
+            ),
+            CommandExample(
+                voice_command="What is 10% of 150?",
+                expected_parameters={"num1": 0.1, "num2": 150, "operation": "multiply"}
+            )
+        ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the calculator command"""

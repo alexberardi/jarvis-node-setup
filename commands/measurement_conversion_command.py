@@ -5,7 +5,7 @@ Converts between various units using base unit conversion for maximum flexibilit
 """
 
 from typing import List, Dict, Any, Optional, Tuple
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import JarvisParameter
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
@@ -93,49 +93,51 @@ class MeasurementConversionCommand(IJarvisCommand):
             JarvisParameter("category", "string", required=False, description="Optional category hint: 'distance', 'volume', 'weight', or 'temperature'. Helps disambiguate units with similar names.")
         ]
     
-    def generate_examples(self, date_context: DateContext) -> str:
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the measurement conversion command"""
-        return f"""
-Voice Command: "How many inches in a mile?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":1,"from_unit":"miles","to_unit":"inches"}}}},"e":null}}}}
-
-Voice Command: "Convert 5 miles to kilometers"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":5,"from_unit":"miles","to_unit":"kilometers"}}}},"e":null}}}}
-
-Voice Command: "How many cups in a gallon?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":1,"from_unit":"gallons","to_unit":"cups"}}}},"e":null}}}}
-
-Voice Command: "What's 2 pints in quarts?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":2,"from_unit":"pints","to_unit":"quarts"}}}},"e":null}}}}
-
-Voice Command: "Convert 10 pounds to kilograms"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":10,"from_unit":"pounds","to_unit":"kilograms"}}}},"e":null}}}}
-
-Voice Command: "How many grams in 3 ounces?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":3,"from_unit":"ounces","to_unit":"grams"}}}},"e":null}}}}
-
-Voice Command: "What's 350 Fahrenheit in Celsius?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":350,"from_unit":"fahrenheit","to_unit":"celsius"}}}},"e":null}}}}
-
-Voice Command: "Convert 25 Celsius to Fahrenheit"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":25,"from_unit":"celsius","to_unit":"fahrenheit"}}}},"e":null}}}}
-
-Voice Command: "How many centimeters in a foot?"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":1,"from_unit":"feet","to_unit":"centimeters"}}}},"e":null}}}}
-
-Voice Command: "Convert 100 meters to yards"
-→ Output:
-{{{{"s":true,"n":"measurement_conversion_command","p":{{{{"value":100,"from_unit":"meters","to_unit":"yards"}}}},"e":null}}}}
-"""
+        return [
+            CommandExample(
+                voice_command="How many inches in a mile?",
+                expected_parameters={"value": 1, "from_unit": "miles", "to_unit": "inches"},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="Convert 5 miles to kilometers",
+                expected_parameters={"value": 5, "from_unit": "miles", "to_unit": "kilometers"}
+            ),
+            CommandExample(
+                voice_command="How many cups in a gallon?",
+                expected_parameters={"value": 1, "from_unit": "gallons", "to_unit": "cups"}
+            ),
+            CommandExample(
+                voice_command="What's 2 pints in quarts?",
+                expected_parameters={"value": 2, "from_unit": "pints", "to_unit": "quarts"}
+            ),
+            CommandExample(
+                voice_command="Convert 10 pounds to kilograms",
+                expected_parameters={"value": 10, "from_unit": "pounds", "to_unit": "kilograms"}
+            ),
+            CommandExample(
+                voice_command="How many grams in 3 ounces?",
+                expected_parameters={"value": 3, "from_unit": "ounces", "to_unit": "grams"}
+            ),
+            CommandExample(
+                voice_command="What's 350 Fahrenheit in Celsius?",
+                expected_parameters={"value": 350, "from_unit": "fahrenheit", "to_unit": "celsius"}
+            ),
+            CommandExample(
+                voice_command="Convert 25 Celsius to Fahrenheit",
+                expected_parameters={"value": 25, "from_unit": "celsius", "to_unit": "fahrenheit"}
+            ),
+            CommandExample(
+                voice_command="How many centimeters in a foot?",
+                expected_parameters={"value": 1, "from_unit": "feet", "to_unit": "centimeters"}
+            ),
+            CommandExample(
+                voice_command="Convert 100 meters to yards",
+                expected_parameters={"value": 100, "from_unit": "meters", "to_unit": "yards"}
+            )
+        ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the measurement conversion command"""

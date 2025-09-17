@@ -2,7 +2,7 @@ from typing import List, Any, Optional
 
 from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -22,33 +22,21 @@ class GeneralKnowledgeCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Answers general knowledge questions using AI, covering topics like history, geography, science, and more"
+        return "Answers general knowledge questions using AI, covering topics like history, geography, science, and more. If the user's question is something you can accurately answer, select this command."
 
-    def generate_examples(self, date_context: DateContext) -> str:
-        """Generate example utterances and how they get parsed into parameters using date context"""
-        return f"""
-        IMPORTANT: When voice commands mention relative dates like "tomorrow", "next week", etc., 
-        you must parse them into actual datetime values and include them in the datetimes array.
-        
-        CRITICAL: All datetime values MUST include the full ISO format with time (YYYY-MM-DDTHH:MM:SSZ).
-        Never return just the date (YYYY-MM-DD) - always include the time component.
-
-        Voice Command: "What's the weather like?"
-        → Output:
-        {{"s":true,"n":"general_knowledge_command","p":{{"query":"What's the weather like?"}},"e":null}}
-
-        Voice Command: "Tell me about artificial intelligence"
-        → Output:
-        {{"s":true,"n":"general_knowledge_command","p":{{"query":"Tell me about artificial intelligence"}},"e":null}}
-
-        Voice Command: "What happened in history today?"
-        → Output:
-        {{"s":true,"n":"general_knowledge_command","p":{{"query":"What happened in history today?","datetimes":["{date_context.current.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "What events are happening tomorrow?"
-        → Output:
-        {{"s":true,"n":"general_knowledge_command","p":{{"query":"What events are happening tomorrow?","datetimes":["{date_context.relative_dates.tomorrow.utc_start_of_day}"]}},"e":null}}
-        """
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
+        """Generate example utterances with expected parameters using date context"""
+        return [
+            CommandExample(
+                voice_command="Tell me about artificial intelligence",
+                expected_parameters={"query": "Tell me about artificial intelligence"},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="What happened in history today?",
+                expected_parameters={"query": "What happened in history today?"}
+            )
+        ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:

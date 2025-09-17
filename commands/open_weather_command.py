@@ -1,12 +1,11 @@
 import datetime
 import requests
-import time
 from typing import List, Any, Optional
 
 from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
@@ -28,45 +27,41 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Gets the current weather or forecast for a city"
+        return "Gets the current weather or forecast for an optional city or optional date range"
 
-    def generate_examples(self, date_context: DateContext) -> str:
-        """Generate example utterances and how they get parsed into parameters using date context"""
-        return f"""
-        IMPORTANT: When voice commands mention relative dates like "tomorrow", "next week", etc., 
-        you must parse them into actual datetime values and include them in the datetimes array.
-        
-        CRITICAL: All datetime values MUST include the full ISO format with time (YYYY-MM-DDTHH:MM:SSZ).
-        Never return just the date (YYYY-MM-DD) - always include the time component.
-
-        Voice Command: "What's the weather like?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{}},"e":null}}
-
-        Voice Command: "What's the weather in Miami?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Miami"}},"e":null}}
-
-        Voice Command: "How's the weather in New York today?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"New York"}},"e":null}}
-
-        Voice Command: "What's the forecast for Los Angeles tomorrow?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Los Angeles","datetimes":["{date_context.relative_dates.tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "Weather forecast for Chicago on the day after tomorrow"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Chicago","datetimes":["{date_context.relative_dates.day_after_tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "What's the weather like in metric units?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"unit_system":"metric"}},"e":null}}
-
-        Voice Command: "Forecast for Seattle this weekend"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Seattle","datetimes":["{date_context.weekend.this_weekend[0].utc_start_of_day}","{date_context.weekend.this_weekend[1].utc_start_of_day}"]}},"e":null}}
-        """
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
+        """Generate example utterances with expected parameters using date context"""
+        return [
+            CommandExample(
+                voice_command="What's the weather like?",
+                expected_parameters={},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="What's the weather in Miami?",
+                expected_parameters={"city": "Miami"}
+            ),
+            CommandExample(
+                voice_command="How's the weather in New York today?",
+                expected_parameters={"city": "New York"}
+            ),
+            CommandExample(
+                voice_command="What's the forecast for Los Angeles tomorrow?",
+                expected_parameters={"city": "Los Angeles", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="Weather forecast for Chicago on the day after tomorrow",
+                expected_parameters={"city": "Chicago", "datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="What's the weather like in metric units?",
+                expected_parameters={"unit_system": "metric"}
+            ),
+            CommandExample(
+                voice_command="Forecast for Seattle this weekend",
+                expected_parameters={"city": "Seattle", "datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
+            )
+        ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:

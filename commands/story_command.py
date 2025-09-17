@@ -1,16 +1,15 @@
-import math
 import re
-import uuid
-from typing import Dict, Any, List, Optional
+from typing import List
 
 from pydantic import BaseModel
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
-from core.ijarvis_command import IJarvisCommand
+from clients.responses.jarvis_command_center import DateContext
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
 from services.chunked_command_response_service import ChunkedCommandResponseService
-from services.secret_service import get_secret_value, get_secret_value_int
+from services.secret_service import get_secret_value_int
 from utils.config_service import Config
 
 # --- Pydantic model for LLM JSON response ---
@@ -46,6 +45,32 @@ class StoryCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return ["story", "tell me a story", "continue story", "end story"]
+
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
+        """Generate examples for the story command"""
+        return [
+            CommandExample(
+                voice_command="Tell me a story",
+                expected_parameters={},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="Tell me a story about dragons",
+                expected_parameters={"story_subject": "dragons"}
+            ),
+            CommandExample(
+                voice_command="Tell me a 500 word story",
+                expected_parameters={"word_count": 500}
+            ),
+            CommandExample(
+                voice_command="Continue story",
+                expected_parameters={"action": "continue"}
+            ),
+            CommandExample(
+                voice_command="End story",
+                expected_parameters={"action": "end"}
+            )
+        ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:
         # ---- inputs & defaults ----
@@ -105,9 +130,6 @@ class StoryCommand(IJarvisCommand):
         TARGET_CHUNK_WORDS = 400
         REMAINING = max(150, int(word_count))  # guard against tiny values
 
-        def last_tail_words(text: str, n: int = 40) -> str:
-            words = text.split()
-            return " ".join(words[-n:]) if words else ""
 
         # helper to trim to word boundary & end of sentence
         END_SENTENCE_RE = re.compile(r"([.!?][\"\']?\s+)")

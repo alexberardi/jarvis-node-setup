@@ -2,7 +2,7 @@ from typing import List, Any, Optional
 
 from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand
+from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
@@ -27,39 +27,46 @@ class ReadCalendarCommand(IJarvisCommand):
     def description(self) -> str:
         return "Reads calendar events from your configured calendar service (iCloud, Google, etc.)"
 
-    def generate_examples(self, date_context: DateContext) -> str:
-        """Generate example utterances and how they get parsed into parameters using date context"""
-        return f"""
-        IMPORTANT: When voice commands mention relative dates like "tomorrow", "next week", etc., 
-        you must parse them into actual datetime values and include them in the datetimes array.
-        
-        CRITICAL: All datetime values MUST include the full ISO format with time (YYYY-MM-DDTHH:MM:SSZ).
-        Never return just the date (YYYY-MM-DD) - always include the time component.
-
-        Voice Command: "What's on my calendar today?"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{"datetimes":["{date_context.current.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "Show me my schedule for tomorrow"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{"datetimes":["{date_context.relative_dates.tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "What appointments do I have the day after tomorrow?"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{"datetimes":["{date_context.relative_dates.day_after_tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "Show my calendar for this weekend"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{"datetimes":["{date_context.weekend.this_weekend[0].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 0 else ''}","{date_context.weekend.this_weekend[1].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 1 else ''}"]}},"e":null}}
-
-        Voice Command: "What meetings do I have next week?"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{"datetimes":["{date_context.weeks.next_week[0].utc_start_of_day}","{date_context.weeks.next_week[1].utc_start_of_day}","{date_context.weeks.next_week[2].utc_start_of_day}","{date_context.weeks.next_week[3].utc_start_of_day}","{date_context.weeks.next_week[4].utc_start_of_day}","{date_context.weeks.next_week[5].utc_start_of_day}","{date_context.weeks.next_week[6].utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "Read my calendar"
-        → Output:
-        {{"s":true,"n":"read_calendar_command","p":{{}},"e":null}}
-        """
+    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
+        """Generate example utterances with expected parameters using date context"""
+        return [
+            CommandExample(
+                voice_command="What's on my calendar today?",
+                expected_parameters={"datetimes": [date_context.current.utc_start_of_day]},
+                is_primary=True
+            ),
+            CommandExample(
+                voice_command="Show me my schedule for tomorrow",
+                expected_parameters={"datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="What appointments do I have the day after tomorrow?",
+                expected_parameters={"datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
+            ),
+            CommandExample(
+                voice_command="Show my calendar for this weekend",
+                expected_parameters={"datetimes": [
+                    date_context.weekend.this_weekend[0].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 0 else '',
+                    date_context.weekend.this_weekend[1].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 1 else ''
+                ]}
+            ),
+            CommandExample(
+                voice_command="What meetings do I have next week?",
+                expected_parameters={"datetimes": [
+                    date_context.weeks.next_week[0].utc_start_of_day,
+                    date_context.weeks.next_week[1].utc_start_of_day,
+                    date_context.weeks.next_week[2].utc_start_of_day,
+                    date_context.weeks.next_week[3].utc_start_of_day,
+                    date_context.weeks.next_week[4].utc_start_of_day,
+                    date_context.weeks.next_week[5].utc_start_of_day,
+                    date_context.weeks.next_week[6].utc_start_of_day
+                ]}
+            ),
+            CommandExample(
+                voice_command="Read my calendar",
+                expected_parameters={}
+            )
+        ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
