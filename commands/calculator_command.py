@@ -27,11 +27,11 @@ class CalculatorCommand(IJarvisCommand):
     
     @property
     def command_name(self) -> str:
-        return "calculator_command"
+        return "calculate"
     
     @property
     def description(self) -> str:
-        return "Perform basic arithmetic operations (add, subtract, multiply, divide) on two numbers"
+        return "Two-number arithmetic: add, subtract, multiply, or divide. Use for simple math. Do NOT use for unit conversions or multi-step/advanced formulas."
     
     @property
     def keywords(self) -> List[str]:
@@ -45,9 +45,9 @@ class CalculatorCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("num1", "float", required=True, description="First number for the calculation"),
-            JarvisParameter("num2", "float", required=True, description="Second number for the calculation"),
-            JarvisParameter("operation", "string", required=True, description="Arithmetic operation to perform. Must be one of: 'add', 'subtract', 'multiply', 'divide'")
+            JarvisParameter("num1", "float", required=True, description="The first number in the calculation. Can be positive, negative, integer, or decimal (e.g., 5, -3.14, 42.5)"),
+            JarvisParameter("num2", "float", required=True, description="The second number in the calculation. Can be positive, negative, integer, or decimal (e.g., 3, -1.5, 100)"),
+            JarvisParameter("operation", "string", required=True, description="The arithmetic operation to perform. Must be exactly one of: 'add' (addition/sum), 'subtract' (subtraction/difference), 'multiply' (multiplication/product), 'divide' (division/quotient)")
         ]
 
     @property
@@ -120,8 +120,7 @@ class CalculatorCommand(IJarvisCommand):
                 operation = Operation(operation_str)
             except ValueError:
                 return CommandResponse.error_response(
-                    speak_message=f"I can't perform the operation '{operation_str}'. I can only add, subtract, multiply, or divide.",
-                    error_details=f"Invalid operation: {operation_str}",
+                                        error_details=f"Invalid operation: {operation_str}",
                     context_data={
                         "num1": num1,
                         "num2": num2,
@@ -143,8 +142,7 @@ class CalculatorCommand(IJarvisCommand):
             elif operation == Operation.DIVIDE:
                 if num2 == 0:
                     return CommandResponse.error_response(
-                        speak_message="I can't divide by zero. That's mathematically impossible.",
-                        error_details="Division by zero",
+                                                error_details="Division by zero",
                         context_data={
                             "num1": num1,
                             "num2": num2,
@@ -156,8 +154,7 @@ class CalculatorCommand(IJarvisCommand):
                 operation_text = "divided by"
             else:
                 return CommandResponse.error_response(
-                    speak_message=f"I encountered an unexpected error with the operation '{operation}'.",
-                    error_details=f"Unsupported operation: {operation}",
+                                        error_details=f"Unsupported operation: {operation}",
                     context_data={
                         "num1": num1,
                         "num2": num2,
@@ -177,8 +174,7 @@ class CalculatorCommand(IJarvisCommand):
             calculation_message = f"{num1} {operation_text} {num2} equals {result_text}"
             
             return CommandResponse.follow_up_response(
-                speak_message=calculation_message,
-                context_data={
+                                context_data={
                     "result": result,
                     "calculation": f"{num1} {operation_text} {num2} = {result_text}",
                     "operation": operation.value,
@@ -190,8 +186,7 @@ class CalculatorCommand(IJarvisCommand):
             
         except (ValueError, TypeError) as e:
             return CommandResponse.error_response(
-                speak_message=f"I couldn't understand the numbers you provided. Please make sure you're giving me valid numbers.",
-                error_details=f"Invalid parameters: {str(e)}",
+                                error_details=f"Invalid parameters: {str(e)}",
                 context_data={
                     "error": str(e),
                     "parameters_received": kwargs
@@ -199,8 +194,7 @@ class CalculatorCommand(IJarvisCommand):
             )
         except Exception as e:
             return CommandResponse.error_response(
-                speak_message=f"I encountered an error while doing the calculation: {str(e)}",
-                error_details=f"Calculation error: {str(e)}",
+                                error_details=f"Calculation error: {str(e)}",
                 context_data={
                     "error": str(e),
                     "parameters_received": kwargs

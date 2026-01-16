@@ -20,20 +20,20 @@ class StoryChunk(BaseModel):
 class StoryCommand(IJarvisCommand):
     @property
     def command_name(self) -> str:
-        return "tell_a_story"
+        return "tell_story"
     
     @property
     def description(self) -> str:
-        return "Writes and reads a story to the user in chunks. Use 'continue' to hear more, 'end story' to finish."
+        return "Generate and narrate an original story in chunks, tailored by subject and audience age. Supports start, continue, and end actions. Use for new or ongoing stories/bedtime tales. Do NOT use for reading existing books, summaries, or jokes."
 
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("word_count", "int", required=False, default="750", description="Target word count for the story"),
-            JarvisParameter("story_subject", "string", required=False, description="Subject or theme for the story"),
-            JarvisParameter("target_audience_age", "int", required=False, default="5", description="Target age for the story content"),
-            JarvisParameter("session_id", "string", required=False, description="Session ID to continue an existing story"),
-            JarvisParameter("action", "string", required=False, default="start", description="Action to perform: 'start', 'continue', or 'end'")
+            JarvisParameter("story_subject", "string", required=False, description="The subject, theme, or topic for the story (e.g., 'a brave knight', 'space adventure', 'friendly dinosaur', 'princess and dragon'). If not provided, a random age-appropriate theme will be chosen."),
+            JarvisParameter("target_audience_age", "int", required=False, default=5, description="The target age of the listener in years, used to adjust story complexity and content appropriateness (e.g., 3, 5, 8, 12). Defaults to 5 if not specified."),
+            JarvisParameter("word_count", "int", required=False, default=750, description="Target total word count for the complete story (e.g., 500, 750, 1000). The story will be delivered in chunks. Defaults to 750 words."),
+            JarvisParameter("action", "string", required=False, default="start", description="The story action to perform: 'start' (begin a new story), 'continue' (hear the next part of an ongoing story), or 'end' (finish and summarize the current story). Defaults to 'start'."),
+            JarvisParameter("session_id", "string", required=False, description="Story session identifier for continuing or ending an existing story. Only required when action is 'continue' or 'end'. Do not provide for new stories (action='start').")
         ]
 
     @property
@@ -177,8 +177,7 @@ class StoryCommand(IJarvisCommand):
             # Clean up the session if we failed
             chunked_service.end_session(session_id)
             return CommandResponse.error_response(
-                speak_message="Sorry, I couldn't start the story just now. Please try again.",
-                error_details="LLM failed to generate initial story chunk"
+                                error_details="LLM failed to generate initial story chunk"
             )
 
         raw_text = (result.message or "").strip()
@@ -186,8 +185,7 @@ class StoryCommand(IJarvisCommand):
             # Clean up the session if we got empty content
             chunked_service.end_session(session_id)
             return CommandResponse.error_response(
-                speak_message="Sorry, the story chunk was empty. Please try again.",
-                error_details="LLM returned empty story content"
+                                error_details="LLM returned empty story content"
             )
 
         # Trim and add to session
@@ -200,8 +198,7 @@ class StoryCommand(IJarvisCommand):
         
         # Return response with session info
         return CommandResponse.chunked_response(
-            speak_message=f"I've started a story about {story_subject} for a {target_age} year old. I'll tell it in chunks. Say 'continue' to hear more, or 'end story' when you're done.",
-            session_id=session_id,
+                        session_id=session_id,
             context_data={
                 "session_id": session_id,
                 "subject": story_subject,
@@ -221,8 +218,7 @@ class StoryCommand(IJarvisCommand):
         status = chunked_service.get_session_status(session_id)
         if not status:
             return CommandResponse.error_response(
-                speak_message="I couldn't find that story session. Let me start a new one for you.",
-                error_details=f"Session {session_id} not found"
+                                error_details=f"Session {session_id} not found"
             )
         
         # Get the LLM client
@@ -233,8 +229,7 @@ class StoryCommand(IJarvisCommand):
         db_record = chunked_service.repository.get_by_session_id(session_id)
         if not db_record:
             return CommandResponse.error_response(
-                speak_message="I couldn't retrieve the story. Let me start a new one for you.",
-                error_details=f"Database record for session {session_id} not found"
+                                error_details=f"Database record for session {session_id} not found"
             )
         
         # Get the last few words for continuity
@@ -259,23 +254,20 @@ class StoryCommand(IJarvisCommand):
         result = client.lightweight_chat(prompt, StoryChunk)
         if not result or not isinstance(result, StoryChunk):
             return CommandResponse.error_response(
-                speak_message="Sorry, I couldn't continue the story just now. Please try again.",
-                error_details="LLM failed to generate story continuation"
+                                error_details="LLM failed to generate story continuation"
             )
         
         raw_text = (result.message or "").strip()
         if not raw_text:
             return CommandResponse.error_response(
-                speak_message="Sorry, the story continuation was empty. Please try again.",
-                error_details="LLM returned empty story continuation"
+                                error_details="LLM returned empty story continuation"
             )
         
         # Add the new chunk to the session
         chunked_service.append_content(session_id, " " + raw_text)
         
         return CommandResponse.chunked_response(
-            speak_message=f"I've added more to your story. Say 'continue' to hear more, or 'end story' when you're ready to finish.",
-            session_id=session_id,
+                        session_id=session_id,
             context_data={
                 "session_id": session_id,
                 "action": "continue",
@@ -290,16 +282,14 @@ class StoryCommand(IJarvisCommand):
         status = chunked_service.get_session_status(session_id)
         if not status:
             return CommandResponse.error_response(
-                speak_message="I couldn't find that story session.",
-                error_details=f"Session {session_id} not found"
+                                error_details=f"Session {session_id} not found"
             )
         
         # Get the final content
         db_record = chunked_service.repository.get_by_session_id(session_id)
         if not db_record:
             return CommandResponse.error_response(
-                speak_message="I couldn't retrieve the story content.",
-                error_details=f"Database record for session {session_id} not found"
+                                error_details=f"Database record for session {session_id} not found"
             )
         
         # Add a proper ending
@@ -314,8 +304,7 @@ class StoryCommand(IJarvisCommand):
         word_count = len(final_content.split())
         
         return CommandResponse.final_response(
-            speak_message=f"Your story is now complete! It was {word_count} words long. I hope you enjoyed it!",
-            context_data={
+                        context_data={
                 "session_id": session_id,
                 "action": "end",
                 "is_chunked": False,

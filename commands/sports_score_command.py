@@ -30,7 +30,7 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def command_name(self) -> str:
-        return "sports_score_command"
+        return "get_sports_scores"
     
     @property
     def keywords(self) -> List[str]:
@@ -41,39 +41,39 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Get sports scores and results for past/completed games. Use this for questions about how teams performed, what scores were, who won/lost, or any results from games that have already happened. Covers NFL, NBA, MLB, NHL, and college sports."
+        return "Final scores and results for games already played (today or earlier). Use for 'how did they do' or 'who won' questions. Do NOT use for future schedules, live updates, player stats, or standings."
     
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports score command with varied verbiage"""
         return [
             CommandExample(
                 voice_command="How did the Giants do last weekend?",
-                expected_parameters={"team_name": "Giants", "datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]},
+            expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="What's the score of the Giants game?",
-                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="How did the Seattle Mariners do yesterday?",
-                expected_parameters={"team_name": "Seattle Mariners", "datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]}
+                expected_parameters={"team_name": "Seattle Mariners", "resolved_datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="Show me the Baltimore Orioles game result from last weekend",
-                expected_parameters={"team_name": "Baltimore Orioles", "datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
+                expected_parameters={"team_name": "Baltimore Orioles", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="What was the final score of the Minnesota Twins game?",
-                expected_parameters={"team_name": "Minnesota Twins", "datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Minnesota Twins", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="The complete team name as spoken by the user. Examples: 'Giants', 'Seattle Mariners', 'New York Yankees', 'Ohio State Buckeyes', 'Carolina Panthers'. Include city/state when mentioned."),
-            JarvisParameter("datetimes", "array[datetime]", required=False, description="Array of ISO datetime strings to check for scores. ")
+            JarvisParameter("team_name", "string", required=True, description="The team name exactly as spoken by the user. Include city/state/school when mentioned (e.g., 'Giants', 'New York Giants', 'Seattle Mariners', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'). The system will handle disambiguation if multiple teams match."),
+            JarvisParameter("resolved_datetimes", "array[datetime]", required=True, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server) for dates to check. Resolved datetimes are the result of the resolve_relative_date command.")
         ]
     
     @property
@@ -85,13 +85,14 @@ class SportsScoreCommand(IJarvisCommand):
         return [
             "If no date is specified in the voice command, default to today's start of day (current.utc_start_of_day from date context)",
             "Use this command for questions about PAST performance, results, scores, or 'how did [team] do'",
-            "Questions asking 'how did [team] do [past time period]' should ALWAYS use sports_score_command, not sports_schedule_command"
+            "Questions asking 'how did [team] do [past time period]' should ALWAYS use sports_score_command, not sports_schedule_command",
+            "For championship questions like 'Who won the Super Bowl this year?' or 'Who won the World Series?', prefer web_search_command for current/recent championship information"
         ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
         team_name = kwargs.get("team_name")
-        datetimes = kwargs.get("datetimes", [])
+        resolved_datetimes = kwargs.get("resolved_datetimes", [])
         
         # Extract voice command
         voice_command = request_info.voice_command
@@ -100,8 +101,7 @@ class SportsScoreCommand(IJarvisCommand):
         # Validate team name
         if not team_name:
             return CommandResponse.error_response(
-                speak_message="I need to know which team you're asking about. Please specify a team name.",
-                error_details="Missing team_name parameter",
+                                error_details="Missing team_name parameter",
                 context_data={
                     "voice_command": voice_command,
                     "error": "Missing team name"
@@ -117,8 +117,7 @@ class SportsScoreCommand(IJarvisCommand):
             
             if not teams:
                 return CommandResponse.error_response(
-                    speak_message=f"I'm sorry, but I couldn't find any teams matching '{team_name}'. Please check the team name and try again.",
-                    error_details=f"No teams found for: {team_name}",
+                                        error_details=f"No teams found for: {team_name}",
                     context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
@@ -128,22 +127,9 @@ class SportsScoreCommand(IJarvisCommand):
             
             
             
-            # Handle different actions
-            # Get scores for the resolved teams (existing logic for get_scores action)
             all_games = []
-            # Extract dates from datetimes if provided, otherwise default to today
-            dates_to_check = []
-            if datetimes and len(datetimes) > 0:
-                try:
-                    dates_to_check = extract_dates_from_datetimes(datetimes)
-                except Exception as e:
-                    dates_to_check = []
-            
-            # If no dates specified, default to today
-            if not dates_to_check:
-                from datetime import datetime
-                dates_to_check = [datetime.now().strftime('%Y-%m-%d')]
-            
+            dates_to_check = resolved_datetimes or []
+
             # Loop through each date and get scores for all teams
             for date in dates_to_check:
                 # Convert YYYY-MM-DD format to YYYYMMDD format for ESPN API
@@ -153,7 +139,7 @@ class SportsScoreCommand(IJarvisCommand):
                         team_games = espn_service.get_team_scores(team_name, espn_date)
                         if team_games:
                             all_games.extend(team_games)
-                    except Exception as e:
+                    except Exception:
                         continue
             
             # If no games found
@@ -164,8 +150,7 @@ class SportsScoreCommand(IJarvisCommand):
                     date_display = f"{len(dates_to_check)} dates ({', '.join(dates_to_check)})"
                 
                 return CommandResponse.follow_up_response(
-                    speak_message=f"I checked, but there are no games for {team_name} on {date_display}.",
-                    context_data={
+                                        context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
                         "teams_resolved": [{"name": t.full_name, "league": t.league.value} for t in teams],
@@ -270,7 +255,6 @@ ONLY RETURN THIS EXACT FORMAT:
                 #             message += f"{game.away_team} at {game.home_team} ({game.league.value.upper()}). "
                 
                 return CommandResponse.follow_up_response(
-                    speak_message='', #message,
                     context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
@@ -285,8 +269,7 @@ ONLY RETURN THIS EXACT FORMAT:
                 # Fallback to simple response
                 message = f"I found {len(all_games)} game(s) for {team_name}."
                 return CommandResponse.follow_up_response(
-                    speak_message=message,
-                    context_data={
+                                        context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
                         "teams_resolved": [{"name": t.full_name, "league": t.league.value} for t in teams],
@@ -297,8 +280,7 @@ ONLY RETURN THIS EXACT FORMAT:
                 
         except Exception as e:
             return CommandResponse.error_response(
-                speak_message=f"I'm sorry, but I encountered an error while trying to get sports information: {str(e)}",
-                error_details=str(e),
+                                error_details=str(e),
                 context_data={
                     "voice_command": voice_command,
                     "team_name": team_name,
@@ -407,7 +389,6 @@ Return this exact JSON format and nothing else:
                 message = f"The next {team_name} game is on {date.strftime('%A, %B %d')} at {format_datetime_local(game.start_time, '%I:%M %p')}! {game.away_team} @ {game.home_team} ({game.league.value.upper()})."
             
             return CommandResponse.follow_up_response(
-                speak_message="",#message,
                 context_data={
                     "voice_command": voice_command,
                     "team_name": team_name,
@@ -434,8 +415,7 @@ Return this exact JSON format and nothing else:
             message = f"The next {team_name} game is {date_display} on {next_event['date'].strftime('%A, %B %d')}."
             
             return CommandResponse.follow_up_response(
-                speak_message=message,
-                context_data={
+                                context_data={
                     "voice_command": voice_command,
                     "team_name": team_name,
                     "teams_resolved": [{"name": t.full_name, "league": t.league.value} for t in teams],
