@@ -7,6 +7,7 @@ Converts between various units using base unit conversion for maximum flexibilit
 from typing import List, Dict, Any, Optional, Tuple
 from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import JarvisParameter
+from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
 from clients.responses.jarvis_command_center import DateContext
@@ -68,11 +69,11 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def command_name(self) -> str:
-        return "measurement_conversion_command"
+        return "convert_measurement"
     
     @property
     def description(self) -> str:
-        return "Convert between various measurement units including distance, volume, weight, and temperature"
+        return "Convert between units for distance, volume, weight/mass, and temperature. Defaults value to 1 if not provided. Use for questions like 'how many cups in a gallon' or 'convert 5 miles to kilometers'. Do NOT use for general math or currency conversion."
     
     @property
     def keywords(self) -> List[str]:
@@ -87,11 +88,15 @@ class MeasurementConversionCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("value", "float", required=False, description="The numeric value to convert. If not provided, defaults to 1 (e.g., 'how many cups in a gallon' = 1 gallon)"),
-            JarvisParameter("from_unit", "string", required=True, description="The source unit to convert from (e.g., 'miles', 'gallons', 'pounds')"),
-            JarvisParameter("to_unit", "string", required=True, description="The target unit to convert to (e.g., 'kilometers', 'cups', 'kilograms')"),
-            JarvisParameter("category", "string", required=False, description="Optional category hint: 'distance', 'volume', 'weight', or 'temperature'. Helps disambiguate units with similar names.")
+            JarvisParameter("value", "float", required=False, description="The numeric value to convert. If not explicitly provided in the question, defaults to 1.0 (e.g., 'how many cups in a gallon' means convert 1 gallon)"),
+            JarvisParameter("from_unit", "string", required=True, description="The source unit to convert FROM. Use the full or common unit name (e.g., 'miles', 'kilometers', 'gallons', 'liters', 'pounds', 'kilograms', 'fahrenheit', 'celsius', 'feet', 'meters', 'cups', 'ounces')"),
+            JarvisParameter("to_unit", "string", required=True, description="The target unit to convert TO. Use the full or common unit name (e.g., 'kilometers', 'feet', 'liters', 'cups', 'kilograms', 'grams', 'celsius', 'fahrenheit')"),
+            JarvisParameter("category", "string", required=False, description="Optional category hint to disambiguate similar unit names. Values: 'distance', 'volume', 'weight', 'temperature'. Only provide if ambiguous.")
         ]
+    
+    @property
+    def required_secrets(self) -> List[IJarvisSecret]:
+        return []  # No secrets required for measurement conversion
     
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the measurement conversion command"""
@@ -151,8 +156,7 @@ class MeasurementConversionCommand(IJarvisCommand):
             # Validate units
             if not from_unit or not to_unit:
                 return CommandResponse.error_response(
-                    speak_message="I need both a source unit and a target unit to perform the conversion.",
-                    error_details="Missing from_unit or to_unit",
+                                        error_details="Missing from_unit or to_unit",
                     context_data={
                         "value": value,
                         "from_unit": from_unit,
@@ -164,8 +168,7 @@ class MeasurementConversionCommand(IJarvisCommand):
             # Check if both units are supported
             if from_unit not in self.BASE_CONVERSIONS:
                 return CommandResponse.error_response(
-                    speak_message=f"I don't recognize the unit '{from_unit}'. Please check the spelling and try again.",
-                    error_details=f"Unsupported from_unit: {from_unit}",
+                                        error_details=f"Unsupported from_unit: {from_unit}",
                     context_data={
                         "value": value,
                         "from_unit": from_unit,
@@ -176,8 +179,7 @@ class MeasurementConversionCommand(IJarvisCommand):
             
             if to_unit not in self.BASE_CONVERSIONS:
                 return CommandResponse.error_response(
-                    speak_message=f"I don't recognize the unit '{to_unit}'. Please check the spelling and try again.",
-                    error_details=f"Unsupported to_unit: {to_unit}",
+                                        error_details=f"Unsupported to_unit: {to_unit}",
                     context_data={
                         "value": value,
                         "from_unit": from_unit,
@@ -191,8 +193,7 @@ class MeasurementConversionCommand(IJarvisCommand):
                 result = self._convert_temperature(value, from_unit, to_unit)
                 if result is None:
                     return CommandResponse.error_response(
-                        speak_message=f"I encountered an error converting {value} {from_unit} to {to_unit}.",
-                        error_details="Temperature conversion failed",
+                                                error_details="Temperature conversion failed",
                         context_data={
                             "value": value,
                             "from_unit": from_unit,
@@ -213,8 +214,7 @@ class MeasurementConversionCommand(IJarvisCommand):
                 conversion_message = f"{value} {from_unit} equals {result_text}"
                 
                 return CommandResponse.follow_up_response(
-                    speak_message=conversion_message,
-                    context_data={
+                                        context_data={
                         "value": value,
                         "from_unit": from_unit,
                         "to_unit": to_unit,
@@ -229,8 +229,7 @@ class MeasurementConversionCommand(IJarvisCommand):
                 result = self._convert_through_base(value, from_unit, to_unit)
             except Exception as e:
                 return CommandResponse.error_response(
-                    speak_message=f"I encountered an error during the conversion: {str(e)}",
-                    error_details=f"Conversion error: {str(e)}",
+                                        error_details=f"Conversion error: {str(e)}",
                     context_data={
                         "value": value,
                         "from_unit": from_unit,
@@ -260,8 +259,7 @@ class MeasurementConversionCommand(IJarvisCommand):
                 conversion_message = f"{value} {from_unit} equals {result_text} {to_unit}"
             
             return CommandResponse.follow_up_response(
-                speak_message=conversion_message,
-                context_data={
+                                context_data={
                     "value": value,
                     "from_unit": from_unit,
                     "to_unit": to_unit,
@@ -273,8 +271,7 @@ class MeasurementConversionCommand(IJarvisCommand):
             
         except (ValueError, TypeError) as e:
             return CommandResponse.error_response(
-                speak_message=f"I couldn't understand the conversion request. Please make sure you're providing valid numbers and units.",
-                error_details=f"Parameter error: {str(e)}",
+                                error_details=f"Parameter error: {str(e)}",
                 context_data={
                     "error": str(e),
                     "parameters_received": kwargs
@@ -282,8 +279,7 @@ class MeasurementConversionCommand(IJarvisCommand):
             )
         except Exception as e:
             return CommandResponse.error_response(
-                speak_message=f"I encountered an unexpected error: {str(e)}",
-                error_details=f"Unexpected error: {str(e)}",
+                                error_details=f"Unexpected error: {str(e)}",
                 context_data={
                     "error": str(e),
                     "parameters_received": kwargs

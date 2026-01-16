@@ -17,7 +17,7 @@ class SportsScheduleCommand(IJarvisCommand):
     
     @property
     def command_name(self) -> str:
-        return "sports_schedule_command"
+        return "get_sports_schedule"
     
     @property
     def keywords(self) -> List[str]:
@@ -28,23 +28,23 @@ class SportsScheduleCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Get sports schedules and upcoming games. Use this for questions about future games, when teams play next, upcoming matchups, or game times. This is for FUTURE events only, not past results. Covers NFL, NBA, MLB, NHL, and college sports."
+        return "Upcoming games and schedules (future or later today). Returns opponents, times, venues, broadcast info. Use for 'when do they play next' or 'next week's games'. Do NOT use for past results or live updates."
     
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports schedule command with varied verbiage"""
         return [
             CommandExample(
                 voice_command="When do the Giants play next?",
-                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]},
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="What's the New York Giants schedule for this weekend?",
-                expected_parameters={"team_name": "New York Giants", "datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
+                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="Show me the Panthers upcoming games for next week",
-                expected_parameters={"team_name": "Panthers", "datetimes": [
+                expected_parameters={"team_name": "Panthers", "resolved_datetimes": [
                     date_context.weeks.next_week[0].utc_start_of_day,
                     date_context.weeks.next_week[1].utc_start_of_day,
                     date_context.weeks.next_week[2].utc_start_of_day,
@@ -56,19 +56,19 @@ class SportsScheduleCommand(IJarvisCommand):
             ),
             CommandExample(
                 voice_command="What time is the Carolina Panthers game tomorrow?",
-                expected_parameters={"team_name": "Carolina Panthers", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+                expected_parameters={"team_name": "Carolina Panthers", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="When's the next Giants game?",
-                expected_parameters={"team_name": "Giants", "datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="The complete team name as spoken by the user. Examples: 'Giants', 'New York Giants', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'. Include city/state when mentioned."),
-            JarvisParameter("datetimes", "datetime", required=True, description="Array of ISO datetime strings to check for schedules. If no specific date is mentioned, use today's date: [date_context.current.utc_start_of_day]. For relative dates like 'this weekend' or 'next week', convert them to actual ISO datetime values using the DateContext.")
+            JarvisParameter("team_name", "string", required=True, description="The team name exactly as spoken by the user. Include city/state/school when mentioned (e.g., 'Giants', 'New York Giants', 'Seattle Mariners', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'). The system will handle disambiguation if multiple teams match."),
+            JarvisParameter("resolved_datetimes", "datetime", required=True, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server) covering the dates to check. Example for New York: ['2025-12-15T05:00:00Z'] for tomorrow, or a range for weekend/next week. If no date is mentioned, use today's start-of-day in this format.")
         ]
     
     @property
@@ -86,7 +86,7 @@ class SportsScheduleCommand(IJarvisCommand):
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
         team_name = kwargs.get("team_name")
-        datetimes = kwargs.get("datetimes", [])
+        datetimes = kwargs.get("resolved_datetimes", [])
         
         # Extract voice command
         voice_command = request_info.voice_command
@@ -95,8 +95,7 @@ class SportsScheduleCommand(IJarvisCommand):
         # Validate team name
         if not team_name:
             return CommandResponse.error_response(
-                speak_message="I need to know which team you're asking about. Please specify a team name.",
-                error_details="Missing team_name parameter",
+                                error_details="Missing team_name parameter",
                 context_data={
                     "voice_command": voice_command,
                     "error": "Missing team name"
@@ -112,8 +111,7 @@ class SportsScheduleCommand(IJarvisCommand):
             
             if not teams:
                 return CommandResponse.error_response(
-                    speak_message=f"I'm sorry, but I couldn't find any teams matching '{team_name}'. Please check the team name and try again.",
-                    error_details=f"No teams found for: {team_name}",
+                                        error_details=f"No teams found for: {team_name}",
                     context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
@@ -129,8 +127,7 @@ class SportsScheduleCommand(IJarvisCommand):
                 return self._craft_next_event_response(next_event, voice_command, team_name, teams)
             else:
                 return CommandResponse.follow_up_response(
-                    speak_message=f"I couldn't find any upcoming games for {team_name} in the next 10 days.",
-                    context_data={
+                                        context_data={
                         "voice_command": voice_command,
                         "team_name": team_name,
                         "teams_resolved": [{"name": t.full_name, "league": t.league.value} for t in teams],
@@ -140,8 +137,7 @@ class SportsScheduleCommand(IJarvisCommand):
                 
         except Exception as e:
             return CommandResponse.error_response(
-                speak_message=f"I'm sorry, but I encountered an error while looking up the schedule for {team_name}. Please try again.",
-                error_details=str(e),
+                                error_details=str(e),
                 context_data={
                     "voice_command": voice_command,
                     "team_name": team_name,
@@ -160,8 +156,7 @@ class SportsScheduleCommand(IJarvisCommand):
         # This method will be implemented with the existing logic from sports_command
         # For now, returning a placeholder response
         return CommandResponse.success_response(
-            speak_message=f"Found upcoming game for {team_name}",
-            context_data={
+                        context_data={
                 "voice_command": voice_command,
                 "team_name": team_name,
                 "teams_resolved": [{"name": t.full_name, "league": t.league.value} for t in teams],

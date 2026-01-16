@@ -2,16 +2,13 @@ import datetime
 import requests
 from typing import List, Any, Optional
 
-from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
-from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
 from scripts.text_to_speech import speak
 from services.secret_service import get_secret_value
-from utils.config_service import Config
 from utils.date_util import extract_dates_from_datetimes, extract_date_from_datetime
 
 
@@ -19,7 +16,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def command_name(self) -> str:
-        return "open_weather_command"
+        return "get_weather"
 
     @property
     def keywords(self) -> List[str]:
@@ -27,7 +24,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Gets the current weather or forecast for an optional city or optional date range"
+        return "Current weather or up-to-5-day forecast for a location. Use for temperature, conditions, and rain chances with no date (current) or specific future dates. Do NOT use for past weather, climate statistics, or generic facts."
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
@@ -47,11 +44,11 @@ class OpenWeatherCommand(IJarvisCommand):
             ),
             CommandExample(
                 voice_command="What's the forecast for Los Angeles tomorrow?",
-                expected_parameters={"city": "Los Angeles", "datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+                expected_parameters={"city": "Los Angeles", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="Weather forecast for Chicago on the day after tomorrow",
-                expected_parameters={"city": "Chicago", "datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
+                expected_parameters={"city": "Chicago", "resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="What's the weather like in metric units?",
@@ -59,16 +56,16 @@ class OpenWeatherCommand(IJarvisCommand):
             ),
             CommandExample(
                 voice_command="Forecast for Seattle this weekend",
-                expected_parameters={"city": "Seattle", "datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
+                expected_parameters={"city": "Seattle", "resolved_datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
             )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("city", "string", required=False, default=None, description="The city of weather to get. "),
-            JarvisParameter("unit_system", "string", required=False, default=None, description="The unit system of weather to get." ),
-            JarvisParameter("datetimes", "datetime", required=False, description="Array of ISO datetime strings for weather forecast. If not provided, returns current weather. For relative dates like 'tomorrow' or 'this weekend', convert them to actual ISO datetime values using the DateContext."),
+            JarvisParameter("city", "string", required=False, default=None, description="The city name to get weather for. Use the city name as spoken by the user (e.g., 'Miami', 'New York', 'Tokyo', 'San Francisco'). If not provided, uses the user's default/home location from their profile."),
+            JarvisParameter("unit_system", "string", required=False, default=None, description="Temperature unit system: 'metric' (Celsius, km/h) or 'imperial' (Fahrenheit, mph). If not provided, uses user's default preference."),
+            JarvisParameter("resolved_datetimes", "datetime", required=False, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server). Example for New York: ['2025-12-15T05:00:00Z']. Omit for current weather; include for forecasts (max 5 days ahead)."),
         ]
 
     @property
@@ -77,6 +74,14 @@ class OpenWeatherCommand(IJarvisCommand):
             JarvisSecret("OPENWEATHER_API_KEY", "Open Weather API Key", "integration", "string"),
             JarvisSecret("OPENWEATHER_UNITS", "Imperial, Metric, or Kelvin", "integration", "string"),
             JarvisSecret("OPENWEATHER_LOCATION", "city,state_code,country_code, ie Miami,FL,US. If omitted and no location is found in the command, location will be retrieved from ip-api.com", "node", "string")
+        ]
+
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "Use this command ONLY for weather-related queries (temperature, conditions, forecast, precipitation)",
+            "Do NOT use this for time queries - 'What time is it in [location]?' should use web_search_command",
+            "This command is for meteorological information, not time zones or current time"
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:
@@ -91,7 +96,7 @@ class OpenWeatherCommand(IJarvisCommand):
             city = get_current_location()
         unit_system = kwargs.get("unit_system") or get_secret_value("OPENWEATHER_UNITS", "integration")
         unit_system = unit_system.lower()
-        datetimes = kwargs.get("datetimes")
+        resolved_datetimes = kwargs.get("resolved_datetimes")
 
         # Always get coordinates first (needed for OneCall API)
         geocode_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={api_key}"
@@ -118,7 +123,7 @@ class OpenWeatherCommand(IJarvisCommand):
             raise Exception(f"OpenWeather API error: {error_msg}")
         
 
-        if not datetimes:
+        if not resolved_datetimes:
             # Extract current weather from OneCall API response
             if "current" in onecall_data:
                 current = onecall_data["current"]
@@ -127,32 +132,8 @@ class OpenWeatherCommand(IJarvisCommand):
                 humidity = current.get("humidity", "N/A")
                 wind_speed = current.get("wind_speed", "N/A")
                 
-                jcc_client = JarvisCommandCenterClient(Config.get("jarvis_command_center_api_url"))
-                message = (
-                    "You are Jarvis, a voice assistant. You MUST return ONLY valid JSON.\n\n"
-                    "CRITICAL: Return ONLY the JSON object. No other text, no explanations, no markdown.\n\n"
-                    "TASK: Create a JSON response summarizing the current weather data.\n\n"
-                    "REQUIRED FORMAT:\n"
-                    "{\"message\": \"<weather summary>\"}\n\n"
-                    "INPUT DATA:\n"
-                    f"city: {city}\n"
-                    f"temperature: {temp}\n"
-                    f"description: {description}\n\n"
-                    "EXAMPLE OUTPUT:\n"
-                    "{\"message\": \"It's currently 73° and partly cloudy in Brick, NJ.\"}\n\n"
-                    "RESPOND WITH ONLY THE JSON OBJECT:"
-                )
-
-                # test = jcc_client.lightweight_chat(message, ResponseMessage)
-                # print(test.message)
-                # start_time = time.perf_counter()
-                # speak(test.message)
-                # end_time = time.perf_counter()
-                # elapsed = end_time - start_time
-                # print(f"Speaking time: {elapsed:.2f} seconds")
-
-                return CommandResponse.follow_up_response(
-                    speak_message=f"The current weather in {city} is {description} with a temperature of {round(temp)}° and {humidity}% humidity.",
+                # Return raw data - server will format the message
+                return CommandResponse.success_response(
                     context_data={
                         "city": city,
                         "temperature": temp,
@@ -167,17 +148,17 @@ class OpenWeatherCommand(IJarvisCommand):
                 raise Exception("Could not retrieve current weather data.")
         else:
             # Handle forecast for specific datetimes
-            if not datetimes:
+            if not resolved_datetimes:
                 # Default to current date if no datetimes provided
-                datetimes = [datetime.datetime.now().strftime("%Y-%m-%d")]
-                print(f"No datetimes provided, defaulting to current date: {datetimes[0]}")
+                resolved_datetimes = [datetime.datetime.now().strftime("%Y-%m-%d")]
+                print(f"No datetimes provided, defaulting to current date: {resolved_datetimes[0]}")
             
             # Parse the datetimes parameter - extract dates from datetimes if needed
             target_dates = []
             try:
-                if isinstance(datetimes, list):
+                if isinstance(resolved_datetimes, list):
                     # Extract dates from datetime strings
-                    date_strings = extract_dates_from_datetimes(datetimes)
+                    date_strings = extract_dates_from_datetimes(resolved_datetimes)
                     for date_str in date_strings:
                         if date_str:
                             target_dates.append(datetime.datetime.strptime(date_str, "%Y-%m-%d").date())
@@ -185,8 +166,8 @@ class OpenWeatherCommand(IJarvisCommand):
                             raise Exception("Invalid datetime format in array. Expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS format.")
                 else:
                     # Handle single date/datetime (convert to list for consistency)
-                    if isinstance(datetimes, str):
-                        date_str = extract_date_from_datetime(datetimes)
+                    if isinstance(resolved_datetimes, str):
+                        date_str = extract_date_from_datetime(resolved_datetimes)
                         if date_str:
                             target_dates.append(datetime.datetime.strptime(date_str, "%Y-%m-%d").date())
                         else:
@@ -242,31 +223,15 @@ class OpenWeatherCommand(IJarvisCommand):
                     # Join all summaries
                     full_forecast_summary = '; '.join(forecast_summaries)
                     
-                    jcc_client = JarvisCommandCenterClient(Config.get("jarvis_command_center_api_url"))
-                    message = (
-                        "You are Jarvis, a voice assistant. You MUST return ONLY valid JSON.\n\n"
-                        "CRITICAL: Return ONLY the JSON object. No other text, no explanations, no markdown.\n\n"
-                        "TASK: Create a JSON response summarizing the weather forecast.\n\n"
-                        "REQUIRED FORMAT:\n"
-                        "{\"message\": \"<forecast summary>\"}\n\n"
-                        f"INPUT DATA:\n"
-                        f"city: {city}\n"
-                        f"forecast: {full_forecast_summary}\n\n"
-                        "EXAMPLE OUTPUT:\n"
-                        "{\"message\": \"For the weekend in Miami: Saturday: High 85°, Low 72° with scattered clouds; Sunday: High 87°, Low 74° with clear skies.\"}\n\n"
-                        "RESPOND WITH ONLY THE JSON OBJECT:"
-                    )
-                    response_message = jcc_client.lightweight_chat(message, ResponseMessage)
-                    
-                    return CommandResponse.follow_up_response(
-                        speak_message=response_message.message,
+                    # Return raw data - server will format the message
+                    return CommandResponse.success_response(
                         context_data={
                             "city": city,
                             "dates": [data["date"] for data in all_forecast_data],
-                            "forecast": full_forecast_summary,
+                            "forecast_summary": full_forecast_summary,
                             "forecast_details": all_forecast_data,
                             "unit_system": unit_system,
-                            "success_message": response_message.message
+                            "weather_type": "forecast"
                         }
                     )
                 else:
@@ -280,8 +245,7 @@ class OpenWeatherCommand(IJarvisCommand):
                     print(message)
                     speak(message)
                     return CommandResponse.error_response(
-                        speak_message=message,
-                        error_details="Dates not found in forecast",
+                                                error_details="Dates not found in forecast",
                         context_data={
                             "city": city,
                             "dates": [d.strftime("%Y-%m-%d") for d in target_dates],
@@ -295,8 +259,7 @@ class OpenWeatherCommand(IJarvisCommand):
                 print(message)
                 speak(message)
                 return CommandResponse.error_response(
-                    speak_message=message,
-                    error_details="Could not retrieve weather forecast",
+                                        error_details="Could not retrieve weather forecast",
                     context_data={
                         "forecast": None,
                         "unit_system": unit_system,
@@ -322,49 +285,3 @@ def get_current_location():
     except requests.exceptions.RequestException as e:
         print(f"Error getting location: {e}")
         return None
-
-
-class ResponseMessage(BaseModel):
-    message: str
-
-    def example_with_context(self, date_context: Optional[DateContext] = None) -> str:
-        """Example utterance and how it gets parsed into parameters, with optional date context"""
-        if date_context is None:
-            return self.example
-        
-        # Use date context to create dynamic examples
-        return f"""
-        IMPORTANT: When voice commands mention relative dates like "tomorrow", "next week", etc., 
-        you must parse them into actual datetime values and include them in the datetimes array.
-        
-        CRITICAL: All datetime values MUST include the full ISO format with time (YYYY-MM-DDTHH:MM:SSZ).
-        Never return just the date (YYYY-MM-DD) - always include the time component.
-
-        Voice Command: "What's the weather like?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{}},"e":null}}
-
-        Voice Command: "What's the weather in Miami?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Miami"}},"e":null}}
-
-        Voice Command: "How's the weather in New York today?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"New York"}},"e":null}}
-
-        Voice Command: "What's the forecast for Los Angeles tomorrow?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Los Angeles","datetimes":["{date_context.relative_dates.tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "Weather forecast for Chicago on the day after tomorrow"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Chicago","datetimes":["{date_context.relative_dates.day_after_tomorrow.utc_start_of_day}"]}},"e":null}}
-
-        Voice Command: "What's the weather like in metric units?"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"unit_system":"metric"}},"e":null}}
-
-        Voice Command: "Forecast for Seattle this weekend"
-        → Output:
-        {{"s":true,"n":"open_weather_command","p":{{"city":"Seattle","datetimes":["{date_context.weekend.this_weekend[0].utc_start_of_day}","{date_context.weekend.this_weekend[1].utc_start_of_day}"]}},"e":null}}
-        """

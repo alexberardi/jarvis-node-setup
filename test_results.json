@@ -1,0 +1,273 @@
+{
+  "summary": {
+    "total_tests": 5,
+    "passed": 2,
+    "failed": 3,
+    "success_rate": 40.0,
+    "avg_response_time": 1.032,
+    "min_response_time": 0.777,
+    "max_response_time": 1.322,
+    "test_run_timestamp": "2025-12-18 19:43:34"
+  },
+  "test_results": [
+    {
+      "test_number": 16,
+      "passed": true,
+      "description": "Science knowledge question",
+      "voice_command": "How does photosynthesis work?",
+      "expected": {
+        "command": "answer_question",
+        "parameters": {
+          "query": "How does photosynthesis work?"
+        }
+      },
+      "actual": {
+        "command": "answer_question",
+        "parameters": {
+          "query": "how does photosynthesis work?"
+        }
+      },
+      "response_time_seconds": 0.863,
+      "conversation_id": "07804545-e3b0-4e27-b2b2-9a87dcec05d0",
+      "failure_reason": null,
+      "full_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How does photosynthesis work?",
+          "conversation_id": "07804545-e3b0-4e27-b2b2-9a87dcec05d0"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "what is photosynthesis",
+        "tool_calls": [
+          {
+            "id": "call_284cb50d690a",
+            "type": "function",
+            "function": {
+              "name": "answer_question",
+              "arguments": "{\"query\": \"how does photosynthesis work?\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      }
+    },
+    {
+      "test_number": 18,
+      "passed": true,
+      "description": "Complex topic explanation request",
+      "voice_command": "Explain quantum physics",
+      "expected": {
+        "command": "answer_question",
+        "parameters": {
+          "query": "Explain quantum physics"
+        }
+      },
+      "actual": {
+        "command": "answer_question",
+        "parameters": {
+          "query": "what is quantum physics"
+        }
+      },
+      "response_time_seconds": 1.038,
+      "conversation_id": "bdf5f81c-2f02-4e2d-b1e8-44c232a0e969",
+      "failure_reason": null,
+      "full_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Explain quantum physics",
+          "conversation_id": "bdf5f81c-2f02-4e2d-b1e8-44c232a0e969"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "Explaining quantum physics is complex, but I can provide a brief overview.",
+        "tool_calls": [
+          {
+            "id": "call_c7fc1144175a",
+            "type": "function",
+            "function": {
+              "name": "answer_question",
+              "arguments": "{\"query\": \"what is quantum physics\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      }
+    },
+    {
+      "test_number": 20,
+      "passed": false,
+      "description": "Real-time information search",
+      "voice_command": "What time is it in California?",
+      "expected": {
+        "command": "search_web",
+        "parameters": {
+          "query": "What time is it in California?"
+        }
+      },
+      "actual": {
+        "command": "get_time",
+        "parameters": {
+          "city": "California"
+        }
+      },
+      "response_time_seconds": 0.777,
+      "conversation_id": "0e14787a-e4a7-43b5-9265-23ed5b67754f",
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_time'",
+      "full_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What time is it in California?",
+          "conversation_id": "0e14787a-e4a7-43b5-9265-23ed5b67754f"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "Checking time in California",
+        "tool_calls": [
+          {
+            "id": "call_5d1a9dd249e8",
+            "type": "function",
+            "function": {
+              "name": "get_time",
+              "arguments": "{\"city\": \"California\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      }
+    },
+    {
+      "test_number": 22,
+      "passed": false,
+      "description": "Upcoming event search",
+      "voice_command": "When is the next SpaceX launch?",
+      "expected": {
+        "command": "search_web",
+        "parameters": {
+          "query": "When is the next SpaceX launch?"
+        }
+      },
+      "actual": {
+        "command": "get_weather",
+        "parameters": {
+          "resolved_datetimes": [
+            "2025-12-18T05:00:00Z"
+          ]
+        }
+      },
+      "response_time_seconds": 1.158,
+      "conversation_id": "c69dd459-bf2e-4586-be07-a1d7f7329a28",
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_weather'",
+      "full_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "When is the next SpaceX launch?",
+          "conversation_id": "c69dd459-bf2e-4586-be07-a1d7f7329a28"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "brief ack",
+        "tool_calls": [
+          {
+            "id": "call_cc4222f348d8",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"resolved_datetimes\": [\"2025-12-18T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      }
+    },
+    {
+      "test_number": 23,
+      "passed": false,
+      "description": "Recent sports championship search (web search better for championship questions)",
+      "voice_command": "Who won the Super Bowl this year?",
+      "expected": {
+        "command": "search_web",
+        "parameters": {
+          "query": "Who won the Super Bowl this year?"
+        }
+      },
+      "actual": {
+        "command": "get_sports_scores",
+        "parameters": {
+          "team_name": "",
+          "resolved_datetimes": [
+            "2025-12-18T05:00:00Z"
+          ]
+        }
+      },
+      "response_time_seconds": 1.322,
+      "conversation_id": "a2832019-98d7-4360-ad38-c3265c5e0098",
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_sports_scores'",
+      "full_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Who won the Super Bowl this year?",
+          "conversation_id": "a2832019-98d7-4360-ad38-c3265c5e0098"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "Checking the winner...",
+        "tool_calls": [
+          {
+            "id": "call_16c8249d5ff1",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"\", \"resolved_datetimes\": [\"2025-12-18T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      }
+    }
+  ],
+  "analysis": {
+    "command_success_rates": {
+      "search_web": {
+        "success_rate": 0.0,
+        "passed": 0,
+        "failed": 3,
+        "total": 3
+      },
+      "answer_question": {
+        "success_rate": 100.0,
+        "passed": 2,
+        "failed": 0,
+        "total": 2
+      }
+    },
+    "command_confusion_matrix": {
+      "search_web \u2192 get_time": 1,
+      "search_web \u2192 get_weather": 1,
+      "search_web \u2192 get_sports_scores": 1
+    },
+    "parameter_extraction_issues": {},
+    "recommendations": [
+      {
+        "priority": "HIGH",
+        "command": "search_web",
+        "issue": "Low success rate: 0.0%",
+        "suggestion": "Review and improve command description. Consider adding more specific use cases and anti-patterns to distinguish from similar commands."
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "search_web",
+        "issue": "Confused with 'get_time' 1 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'search_web' description: 'Do NOT use for [actual command use case]. Use get_time instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "search_web",
+        "issue": "Confused with 'get_weather' 1 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'search_web' description: 'Do NOT use for [actual command use case]. Use get_weather instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "search_web",
+        "issue": "Confused with 'get_sports_scores' 1 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'search_web' description: 'Do NOT use for [actual command use case]. Use get_sports_scores instead.'"
+      }
+    ]
+  },
+  "slow_tests": []
+}
