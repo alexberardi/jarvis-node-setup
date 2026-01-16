@@ -37,7 +37,7 @@ class JarvisCommandBase(ABC):
     def _validate_secrets(self):
         missing = []
         for secret in self.required_secrets:
-            if not get_secret_value(secret.key, secret.scope):
+            if secret.required and not get_secret_value(secret.key, secret.scope):
                 missing.append(secret.key)
         if missing:
             raise MissingSecretsError(missing)
@@ -112,11 +112,10 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             
         Returns:
             CommandResponse object with:
-            - speak_message: What Jarvis will say to the user
-            - wait_for_input: Whether to wait for follow-up questions
-            - context_data: Data for follow-up context
+            - context_data: Raw data for the server to use in generating response
             - success: Whether the command succeeded
             - error_details: Any error information
+            - wait_for_input: Whether to wait for follow-up questions
         """
         pass
 
@@ -175,10 +174,87 @@ class IJarvisCommand(JarvisCommandBase, ABC):
     def validate_secrets(self):
         missing = []
         for secret in self.required_secrets:
-            if not get_secret_value(secret.key, secret.scope) :
+            if secret.required and not get_secret_value(secret.key, secret.scope):
                 missing.append(secret.key)
 
         if missing:
             raise MissingSecretsError(missing)
+    
+    def to_openai_tool_schema(self, date_context: DateContext) -> Dict[str, Any]:
+        """
+        Convert this command to OpenAI function/tool calling schema format
+        
+        Args:
+            date_context: Date context for generating examples
+            
+        Returns:
+            Dictionary in OpenAI tool schema format
+        """
+        examples = self.generate_examples(date_context)
+        self._validate_examples(examples)
+
+
+        # Map our parameter types to JSON Schema types
+        type_mapping = {
+            'str': 'string', 'string': 'string',
+            'int': 'integer', 'integer': 'integer',
+            'float': 'number',
+            'bool': 'boolean', 'boolean': 'boolean',
+            'list': 'array', 'array': 'array',
+            'dict': 'object',
+            'datetime': 'string',  # ISO datetime strings
+            'date': 'string',  # ISO date strings
+            'time': 'string',  # ISO time strings
+            'array[datetime]': 'array',
+            'array[date]': 'array',
+        }
+        
+        properties = {}
+        required_params = []
+        
+        for param in self.parameters:
+            json_type = type_mapping.get(param.param_type, 'string')
+            
+            param_schema = {
+                "type": json_type
+            }
+            
+            if param.description:
+                param_schema["description"] = param.description
+            
+            if param.enum_values:
+                param_schema["enum"] = param.enum_values
+            
+            # Handle array types
+            if param.param_type.startswith('array'):
+                param_schema["type"] = "array"
+                if 'datetime' in param.param_type or 'date' in param.param_type:
+                    param_schema["items"] = {"type": "string", "format": "date-time"}
+            
+            properties[param.name] = param_schema
+            
+            if param.required:
+                required_params.append(param.name)
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": self.command_name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required_params
+                }
+            },
+            # Include examples to help the server-side model during warmup
+            "examples": [
+                {
+                    "voice_command": ex.voice_command,
+                    "expected_parameters": ex.expected_parameters,
+                    "is_primary": ex.is_primary
+                } for ex in examples
+            ]
+        }
 
 

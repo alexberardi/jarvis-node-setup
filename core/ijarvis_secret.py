@@ -21,8 +21,13 @@ class IJarvisSecret(ABC):
     def value_type(self) -> str:
         pass
 
+    @property
+    @abstractmethod
+    def required(self) -> bool:
+        pass
+
 class JarvisSecret(IJarvisSecret):
-    def __init__(self, key: str, description: str, scope: str, value_type: str):
+    def __init__(self, key: str, description: str, scope: str, value_type: str, required: bool = True):
         self._key = key
         self._description = description
         if scope != "integration" and scope != "node":
@@ -32,6 +37,7 @@ class JarvisSecret(IJarvisSecret):
         if value_type != "int" and value_type != "string" and value_type != "bool":
             raise ValueError(f"Value Type must be int, string or bool for {key}")
         self._value_type = value_type
+        self._required = required
 
     @property
     def key(self) -> str:
@@ -48,3 +54,7 @@ class JarvisSecret(IJarvisSecret):
     @property
     def value_type(self) -> str:
         return self._value_type
+
+    @property
+    def required(self) -> bool:
+        return self._required

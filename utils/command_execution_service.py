@@ -1,206 +1,247 @@
-import json
-import httpx
-from typing import Dict, Any, Optional, List
-from clients.rest_client import RestClient
+import uuid
+from typing import Dict, Any, List, Optional, Callable
+from clients.jarvis_command_center_client import JarvisCommandCenterClient
+from clients.responses.jarvis_command_center import ToolCallingResponse, ToolCall, ValidationRequest
 from utils.config_service import Config
 from utils.command_discovery_service import get_command_discovery_service
+from utils.tool_result_formatter import format_tool_result, format_tool_error
 from core.helpers import get_tts_provider
+from core.request_information import RequestInformation
 
 
 class CommandExecutionService:
     def __init__(self):
-        self.command_center_url = Config.get_str("jarvis_command_center")
+        self.command_center_url = Config.get_str("jarvis_command_center_api_url")
         self.node_id = Config.get_str("node_id")
         self.room = Config.get_str("room")
         self.command_discovery = get_command_discovery_service()
+        self.client = JarvisCommandCenterClient(self.command_center_url)
         # Force initial discovery
         self.command_discovery.refresh_now()
-
-    def process_voice_command(self, voice_command: str) -> Dict[str, Any]:
+    
+    def register_tools_for_conversation(self, conversation_id: str) -> bool:
         """
-        Process a voice command through the complete pipeline:
-        1. Send to Jarvis Command Center for LLM processing
-        2. Execute the returned command locally
-        3. Handle any errors conversationally
+        Register available client-side tools with the Command Center for a conversation
+        
+        Args:
+            conversation_id: The conversation identifier
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        commands = self.command_discovery.get_all_commands()
+        
+        if not commands:
+            print("⚠️  No commands available to register")
+            return False
+        
+        print(f"📋 Registering {len(commands)} tools for conversation {conversation_id}")
+        
+        try:
+            # Get date context
+            date_context = self.client.get_date_context()
+            
+            # Start conversation with available commands
+            success = self.client.start_conversation(conversation_id, commands, date_context)
+            
+            if success:
+                print(f"✅ Successfully registered {len(commands)} tools")
+            else:
+                print(f"❌ Failed to register tools")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Error registering tools: {e}")
+            return False
+
+    def process_voice_command(
+        self, 
+        voice_command: str,
+        validation_handler: Optional[Callable[[ValidationRequest], str]] = None,
+        register_tools: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Process a voice command through the tool calling pipeline:
+        1. Optionally register available tools with the server
+        2. Send to Jarvis Command Center for LLM processing
+        3. Loop on response stop_reason:
+           - tool_call: Execute tools locally and send results back
+           - validation: Ask user for clarification and send response back
+           - stop/complete: Return final message
         
         Args:
             voice_command: The transcribed voice command
+            validation_handler: Optional callback to handle validation requests
+                               If None, default behavior is used
+            register_tools: Whether to register available tools before processing (default: True)
             
         Returns:
-            Execution result dictionary
+            Execution result dictionary with success, message, and conversation_id
         """
+        conversation_id = self._generate_conversation_id()
+        
+        print(f"🆔 Starting conversation: {conversation_id}")
+        print(f"📡 Processing: {voice_command}")
+        
         try:
-            # Prepare request payload
-            payload = {
-                "voice_command": voice_command,
-                "node_context": {
-                    "room": self.room,
-                    "node_id": self.node_id
-                }
-            }
+            # Register available tools if requested
+            if register_tools:
+                self.register_tools_for_conversation(conversation_id)
             
-            print(f"📡 Sending to Command Center: {voice_command}")
-            
-            # Send to Jarvis Command Center
-            response = RestClient.post(
-                f"{self.command_center_url}/voice/command",
-                data=payload,
-                timeout=30
-            )
+            # Initial request to Command Center
+            response = self.client.send_command(voice_command, conversation_id)
             
             if not response:
-                return self._handle_error("Failed to communicate with Command Center")
+                return self._handle_error("Failed to communicate with Command Center", conversation_id)
             
-            # Extract command details from response
-            commands = response.get("commands", [])
+            # Loop until conversation is complete
+            max_iterations = 10  # Safety limit to prevent infinite loops
+            iteration = 0
             
-            if not commands:
-                return self._handle_error("No commands specified in response")
-            
-            # For now, just speak the command name of the first successful command
-            first_command = commands[0]
-            if first_command.get("success"):
-                command_name = first_command.get("command_name", "unknown command")
-                parameters = first_command.get("parameters", {})
+            while not response.is_final() and iteration < max_iterations:
+                iteration += 1
+                print(f"🔄 Iteration {iteration}: stop_reason = {response.stop_reason}")
                 
-                # For testing purposes, still execute the command if it exists
-                # In production, this would just speak the command name
-                command = self.command_discovery.get_command(command_name)
-                if command:
-                    return self._execute_command(command_name, parameters)
+                if response.requires_tool_execution():
+                    # Execute requested tools
+                    print(f"🔧 Executing {len(response.tool_calls)} tool(s)")
+                    tool_results = self._execute_tools(response.tool_calls, conversation_id)
+                    
+                    # Send results back to continue conversation
+                    response = self.client.send_tool_results(conversation_id, tool_results)
+                    
+                    if not response:
+                        return self._handle_error("Failed to send tool results", conversation_id)
+                
+                elif response.requires_validation():
+                    # Handle validation/clarification request
+                    print(f"❓ Validation required: {response.validation_request.question}")
+                    
+                    if validation_handler:
+                        user_response = validation_handler(response.validation_request)
+                    else:
+                        user_response = self._default_validation_handler(response.validation_request)
+                    
+                    # Send validation response back
+                    response = self.client.send_validation_response(
+                        conversation_id,
+                        response.validation_request,
+                        user_response
+                    )
+                    
+                    if not response:
+                        return self._handle_error("Failed to send validation response", conversation_id)
+                
                 else:
-                    # Just speak the command name
-                    return {
-                        "success": True,
-                        "message": f"Command: {command_name}",
-                        "data": first_command,
-                        "errors": None
-                    }
-            else:
-                return self._handle_error("First command was not successful")
+                    # Unknown stop_reason, treat as error
+                    return self._handle_error(f"Unknown stop_reason: {response.stop_reason}", conversation_id)
             
-        except Exception as e:
-            return self._handle_error(f"Error processing command: {str(e)}")
-
-    def _execute_command(self, command_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Execute a command locally
-        
-        Args:
-            command_name: Name of the command to execute
-            parameters: Parameters for the command
+            if iteration >= max_iterations:
+                return self._handle_error("Conversation exceeded maximum iterations", conversation_id)
             
-        Returns:
-            Execution result
-        """
-        try:
-            # Get the command instance
-            command = self.command_discovery.get_command(command_name)
+            # Final response
+            final_message = response.assistant_message or "Task completed."
+            print(f"✅ Conversation complete: {final_message}")
             
-            if not command:
-                return self._handle_error(f"Unknown command: {command_name}")
-            
-            # Validate parameters
-            validation_result = self._validate_parameters(command, parameters)
-            if not validation_result["success"]:
-                return validation_result
-            
-            # Execute the command
-            print(f"🚀 Executing command: {command_name} with params: {parameters}")
-            result = command.run(parameters)
-            
-            # Handle command execution result
-            if result.get("success"):
-                return {
-                    "success": True,
-                    "message": result.get("message", f"Successfully executed {command_name}"),
-                    "data": result.get("data"),
-                    "errors": None
-                }
-            else:
-                return self._handle_command_error(result)
-                
-        except Exception as e:
-            return self._handle_error(f"Error executing command {command_name}: {str(e)}")
-
-    def _validate_parameters(self, command, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Validate parameters against the command's parameter definitions
-        
-        Args:
-            command: The command instance
-            parameters: Parameters to validate
-            
-        Returns:
-            Validation result
-        """
-        missing_params = []
-        invalid_params = []
-        
-        for param in command.parameters:
-            param_name = param.name
-            param_value = parameters.get(param_name)
-            
-            # Check if required parameter is missing
-            if param.required and param_value is None:
-                missing_params.append({
-                    "name": param_name,
-                    "description": param.description,
-                    "type": param.param_type
-                })
-                continue
-            
-            # Validate parameter value
-            if param_value is not None:
-                is_valid, error_msg = param.validate(param_value)
-                if not is_valid:
-                    invalid_params.append({
-                        "name": param_name,
-                        "value": param_value,
-                        "error": error_msg,
-                        "description": param.description
-                    })
-        
-        if missing_params or invalid_params:
             return {
-                "success": False,
-                "error_code": "parameter_validation_failed",
-                "missing_parameters": missing_params,
-                "invalid_parameters": invalid_params,
-                "message": "Parameter validation failed"
+                "success": True,
+                "message": final_message,
+                "conversation_id": conversation_id
             }
-        
-        return {"success": True}
+            
+        except Exception as e:
+            print(f"❌ Error processing command: {e}")
+            return self._handle_error(f"Error processing command: {str(e)}", conversation_id)
 
-    def _handle_command_error(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle errors returned by command execution"""
-        error_code = result.get("error_code", "unknown_error")
+    def _execute_tools(self, tool_calls: List[ToolCall], conversation_id: str) -> List[Dict[str, Any]]:
+        """
+        Execute client-side tools and return formatted results
         
-        return {
-            "success": False,
-            "error_code": error_code,
-            "message": result.get("message", "Command execution failed"),
-            "data": result.get("data"),
-            "errors": result.get("errors", {})
-        }
+        Args:
+            tool_calls: List of tool calls to execute
+            conversation_id: Current conversation ID
+            
+        Returns:
+            List of formatted tool results in format: [{"tool_call_id": "...", "output": {...}}]
+        """
+        results = []
+        
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            print(f"  🔨 Executing: {tool_name} (id: {tool_call.id})")
+            
+            try:
+                # Get the command instance
+                command = self.command_discovery.get_command(tool_name)
+                
+                if not command:
+                    error_msg = f"Unknown tool: {tool_name}"
+                    print(f"    ❌ {error_msg}")
+                    results.append(format_tool_error(tool_call.id, error_msg))
+                    continue
+                
+                # Parse arguments from JSON string
+                arguments = tool_call.function.get_arguments_dict()
+                
+                # Create request information
+                request_info = RequestInformation(
+                    voice_command=f"Tool call: {tool_name}",
+                    conversation_id=conversation_id,
+                    is_validation_response=False
+                )
+                
+                # Execute the command with the provided arguments
+                command_response = command.execute(request_info, **arguments)
+                
+                # Format the result
+                result = format_tool_result(tool_call.id, command_response)
+                results.append(result)
+                
+                print(f"    ✅ Success: Tool executed successfully")
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"    ❌ Error: {error_msg}")
+                results.append(format_tool_error(tool_call.id, error_msg))
+        
+        return results
 
-    def _handle_error(self, message: str, error_code: str = "execution_error") -> Dict[str, Any]:
+    def _default_validation_handler(self, validation: ValidationRequest) -> str:
+        """
+        Default validation handler - placeholder for now
+        
+        In practice, this should prompt the user via TTS and listen for their response.
+        For now, we'll return a simple error message.
+        
+        Args:
+            validation: The validation request
+            
+        Returns:
+            User's response (or error message)
+        """
+        print(f"⚠️  Default validation handler called - this should be overridden")
+        print(f"    Question: {validation.question}")
+        if validation.options:
+            print(f"    Options: {', '.join(validation.options)}")
+        
+        # For now, return a message indicating validation is not supported
+        return "I'm not sure - please try rephrasing your request."
+
+    def _generate_conversation_id(self) -> str:
+        """Generate unique conversation ID for each voice interaction"""
+        return str(uuid.uuid4())
+
+    def _handle_error(self, message: str, conversation_id: str) -> Dict[str, Any]:
         """Handle general errors"""
         return {
             "success": False,
-            "error_code": error_code,
             "message": message,
-            "data": None,
-            "errors": {"general": message}
+            "conversation_id": conversation_id
         }
 
     def speak_result(self, result: Dict[str, Any]):
         """Speak the result of command execution"""
         tts_provider = get_tts_provider()
-        
-        if result.get("success"):
-            message = result.get("message", "Command executed successfully")
-        else:
-            message = result.get("message", "An error occurred")
-            
-        tts_provider.speak(False, message) 
+        message = result.get("message", "An error occurred")
+        tts_provider.speak(False, message)

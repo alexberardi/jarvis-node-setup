@@ -17,7 +17,7 @@ class ReadCalendarCommand(IJarvisCommand):
 
     @property
     def command_name(self) -> str:
-        return "read_calendar_command"
+        return "get_calendar_events"
 
     @property
     def keywords(self) -> List[str]:
@@ -25,34 +25,34 @@ class ReadCalendarCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Reads calendar events from your configured calendar service (iCloud, Google, etc.)"
+        return "Read the user's calendar for given dates or ranges (defaults to today). Returns event titles, times, locations, and attendees. Use for 'what's on my calendar', 'schedule for tomorrow/this weekend/next week'. Do NOT use to create events or answer generic date/time questions."
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
         return [
             CommandExample(
                 voice_command="What's on my calendar today?",
-                expected_parameters={"datetimes": [date_context.current.utc_start_of_day]},
+                expected_parameters={"resolved_datetimes": [date_context.current.utc_start_of_day]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="Show me my schedule for tomorrow",
-                expected_parameters={"datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+                expected_parameters={"resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="What appointments do I have the day after tomorrow?",
-                expected_parameters={"datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
+                expected_parameters={"resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
             ),
             CommandExample(
                 voice_command="Show my calendar for this weekend",
-                expected_parameters={"datetimes": [
+                expected_parameters={"resolved_datetimes": [
                     date_context.weekend.this_weekend[0].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 0 else '',
                     date_context.weekend.this_weekend[1].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 1 else ''
                 ]}
             ),
             CommandExample(
                 voice_command="What meetings do I have next week?",
-                expected_parameters={"datetimes": [
+                expected_parameters={"resolved_datetimes": [
                     date_context.weeks.next_week[0].utc_start_of_day,
                     date_context.weeks.next_week[1].utc_start_of_day,
                     date_context.weeks.next_week[2].utc_start_of_day,
@@ -71,7 +71,7 @@ class ReadCalendarCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("datetimes", "datetime", description="Array of datetimes to read calendar events for (e.g., ['2025-08-16T10:00:00'] or ['2025-08-16', '2025-08-17T18:00:00']). Dates will be extracted from timestamps. Do not use 'relative' dates like tomorrow, today, etc.", required=False, default=None)
+            JarvisParameter("resolved_datetimes", "datetime", description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server). Example for New York: ['2025-12-15T05:00:00Z'] for a single day. If not provided, defaults to today. Time portion is ignored beyond anchoring to the correct day.", required=False, default=None)
         ]
 
     @property
@@ -85,7 +85,7 @@ class ReadCalendarCommand(IJarvisCommand):
 
     def run(self, request_info, **kwargs) -> CommandResponse:
         # Get parameters
-        datetimes_array = kwargs.get("datetimes")
+        datetimes_array = kwargs.get("resolved_datetimes")
         
         # Debug: Check what type request_info actually is
         print(f"DEBUG: request_info type: {type(request_info)}")
@@ -107,8 +107,7 @@ class ReadCalendarCommand(IJarvisCommand):
             print(f"DEBUG: Parsed target_dates: {[d.strftime('%Y-%m-%d %H:%M:%S') for d in target_dates]}")
         except ValueError as e:
             return CommandResponse.error_response(
-                speak_message=f"I couldn't understand the date format you provided. {str(e)}",
-                error_details=str(e),
+                                error_details=str(e),
                 context_data={
                     "dates": datetimes_array if datetimes_array else [],
                     "events": [],
@@ -127,8 +126,7 @@ class ReadCalendarCommand(IJarvisCommand):
         
         if not all([calendar_type, username, password]):
             return CommandResponse.error_response(
-                speak_message="I'm sorry, but I can't access your calendar right now. The calendar service isn't properly configured.",
-                error_details="Missing calendar configuration",
+                                error_details="Missing calendar configuration",
                 context_data={
                     "dates": dates_to_strings(target_dates),
                     "events": [],
@@ -143,8 +141,7 @@ class ReadCalendarCommand(IJarvisCommand):
             elif calendar_type.lower() == "google":
                 # TODO: Implement Google Calendar service
                 return CommandResponse.error_response(
-                    speak_message="I'm sorry, but I can't access Google Calendar yet. That feature is still being developed.",
-                    error_details="Google Calendar service not implemented",
+                                        error_details="Google Calendar service not implemented",
                     context_data={
                         "dates": dates_to_strings(target_dates),
                         "events": [],
@@ -153,8 +150,7 @@ class ReadCalendarCommand(IJarvisCommand):
                 )
             else:
                 return CommandResponse.error_response(
-                    speak_message=f"I'm sorry, but I don't support the calendar type '{calendar_type}'. I can work with iCloud and Google Calendar.",
-                    error_details=f"Unsupported calendar type: {calendar_type}",
+                                        error_details=f"Unsupported calendar type: {calendar_type}",
                     context_data={
                         "dates": dates_to_strings(target_dates),
                         "events": [],
@@ -196,8 +192,7 @@ class ReadCalendarCommand(IJarvisCommand):
             # Check if we actually authenticated successfully
             if not hasattr(calendar_service, '_authenticated') or not calendar_service._authenticated:
                 return CommandResponse.error_response(
-                    speak_message="I'm sorry, but I couldn't access your calendar. Please check your username and password.",
-                    error_details="Calendar service authentication failed",
+                                        error_details="Calendar service authentication failed",
                     context_data={
                         "dates": dates_to_strings(target_dates),
                         "events": [],
@@ -279,8 +274,7 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural sp
                     # Continue with our original message
                 
                 return CommandResponse.follow_up_response(
-                    speak_message=message,
-                    context_data={
+                                        context_data={
                         "dates": dates_to_strings(target_dates),
                         "calendar_type": calendar_type,
                         "calendar_name": default_calendar or "default",
@@ -334,8 +328,7 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural re
                     # Continue with our original message
                 
                 return CommandResponse.follow_up_response(
-                    speak_message=message,
-                    context_data={
+                                        context_data={
                         "dates": dates_to_strings(target_dates),
                         "calendar_type": calendar_type,
                         "calendar_name": default_calendar or "default",
@@ -349,8 +342,7 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural re
                 
         except Exception as e:
             return CommandResponse.error_response(
-                speak_message=f"I'm sorry, but I encountered an error while trying to read your calendar: {str(e)}",
-                error_details=str(e),
+                                error_details=str(e),
                 context_data={
                     "dates": dates_to_strings(target_dates),
                     "events": [],

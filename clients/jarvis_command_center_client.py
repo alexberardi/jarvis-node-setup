@@ -1,9 +1,9 @@
-from typing import Any, Type, TypeVar, Optional
+from typing import Any, Type, TypeVar, Optional, List, Dict
 
 from pydantic import BaseModel
 
 from core.ijarvis_command import IJarvisCommand
-from .responses.jarvis_command_center import DateContext
+from .responses.jarvis_command_center import DateContext, ToolCallingResponse, ValidationRequest
 from .rest_client import RestClient
 from utils.config_loader import Config
 from utils.timezone_util import get_user_timezone
@@ -38,7 +38,17 @@ class JarvisCommandCenterClient:
             print(f"[JarvisClient] Failed to get date context: {e}")
             return None
 
-    def send_command(self, tts: str, conversation_id: str = None) -> dict[str, Any] | None:
+    def send_command(self, voice_command: str, conversation_id: str) -> Optional[ToolCallingResponse]:
+        """
+        Send a voice command to the Command Center for processing
+        
+        Args:
+            voice_command: The transcribed voice command
+            conversation_id: Unique conversation identifier
+            
+        Returns:
+            ToolCallingResponse with stop_reason, tool_calls, validation, or final message
+        """
         node_context = {
             "node_id": Config.get("node_id"),
             "room": Config.get("room"),
@@ -46,19 +56,111 @@ class JarvisCommandCenterClient:
         }
 
         payload = {
-            "voice_command": tts,
-            "node_context": node_context
+            "voice_command": voice_command,
+            "node_context": node_context,
+            "conversation_id": conversation_id
+        }
+            
+        print(f"[JarvisClient] Sending command: {voice_command} (conversation: {conversation_id})")
+
+        try:
+            response = RestClient.post(f"{self.base_url}/api/v0/voice/command", timeout=30, data=payload)
+            
+            if not response:
+                return None
+            
+            # Parse response into ToolCallingResponse
+            return ToolCallingResponse.model_validate(response)
+        except Exception as e:
+            print(f"[JarvisClient] Failed to send command: {e}")
+            return None
+    
+    def send_tool_results(
+        self,
+        conversation_id: str,
+        tool_results: List[Dict[str, Any]],
+    ) -> Optional[ToolCallingResponse]:
+        """
+        Send tool execution results back to continue the conversation
+        
+        Args:
+            conversation_id: The conversation identifier
+            tool_results: List of tool execution results in format:
+                         [{"tool_call_id": "...", "output": {...}}]
+            
+        Returns:
+            ToolCallingResponse with next action
+        """
+        payload = {
+            "conversation_id": conversation_id,
+            "tool_results": tool_results,
         }
         
-        # Add conversation_id if provided
-        if conversation_id:
-            payload["conversation_id"] = conversation_id
+        print(f"[JarvisClient] Sending {len(tool_results)} tool result(s) (conversation: {conversation_id})")
+        
+        try:
+            response = RestClient.post(f"{self.base_url}/api/v0/voice/command/continue", timeout=30, data=payload)
             
+            if not response:
+                return None
+            
+            return ToolCallingResponse.model_validate(response)
+        except Exception as e:
+            print(f"[JarvisClient] Failed to send tool results: {e}")
+            return None
+    
+    def send_validation_response(
+        self,
+        conversation_id: str,
+        validation_request: ValidationRequest,
+        user_response: str,
+    ) -> Optional[ToolCallingResponse]:
+        """
+        Send user's validation/clarification response back to continue conversation
+        
+        Args:
+            conversation_id: The conversation identifier
+            validation_request: The validation/clarification prompt from the server
+            user_response: The user's chosen answer
+            
+        Returns:
+            ToolCallingResponse with next action
+        """
+
+        # Build ToolResultRequest payload expected by /voice/command/continue
+        tool_call_id = getattr(validation_request, "tool_call_id", None)
+        if not tool_call_id:
+            # Fallback to a deterministic placeholder if missing
+            tool_call_id = "validation-response"
+
+        payload = {
+            "conversation_id": conversation_id,
+            "tool_results": [
+                {
+                    "tool_call_id": tool_call_id,
+                    "output": {
+                        "answer": user_response,
+                        "parameter_name": validation_request.parameter_name,
+                        "question": validation_request.question,
+                        "options": validation_request.options,
+                    },
+                }
+            ],
+        }
+        
+        print(f"[JarvisClient] Sending validation response (conversation: {conversation_id})")
         print(payload)
-
-        response = RestClient.post(f"{self.base_url}/api/v0/voice/command", timeout=30, data=payload)
-
-        return response
+        
+        try:
+            response = RestClient.post(f"{self.base_url}/api/v0/voice/command/continue", timeout=30, data=payload)
+            
+            if not response:
+                return None
+            
+            return ToolCallingResponse.model_validate(response)
+        except Exception as e:
+            print(f"[JarvisClient] Failed to send validation response: {e}")
+            return None
 
     def chat(self, message: str, model: Type[T]) -> Optional[T]:
         response = RestClient.post(f"{self.base_url}/api/v0/chat", {
@@ -141,12 +243,12 @@ class JarvisCommandCenterClient:
 
     def start_conversation(self, conversation_id: str, commands: dict[str, IJarvisCommand], date_context: Optional[DateContext] = None) -> bool:
         """
-        Start a conversation session to warm up the LLM.
+        Start a conversation session and register available client-side tools.
         
         Args:
             conversation_id: UUID for the conversation session
             commands: Dictionary of available commands to send to the command center
-            date_context: Optional date context to use for command examples
+            date_context: Optional date context to use for tool schemas
             
         Returns:
             True if successful, False otherwise
@@ -156,62 +258,28 @@ class JarvisCommandCenterClient:
             date_context = self.get_date_context()
         
         node_context = {
-            "node_id": Config.get("node_id"),
-            "room": Config.get("room"),
             "timezone": get_user_timezone()
         }
         
-        # Build available_commands array
-        available_commands = []
+        # Build client tools array in OpenAI format
+        client_tools = []
         for cmd in commands.values():
-            print(cmd.command_name)
-            # Get examples and convert CommandExample objects to dictionaries
-            examples = cmd.generate_examples(date_context)
-            examples_dict = [
-                {
-                    "voice_command": ex.voice_command,
-                    "expected_parameters": ex.expected_parameters,
-                    "is_primary": ex.is_primary
-                }
-                for ex in examples
-            ]
-            
-            command_schema = {
-                "command_name": cmd.command_name,
-                "description": cmd.description,
-                "keywords": cmd.keywords,
-                "parameters": [
-                    {
-                        "name": p.name,
-                        "type": p.param_type,
-                        **({"description": p.description} if p.description is not None else {}),
-                        **({"enum_values": p.enum_values} if p.enum_values is not None else {}),
-                        "required": p.required
-                    }
-                    for p in cmd.parameters
-                ],
-                "examples": examples_dict
-            }
-            
-            # Add rules if they exist
-            if cmd.rules:
-                command_schema["rules"] = cmd.rules
-            
-            # Add critical rules if they exist
-            if cmd.critical_rules:
-                command_schema["critical_rules"] = cmd.critical_rules
-            
-            available_commands.append(command_schema)
+            print(f"[JarvisClient] Registering tool: {cmd.command_name}")
+            tool_schema = cmd.to_openai_tool_schema(date_context)
+            client_tools.append(tool_schema)
         
         payload = {
-            "node_context": node_context,
             "conversation_id": conversation_id,
-            "available_commands": available_commands
+            "node_context": node_context,
+            "client_tools": client_tools
         }
         
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=10, data=payload)
-            return response is not None
+            if response and response.get("status") == "success":
+                print(f"[JarvisClient] Successfully registered {len(client_tools)} tools")
+                return True
+            return False
         except Exception as e:
             print(f"[JarvisClient] Failed to start conversation: {e}")
             return False

@@ -11,6 +11,8 @@ from scipy.signal import resample
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from scripts.speech_to_text import listen
 from utils.config_service import Config
+from utils.command_execution_service import CommandExecutionService
+from clients.responses.jarvis_command_center import ValidationRequest
 
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
@@ -84,10 +86,39 @@ def send_for_transcription(filename):
         print("📝 Transcription:", transcription)
         
         # Process the command through the command execution service
-        from utils.command_execution_service import CommandExecutionService
         command_service = CommandExecutionService()
         
-        result = command_service.process_voice_command(transcription)
+        # Define validation handler that prompts user and re-listens
+        def validation_handler(validation: ValidationRequest) -> str:
+            """Handle validation by prompting user and capturing their response"""
+            tts_provider = get_tts_provider()
+            
+            # Speak the validation question
+            question = validation.question
+            if validation.options:
+                # If there are options, include them in the question
+                options_text = ", ".join(validation.options)
+                question = f"{question} Your options are: {options_text}"
+            
+            print(f"❓ Asking user: {question}")
+            tts_provider.speak(False, question)
+            
+            # Listen for user's response
+            print("👂 Listening for validation response...")
+            validation_audio = listen()
+            
+            # Transcribe the response
+            validation_transcription = stt_provider.transcribe(validation_audio)
+            
+            if validation_transcription:
+                print(f"📝 User responded: {validation_transcription}")
+                return validation_transcription
+            else:
+                print("❌ Failed to transcribe validation response")
+                return "I didn't catch that, sorry."
+        
+        # Process with validation handler
+        result = command_service.process_voice_command(transcription, validation_handler)
         command_service.speak_result(result)
         
         return result
