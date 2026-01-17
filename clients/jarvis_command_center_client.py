@@ -49,15 +49,8 @@ class JarvisCommandCenterClient:
         Returns:
             ToolCallingResponse with stop_reason, tool_calls, validation, or final message
         """
-        node_context = {
-            "node_id": Config.get("node_id"),
-            "room": Config.get("room"),
-            "timezone": get_user_timezone()
-        }
-
         payload = {
             "voice_command": voice_command,
-            "node_context": node_context,
             "conversation_id": conversation_id
         }
             
@@ -261,6 +254,13 @@ class JarvisCommandCenterClient:
             "timezone": get_user_timezone()
         }
         
+        # Build available commands metadata for server-side tools
+        available_commands = []
+        for cmd in commands.values():
+            schema = cmd.get_command_schema(date_context)
+            print(f"[JarvisClient] Warmup keywords for {schema.get('command_name')}: {schema.get('keywords', [])}")
+            available_commands.append(schema)
+
         # Build client tools array in OpenAI format
         client_tools = []
         for cmd in commands.values():
@@ -271,6 +271,7 @@ class JarvisCommandCenterClient:
         payload = {
             "conversation_id": conversation_id,
             "node_context": node_context,
+            "available_commands": available_commands,
             "client_tools": client_tools
         }
         

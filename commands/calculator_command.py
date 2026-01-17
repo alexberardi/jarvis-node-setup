@@ -31,8 +31,12 @@ class CalculatorCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Two-number arithmetic: add, subtract, multiply, or divide. Use for simple math. Do NOT use for unit conversions or multi-step/advanced formulas."
+        return "Two-number arithmetic: add, subtract, multiply, or divide. Not for unit conversions or advanced formulas."
     
+    @property
+    def allow_direct_answer(self) -> bool:
+        return True
+
     @property
     def keywords(self) -> List[str]:
         return [
@@ -45,9 +49,9 @@ class CalculatorCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("num1", "float", required=True, description="The first number in the calculation. Can be positive, negative, integer, or decimal (e.g., 5, -3.14, 42.5)"),
-            JarvisParameter("num2", "float", required=True, description="The second number in the calculation. Can be positive, negative, integer, or decimal (e.g., 3, -1.5, 100)"),
-            JarvisParameter("operation", "string", required=True, description="The arithmetic operation to perform. Must be exactly one of: 'add' (addition/sum), 'subtract' (subtraction/difference), 'multiply' (multiplication/product), 'divide' (division/quotient)")
+            JarvisParameter("num1", "float", required=True, description="First number."),
+            JarvisParameter("num2", "float", required=True, description="Second number."),
+            JarvisParameter("operation", "string", required=True, description="Operation: strictly 'add', 'subtract', 'multiply', or 'divide'.")
         ]
 
     @property
@@ -82,28 +86,8 @@ class CalculatorCommand(IJarvisCommand):
                 expected_parameters={"num1": 20, "num2": 5, "operation": "divide"}
             ),
             CommandExample(
-                voice_command="Add 15 and 25 together",
-                expected_parameters={"num1": 15, "num2": 25, "operation": "add"}
-            ),
-            CommandExample(
-                voice_command="What's five plus 3?",
-                expected_parameters={"num1": 5, "num2": 3, "operation": "add"}
-            ),
-            CommandExample(
-                voice_command="Calculate ten minus four",
-                expected_parameters={"num1": 10, "num2": 4, "operation": "subtract"}
-            ),
-            CommandExample(
                 voice_command="What's 15 percent of 200?",
                 expected_parameters={"num1": 0.15, "num2": 200, "operation": "multiply"}
-            ),
-            CommandExample(
-                voice_command="Calculate 25% of 80",
-                expected_parameters={"num1": 0.25, "num2": 80, "operation": "multiply"}
-            ),
-            CommandExample(
-                voice_command="What is 10% of 150?",
-                expected_parameters={"num1": 0.1, "num2": 150, "operation": "multiply"}
             )
         ]
     

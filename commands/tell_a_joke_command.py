@@ -19,7 +19,11 @@ class TellAJokeCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Tell a clean, family-friendly joke, optionally on a requested topic. Use when asked for a joke or to make someone laugh. Do NOT use for stories, riddles/brain-teasers, or current-event humor that needs a live lookup."
+        return "Tell a clean, family-friendly joke; optional topic. If user says 'about X', set topic. Not for stories, riddles, or live humor."
+
+    @property
+    def allow_direct_answer(self) -> bool:
+        return True
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
@@ -30,23 +34,19 @@ class TellAJokeCommand(IJarvisCommand):
                 is_primary=True  # Primary example for command inference
             ),
             CommandExample(
-                voice_command="Tell me a funny story",
-                expected_parameters={"topic": "story"}
+                voice_command="Tell me a joke about animals",
+                expected_parameters={"topic": "animals"}
             ),
             CommandExample(
-                voice_command="Make me laugh",
-                expected_parameters={}
-            ),
-            CommandExample(
-                voice_command="Tell me a joke about today",
-                expected_parameters={"topic": "today"}
+                voice_command="Make me laugh with a joke about technology",
+                expected_parameters={"topic": "technology"}
             )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("topic", "string", required=False, default=None, description="Optional topic or subject for the joke (e.g., 'programming', 'animals', 'food', 'science', 'knock-knock'). If provided, the joke will be related to this topic. If omitted, a random family-friendly joke will be told."),
+            JarvisParameter("topic", "string", required=False, default=None, description="Optional topic; omit for a random joke."),
         ]
 
     @property
