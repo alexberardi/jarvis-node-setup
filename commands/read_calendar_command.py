@@ -25,7 +25,7 @@ class ReadCalendarCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Read the user's calendar for given dates or ranges (defaults to today). Returns event titles, times, locations, and attendees. Use for 'what's on my calendar', 'schedule for tomorrow/this weekend/next week'. Do NOT use to create events or answer generic date/time questions."
+        return "Read calendar events for dates or ranges (defaults to today). Returns titles, times, locations, attendees. Not for creating events or general time questions."
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
@@ -51,18 +51,6 @@ class ReadCalendarCommand(IJarvisCommand):
                 ]}
             ),
             CommandExample(
-                voice_command="What meetings do I have next week?",
-                expected_parameters={"resolved_datetimes": [
-                    date_context.weeks.next_week[0].utc_start_of_day,
-                    date_context.weeks.next_week[1].utc_start_of_day,
-                    date_context.weeks.next_week[2].utc_start_of_day,
-                    date_context.weeks.next_week[3].utc_start_of_day,
-                    date_context.weeks.next_week[4].utc_start_of_day,
-                    date_context.weeks.next_week[5].utc_start_of_day,
-                    date_context.weeks.next_week[6].utc_start_of_day
-                ]}
-            ),
-            CommandExample(
                 voice_command="Read my calendar",
                 expected_parameters={}
             )
@@ -71,7 +59,7 @@ class ReadCalendarCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("resolved_datetimes", "datetime", description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server). Example for New York: ['2025-12-15T05:00:00Z'] for a single day. If not provided, defaults to today. Time portion is ignored beyond anchoring to the correct day.", required=False, default=None)
+            JarvisParameter("resolved_datetimes", "array", description="ISO UTC start-of-day datetimes for the dates to read. Omit to use today.", required=False, default=None)
         ]
 
     @property
@@ -81,6 +69,13 @@ class ReadCalendarCommand(IJarvisCommand):
             JarvisSecret("CALENDAR_USERNAME", "Username/Apple ID for calendar service", "integration", "string"),
             JarvisSecret("CALENDAR_PASSWORD", "Password/app-specific password for calendar service", "integration", "string"),
             JarvisSecret("CALENDAR_DEFAULT_NAME", "Default calendar name to use", "integration", "string"),
+        ]
+
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "Always call this tool to read calendar events; do NOT ask for a date first",
+            "If no date is provided, default to today and still call the tool"
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:

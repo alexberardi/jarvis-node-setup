@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
@@ -168,23 +168,38 @@ class WebSearchCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Live web search for current or recently updated info. Use for news, latest results, current times, live scores/results, launches, stocks, and anything that changes often. "
-            "Do NOT use for static facts, weather, or device-local data."
+            "Perform a live web search to get information to inform your response."
         )
 
     @property
     def critical_rules(self) -> List[str]:
         return [
             "Use this for up-to-date or real-time info (news, current time in a place, stock moves, live scores, ongoing events).",
-            "Only use this for questions that are not covered by other commands."
+            "Use this for championship winners or season outcomes (e.g., 'Who won the Super Bowl this year?').",
+            "Always call this tool for web search queries; do NOT answer directly from memory or ask clarifying questions first.",
+            "Do NOT use this for stable facts or geography/location definitions.",
+            "Only use this for questions that require up-to-date information."
+        ]
+
+    @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        return [
+            CommandAntipattern(
+                command_name="answer_question",
+                description="Stable facts, definitions, biographies, or geography."
+            ),
+            CommandAntipattern(
+                command_name="get_sports_schedule",
+                description="Upcoming games, schedules, or future matchups."
+            ),
         ]
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
         return [
             CommandExample(
-                voice_command="What's the latest news about the election?",
-                expected_parameters={"query": "What's the latest news about the election?"},
+                voice_command="Who won the senate race in Pennsylvania?",
+                expected_parameters={"query": "Who won the senate race in Pennsylvania?"},
                 is_primary=True
             ),
             CommandExample(
@@ -192,16 +207,16 @@ class WebSearchCommand(IJarvisCommand):
                 expected_parameters={"query": "What time is it in California right now?"}
             ),
             CommandExample(
+                voice_command="When is the next SpaceX launch?",
+                expected_parameters={"query": "When is the next SpaceX launch?"}
+            ),
+            CommandExample(
                 voice_command="Who won the Super Bowl this year?",
                 expected_parameters={"query": "Who won the Super Bowl this year?"}
             ),
             CommandExample(
-                voice_command="What's the current Tesla stock price?",
-                expected_parameters={"query": "What's the current Tesla stock price?"}
-            ),
-            CommandExample(
-                voice_command="Search for breaking news about AI",
-                expected_parameters={"query": "Search for breaking news about AI"}
+                voice_command="Find the latest information about COVID vaccines",
+                expected_parameters={"query": "Find the latest information about COVID vaccines"}
             )
         ]
     
@@ -209,7 +224,7 @@ class WebSearchCommand(IJarvisCommand):
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("query", "string", required=True, 
-                          description="The search query for current or recent information. Should be a clear, specific question or search terms (e.g., 'latest news about artificial intelligence', 'who won the election in Pennsylvania', 'current Tesla stock price', 'when is the next SpaceX launch')")
+                          description="Search query for current or recent information.")
         ]
 
     @property
