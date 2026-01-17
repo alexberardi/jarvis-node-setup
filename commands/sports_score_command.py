@@ -2,7 +2,7 @@ from typing import List, Any, Optional
 from pydantic import BaseModel
 
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
@@ -41,39 +41,39 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Final scores and results for games already played (today or earlier). Use for 'how did they do' or 'who won' questions. Do NOT use for future schedules, live updates, player stats, or standings."
+        return "Final scores and results for active or recent games. Not for future schedules, live updates, player stats, or standings."
     
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports score command with varied verbiage"""
         return [
             CommandExample(
-                voice_command="How did the Giants do last weekend?",
-            expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]},
+                voice_command="How did the Giants do?",
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
                 is_primary=True
             ),
             CommandExample(
-                voice_command="What's the score of the Giants game?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                voice_command="How did the Cowboys do?",
+                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             ),
             CommandExample(
-                voice_command="How did the Seattle Mariners do yesterday?",
-                expected_parameters={"team_name": "Seattle Mariners", "resolved_datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]}
+                voice_command="How did the New York Giants do?",
+                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             ),
             CommandExample(
-                voice_command="Show me the Baltimore Orioles game result from last weekend",
-                expected_parameters={"team_name": "Baltimore Orioles", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
+                voice_command="How did the Eagles do last weekend?",
+                expected_parameters={"team_name": "Eagles", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
             ),
             CommandExample(
-                voice_command="What was the final score of the Minnesota Twins game?",
-                expected_parameters={"team_name": "Minnesota Twins", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                voice_command="What's the score of the Lakers game today?",
+                expected_parameters={"team_name": "Lakers", "resolved_datetimes": [date_context.current.utc_start_of_day]}
             )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="The team name exactly as spoken by the user. Include city/state/school when mentioned (e.g., 'Giants', 'New York Giants', 'Seattle Mariners', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'). The system will handle disambiguation if multiple teams match."),
-            JarvisParameter("resolved_datetimes", "array[datetime]", required=True, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server) for dates to check. Resolved datetimes are the result of the resolve_relative_date command.")
+            JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said. Must be valid Big 4 or College team."),
+            JarvisParameter("resolved_datetimes", "array", required=True, description="ISO UTC start-of-day datetimes for the dates to check.")
         ]
     
     @property
@@ -84,9 +84,20 @@ class SportsScoreCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "If no date is specified in the voice command, default to today's start of day (current.utc_start_of_day from date context)",
+            "Always call this tool for sports results; do NOT answer from memory or ask for a date first",
+            "Never infer historical season dates when no date is mentioned; use today only",
             "Use this command for questions about PAST performance, results, scores, or 'how did [team] do'",
-            "Questions asking 'how did [team] do [past time period]' should ALWAYS use sports_score_command, not sports_schedule_command",
-            "For championship questions like 'Who won the Super Bowl this year?' or 'Who won the World Series?', prefer web_search_command for current/recent championship information"
+            "If the user is asking about upcoming games, schedules, or future matchups, do not use this command",
+            "If the user is asking about championship winners or season outcomes, do not use this command"
+        ]
+
+    @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        return [
+            CommandAntipattern(
+                command_name="get_sports_schedule",
+                description="Upcoming games, schedules, or future matchups."
+            ),
         ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:

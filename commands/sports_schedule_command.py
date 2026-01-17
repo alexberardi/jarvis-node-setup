@@ -1,7 +1,7 @@
 from typing import List
 
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -28,7 +28,7 @@ class SportsScheduleCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Upcoming games and schedules (future or later today). Returns opponents, times, venues, broadcast info. Use for 'when do they play next' or 'next week's games'. Do NOT use for past results or live updates."
+        return "Upcoming games and schedules (future or later today). Returns opponents, times, venues, broadcast info. Not for past results or live updates."
     
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate examples for the sports schedule command with varied verbiage"""
@@ -67,8 +67,8 @@ class SportsScheduleCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="The team name exactly as spoken by the user. Include city/state/school when mentioned (e.g., 'Giants', 'New York Giants', 'Seattle Mariners', 'Carolina Panthers', 'Ohio State Buckeyes', 'Alabama Crimson Tide'). The system will handle disambiguation if multiple teams match."),
-            JarvisParameter("resolved_datetimes", "datetime", required=True, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server) covering the dates to check. Example for New York: ['2025-12-15T05:00:00Z'] for tomorrow, or a range for weekend/next week. If no date is mentioned, use today's start-of-day in this format.")
+            JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said."),
+            JarvisParameter("resolved_datetimes", "array", required=True, description="ISO UTC start-of-day datetimes for the dates to check.")
         ]
     
     @property
@@ -79,8 +79,17 @@ class SportsScheduleCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "Use this command for questions about FUTURE games, schedules, and upcoming events only",
-            "Questions asking 'how did [team] do' should use sports_score_command, NOT this command",
+            "Do NOT use this for ambiguous past results or results that could be far in the past",
             "This command is for 'when do they play next', 'what time is the game', 'who do they play', etc."
+        ]
+
+    @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        return [
+            CommandAntipattern(
+                command_name="get_sports_scores",
+                description="Past results, scores, or how a team did."
+            )
         ]
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:

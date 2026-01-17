@@ -3,7 +3,7 @@ import requests
 from typing import List, Any, Optional
 
 from clients.responses.jarvis_command_center import DateContext
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.command_response import CommandResponse
@@ -24,7 +24,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Current weather or up-to-5-day forecast for a location. Use for temperature, conditions, and rain chances with no date (current) or specific future dates. Do NOT use for past weather, climate statistics, or generic facts."
+        return "Current weather or up-to-5-day forecast for a location. Use for conditions, temperature, and precipitation. Not for past weather, climate stats, or general facts."
 
     def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
         """Generate example utterances with expected parameters using date context"""
@@ -35,10 +35,6 @@ class OpenWeatherCommand(IJarvisCommand):
                 is_primary=True
             ),
             CommandExample(
-                voice_command="What's the weather in Miami?",
-                expected_parameters={"city": "Miami"}
-            ),
-            CommandExample(
                 voice_command="How's the weather in New York today?",
                 expected_parameters={"city": "New York"}
             ),
@@ -46,26 +42,14 @@ class OpenWeatherCommand(IJarvisCommand):
                 voice_command="What's the forecast for Los Angeles tomorrow?",
                 expected_parameters={"city": "Los Angeles", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
             ),
-            CommandExample(
-                voice_command="Weather forecast for Chicago on the day after tomorrow",
-                expected_parameters={"city": "Chicago", "resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
-            ),
-            CommandExample(
-                voice_command="What's the weather like in metric units?",
-                expected_parameters={"unit_system": "metric"}
-            ),
-            CommandExample(
-                voice_command="Forecast for Seattle this weekend",
-                expected_parameters={"city": "Seattle", "resolved_datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
-            )
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("city", "string", required=False, default=None, description="The city name to get weather for. Use the city name as spoken by the user (e.g., 'Miami', 'New York', 'Tokyo', 'San Francisco'). If not provided, uses the user's default/home location from their profile."),
-            JarvisParameter("unit_system", "string", required=False, default=None, description="Temperature unit system: 'metric' (Celsius, km/h) or 'imperial' (Fahrenheit, mph). If not provided, uses user's default preference."),
-            JarvisParameter("resolved_datetimes", "datetime", required=False, description="Array of ISO datetime strings at UTC start-of-day for the user's timezone (provided by server). Example for New York: ['2025-12-15T05:00:00Z']. Omit for current weather; include for forecasts (max 5 days ahead)."),
+            JarvisParameter("city", "string", required=False, default=None, description="City name as spoken. Omit to use the user's default location."),
+            JarvisParameter("unit_system", "string", required=False, default=None, description="Unit system: 'metric' or 'imperial'. Omit to use the user's default."),
+            JarvisParameter("resolved_datetimes", "array", required=False, description="ISO UTC start-of-day datetimes for forecast days (max 5). Omit for current weather."),
         ]
 
     @property
@@ -80,8 +64,19 @@ class OpenWeatherCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "Use this command ONLY for weather-related queries (temperature, conditions, forecast, precipitation)",
-            "Do NOT use this for time queries - 'What time is it in [location]?' should use web_search_command",
+            "Always call this tool for weather; do NOT answer from memory or ask follow-up questions",
+            "If the user says today/tomorrow/day after tomorrow/weekend, include resolved_datetimes accordingly; if no date is given, omit resolved_datetimes for current weather",
+            "Do NOT use this for time queries; those are not weather requests",
             "This command is for meteorological information, not time zones or current time"
+        ]
+
+    @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        return [
+            CommandAntipattern(
+                command_name="search_web",
+                description="Time queries or non-weather facts."
+            )
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:

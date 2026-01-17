@@ -21,3 +21,4 @@ sqlalchemy
 alembic
 pytz
 pydantic
+dotenv

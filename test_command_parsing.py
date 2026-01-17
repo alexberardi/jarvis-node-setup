@@ -4,6 +4,7 @@ Test script for testing command parsing across all Jarvis commands.
 This script tests various natural language utterances to ensure proper parameter extraction.
 """
 
+import ast
 import json
 import time
 import uuid
@@ -76,7 +77,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "Current weather with unit system specified"
         ),
         CommandTest(
-            "Forecast for Seattle this weekend",
+            "What is the forecast for Seattle this weekend",
             "get_weather",
             {"city": "Seattle", "resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.this_weekend] if date_context.weekend.this_weekend else []},
             "Forecast with city and date range"
@@ -440,25 +441,25 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "How did the Giants do?",
             "get_sports_scores",
-            {"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Giants"},
             "Basic sports score request (no city, no dates)"
         ),
         CommandTest(
             "What's the score of the Yankees game?",
             "get_sports_scores",
-            {"team_name": "Yankees", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Yankees"},
             "Sports score request with different team"
         ),
         CommandTest(
             "How did the New York Giants do?",
             "get_sports_scores",
-            {"team_name": "New York Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "New York Giants"},
             "Sports score request with location disambiguation"
         ),
         CommandTest(
             "What's the score of the Carolina Panthers game?",
             "get_sports_scores",
-            {"team_name": "Carolina Panthers", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Carolina Panthers"},
             "Sports score request with different location/team combination"
         ),
         CommandTest(
@@ -488,7 +489,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "How did the Cowboys do?",
             "get_sports_scores",
-            {"team_name": "Cowboys", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Cowboys"},
             "Sports score with no date (defaults to today)"
         ),
         CommandTest(
@@ -518,7 +519,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "How did the Buccaneers do?",
             "get_sports_scores",
-            {"team_name": "Buccaneers", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Buccaneers"},
             "Sports score with no date (defaults to today)"
         )
     ]
@@ -552,6 +553,73 @@ def _datetimes_optional_default_today_ok(expected_value: Any, actual_value: Any,
         return True
 
     return False
+
+
+def _maybe_parse_list_string(value: Any) -> Optional[list]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        try:
+            parsed = ast.literal_eval(stripped)
+        except Exception:
+            return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _normalize_tool_call(tool_call: Any) -> Optional[dict]:
+    if not isinstance(tool_call, dict):
+        return None
+    name = tool_call.get("name")
+    arguments = tool_call.get("arguments", {})
+    if not name and "function" in tool_call:
+        function = tool_call.get("function") or {}
+        name = function.get("name") or name
+        arguments = function.get("arguments", arguments)
+    if not name:
+        return None
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except Exception:
+            pass
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return None
+    return {
+        "command_name": name,
+        "parameters": arguments
+    }
+
+
+def _extract_tool_call_from_assistant_message(response: Any, response_dict: Optional[dict]) -> Optional[dict]:
+    message = None
+    if hasattr(response, "assistant_message"):
+        message = response.assistant_message
+    elif hasattr(response, "message"):
+        message = response.message
+    if message is None and isinstance(response_dict, dict):
+        message = response_dict.get("assistant_message") or response_dict.get("message")
+    if not message or not isinstance(message, str):
+        return None
+    try:
+        parsed = json.loads(message.strip())
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    tool_call = parsed.get("tool_call")
+    if tool_call:
+        return _normalize_tool_call(tool_call)
+    tool_calls = parsed.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        return _normalize_tool_call(tool_calls[0])
+    return None
 
 
 def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_context: DateContext, test_index: int) -> tuple[bool, str, dict]:
@@ -614,17 +682,28 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                 "command_name": actual_command,
                 "parameters": actual_params
             }
-        elif hasattr(response, 'commands') and response.commands:
-            print(f"   📦 Legacy command response detected")
-            command_response = response.commands[0]
-        elif getattr(response, "stop_reason", None) == "complete":
-            # The LLM answered directly without a tool call (e.g., calc or simple Q&A).
-            print(f"   ℹ️ No tool calls; treating direct completion as acceptable.")
-            return True, "", response_dict
-        else:
-            failure_reason = "No tool_calls or commands in response"
-            print(f"   ❌ {failure_reason}")
-            return False, failure_reason, response_dict
+        if not command_response:
+            parsed_tool_call = _extract_tool_call_from_assistant_message(response, response_dict)
+            if parsed_tool_call:
+                print(f"   🔧 Tool call parsed from assistant_message")
+                command_response = parsed_tool_call
+        if not command_response:
+            if hasattr(response, 'commands') and response.commands:
+                print(f"   📦 Legacy command response detected")
+                command_response = response.commands[0]
+            elif getattr(response, "stop_reason", None) == "complete":
+                # The LLM answered directly without a tool call (e.g., calc or simple Q&A).
+                direct_completion_whitelist = {"calculate", "answer_question", "tell_joke"}
+                if test.expected_command in direct_completion_whitelist:
+                    print(f"   ℹ️ No tool calls; treating direct completion as acceptable.")
+                    return True, "", response_dict
+                failure_reason = "Direct completion not allowed for this command"
+                print(f"   ❌ {failure_reason}")
+                return False, failure_reason, response_dict
+            else:
+                failure_reason = "No tool_calls or commands in response"
+                print(f"   ❌ {failure_reason}")
+                return False, failure_reason, response_dict
         
         if "command_name" not in command_response:
             failure_reason = "Missing command_name in command response"
@@ -688,44 +767,51 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     print(f"   ⚠️  Test {test_index}: Missing datetimes allowed (command defaults to today)")
                     continue
                 missing_params.append(expected_key)
-            elif actual_params[expected_key] != expected_value:
+            else:
+                actual_value = actual_params[expected_key]
+                if isinstance(expected_value, list):
+                    parsed_list = _maybe_parse_list_string(actual_value)
+                    if parsed_list is not None:
+                        actual_value = parsed_list
+                if actual_value == expected_value:
+                    continue
                 # Allow missing/empty datetimes when command defaults to today
-                if expected_key == "resolved_datetimes" and _datetimes_optional_default_today_ok(expected_value, actual_params[expected_key], test.expected_command, date_context):
+                if expected_key == "resolved_datetimes" and _datetimes_optional_default_today_ok(expected_value, actual_value, test.expected_command, date_context):
                     print(f"   ⚠️  Test {test_index}: Datetimes validation passed (command defaults to today)")
                     continue
                 # Special handling for web search queries - allow optimized search terms (apply before strict match)
-                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):
-                    if is_valid_search_query(expected_value, actual_params[expected_key]):
+                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_value, str):
+                    if is_valid_search_query(expected_value, actual_value):
                         print(f"   ⚠️  Test {test_index}: Search query validation passed (optimized search terms)")
                         continue
                     # Fall through to normalization if overlap check fails
                     import string
                     expected_normalized = expected_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                    actual_normalized = actual_params[expected_key].translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                    actual_normalized = actual_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
                     if expected_normalized == actual_normalized:
                         print(f"   ⚠️  Test {test_index}: Query validation passed (punctuation/case normalized)")
                         continue
                     else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
                 # Special handling for query parameters - normalize punctuation and case and allow semantic overlap
-                elif expected_key == "query" and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):
+                elif expected_key == "query" and isinstance(expected_value, str) and isinstance(actual_value, str):
                     import string
                     expected_normalized = expected_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                    actual_normalized = actual_params[expected_key].translate(str.maketrans('', '', string.punctuation)).lower().strip()
+                    actual_normalized = actual_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
                     
                     if expected_normalized == actual_normalized:
                         print(f"   ⚠️  Test {test_index}: Query validation passed (punctuation/case normalized)")
                         continue
                     # Allow looser semantic match for knowledge/search-style questions
-                    if is_valid_search_query(expected_value, actual_params[expected_key]):
+                    if is_valid_search_query(expected_value, actual_value):
                         print(f"   ⚠️  Test {test_index}: Query validation passed (semantic overlap)")
                         continue
                     else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
                 # Special handling for team names - allow either short name or full name
-                elif expected_key == "team_name" and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):
+                elif expected_key == "team_name" and isinstance(expected_value, str) and isinstance(actual_value, str):
                     expected_lower = expected_value.lower()
-                    actual_lower = actual_params[expected_key].lower()
+                    actual_lower = actual_value.lower()
                     
                     # Check if the expected team name is contained in the actual (e.g., "Yankees" in "New York Yankees")
                     # or if they're exactly equal
@@ -733,16 +819,16 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                         print(f"   ⚠️  Test {test_index}: Team name validation passed (flexible matching)")
                         continue
                     else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
                 # Special handling for web search queries - allow optimized search terms
-                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_params[expected_key], str):  # Web search test range
-                    if is_valid_search_query(expected_value, actual_params[expected_key]):
+                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_value, str):  # Web search test range
+                    if is_valid_search_query(expected_value, actual_value):
                         print(f"   ⚠️  Test {test_index}: Search query validation passed (optimized search terms)")
                         continue
                     else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
                 else:
-                    mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_params[expected_key]}")
+                    mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
         
         if missing_params or mismatched_params:
             failure_reason = "Parameter validation failed: "

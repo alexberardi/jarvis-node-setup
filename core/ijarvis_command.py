@@ -18,6 +18,13 @@ class CommandExample:
     expected_parameters: Dict[str, Any]
     is_primary: bool = False
 
+
+@dataclass
+class CommandAntipattern:
+    """Represents a command anti-pattern for tool disambiguation"""
+    command_name: str
+    description: str
+
 class JarvisCommandBase(ABC):
     def execute(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """
@@ -97,6 +104,16 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         return []
 
     @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        """Optional list of anti-patterns that point to other commands"""
+        return []
+
+    @property
+    def allow_direct_answer(self) -> bool:
+        """Whether the model may respond directly without calling the tool."""
+        return False
+
+    @property
     def critical_rules(self) -> List[str]:
         """Optional list of critical rules that must be followed for this command"""
         return []
@@ -133,6 +150,7 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         schema = {
             "command_name": self.command_name,
             "description": self.description,
+            "allow_direct_answer": self.allow_direct_answer,
             "examples": [
                 {
                     "voice_command": ex.voice_command,
@@ -149,6 +167,16 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         if self.rules:
             schema["rules"] = self.rules
         
+        # Add antipatterns if they exist
+        if self.antipatterns:
+            schema["antipatterns"] = [
+                {
+                    "command_name": antipattern.command_name,
+                    "description": antipattern.description
+                }
+                for antipattern in self.antipatterns
+            ]
+
         # Add critical rules if they exist
         if self.critical_rules:
             schema["critical_rules"] = self.critical_rules
@@ -236,7 +264,7 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             if param.required:
                 required_params.append(param.name)
         
-        return {
+        tool_schema = {
             "type": "function",
             "function": {
                 "name": self.command_name,
@@ -247,6 +275,8 @@ class IJarvisCommand(JarvisCommandBase, ABC):
                     "required": required_params
                 }
             },
+            "allow_direct_answer": self.allow_direct_answer,
+            "keywords": self.keywords,
             # Include examples to help the server-side model during warmup
             "examples": [
                 {
@@ -256,5 +286,16 @@ class IJarvisCommand(JarvisCommandBase, ABC):
                 } for ex in examples
             ]
         }
+
+        if self.antipatterns:
+            tool_schema["antipatterns"] = [
+                {
+                    "command_name": antipattern.command_name,
+                    "description": antipattern.description
+                }
+                for antipattern in self.antipatterns
+            ]
+
+        return tool_schema
 
 

@@ -73,7 +73,7 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Convert between units for distance, volume, weight/mass, and temperature. Defaults value to 1 if not provided. Use for questions like 'how many cups in a gallon' or 'convert 5 miles to kilometers'. Do NOT use for general math or currency conversion."
+        return "Convert units for distance, volume, weight/mass, and temperature. Defaults value to 1. Not for general math or currency."
     
     @property
     def keywords(self) -> List[str]:
@@ -88,10 +88,10 @@ class MeasurementConversionCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("value", "float", required=False, description="The numeric value to convert. If not explicitly provided in the question, defaults to 1.0 (e.g., 'how many cups in a gallon' means convert 1 gallon)"),
-            JarvisParameter("from_unit", "string", required=True, description="The source unit to convert FROM. Use the full or common unit name (e.g., 'miles', 'kilometers', 'gallons', 'liters', 'pounds', 'kilograms', 'fahrenheit', 'celsius', 'feet', 'meters', 'cups', 'ounces')"),
-            JarvisParameter("to_unit", "string", required=True, description="The target unit to convert TO. Use the full or common unit name (e.g., 'kilometers', 'feet', 'liters', 'cups', 'kilograms', 'grams', 'celsius', 'fahrenheit')"),
-            JarvisParameter("category", "string", required=False, description="Optional category hint to disambiguate similar unit names. Values: 'distance', 'volume', 'weight', 'temperature'. Only provide if ambiguous.")
+            JarvisParameter("value", "float", required=False, description="Numeric value to convert; defaults to 1."),
+            JarvisParameter("from_unit", "string", required=True, description="Source unit name."),
+            JarvisParameter("to_unit", "string", required=True, description="Target unit name."),
+            JarvisParameter("category", "string", required=False, description="Optional hint: 'distance', 'volume', 'weight', or 'temperature'.")
         ]
     
     @property
@@ -115,32 +115,12 @@ class MeasurementConversionCommand(IJarvisCommand):
                 expected_parameters={"value": 1, "from_unit": "gallons", "to_unit": "cups"}
             ),
             CommandExample(
-                voice_command="What's 2 pints in quarts?",
-                expected_parameters={"value": 2, "from_unit": "pints", "to_unit": "quarts"}
-            ),
-            CommandExample(
                 voice_command="Convert 10 pounds to kilograms",
                 expected_parameters={"value": 10, "from_unit": "pounds", "to_unit": "kilograms"}
             ),
             CommandExample(
-                voice_command="How many grams in 3 ounces?",
-                expected_parameters={"value": 3, "from_unit": "ounces", "to_unit": "grams"}
-            ),
-            CommandExample(
                 voice_command="What's 350 Fahrenheit in Celsius?",
                 expected_parameters={"value": 350, "from_unit": "fahrenheit", "to_unit": "celsius"}
-            ),
-            CommandExample(
-                voice_command="Convert 25 Celsius to Fahrenheit",
-                expected_parameters={"value": 25, "from_unit": "celsius", "to_unit": "fahrenheit"}
-            ),
-            CommandExample(
-                voice_command="How many centimeters in a foot?",
-                expected_parameters={"value": 1, "from_unit": "feet", "to_unit": "centimeters"}
-            ),
-            CommandExample(
-                voice_command="Convert 100 meters to yards",
-                expected_parameters={"value": 100, "from_unit": "meters", "to_unit": "yards"}
             )
         ]
     

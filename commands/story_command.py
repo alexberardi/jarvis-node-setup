@@ -24,16 +24,16 @@ class StoryCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Generate and narrate an original story in chunks, tailored by subject and audience age. Supports start, continue, and end actions. Use for new or ongoing stories/bedtime tales. Do NOT use for reading existing books, summaries, or jokes."
+        return "Generate an original story in chunks, tailored by subject and age. Actions: start, continue, end. Not for existing books, summaries, or jokes."
 
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("story_subject", "string", required=False, description="The subject, theme, or topic for the story (e.g., 'a brave knight', 'space adventure', 'friendly dinosaur', 'princess and dragon'). If not provided, a random age-appropriate theme will be chosen."),
-            JarvisParameter("target_audience_age", "int", required=False, default=5, description="The target age of the listener in years, used to adjust story complexity and content appropriateness (e.g., 3, 5, 8, 12). Defaults to 5 if not specified."),
-            JarvisParameter("word_count", "int", required=False, default=750, description="Target total word count for the complete story (e.g., 500, 750, 1000). The story will be delivered in chunks. Defaults to 750 words."),
-            JarvisParameter("action", "string", required=False, default="start", description="The story action to perform: 'start' (begin a new story), 'continue' (hear the next part of an ongoing story), or 'end' (finish and summarize the current story). Defaults to 'start'."),
-            JarvisParameter("session_id", "string", required=False, description="Story session identifier for continuing or ending an existing story. Only required when action is 'continue' or 'end'. Do not provide for new stories (action='start').")
+            JarvisParameter("story_subject", "string", required=False, description="Story subject or theme; omit for a random one."),
+            JarvisParameter("target_audience_age", "int", required=False, default=5, description="Listener age in years; defaults to 5."),
+            JarvisParameter("word_count", "int", required=False, default=750, description="Target total word count; defaults to 750."),
+            JarvisParameter("action", "string", required=False, default="start", description="Story action: 'start', 'continue', or 'end'."),
+            JarvisParameter("session_id", "string", required=False, description="Session id for continue/end only.")
         ]
 
     @property
