@@ -77,8 +77,13 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         pass
 
     @abstractmethod
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate example utterances with expected parameters using date context"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise examples for prompt/tool registration"""
+        pass
+
+    @abstractmethod
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate larger, varied examples for adapter training"""
         pass
 
     @property
@@ -142,9 +147,9 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         if primary_count > 1:
             raise ValueError(f"Command '{self.command_name}' has {primary_count} primary examples. Only 0 or 1 allowed.")
     
-    def get_command_schema(self, date_context: DateContext) -> Dict[str, Any]:
+    def get_command_schema(self, date_context: DateContext, use_adapter_examples: bool = False) -> Dict[str, Any]:
         """Generate the command schema for the LLM"""
-        examples = self.generate_examples(date_context)
+        examples = self.generate_adapter_examples() if use_adapter_examples else self.generate_prompt_examples()
         self._validate_examples(examples)
         
         schema = {
@@ -185,7 +190,7 @@ class IJarvisCommand(JarvisCommandBase, ABC):
     
     def get_primary_example(self, date_context: DateContext) -> CommandExample:
         """Get the primary example for command inference (or first if none marked primary)"""
-        examples = self.generate_examples(date_context)
+        examples = self.generate_prompt_examples()
         self._validate_examples(examples)
         
         # Find primary example
@@ -218,7 +223,7 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         Returns:
             Dictionary in OpenAI tool schema format
         """
-        examples = self.generate_examples(date_context)
+        examples = self.generate_prompt_examples()
         self._validate_examples(examples)
 
 
@@ -235,6 +240,10 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             'time': 'string',  # ISO time strings
             'array[datetime]': 'array',
             'array[date]': 'array',
+            'array<datetime>': 'array',
+            'array<date>': 'array',
+            'datetime[]': 'array',
+            'date[]': 'array',
         }
         
         properties = {}
@@ -254,10 +263,12 @@ class IJarvisCommand(JarvisCommandBase, ABC):
                 param_schema["enum"] = param.enum_values
             
             # Handle array types
-            if param.param_type.startswith('array'):
+            if param.param_type.startswith('array') or param.param_type.endswith('[]'):
                 param_schema["type"] = "array"
-                if 'datetime' in param.param_type or 'date' in param.param_type:
+                if 'datetime' in param.param_type:
                     param_schema["items"] = {"type": "string", "format": "date-time"}
+                elif 'date' in param.param_type:
+                    param_schema["items"] = {"type": "string", "format": "date"}
             
             properties[param.name] = param_schema
             
