@@ -85,6 +85,16 @@ class IJarvisParameter(ABC):
             'time': time,
             'timedelta': timedelta
         }
+
+        # Handle array type grammars like array<datetime>, array[datetime], datetime[]
+        if isinstance(self.param_type, str):
+            param_type = self.param_type.strip()
+            if param_type.startswith("array<") and param_type.endswith(">"):
+                return isinstance(value, list)
+            if param_type.startswith("array[") and param_type.endswith("]"):
+                return isinstance(value, list)
+            if param_type.endswith("[]"):
+                return isinstance(value, list)
         
         expected_type = type_aliases.get(self.param_type)
         if expected_type is None:
@@ -111,7 +121,13 @@ class JarvisParameter(IJarvisParameter):
             # Primitive types
             'str', 'string', 'int', 'integer', 'float', 'bool', 'boolean', 'list', 'array', 'dict',
             # Datetime types
-            'datetime', 'date', 'time', 'timedelta', 'array[datetime]', 'array[date]', 'array[time]', 'array[timedelta]'
+            'datetime', 'date', 'time', 'timedelta',
+            # Array types (angle and bracket syntax)
+            'array<datetime>', 'array<date>', 'array<time>', 'array<timedelta>',
+            'array<string>', 'array<int>', 'array<float>', 'array<bool>',
+            'array[datetime]', 'array[date]', 'array[time]', 'array[timedelta]',
+            # Shorthand array aliases
+            'datetime[]', 'date[]', 'time[]', 'timedelta[]'
         }
         
         if param_type not in allowed_types:
