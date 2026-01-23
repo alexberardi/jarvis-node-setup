@@ -4,6 +4,7 @@
   "jarvis_whisper_api_url": "https://whisper.yourdomain.com",
   "jarvis_command_center_api_url": "http://your-command-center:9998",
   "jarvis_llm_proxy_api_url": "http://localhost:8000",
+  "jcc_adapter_base_model_id": "llm-proxy-model-name",
   "room": "your-room-name",
   "user": "your-username",
   "voice": "en",
@@ -25,5 +26,6 @@
   "jarvis_tts_api_url": "http://your-tts-server:8001",
   "music_assistant_enabled": true,
   "music_assistant_url": "ws://your-music-assistant:8095/ws",
-  "music_assistant_player_id": "your_music_assistant_player_id"
+  "music_assistant_player_id": "your_music_assistant_player_id",
+  "skip_warmup_inference": true
 }

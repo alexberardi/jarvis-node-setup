@@ -1,0 +1,100 @@
+{"utterance":"What's the weather in Boston right now?","tool_name":"get_weather"}
+{"utterance":"Is it raining in Seattle today?","tool_name":"get_weather"}
+{"utterance":"Give me the forecast for Dallas tomorrow.","tool_name":"get_weather"}
+{"utterance":"Will it snow in Denver this weekend?","tool_name":"get_weather"}
+{"utterance":"How hot is it in Phoenix?","tool_name":"get_weather"}
+{"utterance":"Show me the 5 day forecast for Chicago.","tool_name":"get_weather"}
+{"utterance":"Weather for San Francisco tomorrow morning.","tool_name":"get_weather"}
+{"utterance":"What's the temperature in Miami?","tool_name":"get_weather"}
+{"utterance":"Forecast for Austin on Saturday.","tool_name":"get_weather"}
+{"utterance":"How windy is it in Portland today?","tool_name":"get_weather"}
+{"utterance":"What's on my calendar today?","tool_name":"get_calendar_events"}
+{"utterance":"Do I have any meetings tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Show my schedule for next week.","tool_name":"get_calendar_events"}
+{"utterance":"Read my calendar for this weekend.","tool_name":"get_calendar_events"}
+{"utterance":"Any appointments this afternoon?","tool_name":"get_calendar_events"}
+{"utterance":"What's on my calendar Monday?","tool_name":"get_calendar_events"}
+{"utterance":"Check my calendar for Friday.","tool_name":"get_calendar_events"}
+{"utterance":"Show my events for next Tuesday.","tool_name":"get_calendar_events"}
+{"utterance":"What meetings do I have today?","tool_name":"get_calendar_events"}
+{"utterance":"What's on my agenda tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"What is the capital of Japan?","tool_name":"answer_question"}
+{"utterance":"Who wrote Pride and Prejudice?","tool_name":"answer_question"}
+{"utterance":"When did World War I end?","tool_name":"answer_question"}
+{"utterance":"How does a telescope work?","tool_name":"answer_question"}
+{"utterance":"Where is the Amazon River located?","tool_name":"answer_question"}
+{"utterance":"What is the definition of entropy?","tool_name":"answer_question"}
+{"utterance":"Who painted the Mona Lisa?","tool_name":"answer_question"}
+{"utterance":"Explain how photosynthesis works.","tool_name":"answer_question"}
+{"utterance":"What is the tallest mountain in Europe?","tool_name":"answer_question"}
+{"utterance":"What is the boiling point of water?","tool_name":"answer_question"}
+{"utterance":"Who won the Super Bowl this year?","tool_name":"search_web"}
+{"utterance":"What time is it in Tokyo right now?","tool_name":"search_web"}
+{"utterance":"Latest news about Tesla stock.","tool_name":"search_web"}
+{"utterance":"Search for breaking news about earthquakes.","tool_name":"search_web"}
+{"utterance":"When is the next SpaceX launch?","tool_name":"search_web"}
+{"utterance":"Current price of Bitcoin.","tool_name":"search_web"}
+{"utterance":"Find today's headlines.","tool_name":"search_web"}
+{"utterance":"Who won the World Series last night?","tool_name":"search_web"}
+{"utterance":"What's the latest update on the Mars rover?","tool_name":"search_web"}
+{"utterance":"Search for live updates on the hurricane.","tool_name":"search_web"}
+{"utterance":"What is 12 plus 7?","tool_name":"calculate"}
+{"utterance":"Calculate 100 minus 45.","tool_name":"calculate"}
+{"utterance":"What's 6 times 9?","tool_name":"calculate"}
+{"utterance":"Divide 81 by 9.","tool_name":"calculate"}
+{"utterance":"Add 3.5 and 2.1.","tool_name":"calculate"}
+{"utterance":"What is 50 percent of 80?","tool_name":"calculate"}
+{"utterance":"What's 14 minus 3?","tool_name":"calculate"}
+{"utterance":"Multiply 7 and 8.","tool_name":"calculate"}
+{"utterance":"What is 9 divided by 3?","tool_name":"calculate"}
+{"utterance":"Compute 23 plus 19.","tool_name":"calculate"}
+{"utterance":"Convert 5 miles to kilometers.","tool_name":"convert_measurement"}
+{"utterance":"How many inches are in 2 feet?","tool_name":"convert_measurement"}
+{"utterance":"Convert 3 gallons to liters.","tool_name":"convert_measurement"}
+{"utterance":"How many pounds is 2 kilograms?","tool_name":"convert_measurement"}
+{"utterance":"Convert 350 Fahrenheit to Celsius.","tool_name":"convert_measurement"}
+{"utterance":"How many cups are in a quart?","tool_name":"convert_measurement"}
+{"utterance":"Convert 100 meters to yards.","tool_name":"convert_measurement"}
+{"utterance":"How many grams are in 5 ounces?","tool_name":"convert_measurement"}
+{"utterance":"Convert 2 liters to gallons.","tool_name":"convert_measurement"}
+{"utterance":"How many centimeters are in a meter?","tool_name":"convert_measurement"}
+{"utterance":"What's the score of the Lakers game?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Yankees do yesterday?","tool_name":"get_sports_scores"}
+{"utterance":"What was the score of the Patriots game?","tool_name":"get_sports_scores"}
+{"utterance":"Did the Warriors win last night?","tool_name":"get_sports_scores"}
+{"utterance":"How did the New York Giants do?","tool_name":"get_sports_scores"}
+{"utterance":"What was the Bulls score yesterday?","tool_name":"get_sports_scores"}
+{"utterance":"Give me the final score for the Dodgers game.","tool_name":"get_sports_scores"}
+{"utterance":"How did the Cowboys do today?","tool_name":"get_sports_scores"}
+{"utterance":"What was the score of the Panthers game yesterday?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Eagles do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"When do the Giants play next?","tool_name":"get_sports_schedule"}
+{"utterance":"What's the next game for the Lakers?","tool_name":"get_sports_schedule"}
+{"utterance":"When is the Yankees game tomorrow?","tool_name":"get_sports_schedule"}
+{"utterance":"Show me the Cowboys schedule this week.","tool_name":"get_sports_schedule"}
+{"utterance":"What time do the Warriors play tonight?","tool_name":"get_sports_schedule"}
+{"utterance":"Who do the Bulls play next?","tool_name":"get_sports_schedule"}
+{"utterance":"When is the next Panthers game?","tool_name":"get_sports_schedule"}
+{"utterance":"What's the Seahawks schedule for next week?","tool_name":"get_sports_schedule"}
+{"utterance":"When do the Dodgers play on Saturday?","tool_name":"get_sports_schedule"}
+{"utterance":"Show upcoming games for the Bruins.","tool_name":"get_sports_schedule"}
+{"utterance":"Tell me a joke.","tool_name":"tell_joke"}
+{"utterance":"Tell a joke about cats.","tool_name":"tell_joke"}
+{"utterance":"Make me laugh with a programming joke.","tool_name":"tell_joke"}
+{"utterance":"I need a funny joke.","tool_name":"tell_joke"}
+{"utterance":"Tell me a clean joke about sports.","tool_name":"tell_joke"}
+{"utterance":"Joke about space.","tool_name":"tell_joke"}
+{"utterance":"Say something funny.","tool_name":"tell_joke"}
+{"utterance":"Tell a joke about food.","tool_name":"tell_joke"}
+{"utterance":"Give me a joke about computers.","tool_name":"tell_joke"}
+{"utterance":"Tell a quick joke.","tool_name":"tell_joke"}
+{"utterance":"Tell me a story.","tool_name":"tell_story"}
+{"utterance":"Tell me a story about dragons.","tool_name":"tell_story"}
+{"utterance":"Start a bedtime story about space.","tool_name":"tell_story"}
+{"utterance":"Tell a short story about a robot.","tool_name":"tell_story"}
+{"utterance":"Continue the story.","tool_name":"tell_story"}
+{"utterance":"Finish the story.","tool_name":"tell_story"}
+{"utterance":"Tell a story for a 7 year old.","tool_name":"tell_story"}
+{"utterance":"Tell me a 300 word story about pirates.","tool_name":"tell_story"}
+{"utterance":"Make up a story about a lost puppy.","tool_name":"tell_story"}
+{"utterance":"End the story now.","tool_name":"tell_story"}

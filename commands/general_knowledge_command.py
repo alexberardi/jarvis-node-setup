@@ -25,8 +25,8 @@ class GeneralKnowledgeCommand(IJarvisCommand):
     def allow_direct_answer(self) -> bool:
         return True
 
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate example utterances with expected parameters using date context"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise example utterances with expected parameters using date context"""
         return [
             CommandExample(
                 voice_command="What is the capital of France?",
@@ -50,6 +50,59 @@ class GeneralKnowledgeCommand(IJarvisCommand):
                 expected_parameters={"query": "What is the definition of democracy?"}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        questions = [
+            "What is the capital of France?",
+            "Who was Albert Einstein?",
+            "How does photosynthesis work?",
+            "Where is Mount Everest located?",
+            "What is the definition of democracy?",
+            "Who wrote Pride and Prejudice?",
+            "What is the tallest mountain in Europe?",
+            "When did World War I end?",
+            "Explain how gravity works",
+            "What is the boiling point of water?",
+            "Who painted the Mona Lisa?",
+            "Where is the Amazon River located?",
+            "What is the largest planet in the solar system?",
+            "What does DNA stand for?",
+            "Who was Marie Curie?",
+            "What is the speed of light?",
+            "Explain the water cycle",
+            "What is the currency of Japan?",
+            "When was the Declaration of Independence signed?",
+            "Who discovered penicillin?",
+            "What is the smallest prime number?",
+            "Where is the Great Barrier Reef?",
+            "What is the longest river in the world?",
+            "How do solar panels work?",
+            "What is the capital of Canada?",
+            "Who is Isaac Newton?",
+            "What is the meaning of photosynthesis?",
+            "Where is the Sahara Desert?",
+            "What is an ecosystem?",
+            "How does an engine work?",
+            "What is the freezing point of water?",
+            "Who was Martin Luther King Jr.?",
+            "What is the capital of Italy?",
+            "Explain plate tectonics",
+            "Where is the Eiffel Tower located?",
+            "What is the human body's largest organ?",
+            "What is a black hole?",
+            "How do airplanes fly?",
+            "What is the chemical symbol for gold?",
+            "Who was Cleopatra?"
+        ]
+        examples = []
+        for i, question in enumerate(questions):
+            examples.append(CommandExample(
+                voice_command=question,
+                expected_parameters={"query": question},
+                is_primary=(i == 0)
+            ))
+        return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
