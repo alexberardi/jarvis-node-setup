@@ -1,7 +1,7 @@
 from typing import List, Any, Optional
 from pydantic import BaseModel
 
-from clients.responses.jarvis_command_center import DateContext
+from constants.relative_date_keys import RelativeDateKeys
 from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -43,37 +43,122 @@ class SportsScoreCommand(IJarvisCommand):
     def description(self) -> str:
         return "Final scores and results for active or recent games. Not for future schedules, live updates, player stats, or standings."
     
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate examples for the sports score command with varied verbiage"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise examples for the sports score command with varied verbiage"""
         return [
             CommandExample(
                 voice_command="How did the Giants do?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="How did the Cowboys do?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": [RelativeDateKeys.TODAY]}
             ),
             CommandExample(
                 voice_command="How did the New York Giants do?",
-                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]}
             ),
             CommandExample(
                 voice_command="How did the Eagles do last weekend?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": [date_context.weekend.last_weekend[0].utc_start_of_day, date_context.weekend.last_weekend[1].utc_start_of_day]}
+                expected_parameters={"team_name": "Eagles", "resolved_datetimes": [RelativeDateKeys.LAST_WEEKEND]}
             ),
             CommandExample(
                 voice_command="What's the score of the Lakers game today?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Lakers", "resolved_datetimes": [RelativeDateKeys.TODAY]}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        today = [RelativeDateKeys.TODAY]
+        yesterday = [RelativeDateKeys.YESTERDAY]
+        tomorrow = [RelativeDateKeys.TOMORROW]
+        last_weekend = [RelativeDateKeys.LAST_WEEKEND]
+        # Include both short names and full city+team names
+        teams = [
+            "Giants", "Cowboys", "New York Giants", "Dallas Cowboys", "Eagles", "Philadelphia Eagles",
+            "Lakers", "Los Angeles Lakers", "Yankees", "New York Yankees", "Dodgers", "LA Dodgers",
+            "Warriors", "Golden State Warriors", "Celtics", "Boston Celtics", "Patriots", "New England Patriots",
+            "Panthers", "Carolina Panthers", "Bulls", "Chicago Bulls", "Mets", "New York Mets",
+            "Rangers", "Texas Rangers", "Packers", "Green Bay Packers", "49ers", "San Francisco 49ers",
+            "Seahawks", "Seattle Seahawks", "Cardinals", "Arizona Cardinals", "Buccaneers", "Tampa Bay Buccaneers"
+        ]
+        # Implicit today templates (no date word - critical for training)
+        implicit_today_templates = [
+            "How did the {team} do?",
+            "What's the score of the {team} game?",
+            "What was the score of the {team} game?",
+            "Did the {team} win?",
+            "What was the {team} score?",
+            "Final score for the {team} game",
+            "Score of the {team} game",
+            "{team} score",
+            "How'd the {team} do?",
+        ]
+        # Explicit date templates
+        explicit_templates = [
+            ("How did {team} do yesterday?", yesterday),
+            ("Score of the {team} game yesterday", yesterday),
+            ("How did the {team} do last weekend?", last_weekend),
+            ("What was the {team} score last weekend?", last_weekend),
+            ("How did the {team} do today?", today),
+            ("What's the {team} score today?", today),
+        ]
+        examples: List[CommandExample] = []
+        is_primary = True
+
+        # Generate implicit today examples (most important for training)
+        for team in teams:
+            for template in implicit_today_templates:
+                if len(examples) >= 30:
+                    break
+                utterance = template.format(team=team)
+                examples.append(CommandExample(
+                    voice_command=utterance,
+                    expected_parameters={"team_name": team, "resolved_datetimes": today},
+                    is_primary=is_primary
+                ))
+                is_primary = False
+            if len(examples) >= 30:
+                break
+
+        # Add explicit date examples
+        for team in teams[:8]:  # Use subset for explicit dates
+            for template, dates in explicit_templates:
+                if len(examples) >= 45:
+                    break
+                utterance = template.format(team=team)
+                examples.append(CommandExample(
+                    voice_command=utterance,
+                    expected_parameters={"team_name": team, "resolved_datetimes": dates},
+                    is_primary=False
+                ))
+            if len(examples) >= 45:
+                break
+
+        # Casual/varied phrasings (nicknames, slang, minimal context)
+        varied_examples = [
+            ("How'd the Bronx Bombers do?", {"team_name": "Yankees", "resolved_datetimes": today}),
+            ("Did America's Team win?", {"team_name": "Dallas Cowboys", "resolved_datetimes": today}),
+            ("How'd my Cubs do?", {"team_name": "Chicago Cubs", "resolved_datetimes": today}),
+            ("Did the Birds win?", {"team_name": "Cardinals", "resolved_datetimes": today}),
+            ("Pack win last night?", {"team_name": "Green Bay Packers", "resolved_datetimes": yesterday}),
+            ("Score of the Bolts game?", {"team_name": "Chargers", "resolved_datetimes": today}),
+            ("Did we beat them?", {"team_name": "Lakers", "resolved_datetimes": today}),
+            ("Who won?", {"resolved_datetimes": today}),
+            ("Final score?", {"resolved_datetimes": today}),
+        ]
+        for voice, params in varied_examples:
+            examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=False))
+
+        return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said. Must be valid Big 4 or College team."),
-            JarvisParameter("resolved_datetimes", "array", required=True, description="ISO UTC start-of-day datetimes for the dates to check.")
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="ISO UTC start-of-day datetimes for the dates to check (required; use today's date if none is supplied).")
         ]
     
     @property
@@ -83,7 +168,7 @@ class SportsScoreCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "If no date is specified in the voice command, default to today's start of day (current.utc_start_of_day from date context)",
+            "Always include resolved_datetimes; if no date is specified, use today's start of day (current.utc_start_of_day from date context)",
             "Always call this tool for sports results; do NOT answer from memory or ask for a date first",
             "Never infer historical season dates when no date is mentioned; use today only",
             "Use this command for questions about PAST performance, results, scores, or 'how did [team] do'",
@@ -103,7 +188,7 @@ class SportsScoreCommand(IJarvisCommand):
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
         team_name = kwargs.get("team_name")
-        resolved_datetimes = kwargs.get("resolved_datetimes", [])
+        resolved_datetimes = kwargs.get("resolved_datetimes")
         
         # Extract voice command
         voice_command = request_info.voice_command
@@ -116,6 +201,16 @@ class SportsScoreCommand(IJarvisCommand):
                 context_data={
                     "voice_command": voice_command,
                     "error": "Missing team name"
+                }
+            )
+
+        if not resolved_datetimes:
+            return CommandResponse.error_response(
+                error_details="Missing resolved_datetimes parameter",
+                context_data={
+                    "voice_command": voice_command,
+                    "team_name": team_name,
+                    "error": "Missing dates"
                 }
             )
         
@@ -139,7 +234,7 @@ class SportsScoreCommand(IJarvisCommand):
             
             
             all_games = []
-            dates_to_check = resolved_datetimes or []
+            dates_to_check = resolved_datetimes
 
             # Loop through each date and get scores for all teams
             for date in dates_to_check:

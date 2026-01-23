@@ -25,8 +25,8 @@ class TellAJokeCommand(IJarvisCommand):
     def allow_direct_answer(self) -> bool:
         return True
 
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate example utterances with expected parameters using date context"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise example utterances with expected parameters using date context"""
         return [
             CommandExample(
                 voice_command="Tell me a joke",
@@ -42,6 +42,57 @@ class TellAJokeCommand(IJarvisCommand):
                 expected_parameters={"topic": "technology"}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        topics = [
+            None, "animals", "technology", "programming", "sports", "food", "space",
+            "music", "school", "science", "history", "travel", "cats", "dogs", "robots",
+            "computers", "movies", "books", "pirates", "nature", "weather", "cars",
+            "video games", "math", "office", "kids", "family", "work", "coffee", "pizza",
+            "astronomy", "dinosaurs", "superheroes", "cooking", "gardening", "planes",
+            "trains", "bicycles", "oceans", "mountains"
+        ]
+        phrases = [
+            "Tell me a joke",
+            "I need a joke",
+            "Make me laugh",
+            "Say something funny",
+            "Give me a quick joke",
+            "Tell a clean joke",
+            "Can you tell a joke?",
+            "I want a joke",
+            "Share a joke",
+            "Give me a funny joke"
+        ]
+        examples: List[CommandExample] = []
+        is_primary = True
+        for topic in topics:
+            for phrase in phrases:
+                if len(examples) >= 40:
+                    break
+                if topic:
+                    voice = f"{phrase} about {topic}"
+                    params = {"topic": topic}
+                else:
+                    voice = phrase
+                    params = {}
+                examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=is_primary))
+                is_primary = False
+            if len(examples) >= 40:
+                break
+
+        # Casual/varied phrasings (no explicit "joke" word)
+        varied_examples = [
+            ("Make me laugh", {}),
+            ("Hit me with something funny", {}),
+            ("Got any good ones?", {}),
+            ("Cheer me up", {}),
+        ]
+        for voice, params in varied_examples:
+            examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=False))
+
+        return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:

@@ -155,6 +155,64 @@ class JarvisCommandCenterClient:
             print(f"[JarvisClient] Failed to send validation response: {e}")
             return None
 
+    def train_tool_router(self, payload: Dict[str, Any], timeout: int = 120) -> Optional[Dict[str, Any]]:
+        """
+        Train the tool router FastText model on the command center.
+
+        Args:
+            payload: ToolRouterTrainingRequest body.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            JSON response dict on success, or None on error.
+        """
+        try:
+            response = RestClient.post(
+                f"{self.base_url}/api/v0/tool-router/train",
+                timeout=timeout,
+                data=payload,
+            )
+            return response
+        except Exception as e:
+            print(f"[JarvisClient] Failed to train tool router: {e}")
+            return None
+
+    def train_node_adapter(self, payload: Dict[str, Any], timeout: int = 120) -> Optional[Dict[str, Any]]:
+        """
+        Request node adapter training on the command center.
+
+        Args:
+            payload: Adapter training request body.
+            timeout: Request timeout in seconds.
+
+        Returns:
+            JSON response dict on success, or None on error.
+        """
+        try:
+            response = RestClient.post(
+                f"{self.base_url}/api/v0/adapters/train",
+                timeout=timeout,
+                data=payload,
+            )
+            return response
+        except Exception as e:
+            print(f"[JarvisClient] Failed to train node adapter: {e}")
+            return None
+
+    def get_adapter_job_status(self, job_id: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
+        """
+        Fetch adapter training job status.
+        """
+        try:
+            response = RestClient.get(
+                f"{self.base_url}/api/v0/adapters/jobs/{job_id}",
+                timeout=timeout,
+            )
+            return response
+        except Exception as e:
+            print(f"[JarvisClient] Failed to fetch adapter job status: {e}")
+            return None
+
     def chat(self, message: str, model: Type[T]) -> Optional[T]:
         response = RestClient.post(f"{self.base_url}/api/v0/chat", {
             "messages": [
@@ -237,19 +295,23 @@ class JarvisCommandCenterClient:
     def start_conversation(self, conversation_id: str, commands: dict[str, IJarvisCommand], date_context: Optional[DateContext] = None) -> bool:
         """
         Start a conversation session and register available client-side tools.
-        
+
         Args:
             conversation_id: UUID for the conversation session
             commands: Dictionary of available commands to send to the command center
             date_context: Optional date context to use for tool schemas
-            
+
         Returns:
             True if successful, False otherwise
         """
         # Get date context if not provided
         if date_context is None:
             date_context = self.get_date_context()
-        
+
+        # Check if we should skip warmup inference (useful for vLLM which doesn't cache KV)
+        skip_warmup_raw = Config.get("skip_warmup_inference", "false")
+        skip_warmup = str(skip_warmup_raw).lower() in ("true", "1", "yes")
+
         node_context = {
             "timezone": get_user_timezone()
         }
@@ -272,7 +334,8 @@ class JarvisCommandCenterClient:
             "conversation_id": conversation_id,
             "node_context": node_context,
             "available_commands": available_commands,
-            "client_tools": client_tools
+            "client_tools": client_tools,
+            "skip_warmup_inference": skip_warmup
         }
         
         try:
