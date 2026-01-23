@@ -1,6 +1,6 @@
 from typing import List
 
-from clients.responses.jarvis_command_center import DateContext
+from constants.relative_date_keys import RelativeDateKeys
 from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -30,45 +30,78 @@ class SportsScheduleCommand(IJarvisCommand):
     def description(self) -> str:
         return "Upcoming games and schedules (future or later today). Returns opponents, times, venues, broadcast info. Not for past results or live updates."
     
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate examples for the sports schedule command with varied verbiage"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise examples for the sports schedule command with varied verbiage"""
         return [
             CommandExample(
                 voice_command="When do the Giants play next?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="What's the New York Giants schedule for this weekend?",
-                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [date_context.weekend.this_weekend[0].utc_start_of_day, date_context.weekend.this_weekend[1].utc_start_of_day]}
+                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}
             ),
             CommandExample(
                 voice_command="Show me the Panthers upcoming games for next week",
-                expected_parameters={"team_name": "Panthers", "resolved_datetimes": [
-                    date_context.weeks.next_week[0].utc_start_of_day,
-                    date_context.weeks.next_week[1].utc_start_of_day,
-                    date_context.weeks.next_week[2].utc_start_of_day,
-                    date_context.weeks.next_week[3].utc_start_of_day,
-                    date_context.weeks.next_week[4].utc_start_of_day,
-                    date_context.weeks.next_week[5].utc_start_of_day,
-                    date_context.weeks.next_week[6].utc_start_of_day
-                ]}
+                expected_parameters={"team_name": "Panthers", "resolved_datetimes": [RelativeDateKeys.NEXT_WEEK]}
             ),
             CommandExample(
                 voice_command="What time is the Carolina Panthers game tomorrow?",
-                expected_parameters={"team_name": "Carolina Panthers", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+                expected_parameters={"team_name": "Carolina Panthers", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}
             ),
             CommandExample(
                 voice_command="When's the next Giants game?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": [date_context.current.utc_start_of_day]}
+                expected_parameters={"team_name": "Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        today = [RelativeDateKeys.TODAY]
+        tomorrow = [RelativeDateKeys.TOMORROW]
+        weekend_dates = [RelativeDateKeys.THIS_WEEKEND]
+        next_week_dates = [RelativeDateKeys.NEXT_WEEK]
+        teams = [
+            "Giants", "Panthers", "Cowboys", "Eagles", "Lakers",
+            "Yankees", "Dodgers", "Warriors", "Celtics", "Patriots",
+            "Bulls", "Mets", "Rangers", "Packers", "49ers",
+            "Seahawks", "Cardinals", "Red Sox", "Knicks", "Bruins"
+        ]
+        templates = [
+            ("When do the {team} play next?", today),
+            ("When's the next {team} game?", today),
+            ("What time is the {team} game tomorrow?", tomorrow),
+            ("Show the {team} schedule for this weekend", weekend_dates),
+            ("What's the {team} schedule for this weekend?", weekend_dates),
+            ("Show me the {team} upcoming games for next week", next_week_dates),
+            ("Who do the {team} play next?", today),
+            ("When is the next {team} game?", today),
+            ("What time do the {team} play tomorrow?", tomorrow),
+            ("Upcoming games for the {team} next week", next_week_dates),
+        ]
+        examples: List[CommandExample] = []
+        is_primary = True
+        for team in teams:
+            for template, dates in templates:
+                if len(examples) >= 40:
+                    break
+                voice = template.format(team=team)
+                examples.append(CommandExample(
+                    voice_command=voice,
+                    expected_parameters={"team_name": team, "resolved_datetimes": dates},
+                    is_primary=is_primary
+                ))
+                is_primary = False
+            if len(examples) >= 40:
+                break
+        return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said."),
-            JarvisParameter("resolved_datetimes", "array", required=True, description="ISO UTC start-of-day datetimes for the dates to check.")
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="ISO UTC start-of-day datetimes for the dates to check (required; use today's date if none is supplied).")
         ]
     
     @property
@@ -79,6 +112,7 @@ class SportsScheduleCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "Use this command for questions about FUTURE games, schedules, and upcoming events only",
+            "Always include resolved_datetimes; if no date is specified, use today's start of day (current.utc_start_of_day from date context)",
             "Do NOT use this for ambiguous past results or results that could be far in the past",
             "This command is for 'when do they play next', 'what time is the game', 'who do they play', etc."
         ]
@@ -95,7 +129,7 @@ class SportsScheduleCommand(IJarvisCommand):
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
         team_name = kwargs.get("team_name")
-        datetimes = kwargs.get("resolved_datetimes", [])
+        datetimes = kwargs.get("resolved_datetimes")
         
         # Extract voice command
         voice_command = request_info.voice_command
@@ -108,6 +142,16 @@ class SportsScheduleCommand(IJarvisCommand):
                 context_data={
                     "voice_command": voice_command,
                     "error": "Missing team name"
+                }
+            )
+
+        if not datetimes:
+            return CommandResponse.error_response(
+                error_details="Missing resolved_datetimes parameter",
+                context_data={
+                    "voice_command": voice_command,
+                    "team_name": team_name,
+                    "error": "Missing dates"
                 }
             )
         

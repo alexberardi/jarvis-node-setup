@@ -5,6 +5,7 @@ This script tests various natural language utterances to ensure proper parameter
 """
 
 import ast
+import datetime
 import json
 import time
 import uuid
@@ -13,6 +14,7 @@ import argparse
 from dotenv import load_dotenv
 
 from clients.responses.jarvis_command_center import DateContext
+from constants.relative_date_keys import RelativeDateKeys, ALL_DATE_KEYS
 
 # Load environment variables (this will load CONFIG_PATH from .env)
 load_dotenv()
@@ -43,43 +45,43 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "What's the weather like?",
             "get_weather",
-            {},
-            "Basic current weather request (no city, no dates)"
+            {"resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Basic current weather request (no city; uses today)"
         ),
         CommandTest(
             "What's the weather in Miami?",
             "get_weather", 
-            {"city": "Miami"},
+            {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Current weather with city specified"
         ),
         CommandTest(
             "How's the weather in New York today?",
             "get_weather",
-            {"city": "New York"},
+            {"city": "New York", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Current weather with city and relative date (treated as current)"
         ),
         CommandTest(
             "What's the forecast for Los Angeles tomorrow?",
             "get_weather",
-            {"city": "Los Angeles", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]},
+            {"city": "Los Angeles", "resolved_datetimes": [RelativeDateKeys.TOMORROW]},
             "Forecast with city and relative date"
         ),
         CommandTest(
             "Weather forecast for Chicago on the day after tomorrow",
             "get_weather",
-            {"city": "Chicago", "resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]},
+            {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]},
             "Forecast with city and specific relative date"
         ),
         CommandTest(
             "What's the weather like in metric units?",
             "get_weather",
-            {"unit_system": "metric"},
+            {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Current weather with unit system specified"
         ),
         CommandTest(
             "What is the forecast for Seattle this weekend",
             "get_weather",
-            {"city": "Seattle", "resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.this_weekend] if date_context.weekend.this_weekend else []},
+            {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]},
             "Forecast with city and date range"
         )
     ]
@@ -90,38 +92,38 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "What's on my calendar today?",
             "get_calendar_events",
-            {"resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Calendar events for today (relative date)"
         ),
         CommandTest(
             "Show me my schedule for tomorrow",
             "get_calendar_events",
-            {"resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]},
+            {"resolved_datetimes": [RelativeDateKeys.TOMORROW]},
             "Calendar events for tomorrow (relative date)"
         ),
         CommandTest(
             "What appointments do I have the day after tomorrow?",
             "get_calendar_events",
-            {"resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]},
+            {"resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]},
             "Calendar events for day after tomorrow (relative date)"
         ),
         CommandTest(
             "Show my calendar for this weekend",
             "get_calendar_events",
-            {"resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.this_weekend] if date_context.weekend.this_weekend else []},
+            {"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]},
             "Calendar events for date range"
         ),
         CommandTest(
             "What meetings do I have next week?",
             "get_calendar_events",
-            {"resolved_datetimes": [day.utc_start_of_day for day in date_context.weeks.next_week] if date_context.weeks.next_week else []},
+            {"resolved_datetimes": [RelativeDateKeys.NEXT_WEEK]},
             "Calendar events for week range"
         ),
         CommandTest(
             "Read my calendar",
             "get_calendar_events",
-            {},
-            "Basic calendar request (no dates specified)"
+            {"resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Basic calendar request (uses today)"
         )
     ]
     tests.extend(calendar_tests)
@@ -202,7 +204,7 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "What's the current weather in Miami?",
             "get_weather",
-            {"city": "Miami"},
+            {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Current weather query (should use weather command, not web search)"
         ),
         CommandTest(
@@ -441,119 +443,91 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         CommandTest(
             "How did the Giants do?",
             "get_sports_scores",
-            {"team_name": "Giants"},
+            {"team_name": "Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Basic sports score request (no city, no dates)"
         ),
         CommandTest(
             "What's the score of the Yankees game?",
             "get_sports_scores",
-            {"team_name": "Yankees"},
+            {"team_name": "Yankees", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Sports score request with different team"
         ),
         CommandTest(
             "How did the New York Giants do?",
             "get_sports_scores",
-            {"team_name": "New York Giants"},
+            {"team_name": "New York Giants", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Sports score request with location disambiguation"
         ),
         CommandTest(
             "What's the score of the Carolina Panthers game?",
             "get_sports_scores",
-            {"team_name": "Carolina Panthers"},
+            {"team_name": "Carolina Panthers", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Sports score request with different location/team combination"
         ),
         CommandTest(
             "How did the Giants do yesterday?",
             "get_sports_scores",
-            {"team_name": "Giants", "resolved_datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Giants", "resolved_datetimes": [RelativeDateKeys.YESTERDAY]},
             "Sports score request with relative date"
         ),
         CommandTest(
             "What was the score of the Yankees game yesterday?",
             "get_sports_scores",
-            {"team_name": "Yankees", "resolved_datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Yankees", "resolved_datetimes": [RelativeDateKeys.YESTERDAY]},
             "Sports score with relative date"
         ),
         CommandTest(
             "How did the Baltimore Orioles do last weekend?",
             "get_sports_scores",
-            {"team_name": "Baltimore Orioles", "resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Baltimore Orioles", "resolved_datetimes": [RelativeDateKeys.LAST_WEEKEND]},
             "Sports score with date range"
         ),
         CommandTest(
             "What was the Chicago Bulls score last weekend?",
             "get_sports_scores",
-            {"team_name": "Chicago Bulls", "resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Chicago Bulls", "resolved_datetimes": [RelativeDateKeys.LAST_WEEKEND]},
             "Sports score with date range"
         ),
         CommandTest(
             "How did the Cowboys do?",
             "get_sports_scores",
-            {"team_name": "Cowboys"},
-            "Sports score with no date (defaults to today)"
+            {"team_name": "Cowboys", "resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Sports score with explicit today date"
         ),
         CommandTest(
             "What's the score of the Warriors game tomorrow?",
             "get_sports_scores",
-            {"team_name": "Warriors", "resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]},
+            {"team_name": "Warriors", "resolved_datetimes": [RelativeDateKeys.TOMORROW]},
             "Sports score with relative date"
         ),
         CommandTest(
             "What was the score of the Panthers game yesterday?",
             "get_sports_scores",
-            {"team_name": "Panthers", "resolved_datetimes": [date_context.relative_dates.yesterday.utc_start_of_day]},
+            {"team_name": "Panthers", "resolved_datetimes": [RelativeDateKeys.YESTERDAY]},
             "Sports score with relative date"
         ),
         CommandTest(
             "How did the Eagles do last weekend?",
             "get_sports_scores",
-            {"team_name": "Eagles", "resolved_datetimes": [day.utc_start_of_day for day in date_context.weekend.last_weekend] if date_context.weekend.last_weekend else []},
+            {"team_name": "Eagles", "resolved_datetimes": [RelativeDateKeys.LAST_WEEKEND]},
             "Sports score with date range"
         ),
         CommandTest(
             "What's the score of the Lakers game today?",
             "get_sports_scores",
-            {"team_name": "Lakers", "resolved_datetimes": [date_context.current.utc_start_of_day]},
+            {"team_name": "Lakers", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Sports score with current date"
         ),
         CommandTest(
             "How did the Buccaneers do?",
             "get_sports_scores",
-            {"team_name": "Buccaneers"},
-            "Sports score with no date (defaults to today)"
+            {"team_name": "Buccaneers", "resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Sports score with explicit today date"
         )
     ]
     tests.extend(sports_tests)
     
     return tests
-
-def _datetimes_optional_default_today_ok(expected_value: Any, actual_value: Any, command_name: str, date_context: DateContext) -> bool:
-    """
-    Allow missing/empty datetimes when the command parameter is optional and
-    documented to default to today.
-    Only applies when the test's expected datetimes correspond to today's start-of-day.
-    """
-    optional_default_today_commands = {"get_sports_scores", "get_calendar_events"}
-    if command_name not in optional_default_today_commands:
-        return False
-
-    try:
-        today = date_context.current.utc_start_of_day
-    except AttributeError:
-        return False
-
-    # Expected must be exactly today's start-of-day and a single entry
-    if not (isinstance(expected_value, list) and len(expected_value) == 1 and expected_value[0] == today):
-        return False
-
-    # Accept None, missing, or empty list from the model
-    if actual_value is None:
-        return True
-    if isinstance(actual_value, list) and len(actual_value) == 0:
-        return True
-
-    return False
-
 
 def _maybe_parse_list_string(value: Any) -> Optional[list]:
     if not isinstance(value, str):
@@ -569,6 +543,39 @@ def _maybe_parse_list_string(value: Any) -> Optional[list]:
         except Exception:
             return None
     return parsed if isinstance(parsed, list) else None
+
+
+def _normalize_datetime_value(value: Any) -> Optional[str]:
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if stripped in ALL_DATE_KEYS:
+        return stripped
+    if len(stripped) >= 10 and stripped[4:5] == "-" and stripped[7:8] == "-":
+        return stripped[:10]
+    try:
+        if stripped.endswith("Z"):
+            stripped = f"{stripped[:-1]}+00:00"
+        parsed = datetime.datetime.fromisoformat(stripped)
+        return parsed.date().isoformat()
+    except Exception:
+        return None
+
+
+def _normalize_datetimes_list(value: Any) -> Optional[list]:
+    if not isinstance(value, list):
+        return None
+    normalized = []
+    for item in value:
+        normalized_item = _normalize_datetime_value(item)
+        if not normalized_item:
+            return None
+        normalized.append(normalized_item)
+    return normalized
 
 
 def _normalize_tool_call(tool_call: Any) -> Optional[dict]:
@@ -762,10 +769,6 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         
         for expected_key, expected_value in test.expected_params.items():
             if expected_key not in actual_params:
-                # Allow missing datetimes when the command defaults to today
-                if expected_key == "resolved_datetimes" and _datetimes_optional_default_today_ok(expected_value, None, test.expected_command, date_context):
-                    print(f"   ⚠️  Test {test_index}: Missing datetimes allowed (command defaults to today)")
-                    continue
                 missing_params.append(expected_key)
             else:
                 actual_value = actual_params[expected_key]
@@ -773,11 +776,14 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     parsed_list = _maybe_parse_list_string(actual_value)
                     if parsed_list is not None:
                         actual_value = parsed_list
+                if expected_key == "resolved_datetimes":
+                    normalized_expected = _normalize_datetimes_list(expected_value)
+                    normalized_actual = _normalize_datetimes_list(actual_value)
+                    if normalized_expected is not None and normalized_actual is not None:
+                        if normalized_expected == normalized_actual:
+                            print(f"   ⚠️  Test {test_index}: Datetimes matched by date-only comparison")
+                            continue
                 if actual_value == expected_value:
-                    continue
-                # Allow missing/empty datetimes when command defaults to today
-                if expected_key == "resolved_datetimes" and _datetimes_optional_default_today_ok(expected_value, actual_value, test.expected_command, date_context):
-                    print(f"   ⚠️  Test {test_index}: Datetimes validation passed (command defaults to today)")
                     continue
                 # Special handling for web search queries - allow optimized search terms (apply before strict match)
                 elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_value, str):
@@ -1361,10 +1367,31 @@ def main():
             "test_run_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         },
         "test_results": all_test_results,
+        "failed_test_details": failed_test_details,
         "analysis": generate_analysis(all_test_results),
         "slow_tests": []
     })
     print(f"✅ Results written to {args.output}")
+
+    # Also write to JCC temp location for server-side tooling
+    jcc_results_path = "/home/alex/jarvis/jarvis-command-center/temp/test_results.json"
+    write_results_to_file(jcc_results_path, {
+        "summary": {
+            "total_tests": len(test_commands_to_run),
+            "passed": passed_tests,
+            "failed": failed_tests,
+            "success_rate": round((passed_tests / len(test_commands_to_run) * 100), 2) if test_commands_to_run else 0,
+            "avg_response_time": round(sum(response_times) / len(response_times), 3) if response_times else 0,
+            "min_response_time": round(min(response_times), 3) if response_times else 0,
+            "max_response_time": round(max(response_times), 3) if response_times else 0,
+            "test_run_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+        },
+        "test_results": all_test_results,
+        "failed_test_details": failed_test_details,
+        "analysis": generate_analysis(all_test_results),
+        "slow_tests": []
+    })
+    print(f"✅ Results written to {jcc_results_path}")
     
     print(f"\n🔚 Test execution completed.")
 

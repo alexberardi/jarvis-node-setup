@@ -1,7 +1,7 @@
 from typing import List, Any, Optional
 
 from pydantic import BaseModel
-from clients.responses.jarvis_command_center import DateContext
+from constants.relative_date_keys import RelativeDateKeys
 from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
@@ -25,41 +25,92 @@ class ReadCalendarCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Read calendar events for dates or ranges (defaults to today). Returns titles, times, locations, attendees. Not for creating events or general time questions."
+        return "Read calendar events for specified dates or ranges. Returns titles, times, locations, attendees. Not for creating events or general time questions."
 
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate example utterances with expected parameters using date context"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise example utterances with expected parameters using date keys"""
         return [
             CommandExample(
                 voice_command="What's on my calendar today?",
-                expected_parameters={"resolved_datetimes": [date_context.current.utc_start_of_day]},
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.TODAY]},
                 is_primary=True
             ),
             CommandExample(
                 voice_command="Show me my schedule for tomorrow",
-                expected_parameters={"resolved_datetimes": [date_context.relative_dates.tomorrow.utc_start_of_day]}
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.TOMORROW]}
             ),
             CommandExample(
                 voice_command="What appointments do I have the day after tomorrow?",
-                expected_parameters={"resolved_datetimes": [date_context.relative_dates.day_after_tomorrow.utc_start_of_day]}
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}
             ),
             CommandExample(
                 voice_command="Show my calendar for this weekend",
-                expected_parameters={"resolved_datetimes": [
-                    date_context.weekend.this_weekend[0].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 0 else '',
-                    date_context.weekend.this_weekend[1].utc_start_of_day if date_context.weekend.this_weekend and len(date_context.weekend.this_weekend) > 1 else ''
-                ]}
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}
             ),
             CommandExample(
                 voice_command="Read my calendar",
-                expected_parameters={}
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.TODAY]}
             )
+        ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        examples = [
+            ("What's on my calendar today?", [RelativeDateKeys.TODAY], True),
+            ("Show my schedule today", [RelativeDateKeys.TODAY], False),
+            ("Do I have any meetings today?", [RelativeDateKeys.TODAY], False),
+            ("What events are on my calendar today?", [RelativeDateKeys.TODAY], False),
+            ("Calendar for today", [RelativeDateKeys.TODAY], False),
+            ("Show me my schedule for tomorrow", [RelativeDateKeys.TOMORROW], False),
+            ("What's on my calendar tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Any meetings tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("What appointments do I have the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Show my calendar for the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Show my calendar for this weekend", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Calendar this weekend", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("What's on my calendar this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Show me my events for the weekend", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("What meetings do I have next week?", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Calendar next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Show my schedule next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Read my calendar", [RelativeDateKeys.TODAY], False),
+            ("Check my calendar for today", [RelativeDateKeys.TODAY], False),
+            ("Show my appointments for today", [RelativeDateKeys.TODAY], False),
+            ("What's on my calendar Monday?", [RelativeDateKeys.NEXT_MONDAY], False),
+            ("What's on my calendar Tuesday?", [RelativeDateKeys.NEXT_TUESDAY], False),
+            ("What's on my calendar Wednesday?", [RelativeDateKeys.NEXT_WEDNESDAY], False),
+            ("What's on my calendar Thursday?", [RelativeDateKeys.NEXT_THURSDAY], False),
+            ("What's on my calendar Friday?", [RelativeDateKeys.NEXT_FRIDAY], False),
+            ("What's on my calendar Saturday?", [RelativeDateKeys.NEXT_SATURDAY], False),
+            ("What's on my calendar Sunday?", [RelativeDateKeys.NEXT_SUNDAY], False),
+            ("Show my schedule for the weekend", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Do I have any appointments this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Show my calendar for next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("What meetings are scheduled next week?", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Show me everything on my calendar next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("List my events for next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Check my meetings for tomorrow", [RelativeDateKeys.TOMORROW], False),
+            ("Any appointments for tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Read my schedule today", [RelativeDateKeys.TODAY], False),
+            ("What's on my agenda today?", [RelativeDateKeys.TODAY], False),
+            ("Show my agenda for tomorrow", [RelativeDateKeys.TOMORROW], False),
+            # Casual/varied phrasings (minimal context, colloquial)
+            ("What do I have coming up?", [RelativeDateKeys.TODAY], False),
+            ("Anything on my plate today?", [RelativeDateKeys.TODAY], False),
+            ("Am I free tonight?", [RelativeDateKeys.TODAY], False),
+            ("What's my day look like?", [RelativeDateKeys.TODAY], False),
+            ("When's my next meeting?", [RelativeDateKeys.TODAY], False),
+            ("Busy this week?", [RelativeDateKeys.NEXT_WEEK], False),
+        ]
+        return [
+            CommandExample(voice_command=voice, expected_parameters={"resolved_datetimes": dates}, is_primary=is_primary)
+            for voice, dates, is_primary in examples
         ]
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("resolved_datetimes", "array", description="ISO UTC start-of-day datetimes for the dates to read. Omit to use today.", required=False, default=None)
+            JarvisParameter("resolved_datetimes", "array<datetime>", description="ISO UTC start-of-day datetimes for the dates to read.", required=True)
         ]
 
     @property
@@ -75,7 +126,7 @@ class ReadCalendarCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "Always call this tool to read calendar events; do NOT ask for a date first",
-            "If no date is provided, default to today and still call the tool"
+            "Always include resolved_datetimes; use today's date if the user asks for 'today'."
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:
@@ -96,13 +147,23 @@ class ReadCalendarCommand(IJarvisCommand):
             voice_command = "unknown command"
             print(f"WARNING: Could not extract voice_command from request_info: {request_info}")
         
+        if not datetimes_array:
+            return CommandResponse.error_response(
+                error_details="Missing required resolved_datetimes parameter",
+                context_data={
+                    "dates": [],
+                    "events": [],
+                    "error": "Missing dates"
+                }
+            )
+
         # Parse datetime parameters
         try:
             target_dates = parse_date_array(datetimes_array)
             print(f"DEBUG: Parsed target_dates: {[d.strftime('%Y-%m-%d %H:%M:%S') for d in target_dates]}")
         except ValueError as e:
             return CommandResponse.error_response(
-                                error_details=str(e),
+                error_details=str(e),
                 context_data={
                     "dates": datetimes_array if datetimes_array else [],
                     "events": [],
@@ -156,14 +217,8 @@ class ReadCalendarCommand(IJarvisCommand):
             # Collect events based on whether we have specific dates or are using the default
             all_events = []
             
-            # Check if we're using the default 60-day range or specific dates from the LLM
-            if datetimes_array is None or len(datetimes_array) == 0:
-                # No dates provided by LLM - use 60-day default
-                start_date = target_dates[0]  # This will be today from parse_date_array default
-                print(f"DEBUG: No dates from LLM - using 60-day default starting from {start_date.strftime('%Y-%m-%d')}")
-                all_events = calendar_service.read_events(start_date, 60)
-                print(f"DEBUG: Found {len(all_events)} total events across 60-day default range")
-            elif len(target_dates) > 1:
+            # Check if we're using specific dates from the LLM
+            if len(target_dates) > 1:
                 # Multiple specific dates from LLM - query the entire range
                 start_date = target_dates[0]
                 end_date = target_dates[-1]

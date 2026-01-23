@@ -194,8 +194,8 @@ class WebSearchCommand(IJarvisCommand):
             ),
         ]
 
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate example utterances with expected parameters using date context"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise example utterances with expected parameters using date context"""
         return [
             CommandExample(
                 voice_command="Who won the senate race in Pennsylvania?",
@@ -218,6 +218,66 @@ class WebSearchCommand(IJarvisCommand):
                 voice_command="Find the latest information about COVID vaccines",
                 expected_parameters={"query": "Find the latest information about COVID vaccines"}
             )
+        ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        queries = [
+            "Who won the senate race in Pennsylvania?",
+            "What time is it in California right now?",
+            "When is the next SpaceX launch?",
+            "Who won the Super Bowl this year?",
+            "Find the latest information about COVID vaccines",
+            "What's the latest news about Tesla stock?",
+            "Latest headlines today",
+            "Search for live updates on the hurricane",
+            "Who won the World Series last night?",
+            "What are today's top news stories?",
+            "Look up the latest on the Mars rover",
+            "Search the web for earthquake updates",
+            "What is the current time in London?",
+            "Find breaking news about the stock market",
+            "Search for live sports scores",
+            "What is the latest update on the election?",
+            "Find recent news about Apple earnings",
+            "Search for current wildfire updates",
+            "What is the latest weather advisory in Florida?",
+            "Search for the latest on the FIFA match",
+            "Look up current gas prices in Texas",
+            "Find the most recent NASA announcement",
+            "Search for today's cryptocurrency news",
+            "What's the current score of the Lakers game?",
+            "Search for current traffic in Seattle",
+            "Find live updates on the storm",
+            "Search for latest vaccine guidance",
+            "What is the current exchange rate for USD to EUR?",
+            "Search for breaking news about flooding",
+            "Find the latest on the Supreme Court ruling",
+            "What time is it in Tokyo right now?",
+            "Search for the latest on interest rates",
+            "Find today's tech news",
+            "Search for current airline delays",
+            "Look up the latest on the Olympics",
+            "Find current updates on the wildfire near Los Angeles",
+            "Search for the newest information about a company merger",
+            "What's the latest news about SpaceX?",
+            "Search for real-time updates on the power outage",
+            "Find the latest economic report",
+            # Casual/varied phrasings (general knowledge questions)
+            "Who invented the telephone?",
+            "When did World War 2 end?",
+            "What's the population of Tokyo?",
+            "Who wrote Hamlet?",
+            "Why is the sky blue?",
+            "What's the capital of Australia?",
+        ]
+        return [
+            CommandExample(
+                voice_command=query,
+                expected_parameters={"query": query},
+                is_primary=(i == 0)
+            )
+            for i, query in enumerate(queries)
         ]
     
     @property

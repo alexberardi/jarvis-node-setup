@@ -98,8 +98,8 @@ class MeasurementConversionCommand(IJarvisCommand):
     def required_secrets(self) -> List[IJarvisSecret]:
         return []  # No secrets required for measurement conversion
     
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate examples for the measurement conversion command"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise examples for the measurement conversion command"""
         return [
             CommandExample(
                 voice_command="How many inches in a mile?",
@@ -123,6 +123,65 @@ class MeasurementConversionCommand(IJarvisCommand):
                 expected_parameters={"value": 350, "from_unit": "fahrenheit", "to_unit": "celsius"}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        items = [
+            ("How many inches in a mile?", 1, "miles", "inches"),
+            ("How many feet in a mile?", 1, "miles", "feet"),
+            ("Convert 5 miles to kilometers", 5, "miles", "kilometers"),
+            ("Convert 10 kilometers to miles", 10, "kilometers", "miles"),
+            ("How many centimeters in a meter?", 1, "meters", "centimeters"),
+            ("Convert 100 meters to yards", 100, "meters", "yards"),
+            ("How many yards in 3 feet?", 3, "feet", "yards"),
+            ("Convert 2 kilometers to meters", 2, "kilometers", "meters"),
+            ("How many inches in 12 feet?", 12, "feet", "inches"),
+            ("Convert 1 league to inches", 1, "leagues", "inches"),
+            ("How many cups in a gallon?", 1, "gallons", "cups"),
+            ("How many tablespoons in a cup?", 1, "cups", "tablespoons"),
+            ("Convert 2 liters to gallons", 2, "liters", "gallons"),
+            ("How many quarts in 2 gallons?", 2, "gallons", "quarts"),
+            ("Convert 8 pints to gallons", 8, "pints", "gallons"),
+            ("How many teaspoons in a gallon?", 1, "gallons", "teaspoons"),
+            ("Convert 5 cups to milliliters", 5, "cups", "milliliters"),
+            ("How many fluid ounces in 3 cups?", 3, "cups", "fluid_ounces"),
+            ("Convert 10 pounds to kilograms", 10, "pounds", "kilograms"),
+            ("How many grams in 3 ounces?", 3, "ounces", "grams"),
+            ("Convert 2 kilograms to pounds", 2, "kilograms", "pounds"),
+            ("How many ounces in 1 pound?", 1, "pounds", "ounces"),
+            ("Convert 500 grams to pounds", 500, "grams", "pounds"),
+            ("What's 350 Fahrenheit in Celsius?", 350, "fahrenheit", "celsius"),
+            ("Convert 25 Celsius to Fahrenheit", 25, "celsius", "fahrenheit"),
+            ("What is 0 Celsius in Fahrenheit?", 0, "celsius", "fahrenheit"),
+            ("Convert 100 Celsius to Fahrenheit", 100, "celsius", "fahrenheit"),
+            ("Convert 32 Fahrenheit to Celsius", 32, "fahrenheit", "celsius"),
+            ("How many liters in 3 gallons?", 3, "gallons", "liters"),
+            ("Convert 4 quarts to liters", 4, "quarts", "liters"),
+            ("How many miles in 1000 feet?", 1000, "feet", "miles"),
+            ("Convert 1 mile to meters", 1, "miles", "meters"),
+            ("How many yards in 2 miles?", 2, "miles", "yards"),
+            ("Convert 12 inches to centimeters", 12, "inches", "centimeters"),
+            ("How many millimeters in 5 meters?", 5, "meters", "millimeters"),
+            ("Convert 2 metric_tons to pounds", 2, "metric_tons", "pounds"),
+            ("How many tons in 2000 pounds?", 2000, "pounds", "tons"),
+            ("Convert 16 ounces to pounds", 16, "ounces", "pounds"),
+            ("How many cups in 2 liters?", 2, "liters", "cups"),
+            # Casual/varied phrasings (contextual, real-world references)
+            ("What's body temp in Celsius?", 98.6, "fahrenheit", "celsius"),
+            ("How many teaspoons in a tablespoon?", 1, "tablespoons", "teaspoons"),
+            ("What's freezing in Fahrenheit?", 0, "celsius", "fahrenheit"),
+            ("A marathon in miles?", 42.195, "kilometers", "miles"),
+            ("How far is a 5K?", 5, "kilometers", "miles"),
+            ("Football field in meters?", 100, "yards", "meters"),
+        ]
+        examples = []
+        for i, (utterance, value, from_unit, to_unit) in enumerate(items):
+            examples.append(CommandExample(
+                voice_command=utterance,
+                expected_parameters={"value": value, "from_unit": from_unit, "to_unit": to_unit},
+                is_primary=(i == 0)
+            ))
+        return examples
     
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the measurement conversion command"""

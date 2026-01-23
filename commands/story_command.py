@@ -46,8 +46,8 @@ class StoryCommand(IJarvisCommand):
     def keywords(self) -> List[str]:
         return ["story", "tell me a story", "continue story", "end story"]
 
-    def generate_examples(self, date_context: DateContext) -> List[CommandExample]:
-        """Generate examples for the story command"""
+    def generate_prompt_examples(self) -> List[CommandExample]:
+        """Generate concise examples for the story command"""
         return [
             CommandExample(
                 voice_command="Tell me a story",
@@ -71,6 +71,71 @@ class StoryCommand(IJarvisCommand):
                 expected_parameters={"action": "end"}
             )
         ]
+
+    def generate_adapter_examples(self) -> List[CommandExample]:
+        """Generate varied examples for adapter training"""
+        subjects = [
+            "dragons", "space", "pirates", "robots", "a lost puppy", "a magic forest",
+            "superheroes", "dinosaurs", "underwater adventure", "a brave knight",
+            "a detective mystery", "a friendly monster", "a time traveler", "a small village",
+            "a hidden treasure", "a talking cat", "a snowstorm", "a desert journey",
+            "a mountain climb", "a secret garden", "a haunted house", "a robot school",
+            "a princess and a dragon", "a space station", "a jungle expedition", "a circus",
+            "a music festival", "a racing car", "a flying ship", "a lighthouse"
+        ]
+        examples: List[CommandExample] = []
+        is_primary = True
+        # Start story examples
+        for subject in subjects:
+            if len(examples) >= 20:
+                break
+            examples.append(CommandExample(
+                voice_command=f"Tell me a story about {subject}",
+                expected_parameters={"story_subject": subject},
+                is_primary=is_primary
+            ))
+            is_primary = False
+
+        # Variations with audience age and word count
+        variants = [
+            ("Tell me a bedtime story", {}),
+            ("Tell me a short story", {"word_count": 300}),
+            ("Tell me a 500 word story", {"word_count": 500}),
+            ("Tell me a 1000 word story", {"word_count": 1000}),
+            ("Tell a story for a 6 year old", {"target_audience_age": 6}),
+            ("Tell a story for a 10 year old", {"target_audience_age": 10}),
+            ("Tell a story for a 12 year old", {"target_audience_age": 12}),
+            ("Tell me a story about space for a 7 year old", {"story_subject": "space", "target_audience_age": 7}),
+            ("Tell me a story about robots in 400 words", {"story_subject": "robots", "word_count": 400}),
+            ("Tell me a story about pirates in 700 words", {"story_subject": "pirates", "word_count": 700}),
+            ("Tell me a story about dragons for an 8 year old", {"story_subject": "dragons", "target_audience_age": 8}),
+            ("Tell me a story about a mystery in 600 words", {"story_subject": "a mystery", "word_count": 600}),
+        ]
+        for voice, params in variants:
+            if len(examples) >= 35:
+                break
+            examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=False))
+
+        # Continue / end examples
+        examples.extend([
+            CommandExample(voice_command="Continue the story", expected_parameters={"action": "continue"}, is_primary=False),
+            CommandExample(voice_command="Keep going with the story", expected_parameters={"action": "continue"}, is_primary=False),
+            CommandExample(voice_command="Continue story", expected_parameters={"action": "continue"}, is_primary=False),
+            CommandExample(voice_command="End the story", expected_parameters={"action": "end"}, is_primary=False),
+            CommandExample(voice_command="Finish the story", expected_parameters={"action": "end"}, is_primary=False),
+        ])
+
+        # Casual/varied phrasings (no explicit "story" word)
+        varied_examples = [
+            ("Storytime!", {}),
+            ("Entertain me", {}),
+            ("Spin me a yarn", {}),
+            ("Got a good tale?", {}),
+        ]
+        for voice, params in varied_examples:
+            examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=False))
+
+        return examples
 
     def run(self, request_info, **kwargs) -> CommandResponse:
         # ---- inputs & defaults ----
