@@ -31,7 +31,7 @@ class CalculatorCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Two-number arithmetic: add, subtract, multiply, or divide. Not for unit conversions or advanced formulas."
+        return "Perform two-number arithmetic operations: addition, subtraction, multiplication, or division."
     
     @property
     def allow_direct_answer(self) -> bool:
@@ -41,9 +41,7 @@ class CalculatorCommand(IJarvisCommand):
     def keywords(self) -> List[str]:
         return [
             "calculate", "math", "add", "subtract", "multiply", "divide",
-            "plus", "minus", "times", "divided by", "sum", "difference",
-            "product", "quotient", "arithmetic", "computation",
-            "percent", "percentage", "%", "percent of", "of"
+            "plus", "minus"
         ]
     
     @property
@@ -51,7 +49,7 @@ class CalculatorCommand(IJarvisCommand):
         return [
             JarvisParameter("num1", "float", required=True, description="First number."),
             JarvisParameter("num2", "float", required=True, description="Second number."),
-            JarvisParameter("operation", "string", required=True, description="Operation: strictly 'add', 'subtract', 'multiply', or 'divide'.")
+            JarvisParameter("operation", "string", required=True, description="Operation: must be exactly 'add', 'subtract', 'multiply', or 'divide' (no synonyms).")
         ]
 
     @property
@@ -92,58 +90,84 @@ class CalculatorCommand(IJarvisCommand):
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training"""
+        """Generate varied examples for adapter training.
+
+        Rules:
+        - 1-2 examples per variation pattern (not 10+)
+        - NEVER include utterances from test_command_parsing.py
+        - Focus on pattern diversity, not quantity
+        """
         items = [
-            ("What's 5 plus 3?", 5, 3, "add"),
-            ("Add 7 and 9", 7, 9, "add"),
-            ("Calculate 18 plus 4", 18, 4, "add"),
-            ("What is 12 + 6?", 12, 6, "add"),
-            ("Sum 21 and 14", 21, 14, "add"),
-            ("What's 10 minus 4?", 10, 4, "subtract"),
+            # Pattern 1: Addition - question format with "plus"
+            ("What's 7 plus 9?", 7, 9, "add"),
+            ("How much is 14 plus 23?", 14, 23, "add"),
+
+            # Pattern 2: Addition - imperative with "and"
+            ("Add 18 and 4", 18, 4, "add"),
+            ("Add together 11 and 29", 11, 29, "add"),
+
+            # Pattern 3: Addition - casual / contracted
+            ("What's 12 and 6?", 12, 6, "add"),
+            ("19 and 7?", 19, 7, "add"),
+
+            # Pattern 4: Subtraction - question with "minus"
+            ("What's 50 minus 13?", 50, 13, "subtract"),
+            ("How much is 100 minus 37?", 100, 37, "subtract"),
+
+            # Pattern 5: Subtraction - "from" phrasing (note: order swaps)
             ("Subtract 7 from 22", 22, 7, "subtract"),
-            ("Calculate 50 minus 13", 50, 13, "subtract"),
-            ("What is 99 - 45?", 99, 45, "subtract"),
-            ("What's the difference between 60 and 18?", 60, 18, "subtract"),
-            ("What is 6 times 7?", 6, 7, "multiply"),
-            ("Multiply 9 and 8", 9, 8, "multiply"),
-            ("Calculate 12 * 4", 12, 4, "multiply"),
-            ("What's 14 times 3?", 14, 3, "multiply"),
-            ("Product of 11 and 5", 11, 5, "multiply"),
-            ("Divide 20 by 5", 20, 5, "divide"),
+            ("Take 15 away from 40", 40, 15, "subtract"),
+
+            # Pattern 6: Subtraction - casual
+            ("33 minus 8?", 33, 8, "subtract"),
+
+            # Pattern 7: Multiplication - "times"
+            ("What's 9 times 8?", 9, 8, "multiply"),
+            ("How much is 12 times 5?", 12, 5, "multiply"),
+
+            # Pattern 8: Multiplication - "multiplied by"
+            ("What is 7 multiplied by 6?", 7, 6, "multiply"),
+
+            # Pattern 9: Multiplication - casual
+            ("8 times 4?", 8, 4, "multiply"),
+
+            # Pattern 10: Division - "divided by"
             ("What is 81 divided by 9?", 81, 9, "divide"),
-            ("Calculate 100 / 4", 100, 4, "divide"),
+            ("How much is 144 divided by 12?", 144, 12, "divide"),
+
+            # Pattern 11: Division - imperative
             ("Divide 72 by 8", 72, 8, "divide"),
-            ("Quotient of 49 and 7", 49, 7, "divide"),
+            ("Split 100 by 4", 100, 4, "divide"),
+
+            # Pattern 12: Division - casual
+            ("63 divided by 7?", 63, 7, "divide"),
+
+            # Pattern 13: Floating point numbers
             ("Add 3.5 and 2.1", 3.5, 2.1, "add"),
-            ("What's 7.2 minus 1.1?", 7.2, 1.1, "subtract"),
             ("Multiply 2.5 by 4", 2.5, 4, "multiply"),
-            ("Divide 9.6 by 3.2", 9.6, 3.2, "divide"),
-            ("What's the sum of 8 and 12?", 8, 12, "add"),
-            ("Compute 23 plus 19", 23, 19, "add"),
-            ("Calculate ten minus four", 10, 4, "subtract"),
-            ("What's five plus three?", 5, 3, "add"),
-            ("What is 6 times 7 again?", 6, 7, "multiply"),
-            ("Divide 144 by 12", 144, 12, "divide"),
-            ("Add 15 and 25 together", 15, 25, "add"),
-            ("Subtract 30 from 100", 100, 30, "subtract"),
-            ("Multiply 16 by 2", 16, 2, "multiply"),
-            ("Divide 45 by 5", 45, 5, "divide"),
-            ("What is 3 plus 0?", 3, 0, "add"),
-            ("What is 9 minus 9?", 9, 9, "subtract"),
-            ("What is 1 times 12?", 1, 12, "multiply"),
-            ("What is 42 divided by 6?", 42, 6, "divide"),
-            ("What's 15 percent of 200?", 0.15, 200, "multiply"),
-            # Casual/varied phrasings (written-out numbers, colloquial)
-            ("What's five plus three?", 5, 3, "add"),
-            ("What's negative ten times four?", -10, 4, "multiply"),
-            ("How much is a dozen times twelve?", 12, 12, "multiply"),
-            ("What's half of a hundred?", 100, 2, "divide"),
-            ("Double seventy-three", 73, 2, "multiply"),
-            ("Triple fifteen", 15, 3, "multiply"),
-            ("What do I get if I add seven and eight?", 7, 8, "add"),
-            ("Take away twelve from fifty", 50, 12, "subtract"),
-            ("How many is six times nine?", 6, 9, "multiply"),
-            ("Minus twenty plus thirty", -20, 30, "add"),
+            ("What's 10.5 minus 3.2?", 10.5, 3.2, "subtract"),
+
+            # Pattern 14: Written-out numbers (small)
+            ("What's seven times nine?", 7, 9, "multiply"),
+            ("Add three and four", 3, 4, "add"),
+            ("What is twelve minus five?", 12, 5, "subtract"),
+
+            # Pattern 15: Percentage calculations (maps to multiply)
+            ("What's 20 percent of 150?", 0.20, 150, "multiply"),
+            ("Calculate 10 percent of 500", 0.10, 500, "multiply"),
+            ("25 percent of 80?", 0.25, 80, "multiply"),
+
+            # Pattern 16: Casual / shorthand
+            ("Double forty-two", 42, 2, "multiply"),
+            ("Half of sixty", 60, 2, "divide"),
+            ("Triple 15", 15, 3, "multiply"),
+
+            # Pattern 17: Large numbers
+            ("What's 1000 plus 2500?", 1000, 2500, "add"),
+            ("250 times 4?", 250, 4, "multiply"),
+
+            # Pattern 18: Negative context (result negative, still valid calc)
+            ("What's 5 minus 12?", 5, 12, "subtract"),
         ]
         examples = []
         for i, (utterance, num1, num2, op) in enumerate(items):

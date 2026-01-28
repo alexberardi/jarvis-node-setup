@@ -21,11 +21,11 @@ class ReadCalendarCommand(IJarvisCommand):
 
     @property
     def keywords(self) -> List[str]:
-        return ["calendar", "events", "schedule", "appointments", "meetings", "what's on", "today's events"]
+        return ["calendar", "events", "schedule", "appointments", "meetings", "what's on", "today's events", "agenda", "plans"]
 
     @property
     def description(self) -> str:
-        return "Read calendar events for specified dates or ranges. Returns titles, times, locations, attendees. Not for creating events or general time questions."
+        return "Retrieve calendar events for specified dates or date ranges. Use for ALL calendar and scheduling queries."
 
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise example utterances with expected parameters using date keys"""
@@ -54,53 +54,98 @@ class ReadCalendarCommand(IJarvisCommand):
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training"""
+        """Generate varied examples for adapter training.
+
+        Optimized for 3B model:
+        - Heavy repetition of "calendar/schedule" patterns
+        - Always include resolved_datetimes (required param)
+        - Clear "no date = today" reinforcement
+        """
         examples = [
-            ("What's on my calendar today?", [RelativeDateKeys.TODAY], True),
-            ("Show my schedule today", [RelativeDateKeys.TODAY], False),
-            ("Do I have any meetings today?", [RelativeDateKeys.TODAY], False),
-            ("What events are on my calendar today?", [RelativeDateKeys.TODAY], False),
-            ("Calendar for today", [RelativeDateKeys.TODAY], False),
-            ("Show me my schedule for tomorrow", [RelativeDateKeys.TOMORROW], False),
-            ("What's on my calendar tomorrow?", [RelativeDateKeys.TOMORROW], False),
-            ("Any meetings tomorrow?", [RelativeDateKeys.TOMORROW], False),
-            ("What appointments do I have the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
-            ("Show my calendar for the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
-            ("Show my calendar for this weekend", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("Calendar this weekend", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("What's on my calendar this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("Show me my events for the weekend", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("What meetings do I have next week?", [RelativeDateKeys.NEXT_WEEK], False),
-            ("Calendar next week", [RelativeDateKeys.NEXT_WEEK], False),
-            ("Show my schedule next week", [RelativeDateKeys.NEXT_WEEK], False),
+            # === CRITICAL: "What's on my calendar" patterns - no date = today ===
+            ("What's on my calendar?", [RelativeDateKeys.TODAY], True),
+            ("What do I have on my calendar?", [RelativeDateKeys.TODAY], False),
+            ("Check my calendar", [RelativeDateKeys.TODAY], False),
+            ("Show me my calendar", [RelativeDateKeys.TODAY], False),
             ("Read my calendar", [RelativeDateKeys.TODAY], False),
-            ("Check my calendar for today", [RelativeDateKeys.TODAY], False),
-            ("Show my appointments for today", [RelativeDateKeys.TODAY], False),
-            ("What's on my calendar Monday?", [RelativeDateKeys.NEXT_MONDAY], False),
-            ("What's on my calendar Tuesday?", [RelativeDateKeys.NEXT_TUESDAY], False),
-            ("What's on my calendar Wednesday?", [RelativeDateKeys.NEXT_WEDNESDAY], False),
-            ("What's on my calendar Thursday?", [RelativeDateKeys.NEXT_THURSDAY], False),
-            ("What's on my calendar Friday?", [RelativeDateKeys.NEXT_FRIDAY], False),
-            ("What's on my calendar Saturday?", [RelativeDateKeys.NEXT_SATURDAY], False),
-            ("What's on my calendar Sunday?", [RelativeDateKeys.NEXT_SUNDAY], False),
-            ("Show my schedule for the weekend", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("Do I have any appointments this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
-            ("Show my calendar for next week", [RelativeDateKeys.NEXT_WEEK], False),
-            ("What meetings are scheduled next week?", [RelativeDateKeys.NEXT_WEEK], False),
-            ("Show me everything on my calendar next week", [RelativeDateKeys.NEXT_WEEK], False),
-            ("List my events for next week", [RelativeDateKeys.NEXT_WEEK], False),
-            ("Check my meetings for tomorrow", [RelativeDateKeys.TOMORROW], False),
-            ("Any appointments for tomorrow?", [RelativeDateKeys.TOMORROW], False),
-            ("Read my schedule today", [RelativeDateKeys.TODAY], False),
-            ("What's on my agenda today?", [RelativeDateKeys.TODAY], False),
-            ("Show my agenda for tomorrow", [RelativeDateKeys.TOMORROW], False),
-            # Casual/varied phrasings (minimal context, colloquial)
-            ("What do I have coming up?", [RelativeDateKeys.TODAY], False),
-            ("Anything on my plate today?", [RelativeDateKeys.TODAY], False),
-            ("Am I free tonight?", [RelativeDateKeys.TODAY], False),
+            ("My calendar", [RelativeDateKeys.TODAY], False),
+
+            # === CRITICAL: "meetings/appointments/schedule" - no date = today ===
+            ("Do I have any meetings?", [RelativeDateKeys.TODAY], False),
+            ("Any meetings?", [RelativeDateKeys.TODAY], False),
+            ("Any appointments?", [RelativeDateKeys.TODAY], False),
+            ("What's my schedule?", [RelativeDateKeys.TODAY], False),
+            ("Show my schedule", [RelativeDateKeys.TODAY], False),
             ("What's my day look like?", [RelativeDateKeys.TODAY], False),
-            ("When's my next meeting?", [RelativeDateKeys.TODAY], False),
-            ("Busy this week?", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Am I busy?", [RelativeDateKeys.TODAY], False),
+
+            # === Explicit "today" patterns ===
+            ("What's on my calendar today?", [RelativeDateKeys.TODAY], False),
+            ("Do I have any meetings today?", [RelativeDateKeys.TODAY], False),
+            ("What meetings do I have today?", [RelativeDateKeys.TODAY], False),
+            ("Check my calendar for today", [RelativeDateKeys.TODAY], False),
+            ("Show me today's schedule", [RelativeDateKeys.TODAY], False),
+            ("Any appointments today?", [RelativeDateKeys.TODAY], False),
+            ("Am I busy today?", [RelativeDateKeys.TODAY], False),
+            ("What's happening today?", [RelativeDateKeys.TODAY], False),
+
+            # === "Tomorrow" patterns ===
+            ("What's on my calendar tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Show me my schedule for tomorrow", [RelativeDateKeys.TOMORROW], False),
+            ("Any meetings tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Any appointments tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("What do I have tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Am I busy tomorrow?", [RelativeDateKeys.TOMORROW], False),
+            ("Check my calendar for tomorrow", [RelativeDateKeys.TOMORROW], False),
+            ("Tomorrow's schedule", [RelativeDateKeys.TOMORROW], False),
+            ("Meetings tomorrow", [RelativeDateKeys.TOMORROW], False),
+
+            # === Day after tomorrow (CRITICAL: must resolve to day_after_tomorrow, NOT a literal date or tomorrow+1) ===
+            ("What's on my calendar the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Any appointments the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Calendar for the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("What appointments do I have the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Do I have any meetings the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Show my schedule for the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Am I busy the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Am I free the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Check my calendar the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("What do I have the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Day after tomorrow calendar", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Day after tomorrow schedule", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Meetings the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Events the day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("What events do I have the day after tomorrow?", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+            ("Schedule for day after tomorrow", [RelativeDateKeys.DAY_AFTER_TOMORROW], False),
+
+            # === Weekend patterns ===
+            ("What's on my calendar this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Show my calendar for this weekend", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Any appointments this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Am I free this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Weekend plans?", [RelativeDateKeys.THIS_WEEKEND], False),
+            ("Do I have anything this weekend?", [RelativeDateKeys.THIS_WEEKEND], False),
+
+            # === Next week patterns ===
+            ("What's on my calendar next week?", [RelativeDateKeys.NEXT_WEEK], False),
+            ("What meetings do I have next week?", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Show my calendar for next week", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Next week's schedule", [RelativeDateKeys.NEXT_WEEK], False),
+            ("Am I busy next week?", [RelativeDateKeys.NEXT_WEEK], False),
+
+            # === Specific day of week ===
+            ("What's on my calendar Monday?", [RelativeDateKeys.NEXT_MONDAY], False),
+            ("Any meetings on Monday?", [RelativeDateKeys.NEXT_MONDAY], False),
+            ("What do I have Tuesday?", [RelativeDateKeys.NEXT_TUESDAY], False),
+            ("Calendar for Wednesday", [RelativeDateKeys.NEXT_WEDNESDAY], False),
+            ("Any appointments Thursday?", [RelativeDateKeys.NEXT_THURSDAY], False),
+            ("What's my schedule Friday?", [RelativeDateKeys.NEXT_FRIDAY], False),
+            ("Saturday schedule", [RelativeDateKeys.NEXT_SATURDAY], False),
+
+            # === Time-of-day references ===
+            ("Am I free tonight?", [RelativeDateKeys.TONIGHT], False),
+            ("Any meetings this morning?", [RelativeDateKeys.MORNING], False),
+            ("Tomorrow morning meetings", [RelativeDateKeys.TOMORROW_MORNING], False),
         ]
         return [
             CommandExample(voice_command=voice, expected_parameters={"resolved_datetimes": dates}, is_primary=is_primary)
@@ -110,7 +155,7 @@ class ReadCalendarCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("resolved_datetimes", "array<datetime>", description="ISO UTC start-of-day datetimes for the dates to read.", required=True)
+            JarvisParameter("resolved_datetimes", "array<datetime>", description="ISO UTC start-of-day datetimes for the dates to retrieve events from.", required=True)
         ]
 
     @property
@@ -126,7 +171,9 @@ class ReadCalendarCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "Always call this tool to read calendar events; do NOT ask for a date first",
-            "Always include resolved_datetimes; use today's date if the user asks for 'today'."
+            "Always include resolved_datetimes; use today's date if the user asks for 'today'.",
+            "'the day after tomorrow' is a SINGLE date token 'day_after_tomorrow' - do NOT split it into multiple dates like 'tomorrow' + 'day_after_tomorrow'",
+            "ALWAYS use symbolic date tokens in resolved_datetimes: 'today', 'tomorrow', 'day_after_tomorrow', 'this_weekend', 'next_week', etc. NEVER output literal dates like '2024-01-29' or '2026-01-29'"
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:

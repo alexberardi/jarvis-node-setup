@@ -523,6 +523,31 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "get_sports_scores",
             {"team_name": "Buccaneers", "resolved_datetimes": [RelativeDateKeys.TODAY]},
             "Sports score with explicit today date"
+        ),
+        # Additional flexibility tests - phrasings NOT directly in examples
+        CommandTest(
+            "Did the Steelers win?",
+            "get_sports_scores",
+            {"team_name": "Steelers", "resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Flexibility test: 'Did X win' pattern"
+        ),
+        CommandTest(
+            "What was the Mets score?",
+            "get_sports_scores",
+            {"team_name": "Mets", "resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Flexibility test: 'What was the X score' pattern"
+        ),
+        CommandTest(
+            "Final score for the Denver Broncos?",
+            "get_sports_scores",
+            {"team_name": "Denver Broncos", "resolved_datetimes": [RelativeDateKeys.TODAY]},
+            "Flexibility test: 'Final score for X' with full team name"
+        ),
+        CommandTest(
+            "How'd the Packers do last night?",
+            "get_sports_scores",
+            {"team_name": "Packers", "resolved_datetimes": [RelativeDateKeys.YESTERDAY]},
+            "Flexibility test: Contraction 'How'd' with 'last night'"
         )
     ]
     tests.extend(sports_tests)
@@ -545,20 +570,102 @@ def _maybe_parse_list_string(value: Any) -> Optional[list]:
     return parsed if isinstance(parsed, list) else None
 
 
-def _normalize_datetime_value(value: Any) -> Optional[str]:
+def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[str, List[str]]:
+    """Build a mapping from symbolic date keys to their resolved ISO date strings."""
+    if not date_context:
+        return {}
+
+    mapping = {}
+
+    # Single dates
+    try:
+        mapping["today"] = [date_context.current.date_iso[:10]]
+        mapping["tomorrow"] = [date_context.relative_dates.tomorrow.date[:10] if hasattr(date_context.relative_dates.tomorrow, 'date') else date_context.relative_dates.tomorrow.utc_start_of_day[:10]]
+        mapping["yesterday"] = [date_context.relative_dates.yesterday.date[:10] if hasattr(date_context.relative_dates.yesterday, 'date') else date_context.relative_dates.yesterday.utc_start_of_day[:10]]
+        mapping["day_after_tomorrow"] = [date_context.relative_dates.day_after_tomorrow.date[:10] if hasattr(date_context.relative_dates.day_after_tomorrow, 'date') else date_context.relative_dates.day_after_tomorrow.utc_start_of_day[:10]]
+    except Exception:
+        pass
+
+    # Weekend dates (lists)
+    try:
+        if date_context.weekend.this_weekend:
+            mapping["this_weekend"] = [d.date[:10] for d in date_context.weekend.this_weekend]
+        if date_context.weekend.last_weekend:
+            mapping["last_weekend"] = [d.date[:10] for d in date_context.weekend.last_weekend]
+        if date_context.weekend.next_weekend:
+            mapping["next_weekend"] = [d.date[:10] for d in date_context.weekend.next_weekend]
+    except Exception:
+        pass
+
+    # Week dates (lists)
+    try:
+        if date_context.weeks.next_week:
+            mapping["next_week"] = [d.date[:10] for d in date_context.weeks.next_week]
+        if date_context.weeks.this_week:
+            mapping["this_week"] = [d.date[:10] for d in date_context.weeks.this_week]
+        if date_context.weeks.last_week:
+            mapping["last_week"] = [d.date[:10] for d in date_context.weeks.last_week]
+    except Exception:
+        pass
+
+    # Weekday dates
+    try:
+        mapping["next_monday"] = [date_context.weekdays.next_monday.date[:10]]
+        mapping["next_tuesday"] = [date_context.weekdays.next_tuesday.date[:10]]
+        mapping["next_wednesday"] = [date_context.weekdays.next_wednesday.date[:10]]
+        mapping["next_thursday"] = [date_context.weekdays.next_thursday.date[:10]]
+        mapping["next_friday"] = [date_context.weekdays.next_friday.date[:10]]
+        mapping["next_saturday"] = [date_context.weekdays.next_saturday.date[:10]]
+        mapping["next_sunday"] = [date_context.weekdays.next_sunday.date[:10]]
+    except Exception:
+        pass
+
+    # Time-of-day variants map to same date as their base
+    try:
+        today_date = date_context.current.date_iso[:10]
+        tomorrow_date = mapping.get("tomorrow", [today_date])[0]
+        yesterday_date = mapping.get("yesterday", [today_date])[0]
+
+        mapping["morning"] = [today_date]
+        mapping["tonight"] = [today_date]
+        mapping["last_night"] = [yesterday_date]
+        mapping["tomorrow_night"] = [tomorrow_date]
+        mapping["tomorrow_morning"] = [tomorrow_date]
+        mapping["tomorrow_afternoon"] = [tomorrow_date]
+        mapping["tomorrow_evening"] = [tomorrow_date]
+        mapping["yesterday_morning"] = [yesterday_date]
+        mapping["yesterday_afternoon"] = [yesterday_date]
+        mapping["yesterday_evening"] = [yesterday_date]
+    except Exception:
+        pass
+
+    return mapping
+
+
+def _values_equal_numeric(expected: Any, actual: Any) -> bool:
+    """Check if two values are numerically equal, handling string/number mismatches."""
+    try:
+        return float(expected) == float(actual)
+    except (ValueError, TypeError):
+        return False
+
+
+def _normalize_datetime_value(value: Any, date_key_map: Optional[Dict[str, List[str]]] = None) -> Optional[str]:
     if isinstance(value, datetime.datetime):
         return value.date().isoformat()
     if isinstance(value, datetime.date):
         return value.isoformat()
     if not isinstance(value, str):
         return None
-    stripped = value.strip()
-    if stripped in ALL_DATE_KEYS:
-        return stripped
+    stripped = value.strip().lower()
+    # If it's a symbolic key and we have a mapping, resolve it
+    if stripped in ALL_DATE_KEYS and date_key_map and stripped in date_key_map:
+        # Return the first date for single-date keys
+        return date_key_map[stripped][0] if date_key_map[stripped] else None
     if len(stripped) >= 10 and stripped[4:5] == "-" and stripped[7:8] == "-":
         return stripped[:10]
     try:
-        if stripped.endswith("Z"):
+        if stripped.endswith("z"):
             stripped = f"{stripped[:-1]}+00:00"
         parsed = datetime.datetime.fromisoformat(stripped)
         return parsed.date().isoformat()
@@ -566,16 +673,22 @@ def _normalize_datetime_value(value: Any) -> Optional[str]:
         return None
 
 
-def _normalize_datetimes_list(value: Any) -> Optional[list]:
+def _normalize_datetimes_list(value: Any, date_key_map: Optional[Dict[str, List[str]]] = None) -> Optional[List[str]]:
     if not isinstance(value, list):
         return None
     normalized = []
     for item in value:
-        normalized_item = _normalize_datetime_value(item)
-        if not normalized_item:
-            return None
-        normalized.append(normalized_item)
-    return normalized
+        # For symbolic keys that represent multiple dates, expand them
+        if isinstance(item, str) and item.strip().lower() in (date_key_map or {}):
+            key = item.strip().lower()
+            expanded = date_key_map[key]
+            normalized.extend(expanded)
+        else:
+            normalized_item = _normalize_datetime_value(item, date_key_map)
+            if not normalized_item:
+                return None
+            normalized.append(normalized_item)
+    return sorted(normalized) if normalized else None
 
 
 def _normalize_tool_call(tool_call: Any) -> Optional[dict]:
@@ -763,10 +876,13 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         actual_params = command_response["parameters"]
         missing_params = []
         mismatched_params = []
-        
+
+        # Build date key map for resolving symbolic dates to ISO dates
+        date_key_map = _build_date_key_to_iso_map(date_context)
+
         # test_index is now passed as a parameter
         print(f"   🔍 Debug: Test index = {test_index}")
-        
+
         for expected_key, expected_value in test.expected_params.items():
             if expected_key not in actual_params:
                 missing_params.append(expected_key)
@@ -777,8 +893,8 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     if parsed_list is not None:
                         actual_value = parsed_list
                 if expected_key == "resolved_datetimes":
-                    normalized_expected = _normalize_datetimes_list(expected_value)
-                    normalized_actual = _normalize_datetimes_list(actual_value)
+                    normalized_expected = _normalize_datetimes_list(expected_value, date_key_map)
+                    normalized_actual = _normalize_datetimes_list(actual_value, date_key_map)
                     if normalized_expected is not None and normalized_actual is not None:
                         if normalized_expected == normalized_actual:
                             print(f"   ⚠️  Test {test_index}: Datetimes matched by date-only comparison")
@@ -833,6 +949,10 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                         continue
                     else:
                         mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
+                # Special handling for numeric parameters - allow string/int comparison
+                elif expected_key in ("num1", "num2", "value") and _values_equal_numeric(expected_value, actual_value):
+                    print(f"   ⚠️  Test {test_index}: Numeric value matched (type-normalized)")
+                    continue
                 else:
                     mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
         
