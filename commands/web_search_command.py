@@ -159,17 +159,13 @@ class WebSearchCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return [
-            "search", "look up", "find", "current", "latest", "recent", 
-            "live", "real time", "what's happening", "who won", 
-            "when is", "what time is it", "today's", "latest news",
-            "current events", "breaking news", "up to date"
+            "search", "look up", "find", "current", "latest", "recent",
+            "live", "real time", "news", "now", "today's news", "breaking"
         ]
 
     @property
     def description(self) -> str:
-        return (
-            "Perform a live web search to get information to inform your response."
-        )
+        return "Perform a live web search for current information, time zones, current time in a location, stock prices, news, election results, or any real-time data. Use for dynamic, changing information."
 
     @property
     def critical_rules(self) -> List[str]:
@@ -186,11 +182,19 @@ class WebSearchCommand(IJarvisCommand):
         return [
             CommandAntipattern(
                 command_name="answer_question",
-                description="Stable facts, definitions, biographies, or geography."
+                description="Stable facts, definitions, biographies, geography, historical dates, or established knowledge."
             ),
             CommandAntipattern(
                 command_name="get_sports_schedule",
-                description="Upcoming games, schedules, or future matchups."
+                description="Upcoming games, schedules, future matchups, 'when do they play next'."
+            ),
+            CommandAntipattern(
+                command_name="get_weather",
+                description="Weather conditions, temperature, forecasts, rain, wind, or 'what's the weather'. Always use get_weather for weather queries."
+            ),
+            CommandAntipattern(
+                command_name="get_sports_scores",
+                description="Game scores, results, 'how did [team] do', 'what was the score', 'did [team] win', final scores."
             ),
         ]
 
@@ -221,64 +225,85 @@ class WebSearchCommand(IJarvisCommand):
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training"""
-        queries = [
-            "Who won the senate race in Pennsylvania?",
-            "What time is it in California right now?",
-            "When is the next SpaceX launch?",
-            "Who won the Super Bowl this year?",
-            "Find the latest information about COVID vaccines",
-            "What's the latest news about Tesla stock?",
-            "Latest headlines today",
-            "Search for live updates on the hurricane",
-            "Who won the World Series last night?",
-            "What are today's top news stories?",
-            "Look up the latest on the Mars rover",
-            "Search the web for earthquake updates",
-            "What is the current time in London?",
-            "Find breaking news about the stock market",
-            "Search for live sports scores",
-            "What is the latest update on the election?",
-            "Find recent news about Apple earnings",
-            "Search for current wildfire updates",
-            "What is the latest weather advisory in Florida?",
-            "Search for the latest on the FIFA match",
-            "Look up current gas prices in Texas",
-            "Find the most recent NASA announcement",
-            "Search for today's cryptocurrency news",
-            "What's the current score of the Lakers game?",
-            "Search for current traffic in Seattle",
-            "Find live updates on the storm",
-            "Search for latest vaccine guidance",
-            "What is the current exchange rate for USD to EUR?",
-            "Search for breaking news about flooding",
-            "Find the latest on the Supreme Court ruling",
-            "What time is it in Tokyo right now?",
-            "Search for the latest on interest rates",
-            "Find today's tech news",
-            "Search for current airline delays",
-            "Look up the latest on the Olympics",
-            "Find current updates on the wildfire near Los Angeles",
-            "Search for the newest information about a company merger",
-            "What's the latest news about SpaceX?",
-            "Search for real-time updates on the power outage",
-            "Find the latest economic report",
-            # Casual/varied phrasings (general knowledge questions)
-            "Who invented the telephone?",
-            "When did World War 2 end?",
-            "What's the population of Tokyo?",
-            "Who wrote Hamlet?",
-            "Why is the sky blue?",
-            "What's the capital of Australia?",
+        """Generate varied examples for adapter training.
+
+        Optimized for 3B model:
+        - Always show query parameter with the search query
+        - Heavy repetition of "current/latest/live" patterns
+        - Distinguish from answer_question (current vs stable facts)
+        - Include time queries (NOT weather!)
+        """
+        examples = [
+            # === CRITICAL: "Who won" championship/election queries ===
+            CommandExample(voice_command="Who won the Super Bowl?", expected_parameters={"query": "Who won the Super Bowl?"}, is_primary=True),
+            CommandExample(voice_command="Who won the Super Bowl this year?", expected_parameters={"query": "Who won the Super Bowl this year?"}, is_primary=False),
+            CommandExample(voice_command="Who won the World Series?", expected_parameters={"query": "Who won the World Series?"}, is_primary=False),
+            CommandExample(voice_command="Who won the NBA Finals?", expected_parameters={"query": "Who won the NBA Finals?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Stanley Cup?", expected_parameters={"query": "Who won the Stanley Cup?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Oscars?", expected_parameters={"query": "Who won the Oscars?"}, is_primary=False),
+            CommandExample(voice_command="Who won the election?", expected_parameters={"query": "Who won the election?"}, is_primary=False),
+            CommandExample(voice_command="Who won the governor race?", expected_parameters={"query": "Who won the governor race?"}, is_primary=False),
+            CommandExample(voice_command="Who won the senate race?", expected_parameters={"query": "Who won the senate race?"}, is_primary=False),
+            CommandExample(voice_command="Who won the senate race in Pennsylvania?", expected_parameters={"query": "Who won the senate race in Pennsylvania?"}, is_primary=False),
+            CommandExample(voice_command="Who won the presidential election?", expected_parameters={"query": "Who won the presidential election?"}, is_primary=False),
+            CommandExample(voice_command="Who won the college football championship?", expected_parameters={"query": "Who won the college football championship?"}, is_primary=False),
+            CommandExample(voice_command="Who won March Madness?", expected_parameters={"query": "Who won March Madness?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Masters this year?", expected_parameters={"query": "Who won the Masters this year?"}, is_primary=False),
+
+            # === CRITICAL: "What time is it in [PLACE]" queries (NOT weather!) ===
+            CommandExample(voice_command="What time is it in Tokyo?", expected_parameters={"query": "What time is it in Tokyo?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in London?", expected_parameters={"query": "What time is it in London?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in New York?", expected_parameters={"query": "What time is it in New York?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in Paris?", expected_parameters={"query": "What time is it in Paris?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in California?", expected_parameters={"query": "What time is it in California?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in California right now?", expected_parameters={"query": "What time is it in California right now?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in Chicago?", expected_parameters={"query": "What time is it in Chicago?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in Berlin?", expected_parameters={"query": "What time is it in Berlin?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in Dubai?", expected_parameters={"query": "What time is it in Dubai?"}, is_primary=False),
+            CommandExample(voice_command="What time is it in Mumbai?", expected_parameters={"query": "What time is it in Mumbai?"}, is_primary=False),
+            CommandExample(voice_command="Current time in Tokyo?", expected_parameters={"query": "Current time in Tokyo?"}, is_primary=False),
+            CommandExample(voice_command="Current time in Sydney?", expected_parameters={"query": "Current time in Sydney?"}, is_primary=False),
+            CommandExample(voice_command="Current time in California?", expected_parameters={"query": "Current time in California?"}, is_primary=False),
+            CommandExample(voice_command="Time in London right now?", expected_parameters={"query": "Time in London right now?"}, is_primary=False),
+            CommandExample(voice_command="Time in Los Angeles right now?", expected_parameters={"query": "Time in Los Angeles right now?"}, is_primary=False),
+            CommandExample(voice_command="What's the time in Hong Kong?", expected_parameters={"query": "What's the time in Hong Kong?"}, is_primary=False),
+            CommandExample(voice_command="What's the current time in Seattle?", expected_parameters={"query": "What's the current time in Seattle?"}, is_primary=False),
+
+            # === "Latest news" / "recent" patterns ===
+            CommandExample(voice_command="What's the latest news about Tesla?", expected_parameters={"query": "What's the latest news about Tesla?"}, is_primary=False),
+            CommandExample(voice_command="Latest news about Apple", expected_parameters={"query": "Latest news about Apple"}, is_primary=False),
+            CommandExample(voice_command="Recent news about AI", expected_parameters={"query": "Recent news about AI"}, is_primary=False),
+            CommandExample(voice_command="What's the latest on the Mars mission?", expected_parameters={"query": "What's the latest on the Mars mission?"}, is_primary=False),
+            CommandExample(voice_command="Latest updates on the hurricane", expected_parameters={"query": "Latest updates on the hurricane"}, is_primary=False),
+            CommandExample(voice_command="What's happening with the wildfires?", expected_parameters={"query": "What's happening with the wildfires?"}, is_primary=False),
+
+            # === Stock / financial queries ===
+            CommandExample(voice_command="What's the Tesla stock price?", expected_parameters={"query": "What's the Tesla stock price?"}, is_primary=False),
+            CommandExample(voice_command="Current price of Apple stock", expected_parameters={"query": "Current price of Apple stock"}, is_primary=False),
+            CommandExample(voice_command="How's the stock market doing?", expected_parameters={"query": "How's the stock market doing?"}, is_primary=False),
+            CommandExample(voice_command="Bitcoin price", expected_parameters={"query": "Bitcoin price"}, is_primary=False),
+            CommandExample(voice_command="Current Bitcoin price", expected_parameters={"query": "Current Bitcoin price"}, is_primary=False),
+            CommandExample(voice_command="USD to EUR exchange rate", expected_parameters={"query": "USD to EUR exchange rate"}, is_primary=False),
+
+            # === "When is" upcoming events ===
+            CommandExample(voice_command="When is the next SpaceX launch?", expected_parameters={"query": "When is the next SpaceX launch?"}, is_primary=False),
+            CommandExample(voice_command="When is the next NASA launch?", expected_parameters={"query": "When is the next NASA launch?"}, is_primary=False),
+            CommandExample(voice_command="When does the new iPhone come out?", expected_parameters={"query": "When does the new iPhone come out?"}, is_primary=False),
+            CommandExample(voice_command="When does Coachella start?", expected_parameters={"query": "When does Coachella start?"}, is_primary=False),
+            CommandExample(voice_command="When is the next eclipse?", expected_parameters={"query": "When is the next eclipse?"}, is_primary=False),
+
+            # === Explicit "search" / "look up" / "find" triggers ===
+            CommandExample(voice_command="Search for COVID vaccine updates", expected_parameters={"query": "Search for COVID vaccine updates"}, is_primary=False),
+            CommandExample(voice_command="Search for breaking news", expected_parameters={"query": "Search for breaking news"}, is_primary=False),
+            CommandExample(voice_command="Look up the lottery numbers", expected_parameters={"query": "Look up the lottery numbers"}, is_primary=False),
+            CommandExample(voice_command="Find the latest on AI regulations", expected_parameters={"query": "Find the latest on AI regulations"}, is_primary=False),
+            CommandExample(voice_command="Find information about COVID vaccines", expected_parameters={"query": "Find information about COVID vaccines"}, is_primary=False),
+
+            # === Live/current data queries ===
+            CommandExample(voice_command="Current traffic in Chicago", expected_parameters={"query": "Current traffic in Chicago"}, is_primary=False),
+            CommandExample(voice_command="Are there subway delays?", expected_parameters={"query": "Are there subway delays?"}, is_primary=False),
         ]
-        return [
-            CommandExample(
-                voice_command=query,
-                expected_parameters={"query": query},
-                is_primary=(i == 0)
-            )
-            for i, query in enumerate(queries)
-        ]
+        return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:

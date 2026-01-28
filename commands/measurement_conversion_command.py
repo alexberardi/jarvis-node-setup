@@ -5,7 +5,7 @@ Converts between various units using base unit conversion for maximum flexibilit
 """
 
 from typing import List, Dict, Any, Optional, Tuple
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -73,31 +73,47 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Convert units for distance, volume, weight/mass, and temperature. Defaults value to 1. Not for general math or currency."
+        return "Convert units for distance, volume, weight/mass, and temperature. Use for explicit unit-to-unit conversions ONLY. Do NOT use for weather queries that mention 'metric units' or 'imperial units'."
     
     @property
     def keywords(self) -> List[str]:
         return [
             "convert", "conversion", "how many", "in a", "equals", "to",
-            "miles", "kilometers", "feet", "inches", "meters", "centimeters",
-            "gallons", "quarts", "pints", "cups", "tablespoons", "teaspoons",
-            "pounds", "kilograms", "grams", "ounces",
-            "celsius", "fahrenheit", "kelvin", "temperature"
+            "miles", "kilometers", "gallons", "liters",
+            "pounds", "kilograms", "celsius", "fahrenheit"
         ]
     
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("value", "float", required=False, description="Numeric value to convert; defaults to 1."),
-            JarvisParameter("from_unit", "string", required=True, description="Source unit name."),
-            JarvisParameter("to_unit", "string", required=True, description="Target unit name."),
+            JarvisParameter("value", "float", required=False, description="Numeric value to convert; defaults to 1 if not specified."),
+            JarvisParameter("from_unit", "string", required=True, description="Source unit name (e.g., 'miles', 'cups', 'pounds', 'celsius')."),
+            JarvisParameter("to_unit", "string", required=True, description="Target unit name (e.g., 'kilometers', 'liters', 'kilograms', 'fahrenheit')."),
             JarvisParameter("category", "string", required=False, description="Optional hint: 'distance', 'volume', 'weight', or 'temperature'.")
         ]
     
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return []  # No secrets required for measurement conversion
-    
+
+    @property
+    def critical_rules(self) -> List[str]:
+        return [
+            "Only use this command for explicit unit-to-unit conversions (e.g., 'convert 5 miles to kilometers', '350 Fahrenheit in Celsius')",
+            "NEVER use this command when the user mentions 'weather' anywhere in the request - use get_weather instead",
+            "Phrases like 'weather in metric units', 'weather in imperial', 'weather in Celsius', 'forecast in metric' are ALL weather requests, NOT conversions",
+            "The user must be asking to convert a specific numeric value between two named units; display preferences for weather are NOT conversions"
+        ]
+
+    @property
+    def antipatterns(self) -> List[CommandAntipattern]:
+        return [
+            CommandAntipattern(
+                command_name="get_weather",
+                description="Weather queries mentioning 'metric units', 'imperial units', 'Celsius', or 'Fahrenheit' as a display preference. These are weather requests, not unit conversions."
+            )
+        ]
+
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the measurement conversion command"""
         return [

@@ -24,7 +24,7 @@ class StoryCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Generate an original story in chunks, tailored by subject and age. Actions: start, continue, end. Not for existing books, summaries, or jokes."
+        return "Generate an original story delivered in chunks, customizable by subject matter and target audience age."
 
     @property
     def parameters(self) -> List[IJarvisParameter]:
@@ -32,8 +32,8 @@ class StoryCommand(IJarvisCommand):
             JarvisParameter("story_subject", "string", required=False, description="Story subject or theme; omit for a random one."),
             JarvisParameter("target_audience_age", "int", required=False, default=5, description="Listener age in years; defaults to 5."),
             JarvisParameter("word_count", "int", required=False, default=750, description="Target total word count; defaults to 750."),
-            JarvisParameter("action", "string", required=False, default="start", description="Story action: 'start', 'continue', or 'end'."),
-            JarvisParameter("session_id", "string", required=False, description="Session id for continue/end only.")
+            JarvisParameter("action", "string", required=False, default="start", description="Story action: must be 'start', 'continue', or 'end'."),
+            JarvisParameter("session_id", "string", required=False, description="Session id for continue/end actions only.")
         ]
 
     @property
@@ -44,7 +44,7 @@ class StoryCommand(IJarvisCommand):
 
     @property
     def keywords(self) -> List[str]:
-        return ["story", "tell me a story", "continue story", "end story"]
+        return ["story", "tell me a story", "continue story", "end story", "narrate", "tale"]
 
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the story command"""

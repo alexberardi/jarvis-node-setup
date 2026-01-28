@@ -8,7 +8,7 @@ from core.ijarvis_command import IJarvisCommand
 
 
 class CommandDiscoveryService:
-    def __init__(self, refresh_interval: int = 20):
+    def __init__(self, refresh_interval: int = 600):
         self.refresh_interval = refresh_interval
         self._commands_cache: Dict[str, IJarvisCommand] = {}
         self._last_refresh = 0

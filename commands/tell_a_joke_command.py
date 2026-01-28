@@ -15,11 +15,11 @@ class TellAJokeCommand(IJarvisCommand):
 
     @property
     def keywords(self) -> List[str]:
-        return ["joke", "funny", "humor", "laugh"]
+        return ["joke", "funny", "humor", "laugh", "comedy", "make me laugh"]
 
     @property
     def description(self) -> str:
-        return "Tell a clean, family-friendly joke; optional topic. If user says 'about X', set topic. Not for stories, riddles, or live humor."
+        return "Tell a clean, family-friendly joke with an optional topic."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -44,54 +44,66 @@ class TellAJokeCommand(IJarvisCommand):
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training"""
-        topics = [
-            None, "animals", "technology", "programming", "sports", "food", "space",
-            "music", "school", "science", "history", "travel", "cats", "dogs", "robots",
-            "computers", "movies", "books", "pirates", "nature", "weather", "cars",
-            "video games", "math", "office", "kids", "family", "work", "coffee", "pizza",
-            "astronomy", "dinosaurs", "superheroes", "cooking", "gardening", "planes",
-            "trains", "bicycles", "oceans", "mountains"
-        ]
-        phrases = [
-            "Tell me a joke",
-            "I need a joke",
-            "Make me laugh",
-            "Say something funny",
-            "Give me a quick joke",
-            "Tell a clean joke",
-            "Can you tell a joke?",
-            "I want a joke",
-            "Share a joke",
-            "Give me a funny joke"
-        ]
-        examples: List[CommandExample] = []
-        is_primary = True
-        for topic in topics:
-            for phrase in phrases:
-                if len(examples) >= 40:
-                    break
-                if topic:
-                    voice = f"{phrase} about {topic}"
-                    params = {"topic": topic}
-                else:
-                    voice = phrase
-                    params = {}
-                examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=is_primary))
-                is_primary = False
-            if len(examples) >= 40:
-                break
+        """Generate varied examples for adapter training.
 
-        # Casual/varied phrasings (no explicit "joke" word)
-        varied_examples = [
-            ("Make me laugh", {}),
-            ("Hit me with something funny", {}),
-            ("Got any good ones?", {}),
-            ("Cheer me up", {}),
-        ]
-        for voice, params in varied_examples:
-            examples.append(CommandExample(voice_command=voice, expected_parameters=params, is_primary=False))
+        Optimized for 3B model:
+        - Heavy repetition of "joke about [TOPIC]" pattern
+        - Clear "no topic = empty params" pattern
+        - Extract topic from "about X" phrases
+        """
+        examples: List[CommandExample] = [
+            # === CRITICAL: "Tell me a joke" (no topic) = empty params ===
+            CommandExample(voice_command="Tell me a joke", expected_parameters={}, is_primary=True),
+            CommandExample(voice_command="Tell me a joke please", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="I want a joke", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="Give me a joke", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="I need a joke", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="Got a joke?", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="Make me laugh", expected_parameters={}, is_primary=False),
+            CommandExample(voice_command="Say something funny", expected_parameters={}, is_primary=False),
 
+            # === CRITICAL: "Tell me a joke about [TOPIC]" - extract topic ===
+            CommandExample(voice_command="Tell me a joke about cats", expected_parameters={"topic": "cats"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about dogs", expected_parameters={"topic": "dogs"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about animals", expected_parameters={"topic": "animals"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about computers", expected_parameters={"topic": "computers"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about technology", expected_parameters={"topic": "technology"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about science", expected_parameters={"topic": "science"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about math", expected_parameters={"topic": "math"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about sports", expected_parameters={"topic": "sports"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about food", expected_parameters={"topic": "food"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about work", expected_parameters={"topic": "work"}, is_primary=False),
+            CommandExample(voice_command="Tell me a joke about coffee", expected_parameters={"topic": "coffee"}, is_primary=False),
+
+            # === "Give me a joke about [TOPIC]" pattern ===
+            CommandExample(voice_command="Give me a joke about cats", expected_parameters={"topic": "cats"}, is_primary=False),
+            CommandExample(voice_command="Give me a joke about dogs", expected_parameters={"topic": "dogs"}, is_primary=False),
+            CommandExample(voice_command="Give me a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
+            CommandExample(voice_command="Give me a joke about sports", expected_parameters={"topic": "sports"}, is_primary=False),
+
+            # === "I want a joke about [TOPIC]" pattern ===
+            CommandExample(voice_command="I want a joke about robots", expected_parameters={"topic": "robots"}, is_primary=False),
+            CommandExample(voice_command="I want a joke about weather", expected_parameters={"topic": "weather"}, is_primary=False),
+            CommandExample(voice_command="I want a joke about school", expected_parameters={"topic": "school"}, is_primary=False),
+
+            # === "Make me laugh with a joke about [TOPIC]" pattern ===
+            CommandExample(voice_command="Make me laugh with a joke about technology", expected_parameters={"topic": "technology"}, is_primary=False),
+            CommandExample(voice_command="Make me laugh with a joke about animals", expected_parameters={"topic": "animals"}, is_primary=False),
+            CommandExample(voice_command="Make me laugh with a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
+
+            # === Question format with topic ===
+            CommandExample(voice_command="Do you know any jokes about computers?", expected_parameters={"topic": "computers"}, is_primary=False),
+            CommandExample(voice_command="Do you know any jokes about cats?", expected_parameters={"topic": "cats"}, is_primary=False),
+            CommandExample(voice_command="Can you tell a joke about math?", expected_parameters={"topic": "math"}, is_primary=False),
+            CommandExample(voice_command="Got any jokes about dogs?", expected_parameters={"topic": "dogs"}, is_primary=False),
+
+            # === Specific humor styles as topics ===
+            CommandExample(voice_command="Tell me a dad joke", expected_parameters={"topic": "dad jokes"}, is_primary=False),
+            CommandExample(voice_command="Tell me a pun", expected_parameters={"topic": "puns"}, is_primary=False),
+            CommandExample(voice_command="Give me a knock knock joke", expected_parameters={"topic": "knock knock"}, is_primary=False),
+            CommandExample(voice_command="Tell me a one-liner", expected_parameters={"topic": "one-liners"}, is_primary=False),
+        ]
         return examples
     
     @property

@@ -15,11 +15,11 @@ class GeneralKnowledgeCommand(IJarvisCommand):
 
     @property
     def keywords(self) -> List[str]:
-        return ["knowledge", "query", "what is", "who was", "when did", "where is", "how does", "explain", "history", "geography", "science", "facts", "definition", "meaning"]
+        return ["knowledge", "query", "what is", "who was", "who is", "when did", "where is", "how does", "define", "explain"]
 
     @property
     def description(self) -> str:
-        return "Answer stable facts and definitions. Use for history, science, geography, and people. Not for current events, weather, sports, personal info, or calculations."
+        return "Answer questions about stable facts, definitions, history, science, geography, and biographies. Use ONLY for established, non-changing knowledge."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -52,62 +52,90 @@ class GeneralKnowledgeCommand(IJarvisCommand):
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training"""
-        questions = [
-            "What is the capital of France?",
-            "Who was Albert Einstein?",
-            "How does photosynthesis work?",
-            "Where is Mount Everest located?",
-            "What is the definition of democracy?",
-            "Who wrote Pride and Prejudice?",
-            "What is the tallest mountain in Europe?",
-            "When did World War I end?",
-            "Explain how gravity works",
-            "What is the boiling point of water?",
-            "Who painted the Mona Lisa?",
-            "Where is the Amazon River located?",
-            "What is the largest planet in the solar system?",
-            "What does DNA stand for?",
-            "Who was Marie Curie?",
-            "What is the speed of light?",
-            "Explain the water cycle",
-            "What is the currency of Japan?",
-            "When was the Declaration of Independence signed?",
-            "Who discovered penicillin?",
-            "What is the smallest prime number?",
-            "Where is the Great Barrier Reef?",
-            "What is the longest river in the world?",
-            "How do solar panels work?",
-            "What is the capital of Canada?",
-            "Who is Isaac Newton?",
-            "What is the meaning of photosynthesis?",
-            "Where is the Sahara Desert?",
-            "What is an ecosystem?",
-            "How does an engine work?",
-            "What is the freezing point of water?",
-            "Who was Martin Luther King Jr.?",
-            "What is the capital of Italy?",
-            "Explain plate tectonics",
-            "Where is the Eiffel Tower located?",
-            "What is the human body's largest organ?",
-            "What is a black hole?",
-            "How do airplanes fly?",
-            "What is the chemical symbol for gold?",
-            "Who was Cleopatra?"
+        """Generate varied examples for adapter training.
+
+        Optimized for 3B model:
+        - Always show query parameter with the full question
+        - Heavy repetition of question patterns
+        - Distinguish from search_web (stable facts vs current events)
+        """
+        examples = [
+            # === CRITICAL: "What is" factual questions ===
+            CommandExample(voice_command="What is the capital of France?", expected_parameters={"query": "What is the capital of France?"}, is_primary=True),
+            CommandExample(voice_command="What is the capital of Germany?", expected_parameters={"query": "What is the capital of Germany?"}, is_primary=False),
+            CommandExample(voice_command="What is the capital of Japan?", expected_parameters={"query": "What is the capital of Japan?"}, is_primary=False),
+            CommandExample(voice_command="What is the capital of Canada?", expected_parameters={"query": "What is the capital of Canada?"}, is_primary=False),
+            CommandExample(voice_command="What is the capital of Italy?", expected_parameters={"query": "What is the capital of Italy?"}, is_primary=False),
+            CommandExample(voice_command="What is an atom?", expected_parameters={"query": "What is an atom?"}, is_primary=False),
+            CommandExample(voice_command="What is gravity?", expected_parameters={"query": "What is gravity?"}, is_primary=False),
+            CommandExample(voice_command="What is photosynthesis?", expected_parameters={"query": "What is photosynthesis?"}, is_primary=False),
+            CommandExample(voice_command="What is DNA?", expected_parameters={"query": "What is DNA?"}, is_primary=False),
+            CommandExample(voice_command="What is the speed of light?", expected_parameters={"query": "What is the speed of light?"}, is_primary=False),
+            CommandExample(voice_command="What is the boiling point of water?", expected_parameters={"query": "What is the boiling point of water?"}, is_primary=False),
+
+            # === "Who was/is" person questions ===
+            CommandExample(voice_command="Who was Albert Einstein?", expected_parameters={"query": "Who was Albert Einstein?"}, is_primary=False),
+            CommandExample(voice_command="Who was Marie Curie?", expected_parameters={"query": "Who was Marie Curie?"}, is_primary=False),
+            CommandExample(voice_command="Who was Abraham Lincoln?", expected_parameters={"query": "Who was Abraham Lincoln?"}, is_primary=False),
+            CommandExample(voice_command="Who was Cleopatra?", expected_parameters={"query": "Who was Cleopatra?"}, is_primary=False),
+            CommandExample(voice_command="Who is Isaac Newton?", expected_parameters={"query": "Who is Isaac Newton?"}, is_primary=False),
+            CommandExample(voice_command="Who invented the telephone?", expected_parameters={"query": "Who invented the telephone?"}, is_primary=False),
+            CommandExample(voice_command="Who wrote Romeo and Juliet?", expected_parameters={"query": "Who wrote Romeo and Juliet?"}, is_primary=False),
+            CommandExample(voice_command="Who discovered penicillin?", expected_parameters={"query": "Who discovered penicillin?"}, is_primary=False),
+
+            # === "Where is" location questions ===
+            CommandExample(voice_command="Where is Mount Everest?", expected_parameters={"query": "Where is Mount Everest?"}, is_primary=False),
+            CommandExample(voice_command="Where is the Eiffel Tower?", expected_parameters={"query": "Where is the Eiffel Tower?"}, is_primary=False),
+            CommandExample(voice_command="Where is the Amazon River?", expected_parameters={"query": "Where is the Amazon River?"}, is_primary=False),
+            CommandExample(voice_command="Where is Antarctica?", expected_parameters={"query": "Where is Antarctica?"}, is_primary=False),
+            CommandExample(voice_command="Where is the Sahara Desert?", expected_parameters={"query": "Where is the Sahara Desert?"}, is_primary=False),
+
+            # === "When did" historical questions ===
+            CommandExample(voice_command="When did World War II end?", expected_parameters={"query": "When did World War II end?"}, is_primary=False),
+            CommandExample(voice_command="When did World War I start?", expected_parameters={"query": "When did World War I start?"}, is_primary=False),
+            CommandExample(voice_command="When was the moon landing?", expected_parameters={"query": "When was the moon landing?"}, is_primary=False),
+            CommandExample(voice_command="When did the dinosaurs go extinct?", expected_parameters={"query": "When did the dinosaurs go extinct?"}, is_primary=False),
+            CommandExample(voice_command="When was the Declaration of Independence signed?", expected_parameters={"query": "When was the Declaration of Independence signed?"}, is_primary=False),
+
+            # === "How does/do" explanation questions ===
+            CommandExample(voice_command="How does photosynthesis work?", expected_parameters={"query": "How does photosynthesis work?"}, is_primary=False),
+            CommandExample(voice_command="How does gravity work?", expected_parameters={"query": "How does gravity work?"}, is_primary=False),
+            CommandExample(voice_command="How do airplanes fly?", expected_parameters={"query": "How do airplanes fly?"}, is_primary=False),
+            CommandExample(voice_command="How do batteries work?", expected_parameters={"query": "How do batteries work?"}, is_primary=False),
+            CommandExample(voice_command="How does the heart pump blood?", expected_parameters={"query": "How does the heart pump blood?"}, is_primary=False),
+
+            # === "Explain" questions ===
+            CommandExample(voice_command="Explain photosynthesis", expected_parameters={"query": "Explain photosynthesis"}, is_primary=False),
+            CommandExample(voice_command="Explain gravity", expected_parameters={"query": "Explain gravity"}, is_primary=False),
+            CommandExample(voice_command="Explain the water cycle", expected_parameters={"query": "Explain the water cycle"}, is_primary=False),
+            CommandExample(voice_command="Explain quantum physics", expected_parameters={"query": "Explain quantum physics"}, is_primary=False),
+            CommandExample(voice_command="Explain how computers work", expected_parameters={"query": "Explain how computers work"}, is_primary=False),
+
+            # === "Define" / definition questions ===
+            CommandExample(voice_command="Define photosynthesis", expected_parameters={"query": "Define photosynthesis"}, is_primary=False),
+            CommandExample(voice_command="Define democracy", expected_parameters={"query": "Define democracy"}, is_primary=False),
+            CommandExample(voice_command="What is the definition of entropy?", expected_parameters={"query": "What is the definition of entropy?"}, is_primary=False),
+            CommandExample(voice_command="What does entropy mean?", expected_parameters={"query": "What does entropy mean?"}, is_primary=False),
+
+            # === Comparative/superlative facts ===
+            CommandExample(voice_command="What is the largest planet?", expected_parameters={"query": "What is the largest planet?"}, is_primary=False),
+            CommandExample(voice_command="What is the longest river in the world?", expected_parameters={"query": "What is the longest river in the world?"}, is_primary=False),
+            CommandExample(voice_command="What is the tallest mountain?", expected_parameters={"query": "What is the tallest mountain?"}, is_primary=False),
+            CommandExample(voice_command="How many continents are there?", expected_parameters={"query": "How many continents are there?"}, is_primary=False),
+            CommandExample(voice_command="How many bones in the human body?", expected_parameters={"query": "How many bones in the human body?"}, is_primary=False),
+
+            # === Casual/short questions ===
+            CommandExample(voice_command="Capital of Japan?", expected_parameters={"query": "Capital of Japan?"}, is_primary=False),
+            CommandExample(voice_command="Capital of Spain?", expected_parameters={"query": "Capital of Spain?"}, is_primary=False),
+            CommandExample(voice_command="What's a black hole?", expected_parameters={"query": "What's a black hole?"}, is_primary=False),
+            CommandExample(voice_command="What's DNA?", expected_parameters={"query": "What's DNA?"}, is_primary=False),
         ]
-        examples = []
-        for i, question in enumerate(questions):
-            examples.append(CommandExample(
-                voice_command=question,
-                expected_parameters={"query": question},
-                is_primary=(i == 0)
-            ))
         return examples
     
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("query", "string", required=True, description="Question about established knowledge."),
+            JarvisParameter("query", "string", required=True, description="Question about established, stable knowledge."),
         ]
 
     @property
@@ -128,7 +156,11 @@ class GeneralKnowledgeCommand(IJarvisCommand):
         return [
             CommandAntipattern(
                 command_name="search_web",
-                description="Current events or live information."
+                description="Current events, live information, election results, 'who won' recent races or championships, real-time data, breaking news. Time zones, current time in locations ('what time is it in X')."
+            ),
+            CommandAntipattern(
+                command_name="convert_measurement",
+                description="Unit conversions (miles to km, cups to liters, pounds to kg). Use convert_measurement for ALL unit conversions."
             )
         ]
 

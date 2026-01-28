@@ -8,6 +8,9 @@
 {"utterance":"What's the temperature in Miami?","tool_name":"get_weather"}
 {"utterance":"Forecast for Austin on Saturday.","tool_name":"get_weather"}
 {"utterance":"How windy is it in Portland today?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for Los Angeles tomorrow?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for Chicago tomorrow?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for Miami tomorrow?","tool_name":"get_weather"}
 {"utterance":"What's on my calendar today?","tool_name":"get_calendar_events"}
 {"utterance":"Do I have any meetings tomorrow?","tool_name":"get_calendar_events"}
 {"utterance":"Show my schedule for next week.","tool_name":"get_calendar_events"}
@@ -38,6 +41,21 @@
 {"utterance":"Who won the World Series last night?","tool_name":"search_web"}
 {"utterance":"What's the latest update on the Mars rover?","tool_name":"search_web"}
 {"utterance":"Search for live updates on the hurricane.","tool_name":"search_web"}
+{"utterance":"What time is it in California?","tool_name":"search_web"}
+{"utterance":"What time is it in Chicago right now?","tool_name":"search_web"}
+{"utterance":"Current time in Dubai?","tool_name":"search_web"}
+{"utterance":"What's the time in Berlin?","tool_name":"search_web"}
+{"utterance":"What time is it in Mumbai?","tool_name":"search_web"}
+{"utterance":"Time in Seattle right now?","tool_name":"search_web"}
+{"utterance":"What's the weather the day after tomorrow in Boston?","tool_name":"get_weather"}
+{"utterance":"Weather forecast for the day after tomorrow.","tool_name":"get_weather"}
+{"utterance":"Forecast for Chicago the day after tomorrow.","tool_name":"get_weather"}
+{"utterance":"What's the weather this weekend in Denver?","tool_name":"get_weather"}
+{"utterance":"Forecast for this weekend in Seattle.","tool_name":"get_weather"}
+{"utterance":"This weekend's weather.","tool_name":"get_weather"}
+{"utterance":"What appointments do I have the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Any meetings the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Schedule for the day after tomorrow.","tool_name":"get_calendar_events"}
 {"utterance":"What is 12 plus 7?","tool_name":"calculate"}
 {"utterance":"Calculate 100 minus 45.","tool_name":"calculate"}
 {"utterance":"What's 6 times 9?","tool_name":"calculate"}
@@ -68,6 +86,16 @@
 {"utterance":"How did the Cowboys do today?","tool_name":"get_sports_scores"}
 {"utterance":"What was the score of the Panthers game yesterday?","tool_name":"get_sports_scores"}
 {"utterance":"How did the Eagles do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Steelers do?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Tampa Bay Buccaneers game?","tool_name":"get_sports_scores"}
+{"utterance":"How did the San Francisco 49ers do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Knicks game today?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Miami Heat do?","tool_name":"get_sports_scores"}
+{"utterance":"What was the Celtics score?","tool_name":"get_sports_scores"}
+{"utterance":"Did the Green Bay Packers win?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Red Sox do last night?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Denver Broncos game?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Atlanta Braves do yesterday?","tool_name":"get_sports_scores"}
 {"utterance":"When do the Giants play next?","tool_name":"get_sports_schedule"}
 {"utterance":"What's the next game for the Lakers?","tool_name":"get_sports_schedule"}
 {"utterance":"When is the Yankees game tomorrow?","tool_name":"get_sports_schedule"}
@@ -98,3 +126,120 @@
 {"utterance":"Tell me a 300 word story about pirates.","tool_name":"tell_story"}
 {"utterance":"Make up a story about a lost puppy.","tool_name":"tell_story"}
 {"utterance":"End the story now.","tool_name":"tell_story"}
+{"utterance":"What's the weather like?","tool_name":"get_weather"}
+{"utterance":"How's the weather?","tool_name":"get_weather"}
+{"utterance":"What's the weather like outside?","tool_name":"get_weather"}
+{"utterance":"What's the weather today?","tool_name":"get_weather"}
+{"utterance":"Weather report please.","tool_name":"get_weather"}
+{"utterance":"How's it looking outside?","tool_name":"get_weather"}
+{"utterance":"What's the current temperature?","tool_name":"get_weather"}
+{"utterance":"When did World War II end?","tool_name":"answer_question"}
+{"utterance":"When did the Civil War start?","tool_name":"answer_question"}
+{"utterance":"What caused World War I?","tool_name":"answer_question"}
+{"utterance":"How does gravity work?","tool_name":"answer_question"}
+{"utterance":"Who discovered America?","tool_name":"answer_question"}
+{"utterance":"What is the meaning of life?","tool_name":"answer_question"}
+{"utterance":"Who invented electricity?","tool_name":"answer_question"}
+{"utterance":"When was the moon landing?","tool_name":"answer_question"}
+{"utterance":"How far is the sun from earth?","tool_name":"answer_question"}
+{"utterance":"What is the largest ocean?","tool_name":"answer_question"}
+{"utterance":"What time is it in London?","tool_name":"search_web"}
+{"utterance":"What time is it in Paris?","tool_name":"search_web"}
+{"utterance":"What time is it in Los Angeles?","tool_name":"search_web"}
+{"utterance":"What time is it in New York right now?","tool_name":"search_web"}
+{"utterance":"What's the current time in Australia?","tool_name":"search_web"}
+{"utterance":"Current time in Japan?","tool_name":"search_web"}
+{"utterance":"Time in Hawaii right now?","tool_name":"search_web"}
+{"utterance":"What time zone is California in?","tool_name":"search_web"}
+{"utterance":"When is the next NASA launch?","tool_name":"search_web"}
+{"utterance":"When does the new iPhone come out?","tool_name":"search_web"}
+{"utterance":"When is Coachella?","tool_name":"search_web"}
+{"utterance":"When is the next eclipse?","tool_name":"search_web"}
+{"utterance":"Did the Steelers win?","tool_name":"get_sports_scores"}
+{"utterance":"What was the Mets score?","tool_name":"get_sports_scores"}
+{"utterance":"Final score for the Denver Broncos?","tool_name":"get_sports_scores"}
+{"utterance":"How'd the Packers do last night?","tool_name":"get_sports_scores"}
+{"utterance":"Did the Buccaneers win?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Carolina Panthers do?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Carolina Panthers game?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Giants do yesterday?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Cowboys do?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Warriors game tomorrow?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Lakers game today?","tool_name":"get_sports_scores"}
+{"utterance":"Read my calendar.","tool_name":"get_calendar_events"}
+{"utterance":"What's on my calendar?","tool_name":"get_calendar_events"}
+{"utterance":"Check my calendar.","tool_name":"get_calendar_events"}
+{"utterance":"Am I busy today?","tool_name":"get_calendar_events"}
+{"utterance":"Any meetings today?","tool_name":"get_calendar_events"}
+{"utterance":"Show me my schedule.","tool_name":"get_calendar_events"}
+{"utterance":"What meetings do I have next week?","tool_name":"get_calendar_events"}
+{"utterance":"Show my calendar for this weekend.","tool_name":"get_calendar_events"}
+{"utterance":"Am I free this weekend?","tool_name":"get_calendar_events"}
+{"utterance":"What's the weather the day after tomorrow?","tool_name":"get_weather"}
+{"utterance":"What's the weather this weekend in Atlanta?","tool_name":"get_weather"}
+{"utterance":"How's the weather in New York today?","tool_name":"get_weather"}
+{"utterance":"How's the weather in Chicago today?","tool_name":"get_weather"}
+{"utterance":"How's the weather in Los Angeles today?","tool_name":"get_weather"}
+{"utterance":"What's the weather in Dallas today?","tool_name":"get_weather"}
+{"utterance":"What's the weather like in San Francisco today?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for Seattle this weekend?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for New York this weekend?","tool_name":"get_weather"}
+{"utterance":"What's the forecast for Chicago this weekend?","tool_name":"get_weather"}
+{"utterance":"Weather forecast for Miami this weekend.","tool_name":"get_weather"}
+{"utterance":"What is the forecast for Portland this weekend?","tool_name":"get_weather"}
+{"utterance":"How did the Baltimore Orioles do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"How did the New York Yankees do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Boston Red Sox do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Los Angeles Dodgers do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Tampa Bay Rays do yesterday?","tool_name":"get_sports_scores"}
+{"utterance":"How did the Chicago Cubs do last weekend?","tool_name":"get_sports_scores"}
+{"utterance":"Who won the World Series this year?","tool_name":"search_web"}
+{"utterance":"Who won the NBA championship?","tool_name":"search_web"}
+{"utterance":"Who won the Stanley Cup this year?","tool_name":"search_web"}
+{"utterance":"Who won the college football championship?","tool_name":"search_web"}
+{"utterance":"Who won March Madness?","tool_name":"search_web"}
+{"utterance":"Who won the Masters this year?","tool_name":"search_web"}
+{"utterance":"Who won the Super Bowl last year?","tool_name":"search_web"}
+{"utterance":"What time is it in San Francisco?","tool_name":"search_web"}
+{"utterance":"What time is it in Denver?","tool_name":"search_web"}
+{"utterance":"What time is it in Atlanta?","tool_name":"search_web"}
+{"utterance":"What time is it in Miami right now?","tool_name":"search_web"}
+{"utterance":"What time is it in Houston?","tool_name":"search_web"}
+{"utterance":"What's the score of the Celtics game tomorrow?","tool_name":"get_sports_scores"}
+{"utterance":"What's the score of the Eagles game tomorrow?","tool_name":"get_sports_scores"}
+{"utterance":"What's the weather like in metric units?","tool_name":"get_weather"}
+{"utterance":"What's the weather in metric units?","tool_name":"get_weather"}
+{"utterance":"Show the weather in metric units.","tool_name":"get_weather"}
+{"utterance":"Weather in metric units.","tool_name":"get_weather"}
+{"utterance":"Give me the weather in imperial units.","tool_name":"get_weather"}
+{"utterance":"Weather in imperial units.","tool_name":"get_weather"}
+{"utterance":"What's the weather in imperial?","tool_name":"get_weather"}
+{"utterance":"Weather forecast in metric units.","tool_name":"get_weather"}
+{"utterance":"What's the forecast in metric units?","tool_name":"get_weather"}
+{"utterance":"Show weather in Fahrenheit.","tool_name":"get_weather"}
+{"utterance":"Weather in Denver in metric units.","tool_name":"get_weather"}
+{"utterance":"What's the weather in Boston in metric units?","tool_name":"get_weather"}
+{"utterance":"What appointments do I have the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Check my calendar the day after tomorrow.","tool_name":"get_calendar_events"}
+{"utterance":"What do I have the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Day after tomorrow calendar.","tool_name":"get_calendar_events"}
+{"utterance":"Day after tomorrow schedule.","tool_name":"get_calendar_events"}
+{"utterance":"Meetings the day after tomorrow.","tool_name":"get_calendar_events"}
+{"utterance":"Events the day after tomorrow.","tool_name":"get_calendar_events"}
+{"utterance":"What events do I have the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Schedule for day after tomorrow.","tool_name":"get_calendar_events"}
+{"utterance":"What's the weather like in metric?","tool_name":"get_weather"}
+{"utterance":"Weather in Celsius please.","tool_name":"get_weather"}
+{"utterance":"Give me the forecast in metric units.","tool_name":"get_weather"}
+{"utterance":"How's the weather in Fahrenheit?","tool_name":"get_weather"}
+{"utterance":"What's the temperature in metric units?","tool_name":"get_weather"}
+{"utterance":"Weather report in metric.","tool_name":"get_weather"}
+{"utterance":"Any meetings the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Do I have any meetings the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Am I busy the day after tomorrow?","tool_name":"get_calendar_events"}
+{"utterance":"Show my schedule for the day after tomorrow.","tool_name":"get_calendar_events"}
+{"utterance":"What time is it in Texas?","tool_name":"search_web"}
+{"utterance":"What time is it in Florida?","tool_name":"search_web"}
+{"utterance":"What time is it in California right now?","tool_name":"search_web"}
+{"utterance":"What time is it in Arizona?","tool_name":"search_web"}
+{"utterance":"Current time in California?","tool_name":"search_web"}
