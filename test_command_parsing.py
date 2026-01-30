@@ -552,7 +552,113 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         )
     ]
     tests.extend(sports_tests)
-    
+
+    # ===== TIMER COMMAND TESTS =====
+    timer_tests = [
+        # Seconds only
+        CommandTest(
+            "Set a timer for 30 seconds",
+            "set_timer",
+            {"duration_seconds": 30},
+            "Timer for seconds only"
+        ),
+        CommandTest(
+            "Timer for 45 seconds",
+            "set_timer",
+            {"duration_seconds": 45},
+            "Timer without 'set' prefix"
+        ),
+
+        # Minutes only
+        CommandTest(
+            "Set a timer for 5 minutes",
+            "set_timer",
+            {"duration_seconds": 300},
+            "Timer for 5 minutes (300 seconds)"
+        ),
+        CommandTest(
+            "Timer for ten minutes",
+            "set_timer",
+            {"duration_seconds": 600},
+            "Timer with written-out number"
+        ),
+        CommandTest(
+            "Set a 15 minute timer",
+            "set_timer",
+            {"duration_seconds": 900},
+            "Timer with duration before 'timer'"
+        ),
+
+        # Hours only
+        CommandTest(
+            "Set a timer for 1 hour",
+            "set_timer",
+            {"duration_seconds": 3600},
+            "Timer for 1 hour (3600 seconds)"
+        ),
+        CommandTest(
+            "Timer for 2 hours",
+            "set_timer",
+            {"duration_seconds": 7200},
+            "Timer for 2 hours"
+        ),
+
+        # Compound times
+        CommandTest(
+            "Set a timer for 1 hour and 30 minutes",
+            "set_timer",
+            {"duration_seconds": 5400},
+            "Compound timer: 1h 30m"
+        ),
+        CommandTest(
+            "Timer for 2 minutes 30 seconds",
+            "set_timer",
+            {"duration_seconds": 150},
+            "Compound timer: 2m 30s"
+        ),
+
+        # With labels
+        CommandTest(
+            "Set a 10 minute timer for pasta",
+            "set_timer",
+            {"duration_seconds": 600, "label": "pasta"},
+            "Timer with label"
+        ),
+        CommandTest(
+            "Timer for 20 minutes for the laundry",
+            "set_timer",
+            {"duration_seconds": 1200, "label": "laundry"},
+            "Timer with label (longer phrase)"
+        ),
+        CommandTest(
+            "Set a nap timer for 30 minutes",
+            "set_timer",
+            {"duration_seconds": 1800, "label": "nap"},
+            "Timer with label before duration"
+        ),
+
+        # Casual phrasing
+        CommandTest(
+            "Remind me in 15 minutes",
+            "set_timer",
+            {"duration_seconds": 900},
+            "Casual: 'remind me' phrasing"
+        ),
+        CommandTest(
+            "Wake me up in 30 minutes",
+            "set_timer",
+            {"duration_seconds": 1800},
+            "Casual: 'wake me up' phrasing"
+        ),
+        CommandTest(
+            "Let me know in an hour",
+            "set_timer",
+            {"duration_seconds": 3600},
+            "Casual: 'let me know' phrasing"
+        )
+    ]
+    tests.extend(timer_tests)
+
     return tests
 
 def _maybe_parse_list_string(value: Any) -> Optional[list]:
