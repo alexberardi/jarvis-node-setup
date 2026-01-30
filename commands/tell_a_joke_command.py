@@ -47,62 +47,28 @@ class TellAJokeCommand(IJarvisCommand):
         """Generate varied examples for adapter training.
 
         Optimized for 3B model:
-        - Heavy repetition of "joke about [TOPIC]" pattern
+        - Fewer examples per pattern (1-2 per variation)
         - Clear "no topic = empty params" pattern
-        - Extract topic from "about X" phrases
+        - Topic extraction from "about X" phrases
         """
         examples: List[CommandExample] = [
-            # === CRITICAL: "Tell me a joke" (no topic) = empty params ===
+            # === No topic ===
             CommandExample(voice_command="Tell me a joke", expected_parameters={}, is_primary=True),
-            CommandExample(voice_command="Tell me a joke please", expected_parameters={}, is_primary=False),
-            CommandExample(voice_command="I want a joke", expected_parameters={}, is_primary=False),
-            CommandExample(voice_command="Give me a joke", expected_parameters={}, is_primary=False),
-            CommandExample(voice_command="I need a joke", expected_parameters={}, is_primary=False),
-            CommandExample(voice_command="Got a joke?", expected_parameters={}, is_primary=False),
             CommandExample(voice_command="Make me laugh", expected_parameters={}, is_primary=False),
             CommandExample(voice_command="Say something funny", expected_parameters={}, is_primary=False),
 
-            # === CRITICAL: "Tell me a joke about [TOPIC]" - extract topic ===
+            # === Topic extraction ===
             CommandExample(voice_command="Tell me a joke about cats", expected_parameters={"topic": "cats"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about dogs", expected_parameters={"topic": "dogs"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about animals", expected_parameters={"topic": "animals"}, is_primary=False),
             CommandExample(voice_command="Tell me a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about computers", expected_parameters={"topic": "computers"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about technology", expected_parameters={"topic": "technology"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about science", expected_parameters={"topic": "science"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about math", expected_parameters={"topic": "math"}, is_primary=False),
             CommandExample(voice_command="Tell me a joke about sports", expected_parameters={"topic": "sports"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about food", expected_parameters={"topic": "food"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about work", expected_parameters={"topic": "work"}, is_primary=False),
-            CommandExample(voice_command="Tell me a joke about coffee", expected_parameters={"topic": "coffee"}, is_primary=False),
 
-            # === "Give me a joke about [TOPIC]" pattern ===
-            CommandExample(voice_command="Give me a joke about cats", expected_parameters={"topic": "cats"}, is_primary=False),
-            CommandExample(voice_command="Give me a joke about dogs", expected_parameters={"topic": "dogs"}, is_primary=False),
-            CommandExample(voice_command="Give me a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
-            CommandExample(voice_command="Give me a joke about sports", expected_parameters={"topic": "sports"}, is_primary=False),
-
-            # === "I want a joke about [TOPIC]" pattern ===
-            CommandExample(voice_command="I want a joke about robots", expected_parameters={"topic": "robots"}, is_primary=False),
-            CommandExample(voice_command="I want a joke about weather", expected_parameters={"topic": "weather"}, is_primary=False),
-            CommandExample(voice_command="I want a joke about school", expected_parameters={"topic": "school"}, is_primary=False),
-
-            # === "Make me laugh with a joke about [TOPIC]" pattern ===
+            # === Varied phrasing with topic ===
             CommandExample(voice_command="Make me laugh with a joke about technology", expected_parameters={"topic": "technology"}, is_primary=False),
-            CommandExample(voice_command="Make me laugh with a joke about animals", expected_parameters={"topic": "animals"}, is_primary=False),
-            CommandExample(voice_command="Make me laugh with a joke about programming", expected_parameters={"topic": "programming"}, is_primary=False),
+            CommandExample(voice_command="Got any jokes about animals?", expected_parameters={"topic": "animals"}, is_primary=False),
 
-            # === Question format with topic ===
-            CommandExample(voice_command="Do you know any jokes about computers?", expected_parameters={"topic": "computers"}, is_primary=False),
-            CommandExample(voice_command="Do you know any jokes about cats?", expected_parameters={"topic": "cats"}, is_primary=False),
-            CommandExample(voice_command="Can you tell a joke about math?", expected_parameters={"topic": "math"}, is_primary=False),
-            CommandExample(voice_command="Got any jokes about dogs?", expected_parameters={"topic": "dogs"}, is_primary=False),
-
-            # === Specific humor styles as topics ===
+            # === Humor style as topic ===
             CommandExample(voice_command="Tell me a dad joke", expected_parameters={"topic": "dad jokes"}, is_primary=False),
-            CommandExample(voice_command="Tell me a pun", expected_parameters={"topic": "puns"}, is_primary=False),
             CommandExample(voice_command="Give me a knock knock joke", expected_parameters={"topic": "knock knock"}, is_primary=False),
-            CommandExample(voice_command="Tell me a one-liner", expected_parameters={"topic": "one-liners"}, is_primary=False),
         ]
         return examples
     
