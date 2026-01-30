@@ -1,11 +1,15 @@
 import threading
-from utils.config_service import Config
-from scripts.voice_listener import start_voice_listener
+
 from scripts.mqtt_tts_listener import start_mqtt_listener
-from utils.music_assistant_service import MusicAssistantService, DummyMusicAssistantService
+from scripts.voice_listener import start_voice_listener
+from services.timer_service import initialize_timer_service
+from utils.config_service import Config
+from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
 
 
 def main():
+    # Initialize timer service with TTS callback
+    initialize_timer_service()
     if Config.get("music_assistant_enabled"):
         ma_service = MusicAssistantService()
     else:
