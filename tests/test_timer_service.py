@@ -2,16 +2,23 @@
 Unit tests for TimerService.
 
 Tests the timer service's core functionality including setting timers,
-cancellation, and completion callbacks.
+cancellation, completion callbacks, and persistence for restart survival.
 """
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services.timer_service import TimerService, get_timer_service, initialize_timer_service
+from services.timer_service import (
+    TIMER_COMMAND_NAME,
+    TimerInfo,
+    TimerService,
+    get_timer_service,
+    initialize_timer_service,
+)
 
 
 @pytest.fixture
@@ -203,3 +210,273 @@ class TestDefaultTimerCompleteHandler:
             mock_get_tts.side_effect = Exception("TTS not configured")
             # Should not raise
             _default_timer_complete_handler("abc123", None)
+
+
+class TestTimerServicePersistence:
+    """Tests for timer persistence functionality"""
+
+    @pytest.fixture
+    def fresh_timer_service_with_mock_db(self):
+        """Create a fresh TimerService with mocked database"""
+        TimerService._instance = None
+        service = TimerService()
+        yield service
+        service.clear_all()
+        TimerService._instance = None
+
+    def test_set_timer_persists(self, fresh_timer_service_with_mock_db):
+        """Test that set_timer persists the timer"""
+        service = fresh_timer_service_with_mock_db
+
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session.__enter__ = MagicMock(return_value=mock_session)
+            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_session_local.return_value = mock_session
+
+            with patch("services.timer_service.CommandDataRepository") as mock_repo_class:
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+
+                timer_id = service.set_timer(300, label="pasta")
+
+                mock_repo.save.assert_called_once()
+                call_args = mock_repo.save.call_args
+                assert call_args.kwargs["command_name"] == TIMER_COMMAND_NAME
+                assert call_args.kwargs["data_key"] == timer_id
+
+    def test_cancel_timer_deletes_persisted(self, fresh_timer_service_with_mock_db):
+        """Test that cancel_timer removes persisted timer"""
+        service = fresh_timer_service_with_mock_db
+
+        # First set a timer (with mocked persistence)
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                timer_id = service.set_timer(300, label="test")
+
+        # Then cancel it and check deletion
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session.__enter__ = MagicMock(return_value=mock_session)
+            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_session_local.return_value = mock_session
+
+            with patch("services.timer_service.CommandDataRepository") as mock_repo_class:
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+
+                service.cancel_timer(timer_id)
+
+                mock_repo.delete.assert_called_once_with(TIMER_COMMAND_NAME, timer_id)
+
+    def test_clear_all_deletes_persisted(self, fresh_timer_service_with_mock_db):
+        """Test that clear_all removes all persisted timers"""
+        service = fresh_timer_service_with_mock_db
+
+        # Set some timers
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                service.set_timer(300)
+                service.set_timer(600)
+
+        # Clear all and check deletion
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session.__enter__ = MagicMock(return_value=mock_session)
+            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_session_local.return_value = mock_session
+
+            with patch("services.timer_service.CommandDataRepository") as mock_repo_class:
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+
+                service.clear_all()
+
+                mock_repo.delete_all.assert_called_once_with(TIMER_COMMAND_NAME)
+
+
+class TestTimerServiceFindByLabel:
+    """Tests for find_timer_by_label"""
+
+    @pytest.fixture
+    def fresh_service(self):
+        """Create a fresh TimerService for testing"""
+        TimerService._instance = None
+        service = TimerService()
+        yield service
+        service.clear_all()
+        TimerService._instance = None
+
+    def test_find_by_exact_label(self, fresh_service):
+        """Test finding timer by exact label"""
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                timer_id = fresh_service.set_timer(300, label="pasta")
+
+        result = fresh_service.find_timer_by_label("pasta")
+        assert result == timer_id
+
+    def test_find_by_partial_label(self, fresh_service):
+        """Test finding timer by partial label match"""
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                timer_id = fresh_service.set_timer(300, label="pasta cooking")
+
+        result = fresh_service.find_timer_by_label("pasta")
+        assert result == timer_id
+
+    def test_find_case_insensitive(self, fresh_service):
+        """Test case-insensitive label matching"""
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                timer_id = fresh_service.set_timer(300, label="Pasta")
+
+        result = fresh_service.find_timer_by_label("pasta")
+        assert result == timer_id
+
+    def test_find_not_found(self, fresh_service):
+        """Test finding non-existent timer returns None"""
+        with patch("services.timer_service.SessionLocal"):
+            with patch("services.timer_service.CommandDataRepository"):
+                fresh_service.set_timer(300, label="pasta")
+
+        result = fresh_service.find_timer_by_label("eggs")
+        assert result is None
+
+
+class TestTimerServiceRestore:
+    """Tests for timer restoration after restart"""
+
+    @pytest.fixture
+    def fresh_service(self):
+        """Create a fresh TimerService for testing"""
+        TimerService._instance = None
+        service = TimerService()
+        yield service
+        service.clear_all()
+        TimerService._instance = None
+
+    def test_restore_active_timers(self, fresh_service):
+        """Test restoring timers that haven't expired"""
+        now = datetime.now(timezone.utc)
+        future_time = now + timedelta(minutes=5)
+
+        mock_persisted = [
+            {
+                "_data_key": "timer1",
+                "timer_id": "timer1",
+                "label": "pasta",
+                "duration_seconds": 300,
+                "started_at": now.isoformat(),
+                "ends_at": future_time.isoformat(),
+            }
+        ]
+
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session.__enter__ = MagicMock(return_value=mock_session)
+            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_session_local.return_value = mock_session
+
+            with patch("services.timer_service.CommandDataRepository") as mock_repo_class:
+                mock_repo = MagicMock()
+                mock_repo.get_all.return_value = mock_persisted
+                mock_repo_class.return_value = mock_repo
+
+                count = fresh_service.restore_timers()
+
+        assert count == 1
+        assert len(fresh_service.get_active_timers()) == 1
+
+    def test_restore_expired_timers_fires_callback(self, fresh_service):
+        """Test that expired timers fire callback immediately"""
+        now = datetime.now(timezone.utc)
+        past_time = now - timedelta(minutes=5)
+        callback = MagicMock()
+        fresh_service.set_on_complete_callback(callback)
+
+        mock_persisted = [
+            {
+                "_data_key": "expired1",
+                "timer_id": "expired1",
+                "label": "old_pasta",
+                "duration_seconds": 300,
+                "started_at": (past_time - timedelta(minutes=5)).isoformat(),
+                "ends_at": past_time.isoformat(),
+            }
+        ]
+
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session.__enter__ = MagicMock(return_value=mock_session)
+            mock_session.__exit__ = MagicMock(return_value=False)
+            mock_session_local.return_value = mock_session
+
+            with patch("services.timer_service.CommandDataRepository") as mock_repo_class:
+                mock_repo = MagicMock()
+                mock_repo.get_all.return_value = mock_persisted
+                mock_repo_class.return_value = mock_repo
+
+                count = fresh_service.restore_timers()
+
+        # Should not count as restored (it fired immediately)
+        assert count == 0
+        # But callback should have been called
+        callback.assert_called_once_with("expired1", "old_pasta")
+
+    def test_restore_handles_db_error(self, fresh_service):
+        """Test restore handles database errors gracefully"""
+        with patch("services.timer_service.SessionLocal") as mock_session_local:
+            mock_session_local.side_effect = Exception("DB error")
+
+            count = fresh_service.restore_timers()
+
+        assert count == 0
+
+
+class TestTimerInfoSerialization:
+    """Tests for TimerInfo serialization"""
+
+    def test_to_dict(self):
+        """Test TimerInfo serialization to dict"""
+        now = datetime.now(timezone.utc)
+        ends = now + timedelta(minutes=5)
+        mock_timer = MagicMock()
+
+        info = TimerInfo(
+            timer_id="abc123",
+            label="pasta",
+            duration_seconds=300,
+            started_at=now,
+            ends_at=ends,
+            timer=mock_timer,
+        )
+
+        data = info.to_dict()
+
+        assert data["timer_id"] == "abc123"
+        assert data["label"] == "pasta"
+        assert data["duration_seconds"] == 300
+        assert data["started_at"] == now.isoformat()
+        assert data["ends_at"] == ends.isoformat()
+
+    def test_from_dict(self):
+        """Test TimerInfo deserialization from dict"""
+        now = datetime.now(timezone.utc)
+        ends = now + timedelta(minutes=5)
+        mock_timer = MagicMock()
+
+        data = {
+            "timer_id": "abc123",
+            "label": "pasta",
+            "duration_seconds": 300,
+            "started_at": now.isoformat(),
+            "ends_at": ends.isoformat(),
+        }
+
+        info = TimerInfo.from_dict(data, mock_timer)
+
+        assert info.timer_id == "abc123"
+        assert info.label == "pasta"
+        assert info.duration_seconds == 300
+        assert info.timer == mock_timer
