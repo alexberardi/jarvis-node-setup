@@ -9,7 +9,13 @@ from utils.music_assistant_service import DummyMusicAssistantService, MusicAssis
 
 def main():
     # Initialize timer service with TTS callback
-    initialize_timer_service()
+    timer_service = initialize_timer_service()
+
+    # Restore any persisted timers from previous session
+    restored_count = timer_service.restore_timers()
+    if restored_count > 0:
+        print(f"[Jarvis] Restored {restored_count} timer(s) from previous session")
+
     if Config.get("music_assistant_enabled"):
         ma_service = MusicAssistantService()
     else:
