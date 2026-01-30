@@ -27,12 +27,20 @@ class OpenWeatherCommand(IJarvisCommand):
         return "Retrieve current weather conditions or up-to-5-day forecast. Use for ALL weather-related queries, including those requesting metric or imperial units."
 
     def generate_prompt_examples(self) -> List[CommandExample]:
-        """Generate concise example utterances with expected parameters using date keys"""
+        """Generate concise example utterances with expected parameters using date keys.
+
+        IMPORTANT: The primary example uses "What's the weather in [CITY]?" pattern
+        to reinforce city extraction (the model has confused this with query parameter).
+        """
         return [
             CommandExample(
-                voice_command="What's the weather like?",
-                expected_parameters={"resolved_datetimes": [RelativeDateKeys.TODAY]},
+                voice_command="What's the weather in Chicago?",
+                expected_parameters={"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.TODAY]},
                 is_primary=True
+            ),
+            CommandExample(
+                voice_command="What's the weather like?",
+                expected_parameters={"resolved_datetimes": [RelativeDateKeys.TODAY]}
             ),
             CommandExample(
                 voice_command="How's the weather in New York today?",
@@ -51,133 +59,56 @@ class OpenWeatherCommand(IJarvisCommand):
     def generate_adapter_examples(self) -> List[CommandExample]:
         """Generate varied examples for adapter training.
 
-        Optimized for 3B model pattern matching:
-        - Heavy repetition of "city extraction" patterns
-        - Always include resolved_datetimes (required param)
-        - Clear "no date = today" pattern reinforcement
+        Focus areas:
+        - Implicit today (no date word -> resolved_datetimes: ["today"])
+        - City extraction with various phrasings
+        - Day after tomorrow as single token
         """
         examples = [
-            # === CRITICAL: City extraction from "in [CITY]" pattern ===
-            ("Weather in Denver", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.TODAY]}, True),
-            ("Weather in Seattle", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Phoenix", {"city": "Phoenix", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Boston", {"city": "Boston", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Dallas", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in Austin?", {"city": "Austin", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in Portland?", {"city": "Portland", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in San Francisco?", {"city": "San Francisco", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Atlanta?", {"city": "Atlanta", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Houston?", {"city": "Houston", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Philadelphia?", {"city": "Philadelphia", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === CRITICAL: No city, no date → defaults to today ===
+            # === IMPLICIT TODAY - Critical pattern: no date word = today ===
+            ("What's the weather like?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, True),
             ("What's the weather?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("How's the weather?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Check the weather", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("Weather report", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's it like outside?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's it outside?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === City + explicit "today" ===
-            ("What's the weather in Tampa today?", {"city": "Tampa", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Orlando today?", {"city": "Orlando", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Nashville today", {"city": "Nashville", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Current weather in Detroit", {"city": "Detroit", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the current weather in Minneapolis?", {"city": "Minneapolis", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === City + "tomorrow" ===
-            ("Weather in Denver tomorrow", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("What's the weather in Seattle tomorrow?", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("What's the forecast for Austin tomorrow?", {"city": "Austin", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("What's the forecast for Los Angeles tomorrow?", {"city": "Los Angeles", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("What's the forecast for Chicago tomorrow?", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("What's the forecast for Miami tomorrow?", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("Tomorrow's weather in San Diego", {"city": "San Diego", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-            ("Will it rain in Cleveland tomorrow?", {"city": "Cleveland", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
-
-            # === "Forecast" keyword patterns ===
-            ("What's the forecast for Portland?", {"city": "Portland", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Forecast for Dallas", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("What's the forecast?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Give me the forecast for tomorrow", {"resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
 
-            # === Weekend patterns (CRITICAL: "this weekend" = this_weekend, NOT next_weekend) ===
-            ("Weekend weather in Houston", {"city": "Houston", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What's the weather this weekend?", {"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("Forecast for this weekend in Tampa", {"city": "Tampa", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What is the forecast for Seattle this weekend", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("How's the weather this weekend in Denver?", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("This weekend's weather in Chicago", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("Weather for this weekend", {"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("Will it rain this weekend?", {"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
+            # === IMPLICIT TODAY + CITY - no date word, but city present ===
+            ("What's the weather in Miami?", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("How's the weather in Seattle?", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Weather in Denver", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Weather in Chicago", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("What's the forecast for Boston?", {"city": "Boston", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Temperature in Phoenix", {"city": "Phoenix", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Is it raining in Portland?", {"city": "Portland", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("How hot is it in Dallas?", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
 
-            # === Day after tomorrow (CRITICAL: must resolve to day_after_tomorrow, NOT tomorrow) ===
-            ("Weather the day after tomorrow", {"resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Weather in Boston the day after tomorrow", {"city": "Boston", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Weather forecast for Chicago on the day after tomorrow", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("What's the forecast the day after tomorrow?", {"resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("What's the weather the day after tomorrow in Phoenix?", {"city": "Phoenix", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Forecast for the day after tomorrow in Dallas", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Day after tomorrow weather in Miami", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("What's the weather the day after tomorrow in Denver?", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Forecast for day after tomorrow in Seattle", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-            ("Day after tomorrow forecast for Atlanta", {"city": "Atlanta", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
-
-            # === Specific day of week ===
-            ("Weather on Monday", {"resolved_datetimes": [RelativeDateKeys.NEXT_MONDAY]}, False),
-            ("Weather in Phoenix on Friday", {"city": "Phoenix", "resolved_datetimes": [RelativeDateKeys.NEXT_FRIDAY]}, False),
-            ("What's the weather Saturday?", {"resolved_datetimes": [RelativeDateKeys.NEXT_SATURDAY]}, False),
-
-            # === Unit system (CRITICAL: "metric units" / "imperial units" = weather, NOT convert_measurement) ===
-            ("Weather in metric", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Celsius", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Denver in metric", {"city": "Denver", "unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather like in metric units?", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in metric units?", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Show the weather in metric units", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in metric units", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Give me the weather in imperial units", {"unit_system": "imperial", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in imperial units", {"unit_system": "imperial", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in imperial?", {"unit_system": "imperial", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Show weather in Fahrenheit", {"unit_system": "imperial", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather forecast in metric units", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the forecast in metric units?", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Weather in Denver in metric units", {"city": "Denver", "unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in Boston in metric units?", {"city": "Boston", "unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === Condition-specific questions (still weather) ===
-            ("Is it raining?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Will it rain today?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Is it cold outside?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How hot is it?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How hot is it in Las Vegas?", {"city": "Las Vegas", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === Casual/implied weather (umbrella, jacket) ===
-            ("Should I bring an umbrella?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("Do I need a jacket?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-
-            # === REINFORCEMENT: "How's the weather in [CITY] today?" (search_web confusion) ===
+            # === EXPLICIT TODAY ===
+            ("What's the weather today?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("How's the weather in New York today?", {"city": "New York", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Chicago today?", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Los Angeles today?", {"city": "Los Angeles", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Miami today?", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("How's the weather in Dallas today?", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in Boston today?", {"city": "Boston", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather in Denver today?", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather like in San Francisco today?", {"city": "San Francisco", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Current weather in Austin", {"city": "Austin", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
 
-            # === REINFORCEMENT: "[CITY] forecast this weekend" (search_web confusion) ===
-            ("What's the forecast for New York this weekend?", {"city": "New York", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What's the forecast for Chicago this weekend?", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What's the forecast for Los Angeles this weekend?", {"city": "Los Angeles", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What's the forecast for Miami this weekend?", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("Weather forecast for Dallas this weekend", {"city": "Dallas", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
-            ("What's the weather forecast for Portland this weekend?", {"city": "Portland", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
+            # === TOMORROW ===
+            ("What's the forecast for Los Angeles tomorrow?", {"city": "Los Angeles", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
+            ("Weather in Denver tomorrow", {"city": "Denver", "resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
+            ("Will it rain tomorrow?", {"resolved_datetimes": [RelativeDateKeys.TOMORROW]}, False),
 
-            # === REINFORCEMENT: "What's the weather like?" no city (param extraction) ===
-            ("What's the weather like?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather like today?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
-            ("What's the weather like outside?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            # === DAY AFTER TOMORROW - single token, NOT two separate dates ===
+            ("Weather forecast for Chicago on the day after tomorrow", {"city": "Chicago", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
+            ("What's the weather the day after tomorrow?", {"resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
+            ("Forecast for San Diego the day after tomorrow", {"city": "San Diego", "resolved_datetimes": [RelativeDateKeys.DAY_AFTER_TOMORROW]}, False),
+
+            # === WEEKEND ===
+            ("What's the weather this weekend?", {"resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
+            ("Weekend forecast for Seattle", {"city": "Seattle", "resolved_datetimes": [RelativeDateKeys.THIS_WEEKEND]}, False),
+
+            # === UNIT SYSTEM ===
+            ("What's the weather in metric units?", {"unit_system": "metric", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Give me the weather in imperial units", {"unit_system": "imperial", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+
+            # === CASUAL PHRASINGS ===
+            ("Is it raining?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Should I bring an umbrella?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Is it cold outside?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
         ]
         return [
             CommandExample(voice_command=voice, expected_parameters=params, is_primary=is_primary)
@@ -188,7 +119,7 @@ class OpenWeatherCommand(IJarvisCommand):
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("city", "string", required=False, default=None, description="City name as spoken. Optional; omit to use the user's default location."),
-            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="ISO UTC start-of-day datetimes for requested days (max 5). Always required; include today for current weather."),
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="ISO UTC start-of-day datetimes for requested days (max 5). Always required; default to today for current weather."),
             JarvisParameter("unit_system", "string", required=False, default=None, description="Unit system: 'metric' or 'imperial'. Omit to use the user's default."),
         ]
 
@@ -205,17 +136,22 @@ class OpenWeatherCommand(IJarvisCommand):
         return [
             "Use this command ONLY for weather-related queries (temperature, conditions, forecast, precipitation)",
             "Always call this tool for weather; do NOT answer from memory or ask follow-up questions",
-            "City is optional; resolved_datetimes is required (use today's date for current weather).",
+            "Extract the city name into the 'city' parameter (NOT 'query'). Example: 'What's the weather in Miami?' -> city='Miami'",
+            "resolved_datetimes is required (use today's date for current weather). city is optional.",
             "Do NOT use this for time queries; those are not weather requests",
-            "This command is for meteorological information, not time zones or current time"
+            "This tool has NO 'query' parameter. Use 'city' for location and 'unit_system' for units."
         ]
 
     @property
     def antipatterns(self) -> List[CommandAntipattern]:
         return [
             CommandAntipattern(
+                command_name="get_current_time",
+                description="Time queries ('What time is it in [location]?', 'Current time in Dubai'), time zones. Use get_current_time for all time-related queries."
+            ),
+            CommandAntipattern(
                 command_name="search_web",
-                description="Time queries ('What time is it in Washington?', 'Current time in Dubai'), time zones, sunrise/sunset times, or non-weather facts."
+                description="Sunrise/sunset times, non-weather facts, current events."
             )
         ]
 
