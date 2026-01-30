@@ -59,9 +59,9 @@ class SportsScheduleCommand(IJarvisCommand):
     def generate_adapter_examples(self) -> List[CommandExample]:
         """Generate varied examples for adapter training.
 
-        Optimized for 3B model:
-        - Focus on FUTURE-oriented keywords: "next", "when", "upcoming", "play next"
-        - Always include both team_name AND resolved_datetimes
+        Consolidated for 3B model:
+        - 1-2 examples per pattern variation
+        - Focus on FUTURE-oriented keywords: "next", "when", "upcoming"
         - Distinguish from get_sports_scores (future vs past)
         """
         today = [RelativeDateKeys.TODAY]
@@ -70,176 +70,24 @@ class SportsScheduleCommand(IJarvisCommand):
         next_week_dates = [RelativeDateKeys.NEXT_WEEK]
 
         examples: List[CommandExample] = [
-            # === CRITICAL: "When do [TEAM] play next?" - no date = today ===
-            CommandExample(
-                voice_command="When do the Giants play next?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": today},
-                is_primary=True
-            ),
-            CommandExample(
-                voice_command="When do the Lakers play next?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When do the Cowboys play next?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When do the Celtics play next?",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When do the Eagles play next?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === "When do [TEAM] play next?" ===
+            CommandExample(voice_command="When do the Giants play next?", expected_parameters={"team_name": "Giants", "resolved_datetimes": today}, is_primary=True),
 
-            # === "When's the next [TEAM] game?" pattern ===
-            CommandExample(
-                voice_command="When's the next Giants game?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When's the next Lakers game?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When's the next Cowboys game?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When is the next Mets game?",
-                expected_parameters={"team_name": "Mets", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When is the next Packers game?",
-                expected_parameters={"team_name": "Packers", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === "When's the next [TEAM] game?" ===
+            CommandExample(voice_command="When's the next Mets game?", expected_parameters={"team_name": "Mets", "resolved_datetimes": today}, is_primary=False),
 
-            # === "Who do [TEAM] play next?" pattern ===
-            CommandExample(
-                voice_command="Who do the Giants play next?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Who do the Lakers play next?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Who do the Cowboys play next?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Who are the Celtics playing next?",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === "Who do [TEAM] play next?" ===
+            CommandExample(voice_command="Who do the Giants play next?", expected_parameters={"team_name": "Giants", "resolved_datetimes": today}, is_primary=False),
 
-            # === "What time is the [TEAM] game tomorrow?" pattern ===
-            CommandExample(
-                voice_command="What time is the Giants game tomorrow?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": tomorrow},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What time is the Lakers game tomorrow?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": tomorrow},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What time is the Cowboys game tomorrow?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": tomorrow},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What time do the Eagles play tomorrow?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": tomorrow},
-                is_primary=False
-            ),
+            # === With date (base adapter handles resolution) ===
+            CommandExample(voice_command="What time is the Giants game tomorrow?", expected_parameters={"team_name": "Giants", "resolved_datetimes": tomorrow}, is_primary=False),
+            CommandExample(voice_command="What's the Giants schedule this weekend?", expected_parameters={"team_name": "Giants", "resolved_datetimes": weekend_dates}, is_primary=False),
 
-            # === Weekend schedule patterns ===
-            CommandExample(
-                voice_command="What's the Giants schedule this weekend?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": weekend_dates},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Show me the Lakers schedule for this weekend",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": weekend_dates},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Cowboys games this weekend",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": weekend_dates},
-                is_primary=False
-            ),
+            # === Full city + team name ===
+            CommandExample(voice_command="When do the New York Giants play next?", expected_parameters={"team_name": "New York Giants", "resolved_datetimes": today}, is_primary=False),
 
-            # === Next week patterns ===
-            CommandExample(
-                voice_command="What's the Giants schedule next week?",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": next_week_dates},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Upcoming Lakers games next week",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": next_week_dates},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Show me the Celtics games for next week",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": next_week_dates},
-                is_primary=False
-            ),
-
-            # === Full city + team name patterns ===
-            CommandExample(
-                voice_command="When do the New York Giants play next?",
-                expected_parameters={"team_name": "New York Giants", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When's the next Los Angeles Lakers game?",
-                expected_parameters={"team_name": "Los Angeles Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="When do the Dallas Cowboys play next?",
-                expected_parameters={"team_name": "Dallas Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What time is the Carolina Panthers game tomorrow?",
-                expected_parameters={"team_name": "Carolina Panthers", "resolved_datetimes": tomorrow},
-                is_primary=False
-            ),
-
-            # === "Upcoming" keyword patterns ===
-            CommandExample(
-                voice_command="Upcoming Giants games",
-                expected_parameters={"team_name": "Giants", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Upcoming Lakers games",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Show me upcoming Cowboys games",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === "Upcoming" keyword ===
+            CommandExample(voice_command="Upcoming Giants games", expected_parameters={"team_name": "Giants", "resolved_datetimes": today}, is_primary=False),
         ]
         return examples
     

@@ -72,11 +72,10 @@ class SportsScoreCommand(IJarvisCommand):
     def generate_adapter_examples(self) -> List[CommandExample]:
         """Generate varied examples for adapter training.
 
-        Optimized for 3B model:
-        - Heavy repetition of "How did [TEAM] do?" pattern
-        - Always include both team_name AND resolved_datetimes
-        - Clear "no date = today" reinforcement
-        - Distinguish from get_sports_schedule (past vs future)
+        Focus areas:
+        - Implicit today (no date word -> resolved_datetimes: ["today"])
+        - Team name extraction with various patterns
+        - Distinguish from get_sports_schedule (this is for PAST results)
         """
         today = [RelativeDateKeys.TODAY]
         yesterday = [RelativeDateKeys.YESTERDAY]
@@ -84,337 +83,51 @@ class SportsScoreCommand(IJarvisCommand):
         last_night = [RelativeDateKeys.LAST_NIGHT]
 
         examples: List[CommandExample] = [
-            # === CRITICAL: "How did [TEAM] do?" - no date = today ===
-            CommandExample(
-                voice_command="How did the Dodgers do?",
-                expected_parameters={"team_name": "Dodgers", "resolved_datetimes": today},
-                is_primary=True
-            ),
-            CommandExample(
-                voice_command="How did the Lakers do?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Celtics do?",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Eagles do?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Broncos do?",
-                expected_parameters={"team_name": "Broncos", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Mets do?",
-                expected_parameters={"team_name": "Mets", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Heat do?",
-                expected_parameters={"team_name": "Heat", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Steelers do?",
-                expected_parameters={"team_name": "Steelers", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === IMPLICIT TODAY - "How did [TEAM] do?" (no date = today) ===
+            CommandExample(voice_command="How did the Giants do?", expected_parameters={"team_name": "Giants", "resolved_datetimes": today}, is_primary=True),
+            CommandExample(voice_command="How did the Cowboys do?", expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How did the Dodgers do?", expected_parameters={"team_name": "Dodgers", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How did the Lakers do?", expected_parameters={"team_name": "Lakers", "resolved_datetimes": today}, is_primary=False),
 
-            # === CRITICAL: "What's the score of [TEAM] game?" - no date = today ===
-            CommandExample(
-                voice_command="What's the score of the Mets game?",
-                expected_parameters={"team_name": "Mets", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the Knicks game?",
-                expected_parameters={"team_name": "Knicks", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the Braves game?",
-                expected_parameters={"team_name": "Braves", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What was the score of the Bears game?",
-                expected_parameters={"team_name": "Bears", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === CONTRACTIONS - "How'd [TEAM] do?" ===
+            CommandExample(voice_command="How'd the Eagles do?", expected_parameters={"team_name": "Eagles", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How'd the Packers do?", expected_parameters={"team_name": "Packers", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How'd the Bears do?", expected_parameters={"team_name": "Bears", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How'd the Chiefs do?", expected_parameters={"team_name": "Chiefs", "resolved_datetimes": today}, is_primary=False),
 
-            # === "Score of [TEAM] game today/tomorrow" - explicit date ===
-            CommandExample(
-                voice_command="What's the score of the Warriors game tomorrow?",
-                expected_parameters={"team_name": "Warriors", "resolved_datetimes": [RelativeDateKeys.TOMORROW]},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the Cowboys game today?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the Celtics game tomorrow?",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": [RelativeDateKeys.TOMORROW]},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the Eagles game tomorrow?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": [RelativeDateKeys.TOMORROW]},
-                is_primary=False
-            ),
+            # === IMPLICIT TODAY - "What's the score of [TEAM] game?" ===
+            CommandExample(voice_command="What's the score of the Yankees game?", expected_parameters={"team_name": "Yankees", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="What's the score of the Knicks game?", expected_parameters={"team_name": "Knicks", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="What's the score of the Carolina Panthers game?", expected_parameters={"team_name": "Carolina Panthers", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="What was the score of the Mets game?", expected_parameters={"team_name": "Mets", "resolved_datetimes": today}, is_primary=False),
 
-            # === Full city + team name patterns ===
-            CommandExample(
-                voice_command="How did the Boston Red Sox do?",
-                expected_parameters={"team_name": "Boston Red Sox", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the San Francisco Giants do?",
-                expected_parameters={"team_name": "San Francisco Giants", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Los Angeles Rams do?",
-                expected_parameters={"team_name": "Los Angeles Rams", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Green Bay Packers do?",
-                expected_parameters={"team_name": "Green Bay Packers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What's the score of the New York Knicks game?",
-                expected_parameters={"team_name": "New York Knicks", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === FULL CITY + TEAM NAME ===
+            CommandExample(voice_command="How did the New York Giants do?", expected_parameters={"team_name": "New York Giants", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How did the Green Bay Packers do?", expected_parameters={"team_name": "Green Bay Packers", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="How did the Los Angeles Lakers do?", expected_parameters={"team_name": "Los Angeles Lakers", "resolved_datetimes": today}, is_primary=False),
 
-            # === "Did [TEAM] win?" patterns ===
-            CommandExample(
-                voice_command="Did the Celtics win?",
-                expected_parameters={"team_name": "Celtics", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Rangers win?",
-                expected_parameters={"team_name": "Rangers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Packers win?",
-                expected_parameters={"team_name": "Packers", "resolved_datetimes": today},
-                is_primary=False
-            ),
+            # === "Did [TEAM] win?" ===
+            CommandExample(voice_command="Did the Celtics win?", expected_parameters={"team_name": "Celtics", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="Did the Patriots win?", expected_parameters={"team_name": "Patriots", "resolved_datetimes": today}, is_primary=False),
 
-            # === Yesterday patterns ===
-            CommandExample(
-                voice_command="How did the Phillies do yesterday?",
-                expected_parameters={"team_name": "Phillies", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Cubs do yesterday?",
-                expected_parameters={"team_name": "Cubs", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What was the score of the Nets game yesterday?",
-                expected_parameters={"team_name": "Nets", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Seahawks win yesterday?",
-                expected_parameters={"team_name": "Seahawks", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
+            # === "LAST NIGHT" - Critical pattern for evening games ===
+            CommandExample(voice_command="How'd the Packers do last night?", expected_parameters={"team_name": "Packers", "resolved_datetimes": last_night}, is_primary=False),
+            CommandExample(voice_command="How did the Bruins do last night?", expected_parameters={"team_name": "Bruins", "resolved_datetimes": last_night}, is_primary=False),
+            CommandExample(voice_command="How'd the Bulls do last night?", expected_parameters={"team_name": "Bulls", "resolved_datetimes": last_night}, is_primary=False),
+            CommandExample(voice_command="How'd the Celtics do last night?", expected_parameters={"team_name": "Celtics", "resolved_datetimes": last_night}, is_primary=False),
+            CommandExample(voice_command="What was the score last night?", expected_parameters={"team_name": "", "resolved_datetimes": last_night}, is_primary=False),
 
-            # === Last night patterns ===
-            CommandExample(
-                voice_command="How did the Bruins do last night?",
-                expected_parameters={"team_name": "Bruins", "resolved_datetimes": last_night},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Cubs win last night?",
-                expected_parameters={"team_name": "Cubs", "resolved_datetimes": last_night},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What was the score of the Warriors game last night?",
-                expected_parameters={"team_name": "Warriors", "resolved_datetimes": last_night},
-                is_primary=False
-            ),
+            # === YESTERDAY ===
+            CommandExample(voice_command="How did the Giants do yesterday?", expected_parameters={"team_name": "Giants", "resolved_datetimes": yesterday}, is_primary=False),
+            CommandExample(voice_command="How did the Phillies do yesterday?", expected_parameters={"team_name": "Phillies", "resolved_datetimes": yesterday}, is_primary=False),
+            CommandExample(voice_command="How'd the Yankees do yesterday?", expected_parameters={"team_name": "Yankees", "resolved_datetimes": yesterday}, is_primary=False),
 
-            # === Last weekend patterns ===
-            CommandExample(
-                voice_command="How did the Ravens do last weekend?",
-                expected_parameters={"team_name": "Ravens", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What was the Broncos score last weekend?",
-                expected_parameters={"team_name": "Broncos", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Chargers do last weekend?",
-                expected_parameters={"team_name": "Chargers", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
+            # === LAST WEEKEND ===
+            CommandExample(voice_command="How did the Ravens do last weekend?", expected_parameters={"team_name": "Ravens", "resolved_datetimes": last_weekend}, is_primary=False),
 
-            # === Contracted/casual (still needs both params) ===
-            CommandExample(
-                voice_command="How'd the Raptors do?",
-                expected_parameters={"team_name": "Raptors", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How'd the Spurs do?",
-                expected_parameters={"team_name": "Spurs", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === Final score patterns ===
-            CommandExample(
-                voice_command="Final score of the Brewers game?",
-                expected_parameters={"team_name": "Brewers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="What was the final score of the Twins game?",
-                expected_parameters={"team_name": "Twins", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === FLEXIBILITY: Casual/abbreviated forms ===
-            CommandExample(
-                voice_command="Packers win?",
-                expected_parameters={"team_name": "Packers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Lakers score?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Sox score?",
-                expected_parameters={"team_name": "Red Sox", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Niners win?",
-                expected_parameters={"team_name": "49ers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === FLEXIBILITY: "Did they win/lose" patterns ===
-            CommandExample(
-                voice_command="Did the Broncos win or lose?",
-                expected_parameters={"team_name": "Broncos", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Mets lose?",
-                expected_parameters={"team_name": "Mets", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did they pull it off?",
-                expected_parameters={"team_name": "they", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === FLEXIBILITY: City-only references ===
-            CommandExample(
-                voice_command="How did Pittsburgh do?",
-                expected_parameters={"team_name": "Pittsburgh", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did Boston do?",
-                expected_parameters={"team_name": "Boston", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How'd Chicago do?",
-                expected_parameters={"team_name": "Chicago", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === FLEXIBILITY: Alternative phrasings ===
-            CommandExample(
-                voice_command="What happened in the Cowboys game?",
-                expected_parameters={"team_name": "Cowboys", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Who won the Lakers game?",
-                expected_parameters={"team_name": "Lakers", "resolved_datetimes": today},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="Did the Eagles beat the Cowboys?",
-                expected_parameters={"team_name": "Eagles", "resolved_datetimes": today},
-                is_primary=False
-            ),
-
-            # === REINFORCEMENT: Full team name + "last weekend" (search_web confusion) ===
-            CommandExample(
-                voice_command="How did the Baltimore Orioles do last weekend?",
-                expected_parameters={"team_name": "Baltimore Orioles", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the New York Yankees do last weekend?",
-                expected_parameters={"team_name": "New York Yankees", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Boston Red Sox do last weekend?",
-                expected_parameters={"team_name": "Boston Red Sox", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Los Angeles Dodgers do last weekend?",
-                expected_parameters={"team_name": "Los Angeles Dodgers", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the San Francisco 49ers do last weekend?",
-                expected_parameters={"team_name": "San Francisco 49ers", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Minnesota Twins do last weekend?",
-                expected_parameters={"team_name": "Minnesota Twins", "resolved_datetimes": last_weekend},
-                is_primary=False
-            ),
-
-            # === REINFORCEMENT: Full team name + yesterday ===
-            CommandExample(
-                voice_command="How did the New York Mets do yesterday?",
-                expected_parameters={"team_name": "New York Mets", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Chicago Cubs do yesterday?",
-                expected_parameters={"team_name": "Chicago Cubs", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
-            CommandExample(
-                voice_command="How did the Tampa Bay Rays do yesterday?",
-                expected_parameters={"team_name": "Tampa Bay Rays", "resolved_datetimes": yesterday},
-                is_primary=False
-            ),
+            # === CASUAL / ABBREVIATED ===
+            CommandExample(voice_command="Lakers score?", expected_parameters={"team_name": "Lakers", "resolved_datetimes": today}, is_primary=False),
+            CommandExample(voice_command="Giants score?", expected_parameters={"team_name": "Giants", "resolved_datetimes": today}, is_primary=False),
         ]
         return examples
     

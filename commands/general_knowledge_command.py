@@ -54,81 +54,48 @@ class GeneralKnowledgeCommand(IJarvisCommand):
     def generate_adapter_examples(self) -> List[CommandExample]:
         """Generate varied examples for adapter training.
 
-        Optimized for 3B model:
-        - Always show query parameter with the full question
-        - Heavy repetition of question patterns
-        - Distinguish from search_web (stable facts vs current events)
+        Focus areas:
+        - "Explain [topic]" - stable knowledge, not current events
+        - "What is [concept]" - definitions and facts
+        - "Who was/is [person]" - biographies
+        - "How does [thing] work" - scientific explanations
         """
         examples = [
-            # === CRITICAL: "What is" factual questions ===
-            CommandExample(voice_command="What is the capital of France?", expected_parameters={"query": "What is the capital of France?"}, is_primary=True),
-            CommandExample(voice_command="What is the capital of Germany?", expected_parameters={"query": "What is the capital of Germany?"}, is_primary=False),
-            CommandExample(voice_command="What is the capital of Japan?", expected_parameters={"query": "What is the capital of Japan?"}, is_primary=False),
-            CommandExample(voice_command="What is the capital of Canada?", expected_parameters={"query": "What is the capital of Canada?"}, is_primary=False),
-            CommandExample(voice_command="What is the capital of Italy?", expected_parameters={"query": "What is the capital of Italy?"}, is_primary=False),
-            CommandExample(voice_command="What is an atom?", expected_parameters={"query": "What is an atom?"}, is_primary=False),
-            CommandExample(voice_command="What is gravity?", expected_parameters={"query": "What is gravity?"}, is_primary=False),
+            # === "EXPLAIN" - Scientific/educational topics ===
+            CommandExample(voice_command="Explain quantum physics", expected_parameters={"query": "Explain quantum physics"}, is_primary=True),
+            CommandExample(voice_command="Explain gravity", expected_parameters={"query": "Explain gravity"}, is_primary=False),
+            CommandExample(voice_command="Explain how the internet works", expected_parameters={"query": "Explain how the internet works"}, is_primary=False),
+            CommandExample(voice_command="Explain evolution", expected_parameters={"query": "Explain evolution"}, is_primary=False),
+            CommandExample(voice_command="Explain the theory of relativity", expected_parameters={"query": "Explain the theory of relativity"}, is_primary=False),
+
+            # === "WHAT IS" factual ===
+            CommandExample(voice_command="What is the capital of France?", expected_parameters={"query": "What is the capital of France?"}, is_primary=False),
             CommandExample(voice_command="What is photosynthesis?", expected_parameters={"query": "What is photosynthesis?"}, is_primary=False),
-            CommandExample(voice_command="What is DNA?", expected_parameters={"query": "What is DNA?"}, is_primary=False),
-            CommandExample(voice_command="What is the speed of light?", expected_parameters={"query": "What is the speed of light?"}, is_primary=False),
-            CommandExample(voice_command="What is the boiling point of water?", expected_parameters={"query": "What is the boiling point of water?"}, is_primary=False),
+            CommandExample(voice_command="What is a black hole?", expected_parameters={"query": "What is a black hole?"}, is_primary=False),
+            CommandExample(voice_command="What is the largest planet?", expected_parameters={"query": "What is the largest planet?"}, is_primary=False),
 
-            # === "Who was/is" person questions ===
+            # === "WHO" person questions ===
             CommandExample(voice_command="Who was Albert Einstein?", expected_parameters={"query": "Who was Albert Einstein?"}, is_primary=False),
-            CommandExample(voice_command="Who was Marie Curie?", expected_parameters={"query": "Who was Marie Curie?"}, is_primary=False),
-            CommandExample(voice_command="Who was Abraham Lincoln?", expected_parameters={"query": "Who was Abraham Lincoln?"}, is_primary=False),
-            CommandExample(voice_command="Who was Cleopatra?", expected_parameters={"query": "Who was Cleopatra?"}, is_primary=False),
-            CommandExample(voice_command="Who is Isaac Newton?", expected_parameters={"query": "Who is Isaac Newton?"}, is_primary=False),
             CommandExample(voice_command="Who invented the telephone?", expected_parameters={"query": "Who invented the telephone?"}, is_primary=False),
-            CommandExample(voice_command="Who wrote Romeo and Juliet?", expected_parameters={"query": "Who wrote Romeo and Juliet?"}, is_primary=False),
-            CommandExample(voice_command="Who discovered penicillin?", expected_parameters={"query": "Who discovered penicillin?"}, is_primary=False),
+            CommandExample(voice_command="Who was Shakespeare?", expected_parameters={"query": "Who was Shakespeare?"}, is_primary=False),
 
-            # === "Where is" location questions ===
+            # === "WHERE IS" / "WHEN DID" ===
             CommandExample(voice_command="Where is Mount Everest?", expected_parameters={"query": "Where is Mount Everest?"}, is_primary=False),
-            CommandExample(voice_command="Where is the Eiffel Tower?", expected_parameters={"query": "Where is the Eiffel Tower?"}, is_primary=False),
-            CommandExample(voice_command="Where is the Amazon River?", expected_parameters={"query": "Where is the Amazon River?"}, is_primary=False),
-            CommandExample(voice_command="Where is Antarctica?", expected_parameters={"query": "Where is Antarctica?"}, is_primary=False),
             CommandExample(voice_command="Where is the Sahara Desert?", expected_parameters={"query": "Where is the Sahara Desert?"}, is_primary=False),
-
-            # === "When did" historical questions ===
             CommandExample(voice_command="When did World War II end?", expected_parameters={"query": "When did World War II end?"}, is_primary=False),
-            CommandExample(voice_command="When did World War I start?", expected_parameters={"query": "When did World War I start?"}, is_primary=False),
-            CommandExample(voice_command="When was the moon landing?", expected_parameters={"query": "When was the moon landing?"}, is_primary=False),
-            CommandExample(voice_command="When did the dinosaurs go extinct?", expected_parameters={"query": "When did the dinosaurs go extinct?"}, is_primary=False),
             CommandExample(voice_command="When was the Declaration of Independence signed?", expected_parameters={"query": "When was the Declaration of Independence signed?"}, is_primary=False),
 
-            # === "How does/do" explanation questions ===
+            # === "HOW DOES" / scientific ===
             CommandExample(voice_command="How does photosynthesis work?", expected_parameters={"query": "How does photosynthesis work?"}, is_primary=False),
-            CommandExample(voice_command="How does gravity work?", expected_parameters={"query": "How does gravity work?"}, is_primary=False),
-            CommandExample(voice_command="How do airplanes fly?", expected_parameters={"query": "How do airplanes fly?"}, is_primary=False),
-            CommandExample(voice_command="How do batteries work?", expected_parameters={"query": "How do batteries work?"}, is_primary=False),
-            CommandExample(voice_command="How does the heart pump blood?", expected_parameters={"query": "How does the heart pump blood?"}, is_primary=False),
+            CommandExample(voice_command="How does a computer work?", expected_parameters={"query": "How does a computer work?"}, is_primary=False),
 
-            # === "Explain" questions ===
-            CommandExample(voice_command="Explain photosynthesis", expected_parameters={"query": "Explain photosynthesis"}, is_primary=False),
-            CommandExample(voice_command="Explain gravity", expected_parameters={"query": "Explain gravity"}, is_primary=False),
-            CommandExample(voice_command="Explain the water cycle", expected_parameters={"query": "Explain the water cycle"}, is_primary=False),
-            CommandExample(voice_command="Explain quantum physics", expected_parameters={"query": "Explain quantum physics"}, is_primary=False),
-            CommandExample(voice_command="Explain how computers work", expected_parameters={"query": "Explain how computers work"}, is_primary=False),
-
-            # === "Define" / definition questions ===
-            CommandExample(voice_command="Define photosynthesis", expected_parameters={"query": "Define photosynthesis"}, is_primary=False),
+            # === "DEFINE" ===
             CommandExample(voice_command="Define democracy", expected_parameters={"query": "Define democracy"}, is_primary=False),
-            CommandExample(voice_command="What is the definition of entropy?", expected_parameters={"query": "What is the definition of entropy?"}, is_primary=False),
-            CommandExample(voice_command="What does entropy mean?", expected_parameters={"query": "What does entropy mean?"}, is_primary=False),
+            CommandExample(voice_command="Define entropy", expected_parameters={"query": "Define entropy"}, is_primary=False),
 
-            # === Comparative/superlative facts ===
-            CommandExample(voice_command="What is the largest planet?", expected_parameters={"query": "What is the largest planet?"}, is_primary=False),
-            CommandExample(voice_command="What is the longest river in the world?", expected_parameters={"query": "What is the longest river in the world?"}, is_primary=False),
-            CommandExample(voice_command="What is the tallest mountain?", expected_parameters={"query": "What is the tallest mountain?"}, is_primary=False),
+            # === CASUAL / "TELL ME ABOUT" ===
+            CommandExample(voice_command="Tell me about the solar system", expected_parameters={"query": "Tell me about the solar system"}, is_primary=False),
             CommandExample(voice_command="How many continents are there?", expected_parameters={"query": "How many continents are there?"}, is_primary=False),
-            CommandExample(voice_command="How many bones in the human body?", expected_parameters={"query": "How many bones in the human body?"}, is_primary=False),
-
-            # === Casual/short questions ===
-            CommandExample(voice_command="Capital of Japan?", expected_parameters={"query": "Capital of Japan?"}, is_primary=False),
-            CommandExample(voice_command="Capital of Spain?", expected_parameters={"query": "Capital of Spain?"}, is_primary=False),
-            CommandExample(voice_command="What's a black hole?", expected_parameters={"query": "What's a black hole?"}, is_primary=False),
-            CommandExample(voice_command="What's DNA?", expected_parameters={"query": "What's DNA?"}, is_primary=False),
         ]
         return examples
     
