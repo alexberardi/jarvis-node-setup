@@ -48,7 +48,10 @@ Thumbs.db
 .env
 !.env.example
 secrets.db
+
+# IDE / Claude Code
 .claude/
+.continue/
 
 # Project specific
 config.json
