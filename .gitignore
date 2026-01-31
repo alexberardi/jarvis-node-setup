@@ -44,6 +44,12 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
+# Environment and secrets
+.env
+!.env.example
+secrets.db
+.claude/
+
 # Project specific
 config.json
 runtime_fingerprint_index.json
