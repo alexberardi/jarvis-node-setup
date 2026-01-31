@@ -130,7 +130,22 @@ python test_multi_turn_conversation.py --full -t 0 1 2 --save-audio ./audio_arti
 **Required services for tests:**
 - `jarvis-command-center` (port 8002)
 - `jarvis-llm-proxy-api` (port 8000)
-- For full mode: `jarvis-tts` (port 8000) + `jarvis-whisper-api` (port 9999)
+- For full mode: `jarvis-tts` (port 8009) + `jarvis-whisper-api` (port 8012)
+
+**Service startup:**
+```bash
+# Command center
+cd jarvis-command-center && ./run-docker-dev.sh
+
+# LLM proxy
+cd jarvis-llm-proxy-api && ./run.sh
+
+# TTS (for --full mode)
+cd jarvis-tts && ./run-docker-dev.sh
+
+# Whisper (for --full mode)
+cd jarvis-whisper-api && ./run-dev.sh
+```
 
 **Test categories:**
 - `tool_execution` - Single-turn tool execution (happy path)
