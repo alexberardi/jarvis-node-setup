@@ -43,6 +43,13 @@ class AudioPipelineClient:
         self.whisper_url = whisper_url or Config.get("jarvis_whisper_api_url", "http://localhost:9999")
         self.save_audio_dir = save_audio_dir
 
+        # Build auth header from node credentials
+        node_id = Config.get("node_id", "")
+        api_key = Config.get("api_key", "")
+        self.auth_headers = {}
+        if node_id and api_key:
+            self.auth_headers["X-API-Key"] = f"{node_id}:{api_key}"
+
         if self.save_audio_dir:
             Path(self.save_audio_dir).mkdir(parents=True, exist_ok=True)
 
@@ -86,6 +93,7 @@ class AudioPipelineClient:
             response = requests.post(
                 f"{self.tts_url}/speak",
                 json={"text": text},
+                headers=self.auth_headers,
                 timeout=30,
             )
             response.raise_for_status()
@@ -126,6 +134,7 @@ class AudioPipelineClient:
                     response = requests.post(
                         f"{self.whisper_url}/transcribe",
                         files=files,
+                        headers=self.auth_headers,
                         timeout=60,
                     )
                     response.raise_for_status()
