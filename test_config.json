@@ -1,8 +1,8 @@
 {
   "node_id": "test-node-linux-desktop",
   "api_key": "test_api_key",
-  "jarvis_whisper_api_url": "http://localhost:8000",
-  "jarvis_command_center": "http://localhost:8002",
+  "jarvis_whisper_api_url": "http://localhost:8012",
+  "jarvis_command_center_api_url": "http://localhost:8002",
   "room": "test-room",
   "user": "test-user",
   "voice": "en",
@@ -13,7 +13,7 @@
   "mic_sample_rate": 48000,
   "stt_provider": "jarvis-whisper-api",
   "tts_provider": "jarvis-tts-api",
-  "jarvis_tts_api_url": "http://raspberrypi.local:8001",
+  "jarvis_tts_api_url": "http://localhost:8009",
   "music_assistant_enabled": false,
   "music_assistant_player_id": "test_player"
 }
