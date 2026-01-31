@@ -76,3 +76,7 @@ htmlcov/
 *.temp
 temp/
 tmp/
+
+# Test result artifacts
+test_results*.json
+multi_turn_test_results*.json
