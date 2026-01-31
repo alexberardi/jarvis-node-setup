@@ -86,6 +86,60 @@ Uses Porcupine for local wake word detection. Configured in settings.
 - **Network discovery**: Find other jarvis services
 - **Encrypted storage**: PySQLCipher for local secrets
 
+## E2E Testing
+
+### Command Parsing Tests
+
+Tests intent classification and parameter extraction (front half):
+
+```bash
+# Run all tests
+python test_command_parsing.py
+
+# List all tests
+python test_command_parsing.py -l
+
+# Run specific tests by index
+python test_command_parsing.py -t 5 7 11
+
+# Run tests for specific commands
+python test_command_parsing.py -c calculate get_weather
+```
+
+### Multi-Turn Conversation Tests
+
+Tests tool execution, validation flow, and context preservation (back half):
+
+```bash
+# Fast mode (text-based, no audio)
+python test_multi_turn_conversation.py
+
+# Full mode (TTS → Whisper pipeline)
+python test_multi_turn_conversation.py --full
+
+# List all tests
+python test_multi_turn_conversation.py -l
+
+# Run specific category
+python test_multi_turn_conversation.py -c validation
+
+# Run specific tests with audio artifacts saved
+python test_multi_turn_conversation.py --full -t 0 1 2 --save-audio ./audio_artifacts/
+```
+
+**Required services for tests:**
+- `jarvis-command-center` (port 8002)
+- `jarvis-llm-proxy-api` (port 8000)
+- For full mode: `jarvis-tts` (port 8000) + `jarvis-whisper-api` (port 9999)
+
+**Test categories:**
+- `tool_execution` - Single-turn tool execution (happy path)
+- `validation` - Validation/clarification flow
+- `result_incorporation` - Tool results in final response
+- `context` - Context preservation across turns
+- `error_handling` - Graceful error handling
+- `complex` - Complex queries (knowledge, conversions)
+
 ## Notes
 
 - This is client software, not a server
