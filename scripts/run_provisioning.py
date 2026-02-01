@@ -18,6 +18,10 @@ import sys
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import uvicorn
 from jarvis_log_client import init as init_logging, JarvisLogger
 
