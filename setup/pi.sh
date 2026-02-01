@@ -107,7 +107,16 @@ else
         sqlcipher \
         libsqlcipher-dev \
         avahi-utils \
-        libopenblas-dev
+        libopenblas-dev \
+        hostapd \
+        dnsmasq
+
+    # Disable system services - we manage hostapd/dnsmasq ourselves
+    log_info "Disabling system hostapd/dnsmasq services..."
+    sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
+    sudo systemctl disable hostapd dnsmasq 2>/dev/null || true
+    sudo systemctl mask hostapd dnsmasq 2>/dev/null || true
+
     log_success "System dependencies installed"
 fi
 log_info "Python 3.11 version: $(python3.11 --version)"
@@ -229,6 +238,7 @@ WantedBy=multi-user.target
 EOF
 
     # Provisioning service (runs on first boot / when not provisioned)
+    # Note: Runs as root because hostapd/dnsmasq require root privileges
     cat <<EOF | sudo tee /etc/systemd/system/jarvis-provisioning.service
 [Unit]
 Description=Jarvis Node Provisioning Service
@@ -237,7 +247,6 @@ After=network.target
 [Service]
 ExecStart=$PI_PROJECT_DIR/.venv/bin/python $PI_PROJECT_DIR/scripts/run_provisioning.py
 Restart=on-failure
-User=$PI_USER
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$PI_PROJECT_DIR
 
