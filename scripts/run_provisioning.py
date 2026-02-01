@@ -36,6 +36,15 @@ init_logging(
 logger = JarvisLogger(service="jarvis-provisioning")
 
 
+def _is_raspberry_pi() -> bool:
+    """Check if running on a Raspberry Pi."""
+    try:
+        with open("/sys/firmware/devicetree/base/model", "r") as f:
+            return "raspberry pi" in f.read().lower()
+    except (FileNotFoundError, PermissionError):
+        return False
+
+
 def main() -> None:
     """Start the provisioning server."""
     # Get configuration from environment
@@ -43,16 +52,23 @@ def main() -> None:
     simulate = os.environ.get("JARVIS_SIMULATE_PROVISIONING", "false").lower()
     is_simulated = simulate in ("true", "1", "yes")
 
+    # Auto-detect hostapd backend on Pi if not explicitly set
+    backend = os.environ.get("JARVIS_WIFI_BACKEND", "").lower()
+    if not backend and _is_raspberry_pi() and not is_simulated:
+        os.environ["JARVIS_WIFI_BACKEND"] = "hostapd"
+        logger.info("Auto-detected Raspberry Pi, using hostapd backend")
+
     # Get appropriate WiFi manager
     wifi_manager = get_wifi_manager()
 
     mode = "SIMULATION" if is_simulated else "REAL"
-    logger.info("Starting provisioning server", mode=mode, port=port)
+    backend_name = os.environ.get("JARVIS_WIFI_BACKEND", "networkmanager")
+    logger.info("Starting provisioning server", mode=mode, port=port, backend=backend_name)
 
     if is_simulated:
         logger.info("Using simulated WiFi manager")
     else:
-        logger.info("Using NetworkManager for WiFi operations")
+        logger.info(f"Using {backend_name} for WiFi operations")
 
     # On real Pi, start AP mode
     if not is_simulated:
