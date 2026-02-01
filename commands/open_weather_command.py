@@ -2,6 +2,8 @@ import datetime
 import requests
 from typing import List, Any, Optional
 
+from jarvis_log_client import JarvisLogger
+
 from constants.relative_date_keys import RelativeDateKeys
 from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
@@ -10,6 +12,8 @@ from core.command_response import CommandResponse
 from scripts.text_to_speech import speak
 from services.secret_service import get_secret_value
 from utils.date_util import extract_dates_from_datetimes, extract_date_from_datetime
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class OpenWeatherCommand(IJarvisCommand):
@@ -182,7 +186,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
         # Get OneCall API data (includes current, hourly, and daily)
         onecall_url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&units={unit_system}&appid={api_key}"
-        print(f"Getting weather data for {city} (lat: {lat}, lon: {lon})")
+        logger.debug("Getting weather data", city=city, lat=lat, lon=lon)
         
         onecall_response = requests.get(onecall_url)
         onecall_response.raise_for_status()
@@ -252,18 +256,17 @@ class OpenWeatherCommand(IJarvisCommand):
         except ValueError:
             raise Exception("Invalid datetime format. Expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS format.")
 
-        print(f"Looking for weather on: {target_dates}")
+        logger.debug("Looking for weather on dates", dates=str(target_dates))
 
         if "daily" in onecall_data:
             # Find the forecasts for the specific dates
             target_forecasts = []
-            print("Available dates in forecast:")
+            logger.debug("Searching for matching forecast dates")
             for day in onecall_data["daily"]:
                 day_date = datetime.datetime.fromtimestamp(day["dt"]).date()
-                print(f"  {day_date} (timestamp: {day['dt']})")
                 if day_date in target_dates:
                     target_forecasts.append(day)
-                    print(f"Found match for {day_date}!")
+                    logger.debug("Found forecast match", date=str(day_date))
 
             if target_forecasts:
                 # Build forecast summary for all requested dates
@@ -317,7 +320,7 @@ class OpenWeatherCommand(IJarvisCommand):
                 date_strings = [d.strftime('%B %d') for d in target_dates]
                 message = f"I couldn't find weather data for {', '.join(date_strings)}. The forecast only covers the next 8 days."
 
-            print(message)
+            logger.warning("Dates not found in forecast", message=message)
             speak(message)
             return CommandResponse.error_response(
                 error_details="Dates not found in forecast",
@@ -331,7 +334,7 @@ class OpenWeatherCommand(IJarvisCommand):
             )
 
         message = "I couldn't retrieve the weather forecast."
-        print(message)
+        logger.warning("Could not retrieve weather forecast")
         speak(message)
         return CommandResponse.error_response(
             error_details="Could not retrieve weather forecast",
@@ -358,5 +361,5 @@ def get_current_location():
             return city
         return None
     except requests.exceptions.RequestException as e:
-        print(f"Error getting location: {e}")
+        logger.error("Error getting location", error=str(e))
         return None

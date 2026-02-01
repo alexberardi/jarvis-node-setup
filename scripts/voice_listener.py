@@ -7,12 +7,15 @@ import numpy as np
 import pvporcupine
 import pyaudio
 from scipy.signal import resample
+from jarvis_log_client import JarvisLogger
 
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from scripts.speech_to_text import listen
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
 from clients.responses.jarvis_command_center import ValidationRequest
+
+logger = JarvisLogger(service="jarvis-node")
 
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
@@ -38,7 +41,7 @@ def create_audio_stream():
 
 
 def handle_keyword_detected():
-    print("🟢 Wake word detected! Listening for command...")
+    logger.info("Wake word detected, listening for command")
     tts_provider = get_tts_provider()
     if WAKE_FILE.exists():
         wake_text = WAKE_FILE.read_text().strip()
@@ -50,23 +53,23 @@ def handle_keyword_detected():
 
     # Fetch the next wake response in the background if provider is configured
     threading.Thread(target=fetch_next_wake_response, daemon=True).start()
-    
+
 
 def fetch_next_wake_response():
     """Fetch the next wake response using the configured provider"""
     try:
         provider = get_wake_response_provider()
         if not provider:
-            print("[wake-response] No wake response provider configured")
+            logger.debug("No wake response provider configured")
             return
-            
+
         response_text = provider.fetch_next_wake_response()
         if response_text:
             WAKE_FILE.write_text(response_text)
-            print(f"[wake-response] Stored next wake response: {response_text}")
+            logger.debug("Stored next wake response", response=response_text)
 
     except Exception as e:
-        print(f"[wake-response] Failed to fetch next greeting: {e}")
+        logger.error("Failed to fetch next greeting", error=str(e))
 
 
 def close_audio(audio_stream):
@@ -76,51 +79,51 @@ def close_audio(audio_stream):
 
 
 def send_for_transcription(filename):
-    print("📡 Sending to transcription server...")
+    logger.info("Sending audio to transcription server")
     stt_provider = get_stt_provider()
     response = stt_provider.transcribe(filename)
-    
+
     if response is not None:
         # The response is the transcription text directly
         transcription = response
-        print("📝 Transcription:", transcription)
-        
+        logger.info("Transcription received", text=transcription)
+
         # Process the command through the command execution service
         command_service = CommandExecutionService()
-        
+
         # Define validation handler that prompts user and re-listens
         def validation_handler(validation: ValidationRequest) -> str:
             """Handle validation by prompting user and capturing their response"""
             tts_provider = get_tts_provider()
-            
+
             # Speak the validation question
             question = validation.question
             if validation.options:
                 # If there are options, include them in the question
                 options_text = ", ".join(validation.options)
                 question = f"{question} Your options are: {options_text}"
-            
-            print(f"❓ Asking user: {question}")
+
+            logger.info("Asking validation question", question=question)
             tts_provider.speak(False, question)
-            
+
             # Listen for user's response
-            print("👂 Listening for validation response...")
+            logger.debug("Listening for validation response")
             validation_audio = listen()
-            
+
             # Transcribe the response
             validation_transcription = stt_provider.transcribe(validation_audio)
-            
+
             if validation_transcription:
-                print(f"📝 User responded: {validation_transcription}")
+                logger.info("User validation response", response=validation_transcription)
                 return validation_transcription
             else:
-                print("❌ Failed to transcribe validation response")
+                logger.warning("Failed to transcribe validation response")
                 return "I didn't catch that, sorry."
-        
+
         # Process with validation handler
         result = command_service.process_voice_command(transcription, validation_handler)
         command_service.speak_result(result)
-        
+
         return result
     else:
         tts_provider = get_tts_provider()
@@ -133,7 +136,7 @@ def start_voice_listener(ma_service):
     pa = pyaudio.PyAudio()
     audio_stream = create_audio_stream()
 
-    print("👂 Waiting for wake word...")
+    logger.info("Waiting for wake word")
 
     try:
         while True:
@@ -155,17 +158,16 @@ def start_voice_listener(ma_service):
 
                 start = time.perf_counter()
                 command = send_for_transcription(audio_file)
-                print(command)
                 end = time.perf_counter()
 
-                print(f"⏱️ Transcription took {end - start:.2f} seconds")
+                logger.info("Transcription complete", duration_seconds=round(end - start, 2))
 
                 # reinitialize porcupine + pyaudio
                 pa = pyaudio.PyAudio()
                 audio_stream = create_audio_stream()
 
     except KeyboardInterrupt:
-        print("Stopping...")
+        logger.info("Stopping voice listener")
     finally:
         audio_stream.stop_stream()
         audio_stream.close()

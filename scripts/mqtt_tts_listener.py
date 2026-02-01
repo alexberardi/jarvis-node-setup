@@ -1,9 +1,14 @@
 import json
 import paho.mqtt.client as mqtt
 from typing import Any, Dict, List, Optional, Callable
+
+from jarvis_log_client import JarvisLogger
+
 from utils.config_service import Config
 from core.helpers import get_tts_provider
 from utils.music_assistant_service import MusicAssistantService
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 def get_mqtt_config() -> Dict[str, Any]:
@@ -29,25 +34,25 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
 
 
 def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: int) -> None:
-    print(f"[MQTT] Connected with result code {rc}")
+    logger.info("MQTT connected", result_code=rc)
     topic = get_mqtt_config()["topic"]
     client.subscribe(topic)
-    print(f"[MQTT] Subscribed to topic: {topic}")
+    logger.info("MQTT subscribed", topic=topic)
 
 
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
     try:
         payload: List[Dict[str, Any]] = json.loads(msg.payload.decode())
-        print(f"[MQTT] Received message: {payload}")
+        logger.debug("MQTT message received", payload=payload)
     except json.JSONDecodeError:
-        print("⚠️ Invalid JSON payload")
+        logger.warning("Invalid JSON payload in MQTT message")
         return
     except Exception as e:
-        print(f"[ERROR] {e}")
+        logger.error("Error processing MQTT message", error=str(e))
         return
 
     if not isinstance(payload, list):
-        print("⚠️ Payload is not a list of commands")
+        logger.warning("MQTT payload is not a list of commands")
         return
 
     for command_obj in payload:
@@ -60,9 +65,9 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
             try:
                 handler(details)
             except Exception as e:
-                print(f"❌ Error running handler for '{command}': {e}")
+                logger.error("Error running MQTT handler", command=command, error=str(e))
         else:
-            print(f"⚠️ Unknown command: {command}")
+            logger.warning("Unknown MQTT command", command=command)
 
 
 def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
@@ -75,6 +80,6 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     client.on_connect = on_connect
     client.on_message = on_message
 
-    print("📡 MQTT listener started...")
+    logger.info("MQTT listener starting", broker=config["broker"], port=config["port"])
     client.connect(config["broker"], config["port"], 60)
     client.loop_forever()

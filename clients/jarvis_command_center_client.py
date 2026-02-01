@@ -1,5 +1,6 @@
 from typing import Any, Type, TypeVar, Optional, List, Dict
 
+from jarvis_log_client import JarvisLogger
 from pydantic import BaseModel
 
 from core.ijarvis_command import IJarvisCommand
@@ -7,6 +8,8 @@ from .responses.jarvis_command_center import DateContext, ToolCallingResponse, V
 from .rest_client import RestClient
 from utils.config_loader import Config
 from utils.timezone_util import get_user_timezone
+
+logger = JarvisLogger(service="jarvis-node")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -19,23 +22,22 @@ class JarvisCommandCenterClient:
         try:
             timezone = get_user_timezone()
             response = RestClient.get(f"{self.base_url}/api/v0/generate/date-context?timezone={timezone}")
-            
+
             if not response:
-                print(f"[JarvisClient] No response from date-context endpoint")
+                logger.warning("No response from date-context endpoint")
                 return None
-            
+
             # Parse the response into a DateContext object
             try:
                 date_context = DateContext.model_validate(response)
-                print(f"[JarvisClient] Successfully fetched date context for timezone: {date_context.timezone.user_timezone}")
+                logger.debug("Fetched date context", timezone=date_context.timezone.user_timezone)
                 return date_context
             except Exception as parse_error:
-                print(f"[JarvisClient] Failed to parse date context response: {parse_error}")
-                print(f"[JarvisClient] Raw response: {response}")
+                logger.error("Failed to parse date context response", error=str(parse_error), response=response)
                 return None
-            
+
         except Exception as e:
-            print(f"[JarvisClient] Failed to get date context: {e}")
+            logger.error("Failed to get date context", error=str(e))
             return None
 
     def send_command(self, voice_command: str, conversation_id: str) -> Optional[ToolCallingResponse]:
@@ -54,18 +56,18 @@ class JarvisCommandCenterClient:
             "conversation_id": conversation_id
         }
             
-        print(f"[JarvisClient] Sending command: {voice_command} (conversation: {conversation_id})")
+        logger.info("Sending voice command", command=voice_command, conversation_id=conversation_id)
 
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/voice/command", timeout=30, data=payload)
-            
+
             if not response:
                 return None
-            
+
             # Parse response into ToolCallingResponse
             return ToolCallingResponse.model_validate(response)
         except Exception as e:
-            print(f"[JarvisClient] Failed to send command: {e}")
+            logger.error("Failed to send command", error=str(e))
             return None
     
     def send_tool_results(
@@ -89,17 +91,17 @@ class JarvisCommandCenterClient:
             "tool_results": tool_results,
         }
         
-        print(f"[JarvisClient] Sending {len(tool_results)} tool result(s) (conversation: {conversation_id})")
-        
+        logger.debug("Sending tool results", count=len(tool_results), conversation_id=conversation_id)
+
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/voice/command/continue", timeout=30, data=payload)
-            
+
             if not response:
                 return None
-            
+
             return ToolCallingResponse.model_validate(response)
         except Exception as e:
-            print(f"[JarvisClient] Failed to send tool results: {e}")
+            logger.error("Failed to send tool results", error=str(e))
             return None
     
     def send_validation_response(
@@ -141,18 +143,17 @@ class JarvisCommandCenterClient:
             ],
         }
         
-        print(f"[JarvisClient] Sending validation response (conversation: {conversation_id})")
-        print(payload)
-        
+        logger.debug("Sending validation response", conversation_id=conversation_id)
+
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/voice/command/continue", timeout=30, data=payload)
-            
+
             if not response:
                 return None
-            
+
             return ToolCallingResponse.model_validate(response)
         except Exception as e:
-            print(f"[JarvisClient] Failed to send validation response: {e}")
+            logger.error("Failed to send validation response", error=str(e))
             return None
 
     def train_tool_router(self, payload: Dict[str, Any], timeout: int = 120) -> Optional[Dict[str, Any]]:
@@ -174,7 +175,7 @@ class JarvisCommandCenterClient:
             )
             return response
         except Exception as e:
-            print(f"[JarvisClient] Failed to train tool router: {e}")
+            logger.error("Failed to train tool router", error=str(e))
             return None
 
     def train_node_adapter(self, payload: Dict[str, Any], timeout: int = 120) -> Optional[Dict[str, Any]]:
@@ -196,7 +197,7 @@ class JarvisCommandCenterClient:
             )
             return response
         except Exception as e:
-            print(f"[JarvisClient] Failed to train node adapter: {e}")
+            logger.error("Failed to train node adapter", error=str(e))
             return None
 
     def get_adapter_job_status(self, job_id: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
@@ -210,7 +211,7 @@ class JarvisCommandCenterClient:
             )
             return response
         except Exception as e:
-            print(f"[JarvisClient] Failed to fetch adapter job status: {e}")
+            logger.error("Failed to fetch adapter job status", error=str(e), job_id=job_id)
             return None
 
     def chat(self, message: str, model: Type[T]) -> Optional[T]:
@@ -219,38 +220,38 @@ class JarvisCommandCenterClient:
                 {"role": "system", "content": message}
             ]
         })
-        print(f"Chat response: {response}")
+        logger.debug("Chat response received", response=response)
 
         if not response:
             return None
 
         try:
             content = response["choices"][0]["message"]["content"]
-            print(content)
+            logger.debug("Chat content", content=content)
             return model.model_validate_json(content)
         except (KeyError, ValueError, TypeError) as e:
-            print(f"[JarvisClient] Failed to parse LLM response: {e}")
-            
+            logger.warning("Failed to parse LLM response", error=str(e))
+
             # Enhanced fallback: try to extract JSON from mixed content
             try:
                 if isinstance(content, str):
                     # Try to find JSON in the content
                     json_start = content.find('{')
                     json_end = content.rfind('}')
-                    
+
                     if json_start != -1 and json_end != -1 and json_end > json_start:
                         # Extract just the JSON portion
                         json_content = content[json_start:json_end + 1]
-                        print(f"[JarvisClient] Extracted JSON from mixed content: {json_content}")
+                        logger.debug("Extracted JSON from mixed content", json_content=json_content)
                         return model.model_validate_json(json_content)
                     elif not content.strip().startswith('{'):
                         # If no JSON found, wrap plain text in the expected JSON format
                         wrapped_content = f'{{"response": "{content.strip()}"}}'
-                        print(f"[JarvisClient] Attempting fallback JSON wrapping: {wrapped_content}")
+                        logger.debug("Attempting fallback JSON wrapping", wrapped_content=wrapped_content)
                         return model.model_validate_json(wrapped_content)
             except Exception as fallback_error:
-                print(f"[JarvisClient] Enhanced fallback parsing also failed: {fallback_error}")
-            
+                logger.warning("Enhanced fallback parsing also failed", error=str(fallback_error))
+
             return None
 
     def lightweight_chat(self, message: str, model: Type[T]) -> Optional[T]:
@@ -265,31 +266,31 @@ class JarvisCommandCenterClient:
 
         try:
             content = response["choices"][0]["message"]["content"]
-            print(content)
+            logger.debug("Lightweight chat content", content=content)
             return model.model_validate_json(content)
         except (KeyError, ValueError, TypeError) as e:
-            print(f"[JarvisClient] Failed to parse LLM response: {e}")
-            
+            logger.warning("Failed to parse lightweight LLM response", error=str(e))
+
             # Enhanced fallback: try to extract JSON from mixed content
             try:
                 if isinstance(content, str):
                     # Try to find JSON in the content
                     json_start = content.find('{')
                     json_end = content.rfind('}')
-                    
+
                     if json_start != -1 and json_end != -1 and json_end > json_start:
                         # Extract just the JSON portion
                         json_content = content[json_start:json_end + 1]
-                        print(f"[JarvisClient] Extracted JSON from mixed content: {json_content}")
+                        logger.debug("Extracted JSON from mixed content", json_content=json_content)
                         return model.model_validate_json(json_content)
                     elif not content.strip().startswith('{'):
                         # If no JSON found, wrap plain text in the expected JSON format
                         wrapped_content = f'{{"response": "{content.strip()}"}}'
-                        print(f"[JarvisClient] Attempting fallback JSON wrapping: {wrapped_content}")
+                        logger.debug("Attempting fallback JSON wrapping", wrapped_content=wrapped_content)
                         return model.model_validate_json(wrapped_content)
             except Exception as fallback_error:
-                print(f"[JarvisClient] Enhanced fallback parsing also failed: {fallback_error}")
-            
+                logger.warning("Enhanced fallback parsing also failed", error=str(fallback_error))
+
             return None
 
     def start_conversation(self, conversation_id: str, commands: dict[str, IJarvisCommand], date_context: Optional[DateContext] = None) -> bool:
@@ -320,16 +321,16 @@ class JarvisCommandCenterClient:
         available_commands = []
         for cmd in commands.values():
             schema = cmd.get_command_schema(date_context)
-            print(f"[JarvisClient] Warmup keywords for {schema.get('command_name')}: {schema.get('keywords', [])}")
+            logger.debug("Warmup keywords", command=schema.get('command_name'), keywords=schema.get('keywords', []))
             available_commands.append(schema)
 
         # Build client tools array in OpenAI format
         client_tools = []
         for cmd in commands.values():
-            print(f"[JarvisClient] Registering tool: {cmd.command_name}")
+            logger.debug("Registering tool", tool=cmd.command_name)
             tool_schema = cmd.to_openai_tool_schema(date_context)
             client_tools.append(tool_schema)
-        
+
         payload = {
             "conversation_id": conversation_id,
             "node_context": node_context,
@@ -337,15 +338,15 @@ class JarvisCommandCenterClient:
             "client_tools": client_tools,
             "skip_warmup_inference": skip_warmup
         }
-        
+
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=10, data=payload)
             if response and response.get("status") == "success":
-                print(f"[JarvisClient] Successfully registered {len(client_tools)} tools")
+                logger.info("Successfully registered tools", count=len(client_tools))
                 return True
             return False
         except Exception as e:
-            print(f"[JarvisClient] Failed to start conversation: {e}")
+            logger.error("Failed to start conversation", error=str(e))
             return False
 
 

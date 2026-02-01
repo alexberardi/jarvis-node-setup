@@ -1,7 +1,11 @@
-import json
 import requests
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
+
+from jarvis_log_client import JarvisLogger
+
 from utils.config_service import Config
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class RestClient:
@@ -36,9 +40,9 @@ class RestClient:
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
-            print(f"[RestClient] Error during POST to {url}: {e}")
+            logger.error("REST POST request failed", url=url, error=str(e))
             return None
-    
+
     @staticmethod
     def get(
         url: str,
@@ -53,5 +57,5 @@ class RestClient:
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
-            print(f"[RestClient] Error during GET to {url}: {e}")
+            logger.error("REST GET request failed", url=url, error=str(e))
             return None

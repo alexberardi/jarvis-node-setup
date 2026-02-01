@@ -2,6 +2,8 @@ import os
 import sys
 import threading
 
+from jarvis_log_client import init as init_logging, JarvisLogger, shutdown as shutdown_logging
+
 from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
 from services.timer_service import initialize_timer_service
@@ -9,21 +11,28 @@ from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
 from utils.service_discovery import init as init_service_discovery
 
+# Initialize logging
+init_logging(
+    app_id=os.getenv("JARVIS_APP_ID", "jarvis-node"),
+    app_key=os.getenv("JARVIS_APP_KEY", ""),
+)
+logger = JarvisLogger(service="jarvis-node")
+
 
 def main():
     # Check if node is provisioned (skip in development mode)
     if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
         from provisioning.startup import is_provisioned
         if not is_provisioned():
-            print("[Jarvis] Node not provisioned or cannot reach command center.")
-            print("[Jarvis] Run: python scripts/run_provisioning.py")
-            print("[Jarvis] Or set JARVIS_SKIP_PROVISIONING_CHECK=true to skip this check.")
+            logger.error("Node not provisioned or cannot reach command center")
+            logger.info("Run: python scripts/run_provisioning.py")
+            logger.info("Or set JARVIS_SKIP_PROVISIONING_CHECK=true to skip this check")
             sys.exit(1)
     # Initialize service discovery (config service → JSON config fallback)
     if init_service_discovery():
-        print("[Jarvis] Service discovery initialized")
+        logger.info("Service discovery initialized")
     else:
-        print("[Jarvis] Using JSON config for service URLs")
+        logger.info("Using JSON config for service URLs")
 
     # Initialize timer service with TTS callback
     timer_service = initialize_timer_service()
@@ -31,7 +40,7 @@ def main():
     # Restore any persisted timers from previous session
     restored_count = timer_service.restore_timers()
     if restored_count > 0:
-        print(f"[Jarvis] Restored {restored_count} timer(s) from previous session")
+        logger.info("Restored timers from previous session", count=restored_count)
 
     if Config.get("music_assistant_enabled"):
         ma_service = MusicAssistantService()

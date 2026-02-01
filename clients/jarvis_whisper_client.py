@@ -1,5 +1,9 @@
+from jarvis_log_client import JarvisLogger
+
 from .rest_client import RestClient
 from utils.config_loader import Config
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class JarvisWhisperClient:
@@ -8,7 +12,7 @@ class JarvisWhisperClient:
     @staticmethod
     def transcribe(audio_path: str) -> str:
         with open(audio_path, "rb") as f:
-            print(audio_path)
+            logger.debug("Transcribing audio", path=audio_path)
             files = {"file": (audio_path, f, "audio/wav")}
             response = RestClient.post(
                 f"{JarvisWhisperClient.BASE_URL}/transcribe", files=files
