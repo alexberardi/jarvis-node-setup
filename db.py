@@ -17,7 +17,7 @@ def patched_on_connect(conn):
 pysqlite.SQLiteDialect_pysqlite.on_connect = lambda self: patched_on_connect
 
 MASTER_KEY = os.getenv("JARVIS_MASTER_KEY", "default-key")
-DB_PATH = os.getenv("JARVIS_SECRET_DB", "./secrets.db")
+DB_PATH = os.getenv("JARVIS_NODE_DB", "./jarvis_node.db")
 
 # Using pysqlcipher3 dialect for SQLAlchemy
 DATABASE_URL = f"sqlite+pysqlcipher://:{MASTER_KEY}@/{DB_PATH}?cipher=aes-256-cbc&kdf_iter=256000"
