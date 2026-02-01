@@ -191,6 +191,7 @@ log_step "Creating systemd services"
 
 if [ "$PROVISIONING_ONLY" = "1" ]; then
     # Only create provisioning service for provisioning-only setup
+    # Note: Runs as root because hostapd/dnsmasq require root privileges
     cat <<EOF | sudo tee /etc/systemd/system/jarvis-provisioning.service
 [Unit]
 Description=Jarvis Node Provisioning Service
@@ -199,7 +200,6 @@ After=network.target
 [Service]
 ExecStart=$PI_PROJECT_DIR/.venv/bin/python $PI_PROJECT_DIR/scripts/run_provisioning.py
 Restart=on-failure
-User=$PI_USER
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$PI_PROJECT_DIR
 
@@ -209,7 +209,7 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable jarvis-provisioning.service
-    log_success "Provisioning service created and enabled"
+    log_success "Provisioning service created and enabled (runs as root for AP mode)"
 else
     # Main jarvis-node service (runs after provisioning)
     cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
