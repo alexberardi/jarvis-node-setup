@@ -5,9 +5,16 @@ from scripts.voice_listener import start_voice_listener
 from services.timer_service import initialize_timer_service
 from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
+from utils.service_discovery import init as init_service_discovery
 
 
 def main():
+    # Initialize service discovery (config service → JSON config fallback)
+    if init_service_discovery():
+        print("[Jarvis] Service discovery initialized")
+    else:
+        print("[Jarvis] Using JSON config for service URLs")
+
     # Initialize timer service with TTS callback
     timer_service = initialize_timer_service()
 
