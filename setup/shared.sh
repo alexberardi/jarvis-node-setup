@@ -40,18 +40,25 @@ setup_python_venv() {
 
     log_step "Setting up Python virtual environment"
 
+    # For provisioning mode, we need to run as root (for hostapd/dnsmasq)
+    # So we create venv with sudo and install packages with sudo
+    local use_sudo=""
+    if [ "${JARVIS_PROVISIONING_ONLY:-0}" = "1" ]; then
+        use_sudo="sudo"
+        log_info "Provisioning mode: installing as root for hostapd/dnsmasq access"
+    fi
+
     if [ -d "$venv_path" ]; then
         log_info "Virtual environment already exists at $venv_path"
     else
         log_info "Creating virtual environment..."
-        $python_cmd -m venv "$venv_path"
+        $use_sudo $python_cmd -m venv "$venv_path"
         log_success "Virtual environment created"
     fi
 
-    # Activate and upgrade pip
-    source "$venv_path/bin/activate"
+    # Upgrade pip (use python -m pip for reliability)
     log_info "Upgrading pip..."
-    pip install --upgrade pip --quiet
+    $use_sudo "$venv_path/bin/python" -m pip install --upgrade pip --quiet
 
     # Install requirements (prefer platform-specific file)
     # Priority: provisioning-only > Pi-specific > generic
@@ -67,10 +74,15 @@ setup_python_venv() {
 
     if [ -n "$req_file" ]; then
         log_info "Installing requirements from $(basename $req_file)..."
-        pip install -r "$req_file" --quiet
+        $use_sudo "$venv_path/bin/python" -m pip install -r "$req_file" --quiet
         log_success "Requirements installed"
     else
         log_warn "No requirements file found"
+    fi
+
+    # For non-provisioning mode, activate the venv for subsequent steps
+    if [ "${JARVIS_PROVISIONING_ONLY:-0}" != "1" ]; then
+        source "$venv_path/bin/activate"
     fi
 }
 
@@ -116,13 +128,10 @@ setup_database() {
 
     local venv_path="${1:-$PROJECT_ROOT/venv}"
 
-    # Ensure venv is activated
-    source "$venv_path/bin/activate"
-
     if [ -f "$PROJECT_ROOT/alembic.ini" ]; then
         log_info "Running database migrations..."
         cd "$PROJECT_ROOT"
-        alembic upgrade head
+        "$venv_path/bin/python" -m alembic upgrade head
         log_success "Database migrations complete"
     else
         log_warn "No alembic.ini found, skipping migrations"
@@ -134,22 +143,50 @@ verify_installation() {
     log_step "Verifying installation"
 
     local venv_path="${1:-$PROJECT_ROOT/venv}"
-    source "$venv_path/bin/activate"
+    local python_bin="$venv_path/bin/python"
 
-    # Check Python
-    log_info "Python version: $(python --version)"
-
-    # Check key packages
-    if python -c "import sqlalchemy" 2>/dev/null; then
-        log_success "SQLAlchemy installed"
-    else
-        log_error "SQLAlchemy not found"
+    # For provisioning mode, use sudo
+    local use_sudo=""
+    if [ "${JARVIS_PROVISIONING_ONLY:-0}" = "1" ]; then
+        use_sudo="sudo"
     fi
 
-    if python -c "import paho.mqtt.client" 2>/dev/null; then
-        log_success "paho-mqtt installed"
+    # Check Python
+    log_info "Python version: $($use_sudo $python_bin --version)"
+
+    # Check key packages based on mode
+    if [ "${JARVIS_PROVISIONING_ONLY:-0}" = "1" ]; then
+        # Provisioning mode - check minimal packages
+        if $use_sudo $python_bin -c "import fastapi" 2>/dev/null; then
+            log_success "FastAPI installed"
+        else
+            log_error "FastAPI not found"
+        fi
+
+        if $use_sudo $python_bin -c "import uvicorn" 2>/dev/null; then
+            log_success "Uvicorn installed"
+        else
+            log_error "Uvicorn not found"
+        fi
+
+        if $use_sudo $python_bin -c "import dotenv" 2>/dev/null; then
+            log_success "python-dotenv installed"
+        else
+            log_error "python-dotenv not found"
+        fi
     else
-        log_warn "paho-mqtt not found (optional for MQTT features)"
+        # Full mode - check all packages
+        if $use_sudo $python_bin -c "import sqlalchemy" 2>/dev/null; then
+            log_success "SQLAlchemy installed"
+        else
+            log_error "SQLAlchemy not found"
+        fi
+
+        if $use_sudo $python_bin -c "import paho.mqtt.client" 2>/dev/null; then
+            log_success "paho-mqtt installed"
+        else
+            log_warn "paho-mqtt not found (optional for MQTT features)"
+        fi
     fi
 }
 
