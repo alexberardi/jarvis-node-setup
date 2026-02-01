@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 
 from exceptions.missing_secrets_error import MissingSecretsError
@@ -9,6 +9,9 @@ from .ijarvis_secret import IJarvisSecret
 from .request_information import RequestInformation
 from .command_response import CommandResponse
 from clients.responses.jarvis_command_center import DateContext
+
+if TYPE_CHECKING:
+    from .ijarvis_package import JarvisPackage
 
 
 @dataclass
@@ -122,6 +125,36 @@ class IJarvisCommand(JarvisCommandBase, ABC):
     def critical_rules(self) -> List[str]:
         """Optional list of critical rules that must be followed for this command"""
         return []
+
+    @property
+    def required_packages(self) -> List["JarvisPackage"]:
+        """
+        Python packages this command requires.
+
+        Override to declare pip dependencies for this command.
+        Packages are installed on first use and written to custom-requirements.txt.
+
+        Returns:
+            List of JarvisPackage declaring pip dependencies
+        """
+        return []
+
+    def init_data(self) -> Dict[str, Any]:
+        """
+        Optional initialization hook. Called manually on first install.
+
+        Override to sync data on first install:
+        - Register devices with Command Center
+        - Fetch initial state from external services
+        - Set up integrations
+
+        Returns:
+            Dict with initialization results (for logging/display)
+
+        Usage:
+            python scripts/init_data.py --command <command_name>
+        """
+        return {"status": "no_init_required"}
 
     @abstractmethod
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
