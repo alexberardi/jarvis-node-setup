@@ -2,6 +2,10 @@ import os
 import json
 from typing import Any, Dict, Optional
 
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
+
 
 class Config:
     _config_json: Optional[Dict[str, Any]] = None
@@ -13,7 +17,7 @@ class Config:
             with open(config_path) as f:
                 Config._config_json = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            print(f"Error loading config: {config_path}")
+            logger.warning("Error loading config", path=config_path)
             Config._config_json = None
 
     @staticmethod

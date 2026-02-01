@@ -1,6 +1,8 @@
 from typing import List, Any, Optional
 
+from jarvis_log_client import JarvisLogger
 from pydantic import BaseModel
+
 from constants.relative_date_keys import RelativeDateKeys
 from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
@@ -11,6 +13,8 @@ from utils.config_service import Config
 from jarvis_services.icloud_calendar_service import ICloudCalendarService
 from utils.date_util import parse_date_array, format_date_display, dates_to_strings
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class ReadCalendarCommand(IJarvisCommand):
@@ -126,8 +130,8 @@ class ReadCalendarCommand(IJarvisCommand):
         datetimes_array = kwargs.get("resolved_datetimes")
         
         # Debug: Check what type request_info actually is
-        print(f"DEBUG: request_info type: {type(request_info)}")
-        print(f"DEBUG: request_info content: {request_info}")
+        logger.debug(f"DEBUG: request_info type: {type(request_info)}")
+        logger.debug(f"DEBUG: request_info content: {request_info}")
         
         # Handle both RequestInformation object and dictionary
         if hasattr(request_info, 'voice_command'):
@@ -137,7 +141,7 @@ class ReadCalendarCommand(IJarvisCommand):
         else:
             # Fallback if we can't get the voice command
             voice_command = "unknown command"
-            print(f"WARNING: Could not extract voice_command from request_info: {request_info}")
+            logger.debug(f"WARNING: Could not extract voice_command from request_info: {request_info}")
         
         if not datetimes_array:
             return CommandResponse.error_response(
@@ -152,7 +156,7 @@ class ReadCalendarCommand(IJarvisCommand):
         # Parse datetime parameters
         try:
             target_dates = parse_date_array(datetimes_array)
-            print(f"DEBUG: Parsed target_dates: {[d.strftime('%Y-%m-%d %H:%M:%S') for d in target_dates]}")
+            logger.debug(f"DEBUG: Parsed target_dates: {[d.strftime('%Y-%m-%d %H:%M:%S') for d in target_dates]}")
         except ValueError as e:
             return CommandResponse.error_response(
                 error_details=str(e),
@@ -164,7 +168,7 @@ class ReadCalendarCommand(IJarvisCommand):
             )
         
         # Log the original voice command for debugging
-        print(f"Voice command received: '{voice_command}'")
+        logger.debug(f"Voice command received: '{voice_command}'")
         
         # Get calendar configuration
         calendar_type = get_secret_value("CALENDAR_TYPE", "integration")
@@ -217,19 +221,19 @@ class ReadCalendarCommand(IJarvisCommand):
                 # Add 1 day buffer to catch events that span midnight
                 total_span = (end_date - start_date).days + 1
                 
-                print(f"DEBUG: Multiple dates from LLM - querying range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} (span: {total_span} days)")
+                logger.debug(f"DEBUG: Multiple dates from LLM - querying range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} (span: {total_span} days)")
                 all_events = calendar_service.read_events(start_date, total_span)
-                print(f"DEBUG: Found {len(all_events)} total events across specified range")
+                logger.debug(f"DEBUG: Found {len(all_events)} total events across specified range")
             else:
                 # Single specific date from LLM - query just that date
                 start_date = target_dates[0]
-                print(f"DEBUG: Single date from LLM - querying: {start_date.strftime('%Y-%m-%d')} with 1 day lookahead")
+                logger.debug(f"DEBUG: Single date from LLM - querying: {start_date.strftime('%Y-%m-%d')} with 1 day lookahead")
                 all_events = calendar_service.read_events(start_date, 1)
-                print(f"DEBUG: Found {len(all_events)} events for single specified date")
+                logger.debug(f"DEBUG: Found {len(all_events)} events for single specified date")
             
             # Debug: Show all events with their IDs
             for i, event in enumerate(all_events):
-                print(f"DEBUG: Event {i+1}: {event.summary} at {event.start_time} (ID: {event.id})")
+                logger.debug(f"DEBUG: Event {i+1}: {event.summary} at {event.start_time} (ID: {event.id})")
             
             # Check if we actually authenticated successfully
             if not hasattr(calendar_service, '_authenticated') or not calendar_service._authenticated:
@@ -260,7 +264,7 @@ class ReadCalendarCommand(IJarvisCommand):
                 # Create summary message
                 date_display = format_date_display(target_dates)
                 message = f"You have {len(all_events)} event(s) on {date_display}"
-                print(message)
+                logger.debug(message)
                 
                 # Now use the LLM to craft a natural response based on the calendar data
                 try:
@@ -306,13 +310,13 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural sp
                     # Use the LLM response as our message
                     if llm_response and hasattr(llm_response, 'response'):
                         message = llm_response.response.strip()
-                        print(f"LLM crafted response: {message}")
+                        logger.debug(f"LLM crafted response: {message}")
                     else:
                         # Fallback to our original message if LLM fails
-                        print(f"LLM response failed, using fallback message. Response: {llm_response}")
+                        logger.debug(f"LLM response failed, using fallback message. Response: {llm_response}")
                 
                 except Exception as e:
-                    print(f"Failed to get LLM response, using fallback message: {str(e)}")
+                    logger.debug(f"Failed to get LLM response, using fallback message: {str(e)}")
                     # Continue with our original message
                 
                 return CommandResponse.follow_up_response(
@@ -331,7 +335,7 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural sp
                 # No events found
                 date_display = format_date_display(target_dates)
                 message = f"No events found on {date_display}"
-                print(message)
+                logger.debug(message)
                 
                 # Now use the LLM to craft a natural response for the no-events case
                 try:
@@ -360,13 +364,13 @@ Return ONLY a JSON object with this exact format: {{"response": "your natural re
                     # Use the LLM response as our message
                     if llm_response and hasattr(llm_response, 'response'):
                         message = llm_response.response.strip()
-                        print(f"LLM crafted response: {message}")
+                        logger.debug(f"LLM crafted response: {message}")
                     else:
                         # Fallback to our original message if LLM fails
-                        print(f"LLM response failed, using fallback message. Response: {llm_response}")
+                        logger.debug(f"LLM response failed, using fallback message. Response: {llm_response}")
                 
                 except Exception as e:
-                    print(f"Failed to get LLM response, using fallback message: {str(e)}")
+                    logger.debug(f"Failed to get LLM response, using fallback message: {str(e)}")
                     # Continue with our original message
                 
                 return CommandResponse.follow_up_response(

@@ -4,7 +4,11 @@ import threading
 import time
 from typing import Dict, List, Optional
 
+from jarvis_log_client import JarvisLogger
+
 from core.ijarvis_command import IJarvisCommand
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class CommandDiscoveryService:
@@ -13,7 +17,7 @@ class CommandDiscoveryService:
         self._commands_cache: Dict[str, IJarvisCommand] = {}
         self._last_refresh = 0
         self._lock = threading.Lock()
-        
+
         # Start background refresh thread
         self._refresh_thread = threading.Thread(target=self._background_refresh, daemon=True)
         self._refresh_thread.start()
@@ -24,9 +28,9 @@ class CommandDiscoveryService:
             time.sleep(self.refresh_interval)
             try:
                 self._discover_commands()
-                print(f"[CommandDiscovery] Refreshed {len(self._commands_cache)} commands")
+                logger.debug("Refreshed commands", count=len(self._commands_cache))
             except Exception as e:
-                print(f"[CommandDiscovery] Error refreshing commands: {e}")
+                logger.error("Error refreshing commands", error=str(e))
 
     def _discover_commands(self):
         """Discover all IJarvisCommand implementations"""
@@ -49,7 +53,7 @@ class CommandDiscoveryService:
                         new_commands[instance.command_name] = instance
                         
             except Exception as e:
-                print(f"[CommandDiscovery] Error loading module {module_name}: {e}")
+                logger.error("Error loading command module", module=module_name, error=str(e))
         
         with self._lock:
             self._commands_cache = new_commands

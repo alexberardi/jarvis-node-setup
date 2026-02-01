@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from jarvis_log_client import JarvisLogger
 
 from utils.config_loader import Config
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class AudioPipelineClient:
@@ -103,12 +106,12 @@ class AudioPipelineClient:
             if self.save_audio_dir and save_name:
                 audio_path = Path(self.save_audio_dir) / f"{save_name}.wav"
                 audio_path.write_bytes(audio_bytes)
-                print(f"   📁 Saved audio to: {audio_path}")
+                logger.debug("Saved audio file", path=str(audio_path))
 
             return audio_bytes
 
         except requests.RequestException as e:
-            print(f"   ❌ TTS error: {e}")
+            logger.error("TTS error", error=str(e))
             return None
 
     def speech_to_text(self, audio_bytes: bytes) -> Optional[str]:
@@ -146,7 +149,7 @@ class AudioPipelineClient:
                     os.remove(tmp_path)
 
         except requests.RequestException as e:
-            print(f"   ❌ Whisper error: {e}")
+            logger.error("Whisper error", error=str(e))
             return None
 
     def full_pipeline(

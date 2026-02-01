@@ -1,6 +1,8 @@
 import uuid
 from typing import Dict, Any, List, Optional, Callable
 
+from jarvis_log_client import JarvisLogger
+
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.responses.jarvis_command_center import ToolCallingResponse, ToolCall, ValidationRequest
 from core.helpers import get_tts_provider
@@ -9,6 +11,8 @@ from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
 from utils.service_discovery import get_command_center_url
 from utils.tool_result_formatter import format_tool_result, format_tool_error
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class CommandExecutionService:
@@ -32,29 +36,29 @@ class CommandExecutionService:
             True if successful, False otherwise
         """
         commands = self.command_discovery.get_all_commands()
-        
+
         if not commands:
-            print("⚠️  No commands available to register")
+            logger.warning("No commands available to register")
             return False
-        
-        print(f"📋 Registering {len(commands)} tools for conversation {conversation_id}")
-        
+
+        logger.info("Registering tools for conversation", count=len(commands), conversation_id=conversation_id)
+
         try:
             # Get date context
             date_context = self.client.get_date_context()
-            
+
             # Start conversation with available commands
             success = self.client.start_conversation(conversation_id, commands, date_context)
-            
+
             if success:
-                print(f"✅ Successfully registered {len(commands)} tools")
+                logger.info("Successfully registered tools", count=len(commands))
             else:
-                print(f"❌ Failed to register tools")
-            
+                logger.error("Failed to register tools")
+
             return success
-            
+
         except Exception as e:
-            print(f"❌ Error registering tools: {e}")
+            logger.error("Error registering tools", error=str(e))
             return False
 
     def process_voice_command(
@@ -82,43 +86,42 @@ class CommandExecutionService:
             Execution result dictionary with success, message, and conversation_id
         """
         conversation_id = self._generate_conversation_id()
-        
-        print(f"🆔 Starting conversation: {conversation_id}")
-        print(f"📡 Processing: {voice_command}")
-        
+
+        logger.info("Starting conversation", conversation_id=conversation_id, command=voice_command)
+
         try:
             # Register available tools if requested
             if register_tools:
                 self.register_tools_for_conversation(conversation_id)
-            
+
             # Initial request to Command Center
             response = self.client.send_command(voice_command, conversation_id)
-            
+
             if not response:
                 return self._handle_error("Failed to communicate with Command Center", conversation_id)
-            
+
             # Loop until conversation is complete
             max_iterations = 10  # Safety limit to prevent infinite loops
             iteration = 0
-            
+
             while not response.is_final() and iteration < max_iterations:
                 iteration += 1
-                print(f"🔄 Iteration {iteration}: stop_reason = {response.stop_reason}")
-                
+                logger.debug("Processing iteration", iteration=iteration, stop_reason=response.stop_reason)
+
                 if response.requires_tool_execution():
                     # Execute requested tools
-                    print(f"🔧 Executing {len(response.tool_calls)} tool(s)")
+                    logger.debug("Executing tools", count=len(response.tool_calls))
                     tool_results = self._execute_tools(response.tool_calls, conversation_id)
-                    
+
                     # Send results back to continue conversation
                     response = self.client.send_tool_results(conversation_id, tool_results)
-                    
+
                     if not response:
                         return self._handle_error("Failed to send tool results", conversation_id)
-                
+
                 elif response.requires_validation():
                     # Handle validation/clarification request
-                    print(f"❓ Validation required: {response.validation_request.question}")
+                    logger.debug("Validation required", question=response.validation_request.question)
                     
                     if validation_handler:
                         user_response = validation_handler(response.validation_request)
@@ -141,19 +144,19 @@ class CommandExecutionService:
             
             if iteration >= max_iterations:
                 return self._handle_error("Conversation exceeded maximum iterations", conversation_id)
-            
+
             # Final response
             final_message = response.assistant_message or "Task completed."
-            print(f"✅ Conversation complete: {final_message}")
-            
+            logger.info("Conversation complete", message=final_message)
+
             return {
                 "success": True,
                 "message": final_message,
                 "conversation_id": conversation_id
             }
-            
+
         except Exception as e:
-            print(f"❌ Error processing command: {e}")
+            logger.error("Error processing command", error=str(e))
             return self._handle_error(f"Error processing command: {str(e)}", conversation_id)
 
     def _execute_tools(self, tool_calls: List[ToolCall], conversation_id: str) -> List[Dict[str, Any]]:
@@ -171,40 +174,40 @@ class CommandExecutionService:
         
         for tool_call in tool_calls:
             tool_name = tool_call.function.name
-            print(f"  🔨 Executing: {tool_name} (id: {tool_call.id})")
-            
+            logger.debug("Executing tool", tool=tool_name, tool_call_id=tool_call.id)
+
             try:
                 # Get the command instance
                 command = self.command_discovery.get_command(tool_name)
-                
+
                 if not command:
                     error_msg = f"Unknown tool: {tool_name}"
-                    print(f"    ❌ {error_msg}")
+                    logger.error("Unknown tool", tool=tool_name)
                     results.append(format_tool_error(tool_call.id, error_msg))
                     continue
-                
+
                 # Parse arguments from JSON string
                 arguments = tool_call.function.get_arguments_dict()
-                
+
                 # Create request information
                 request_info = RequestInformation(
                     voice_command=f"Tool call: {tool_name}",
                     conversation_id=conversation_id,
                     is_validation_response=False
                 )
-                
+
                 # Execute the command with the provided arguments
                 command_response = command.execute(request_info, **arguments)
-                
+
                 # Format the result
                 result = format_tool_result(tool_call.id, command_response)
                 results.append(result)
-                
-                print(f"    ✅ Success: Tool executed successfully")
-                
+
+                logger.debug("Tool executed successfully", tool=tool_name)
+
             except Exception as e:
                 error_msg = str(e)
-                print(f"    ❌ Error: {error_msg}")
+                logger.error("Tool execution error", tool=tool_name, error=error_msg)
                 results.append(format_tool_error(tool_call.id, error_msg))
         
         return results
@@ -212,21 +215,20 @@ class CommandExecutionService:
     def _default_validation_handler(self, validation: ValidationRequest) -> str:
         """
         Default validation handler - placeholder for now
-        
+
         In practice, this should prompt the user via TTS and listen for their response.
         For now, we'll return a simple error message.
-        
+
         Args:
             validation: The validation request
-            
+
         Returns:
             User's response (or error message)
         """
-        print(f"⚠️  Default validation handler called - this should be overridden")
-        print(f"    Question: {validation.question}")
-        if validation.options:
-            print(f"    Options: {', '.join(validation.options)}")
-        
+        logger.warning("Default validation handler called - should be overridden",
+                       question=validation.question,
+                       options=validation.options)
+
         # For now, return a message indicating validation is not supported
         return "I'm not sure - please try rephrasing your request."
 
