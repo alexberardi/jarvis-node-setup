@@ -155,9 +155,64 @@ cd jarvis-whisper-api && ./run-dev.sh
 - `error_handling` - Graceful error handling
 - `complex` - Complex queries (knowledge, conversions)
 
+## Provisioning
+
+For headless Pi Zero nodes, provisioning allows the mobile app to bootstrap WiFi and register with command center.
+
+### Running Provisioning Server
+
+```bash
+# Start in simulation mode (for development/testing)
+JARVIS_SIMULATE_PROVISIONING=true python scripts/run_provisioning.py
+
+# Start with real WiFi (on Pi)
+python scripts/run_provisioning.py
+```
+
+Server runs on port 8080 (configurable via `JARVIS_PROVISIONING_PORT`).
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/info` | GET | Node info (id, firmware, mac, capabilities, state) |
+| `/api/v1/scan-networks` | GET | Available WiFi networks |
+| `/api/v1/provision` | POST | Send WiFi creds + room + command center URL |
+| `/api/v1/status` | GET | Provisioning progress |
+
+### Provisioning States
+
+- `AP_MODE` - Waiting for mobile app connection
+- `CONNECTING` - Attempting to connect to home WiFi
+- `REGISTERING` - Registering with command center
+- `PROVISIONED` - Successfully provisioned
+- `ERROR` - Error occurred
+
+### Files
+
+```
+provisioning/
+├── __init__.py
+├── api.py              # FastAPI application
+├── models.py           # Pydantic models
+├── registration.py     # Command center registration
+├── startup.py          # Provisioning detection
+├── state_machine.py    # State management
+├── wifi_credentials.py # Encrypted credential storage
+└── wifi_manager.py     # WiFi operations interface
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JARVIS_SIMULATE_PROVISIONING` | false | Use simulated WiFi manager |
+| `JARVIS_PROVISIONING_PORT` | 8080 | Provisioning API port |
+| `JARVIS_SKIP_PROVISIONING_CHECK` | false | Skip provisioning check on main.py startup |
+
 ## Notes
 
-- This is client software, not a server
+- This is client software, not a server (except provisioning mode)
 - Runs on Pi Zero with mic + speaker
 - Communicates with command-center via HTTP
 - Receives TTS commands via MQTT

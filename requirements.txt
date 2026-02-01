@@ -22,3 +22,5 @@ alembic
 pytz
 pydantic
 dotenv
+fastapi>=0.100.0
+uvicorn>=0.22.0
