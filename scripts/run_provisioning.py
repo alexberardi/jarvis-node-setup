@@ -56,6 +56,7 @@ def main() -> None:
     backend = os.environ.get("JARVIS_WIFI_BACKEND", "").lower()
     if not backend and _is_raspberry_pi() and not is_simulated:
         os.environ["JARVIS_WIFI_BACKEND"] = "hostapd"
+        print("[provisioning] Auto-detected Raspberry Pi, using hostapd backend")
         logger.info("Auto-detected Raspberry Pi, using hostapd backend")
 
     # Get appropriate WiFi manager
@@ -63,11 +64,14 @@ def main() -> None:
 
     mode = "SIMULATION" if is_simulated else "REAL"
     backend_name = os.environ.get("JARVIS_WIFI_BACKEND", "networkmanager")
+    print(f"[provisioning] Starting server mode={mode} port={port} backend={backend_name}")
     logger.info("Starting provisioning server", mode=mode, port=port, backend=backend_name)
 
     if is_simulated:
+        print("[provisioning] Using simulated WiFi manager")
         logger.info("Using simulated WiFi manager")
     else:
+        print(f"[provisioning] Using {backend_name} for WiFi operations")
         logger.info(f"Using {backend_name} for WiFi operations")
 
     # On real Pi, start AP mode
@@ -75,10 +79,13 @@ def main() -> None:
         from provisioning.api import _get_node_id
         node_id = _get_node_id()
         ap_ssid = f"jarvis-{node_id[-8:]}"
+        print(f"[provisioning] Starting AP mode with SSID: {ap_ssid}")
         logger.info("Starting AP mode", ssid=ap_ssid)
         if wifi_manager.start_ap_mode(ap_ssid):
+            print(f"[provisioning] ✅ AP mode active: {ap_ssid}")
             logger.info("AP mode active", ssid=ap_ssid)
         else:
+            print(f"[provisioning] ⚠️ Could not start AP mode")
             logger.warning("Could not start AP mode, connect to node IP directly")
 
     # Create and run the app
