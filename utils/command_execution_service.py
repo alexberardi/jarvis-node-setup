@@ -1,17 +1,19 @@
 import uuid
 from typing import Dict, Any, List, Optional, Callable
+
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.responses.jarvis_command_center import ToolCallingResponse, ToolCall, ValidationRequest
-from utils.config_service import Config
-from utils.command_discovery_service import get_command_discovery_service
-from utils.tool_result_formatter import format_tool_result, format_tool_error
 from core.helpers import get_tts_provider
 from core.request_information import RequestInformation
+from utils.command_discovery_service import get_command_discovery_service
+from utils.config_service import Config
+from utils.service_discovery import get_command_center_url
+from utils.tool_result_formatter import format_tool_result, format_tool_error
 
 
 class CommandExecutionService:
     def __init__(self):
-        self.command_center_url = Config.get_str("jarvis_command_center_api_url")
+        self.command_center_url = get_command_center_url()
         self.node_id = Config.get_str("node_id")
         self.room = Config.get_str("room")
         self.command_discovery = get_command_discovery_service()
