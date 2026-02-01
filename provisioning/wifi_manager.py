@@ -3,11 +3,13 @@ WiFi management interface and implementations.
 
 Provides a Protocol for WiFi operations with:
 - NetworkManagerWiFi: Real implementation using nmcli (Linux/Pi)
+- HostapdWiFiManager: Direct hostapd/dnsmasq control for Pi Zero AP mode
 - SimulatedWiFi: Simulated implementation for testing
 """
 
 import os
 import subprocess
+from pathlib import Path
 from typing import Optional, Protocol
 
 from provisioning.models import NetworkInfo
@@ -185,6 +187,269 @@ class NetworkManagerWiFi:
             return False
 
 
+class HostapdWiFiManager:
+    """
+    WiFi manager using hostapd and dnsmasq for AP mode.
+
+    This provides more reliable AP mode on Pi Zero compared to NetworkManager's
+    hotspot feature. Uses:
+    - hostapd: Creates the WiFi access point
+    - dnsmasq: Provides DHCP for connecting devices
+    - ip: Configures the network interface
+
+    For scan/connect operations, delegates to nmcli (same as NetworkManagerWiFi).
+    """
+
+    # Default configuration
+    DEFAULT_INTERFACE = "wlan0"
+    DEFAULT_CHANNEL = 6
+    DEFAULT_AP_IP = "192.168.4.1"
+    DEFAULT_DHCP_START = "192.168.4.10"
+    DEFAULT_DHCP_END = "192.168.4.50"
+    DEFAULT_NETMASK = "255.255.255.0"
+
+    def __init__(
+        self,
+        interface: str = DEFAULT_INTERFACE,
+        config_dir: Optional[Path] = None
+    ) -> None:
+        self._interface = interface
+        self._config_dir = config_dir or Path("/tmp/jarvis-ap")
+        self._hostapd_process: Optional[subprocess.Popen] = None
+        self._dnsmasq_process: Optional[subprocess.Popen] = None
+        self._ap_active = False
+
+    def _generate_hostapd_config(self, ssid: str, interface: str, channel: int) -> str:
+        """Generate hostapd configuration file content."""
+        return f"""# Jarvis AP Mode - hostapd configuration
+interface={interface}
+driver=nl80211
+ssid={ssid}
+hw_mode=g
+channel={channel}
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=0
+"""
+
+    def _generate_dnsmasq_config(
+        self,
+        interface: str,
+        gateway_ip: str,
+        dhcp_start: str,
+        dhcp_end: str
+    ) -> str:
+        """Generate dnsmasq configuration file content."""
+        return f"""# Jarvis AP Mode - dnsmasq configuration
+interface={interface}
+bind-interfaces
+dhcp-range={dhcp_start},{dhcp_end},12h
+dhcp-option=3,{gateway_ip}
+dhcp-option=6,{gateway_ip}
+server=8.8.8.8
+log-queries
+log-dhcp
+"""
+
+    def scan_networks(self) -> list[NetworkInfo]:
+        """Scan for available WiFi networks using nmcli."""
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                return []
+
+            networks: list[NetworkInfo] = []
+            seen_ssids: set[str] = set()
+
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(":")
+                if len(parts) >= 3:
+                    ssid = parts[0].strip()
+                    if not ssid or ssid in seen_ssids:
+                        continue
+                    seen_ssids.add(ssid)
+
+                    try:
+                        signal = int(parts[1])
+                        signal_dbm = -90 + int(signal * 0.6)
+                    except (ValueError, IndexError):
+                        signal_dbm = -70
+
+                    security = parts[2].strip() if len(parts) > 2 else "OPEN"
+
+                    networks.append(NetworkInfo(
+                        ssid=ssid,
+                        signal_strength=signal_dbm,
+                        security=security
+                    ))
+
+            networks.sort(key=lambda n: n.signal_strength, reverse=True)
+            return networks
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return []
+
+    def connect(self, ssid: str, password: str) -> bool:
+        """Connect to a WiFi network using nmcli."""
+        # Stop AP mode first if active
+        if self._ap_active:
+            self.stop_ap_mode()
+
+        try:
+            result = subprocess.run(
+                ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def get_current_ssid(self) -> Optional[str]:
+        """Get the current connected WiFi SSID."""
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode != 0:
+                return None
+
+            for line in result.stdout.strip().split("\n"):
+                if line.startswith("yes:"):
+                    return line.split(":", 1)[1]
+
+            return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+
+    def start_ap_mode(self, ssid: str) -> bool:
+        """
+        Start AP mode using hostapd and dnsmasq.
+
+        Steps:
+        1. Create config directory
+        2. Write hostapd.conf and dnsmasq.conf
+        3. Assign IP to interface
+        4. Start hostapd process
+        5. Start dnsmasq process
+        """
+        try:
+            # Create config directory
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+
+            # Write config files
+            hostapd_conf = self._config_dir / "hostapd.conf"
+            dnsmasq_conf = self._config_dir / "dnsmasq.conf"
+
+            hostapd_conf.write_text(
+                self._generate_hostapd_config(ssid, self._interface, self.DEFAULT_CHANNEL)
+            )
+            dnsmasq_conf.write_text(
+                self._generate_dnsmasq_config(
+                    self._interface,
+                    self.DEFAULT_AP_IP,
+                    self.DEFAULT_DHCP_START,
+                    self.DEFAULT_DHCP_END
+                )
+            )
+
+            # Flush existing IP and assign new one
+            subprocess.run(
+                ["ip", "addr", "flush", "dev", self._interface],
+                capture_output=True,
+                timeout=10
+            )
+            subprocess.run(
+                ["ip", "addr", "add", f"{self.DEFAULT_AP_IP}/24", "dev", self._interface],
+                capture_output=True,
+                timeout=10
+            )
+            subprocess.run(
+                ["ip", "link", "set", self._interface, "up"],
+                capture_output=True,
+                timeout=10
+            )
+
+            # Start hostapd
+            self._hostapd_process = subprocess.Popen(
+                ["hostapd", str(hostapd_conf)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            # Start dnsmasq
+            self._dnsmasq_process = subprocess.Popen(
+                ["dnsmasq", "-C", str(dnsmasq_conf), "-d"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+
+            self._ap_active = True
+            return True
+
+        except (FileNotFoundError, PermissionError, OSError):
+            # Clean up on failure
+            self.stop_ap_mode()
+            return False
+
+    def stop_ap_mode(self) -> bool:
+        """
+        Stop AP mode by terminating hostapd and dnsmasq.
+
+        Steps:
+        1. Terminate hostapd process
+        2. Terminate dnsmasq process
+        3. Remove IP from interface
+        """
+        try:
+            # Terminate hostapd
+            if self._hostapd_process:
+                self._hostapd_process.terminate()
+                try:
+                    self._hostapd_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._hostapd_process.kill()
+                self._hostapd_process = None
+
+            # Terminate dnsmasq
+            if self._dnsmasq_process:
+                self._dnsmasq_process.terminate()
+                try:
+                    self._dnsmasq_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._dnsmasq_process.kill()
+                self._dnsmasq_process = None
+
+            # Remove IP from interface
+            subprocess.run(
+                ["ip", "addr", "flush", "dev", self._interface],
+                capture_output=True,
+                timeout=10
+            )
+
+            self._ap_active = False
+            return True
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            self._ap_active = False
+            return True  # Best effort - still return True
+
+
 class SimulatedWiFi:
     """Simulated WiFi for testing without real hardware."""
 
@@ -235,10 +500,17 @@ def get_wifi_manager() -> WiFiManager:
     """
     Get the appropriate WiFi manager based on environment.
 
-    Returns SimulatedWiFi if JARVIS_SIMULATE_PROVISIONING=true,
-    otherwise returns NetworkManagerWiFi.
+    Environment variables:
+    - JARVIS_SIMULATE_PROVISIONING=true: Returns SimulatedWiFi
+    - JARVIS_WIFI_BACKEND=hostapd: Returns HostapdWiFiManager
+    - Otherwise: Returns NetworkManagerWiFi (default)
     """
     simulate = os.environ.get("JARVIS_SIMULATE_PROVISIONING", "false").lower()
     if simulate in ("true", "1", "yes"):
         return SimulatedWiFi()
+
+    backend = os.environ.get("JARVIS_WIFI_BACKEND", "").lower()
+    if backend == "hostapd":
+        return HostapdWiFiManager()
+
     return NetworkManagerWiFi()
