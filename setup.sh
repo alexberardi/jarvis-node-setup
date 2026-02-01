@@ -73,9 +73,14 @@ show_menu() {
 # Main
 detected_os=$(detect_os)
 
+# Collect extra args to pass through (e.g., --provision)
+extra_args=()
+
 if [[ -n "$1" ]]; then
     # OS passed as argument
     choice="$1"
+    shift
+    extra_args=("$@")
 else
     # Interactive mode
     show_menu "$detected_os"
@@ -100,15 +105,15 @@ fi
 case "$choice" in
     1|pi|raspberry)
         echo -e "\n${GREEN}Running Raspberry Pi setup...${NC}\n"
-        bash "$SETUP_DIR/pi.sh"
+        bash "$SETUP_DIR/pi.sh" "${extra_args[@]}"
         ;;
     2|ubuntu|linux)
         echo -e "\n${GREEN}Running Ubuntu setup...${NC}\n"
-        bash "$SETUP_DIR/ubuntu.sh"
+        bash "$SETUP_DIR/ubuntu.sh" "${extra_args[@]}"
         ;;
     3|macos|mac|darwin)
         echo -e "\n${GREEN}Running macOS setup...${NC}\n"
-        bash "$SETUP_DIR/macos.sh"
+        bash "$SETUP_DIR/macos.sh" "${extra_args[@]}"
         ;;
     q|quit|exit)
         echo "Setup cancelled."
@@ -116,7 +121,7 @@ case "$choice" in
         ;;
     *)
         echo -e "${RED}Invalid choice: $choice${NC}"
-        echo "Usage: $0 [pi|ubuntu|macos]"
+        echo "Usage: $0 [pi|ubuntu|macos] [--provision]"
         exit 1
         ;;
 esac

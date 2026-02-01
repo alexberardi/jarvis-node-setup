@@ -53,13 +53,24 @@ setup_python_venv() {
     log_info "Upgrading pip..."
     pip install --upgrade pip --quiet
 
-    # Install requirements
-    if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
-        log_info "Installing requirements..."
-        pip install -r "$PROJECT_ROOT/requirements.txt" --quiet
+    # Install requirements (prefer platform-specific file)
+    # Priority: provisioning-only > Pi-specific > generic
+    local req_file=""
+    if [ "${JARVIS_PROVISIONING_ONLY:-0}" = "1" ] && [ -f "$PROJECT_ROOT/requirements-provisioning.txt" ]; then
+        req_file="$PROJECT_ROOT/requirements-provisioning.txt"
+        log_info "Using minimal provisioning requirements (JARVIS_PROVISIONING_ONLY=1)"
+    elif [ -f "$PROJECT_ROOT/requirements-pi.txt" ] && grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
+        req_file="$PROJECT_ROOT/requirements-pi.txt"
+    elif [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+        req_file="$PROJECT_ROOT/requirements.txt"
+    fi
+
+    if [ -n "$req_file" ]; then
+        log_info "Installing requirements from $(basename $req_file)..."
+        pip install -r "$req_file" --quiet
         log_success "Requirements installed"
     else
-        log_warn "No requirements.txt found"
+        log_warn "No requirements file found"
     fi
 }
 
@@ -153,7 +164,7 @@ print_completion() {
     echo "Next steps:"
     echo "  1. Update config.json with your settings"
     echo "  2. Update .env with your secrets"
-    echo "  3. Activate the venv: source venv/bin/activate"
+    echo "  3. Activate the venv: source .venv/bin/activate"
     echo "  4. Run: python scripts/main.py"
     echo ""
 }

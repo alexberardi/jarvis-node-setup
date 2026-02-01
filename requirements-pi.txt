@@ -1,0 +1,31 @@
+# Requirements for Pi Zero deployment
+# Uses relative paths for local jarvis packages
+
+paho-mqtt
+httpx
+pvporcupine
+pyaudio
+vosk
+sounddevice
+numpy
+scipy
+requests
+aiodiscover
+websockets
+aiohttp
+tqdm
+zeroconf
+manuf
+cryptography>=3.4,<4.0
+pysqlcipher3
+sqlalchemy
+alembic
+pytz
+pydantic
+python-dotenv
+fastapi>=0.100.0
+uvicorn>=0.22.0
+
+# Local jarvis packages (relative to /home/pi/projects/)
+jarvis-log-client @ file:///home/pi/projects/jarvis-log-client
+jarvis-config-client @ file:///home/pi/projects/jarvis-config-client

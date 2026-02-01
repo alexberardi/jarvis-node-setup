@@ -3,11 +3,17 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 
 def get_secret_dir() -> Path:
-    return Path(os.environ.get("JARVIS_SECRET_DIRECTORY", str(Path.home() / ".jarvis")))
+    raw_path = os.environ.get("JARVIS_SECRET_DIRECTORY", str(Path.home() / ".jarvis"))
+    # Expand shell variables ($HOME) and user paths (~)
+    expanded = os.path.expandvars(os.path.expanduser(raw_path))
+    return Path(expanded)
 
 def get_key_file() -> Path:
     secret_dir = get_secret_dir()
-    return Path(os.environ.get("JARVIS_KEY_FILE", str(secret_dir / "secrets.key")))
+    raw_path = os.environ.get("JARVIS_KEY_FILE", str(secret_dir / "secrets.key"))
+    # Expand shell variables ($HOME) and user paths (~)
+    expanded = os.path.expandvars(os.path.expanduser(raw_path))
+    return Path(expanded)
 
 def get_encryption_key() -> bytes:
     """Read the Fernet key from the configured key file and return as bytes."""

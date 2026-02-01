@@ -1,0 +1,18 @@
+# Minimal requirements for provisioning mode only
+# For full jarvis-node functionality, use requirements-pi.txt
+#
+# This is a lightweight dependency set for headless Pi Zero nodes
+# that only need to run the provisioning server (WiFi setup via mobile app).
+# Installs much faster than the full requirements-pi.txt.
+
+# Web framework for provisioning API
+fastapi>=0.100.0
+uvicorn>=0.22.0
+pydantic
+python-dotenv
+
+# Encrypted credential storage
+cryptography>=3.4,<4.0
+
+# Local jarvis packages (relative to /home/pi/projects/)
+jarvis-log-client @ file:///home/pi/projects/jarvis-log-client
