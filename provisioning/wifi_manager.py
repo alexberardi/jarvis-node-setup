@@ -197,6 +197,9 @@ class HostapdWiFiManager:
     - dnsmasq: Provides DHCP for connecting devices
     - ip: Configures the network interface
 
+    IMPORTANT: Before starting AP mode, this manager stops NetworkManager and
+    wpa_supplicant to avoid conflicts. These are restored when AP mode stops.
+
     For scan/connect operations, delegates to nmcli (same as NetworkManagerWiFi).
     """
 
@@ -218,6 +221,46 @@ class HostapdWiFiManager:
         self._hostapd_process: Optional[subprocess.Popen] = None
         self._dnsmasq_process: Optional[subprocess.Popen] = None
         self._ap_active = False
+        self._nm_was_running = False
+        self._wpa_was_running = False
+
+    def _stop_network_services(self) -> None:
+        """Stop NetworkManager and wpa_supplicant to release the interface."""
+        # Check if NetworkManager is running
+        result = subprocess.run(
+            ["systemctl", "is-active", "NetworkManager"],
+            capture_output=True,
+            text=True
+        )
+        self._nm_was_running = result.returncode == 0
+
+        # Check if wpa_supplicant is running
+        result = subprocess.run(
+            ["systemctl", "is-active", "wpa_supplicant"],
+            capture_output=True,
+            text=True
+        )
+        self._wpa_was_running = result.returncode == 0
+
+        # Stop services
+        if self._nm_was_running:
+            subprocess.run(["systemctl", "stop", "NetworkManager"], capture_output=True)
+        if self._wpa_was_running:
+            subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True)
+
+        # Also kill any running wpa_supplicant processes
+        subprocess.run(["pkill", "-9", "wpa_supplicant"], capture_output=True)
+
+        # Give services time to stop
+        import time
+        time.sleep(1)
+
+    def _restore_network_services(self) -> None:
+        """Restore NetworkManager and wpa_supplicant after AP mode."""
+        if self._wpa_was_running:
+            subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
+        if self._nm_was_running:
+            subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
 
     def _generate_hostapd_config(self, ssid: str, interface: str, channel: int) -> str:
         """Generate hostapd configuration file content."""
@@ -342,13 +385,20 @@ log-dhcp
         Start AP mode using hostapd and dnsmasq.
 
         Steps:
-        1. Create config directory
-        2. Write hostapd.conf and dnsmasq.conf
-        3. Assign IP to interface
-        4. Start hostapd process
-        5. Start dnsmasq process
+        1. Stop NetworkManager/wpa_supplicant to release interface
+        2. Create config directory
+        3. Write hostapd.conf and dnsmasq.conf
+        4. Assign IP to interface
+        5. Start hostapd process
+        6. Start dnsmasq process
         """
+        import time
+
         try:
+            # Stop network services that might be using the interface
+            print("[hostapd] Stopping NetworkManager and wpa_supplicant...")
+            self._stop_network_services()
+
             # Create config directory
             self._config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -369,6 +419,7 @@ log-dhcp
             )
 
             # Flush existing IP and assign new one
+            print(f"[hostapd] Configuring interface {self._interface}...")
             subprocess.run(
                 ["ip", "addr", "flush", "dev", self._interface],
                 capture_output=True,
@@ -386,13 +437,26 @@ log-dhcp
             )
 
             # Start hostapd
+            print(f"[hostapd] Starting hostapd with SSID: {ssid}")
             self._hostapd_process = subprocess.Popen(
                 ["hostapd", str(hostapd_conf)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
 
+            # Wait a moment for hostapd to initialize
+            time.sleep(2)
+
+            # Check if hostapd is still running
+            if self._hostapd_process.poll() is not None:
+                # hostapd exited - read error output
+                _, stderr = self._hostapd_process.communicate()
+                print(f"[hostapd] ERROR: hostapd failed to start: {stderr.decode()}")
+                self._restore_network_services()
+                return False
+
             # Start dnsmasq
+            print("[hostapd] Starting dnsmasq for DHCP...")
             self._dnsmasq_process = subprocess.Popen(
                 ["dnsmasq", "-C", str(dnsmasq_conf), "-d"],
                 stdout=subprocess.PIPE,
@@ -400,9 +464,11 @@ log-dhcp
             )
 
             self._ap_active = True
+            print(f"[hostapd] ✅ AP mode active - SSID: {ssid}, IP: {self.DEFAULT_AP_IP}")
             return True
 
-        except (FileNotFoundError, PermissionError, OSError):
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            print(f"[hostapd] ERROR: {e}")
             # Clean up on failure
             self.stop_ap_mode()
             return False
@@ -415,25 +481,38 @@ log-dhcp
         1. Terminate hostapd process
         2. Terminate dnsmasq process
         3. Remove IP from interface
+        4. Restore NetworkManager/wpa_supplicant
         """
+        print("[hostapd] Stopping AP mode...")
+
         try:
             # Terminate hostapd
             if self._hostapd_process:
+                print("[hostapd] Terminating hostapd...")
                 self._hostapd_process.terminate()
                 try:
-                    self._hostapd_process.wait(timeout=5)
+                    self._hostapd_process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._hostapd_process.kill()
+                    self._hostapd_process.wait(timeout=2)
                 self._hostapd_process = None
+
+            # Also pkill any stray hostapd processes
+            subprocess.run(["pkill", "-9", "hostapd"], capture_output=True)
 
             # Terminate dnsmasq
             if self._dnsmasq_process:
+                print("[hostapd] Terminating dnsmasq...")
                 self._dnsmasq_process.terminate()
                 try:
-                    self._dnsmasq_process.wait(timeout=5)
+                    self._dnsmasq_process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._dnsmasq_process.kill()
+                    self._dnsmasq_process.wait(timeout=2)
                 self._dnsmasq_process = None
+
+            # Also pkill any stray dnsmasq processes we started
+            subprocess.run(["pkill", "-9", "-f", "dnsmasq.*jarvis-ap"], capture_output=True)
 
             # Remove IP from interface
             subprocess.run(
@@ -443,10 +522,22 @@ log-dhcp
             )
 
             self._ap_active = False
+
+            # Restore network services
+            print("[hostapd] Restoring network services...")
+            self._restore_network_services()
+
+            print("[hostapd] ✅ AP mode stopped")
             return True
 
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            print(f"[hostapd] Error during stop: {e}")
             self._ap_active = False
+            # Still try to restore network services
+            try:
+                self._restore_network_services()
+            except Exception:
+                pass
             return True  # Best effort - still return True
 
 
