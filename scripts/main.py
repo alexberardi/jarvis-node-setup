@@ -1,3 +1,5 @@
+import os
+import sys
 import threading
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
@@ -9,6 +11,14 @@ from utils.service_discovery import init as init_service_discovery
 
 
 def main():
+    # Check if node is provisioned (skip in development mode)
+    if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
+        from provisioning.startup import is_provisioned
+        if not is_provisioned():
+            print("[Jarvis] Node not provisioned or cannot reach command center.")
+            print("[Jarvis] Run: python scripts/run_provisioning.py")
+            print("[Jarvis] Or set JARVIS_SKIP_PROVISIONING_CHECK=true to skip this check.")
+            sys.exit(1)
     # Initialize service discovery (config service → JSON config fallback)
     if init_service_discovery():
         print("[Jarvis] Service discovery initialized")
