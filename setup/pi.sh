@@ -78,7 +78,16 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
         python3.11-venv \
         python3-pip \
         git \
-        avahi-utils
+        avahi-utils \
+        hostapd \
+        dnsmasq
+
+    # Disable system services - we manage hostapd/dnsmasq ourselves
+    log_info "Disabling system hostapd/dnsmasq services..."
+    sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
+    sudo systemctl disable hostapd dnsmasq 2>/dev/null || true
+    sudo systemctl mask hostapd dnsmasq 2>/dev/null || true
+
     log_success "Minimal system dependencies installed"
 else
     log_info "Installing dependencies..."
