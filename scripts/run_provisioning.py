@@ -29,6 +29,7 @@ from jarvis_log_client import init as init_logging, JarvisLogger
 
 from provisioning.api import create_provisioning_app
 from provisioning.wifi_manager import get_wifi_manager
+from utils.encryption_utils import initialize_encryption_key, get_secret_dir
 
 # Global flag for shutdown
 _shutdown_event = threading.Event()
@@ -69,6 +70,13 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     Returns:
         True if provisioning completed successfully, False otherwise.
     """
+    # Initialize K1 encryption key if not present (required for K2 storage)
+    secret_dir = get_secret_dir()
+    print(f"[provisioning] Secret directory: {secret_dir}")
+    logger.info("Initializing encryption key", secret_dir=str(secret_dir))
+    initialize_encryption_key()
+    print("[provisioning] ✅ Encryption key (K1) ready")
+
     # Get configuration from environment
     port = int(os.environ.get("JARVIS_PROVISIONING_PORT", "8080"))
     simulate = os.environ.get("JARVIS_SIMULATE_PROVISIONING", "false").lower()
