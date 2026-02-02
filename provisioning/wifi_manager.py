@@ -223,9 +223,10 @@ class HostapdWiFiManager:
         self._ap_active = False
         self._nm_was_running = False
         self._wpa_was_running = False
+        self._dnsmasq_was_running = False
 
     def _stop_network_services(self) -> None:
-        """Stop NetworkManager and wpa_supplicant to release the interface."""
+        """Stop NetworkManager, wpa_supplicant, and dnsmasq to release the interface."""
         # Check if NetworkManager is running
         result = subprocess.run(
             ["systemctl", "is-active", "NetworkManager"],
@@ -242,11 +243,21 @@ class HostapdWiFiManager:
         )
         self._wpa_was_running = result.returncode == 0
 
+        # Check if system dnsmasq is running (conflicts with our DHCP server)
+        result = subprocess.run(
+            ["systemctl", "is-active", "dnsmasq"],
+            capture_output=True,
+            text=True
+        )
+        self._dnsmasq_was_running = result.returncode == 0
+
         # Stop services
         if self._nm_was_running:
             subprocess.run(["systemctl", "stop", "NetworkManager"], capture_output=True)
         if self._wpa_was_running:
             subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True)
+        if self._dnsmasq_was_running:
+            subprocess.run(["systemctl", "stop", "dnsmasq"], capture_output=True)
 
         # Also kill any running wpa_supplicant processes
         subprocess.run(["pkill", "-9", "wpa_supplicant"], capture_output=True)
@@ -256,11 +267,13 @@ class HostapdWiFiManager:
         time.sleep(1)
 
     def _restore_network_services(self) -> None:
-        """Restore NetworkManager and wpa_supplicant after AP mode."""
+        """Restore NetworkManager, wpa_supplicant, and dnsmasq after AP mode."""
         if self._wpa_was_running:
             subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
         if self._nm_was_running:
             subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+        if self._dnsmasq_was_running:
+            subprocess.run(["systemctl", "start", "dnsmasq"], capture_output=True)
 
     def _generate_hostapd_config(self, ssid: str, interface: str, channel: int) -> str:
         """Generate hostapd configuration file content."""
