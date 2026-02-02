@@ -96,11 +96,23 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
         print(f"[provisioning] Using {backend_name} for WiFi operations")
         logger.info(f"Using {backend_name} for WiFi operations")
 
-    # On real Pi, start AP mode
+    # On real Pi, scan networks BEFORE entering AP mode, then start AP
     if not is_simulated:
         from provisioning.api import _get_node_id
         node_id = _get_node_id()
         ap_ssid = f"jarvis-{node_id[-8:]}"
+
+        # Scan and cache networks BEFORE entering AP mode
+        # (WiFi adapter can't scan while acting as an AP)
+        print("[provisioning] Scanning for available networks...")
+        logger.info("Scanning networks before AP mode")
+        networks = wifi_manager.scan_and_cache()
+        print(f"[provisioning] Found {len(networks)} networks")
+        logger.info("Network scan complete", count=len(networks))
+        for net in networks[:5]:  # Log first 5
+            print(f"  - {net.ssid} ({net.signal_strength} dBm)")
+
+        # Now start AP mode
         print(f"[provisioning] Starting AP mode with SSID: {ap_ssid}")
         logger.info("Starting AP mode", ssid=ap_ssid)
         if wifi_manager.start_ap_mode(ap_ssid):
