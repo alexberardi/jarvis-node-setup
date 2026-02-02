@@ -5,6 +5,11 @@ Provides a Protocol for WiFi operations with:
 - NetworkManagerWiFi: Real implementation using nmcli (Linux/Pi)
 - HostapdWiFiManager: Direct hostapd/dnsmasq control for Pi Zero AP mode
 - SimulatedWiFi: Simulated implementation for testing
+
+Network Caching:
+When in AP mode, the WiFi adapter cannot scan for networks. To support this,
+managers should scan networks BEFORE entering AP mode and cache the results.
+Use scan_and_cache() before start_ap_mode(), then scan_networks() returns cached data.
 """
 
 import os
@@ -15,11 +20,56 @@ from typing import Optional, Protocol
 from provisioning.models import NetworkInfo
 
 
+# Global network cache for sharing between manager instances
+_cached_networks: list[NetworkInfo] = []
+_cache_populated: bool = False
+
+
+def get_cached_networks() -> list[NetworkInfo]:
+    """Get cached networks (may be empty if not populated)."""
+    return _cached_networks.copy()
+
+
+def set_cached_networks(networks: list[NetworkInfo]) -> None:
+    """Set the network cache."""
+    global _cached_networks, _cache_populated
+    _cached_networks = networks.copy()
+    _cache_populated = True
+
+
+def is_cache_populated() -> bool:
+    """Check if network cache has been populated."""
+    return _cache_populated
+
+
+def clear_network_cache() -> None:
+    """Clear the network cache."""
+    global _cached_networks, _cache_populated
+    _cached_networks = []
+    _cache_populated = False
+
+
 class WiFiManager(Protocol):
     """Protocol for WiFi management operations."""
 
     def scan_networks(self) -> list[NetworkInfo]:
-        """Scan for available WiFi networks."""
+        """
+        Scan for available WiFi networks.
+
+        When in AP mode, returns cached networks if available.
+        """
+        ...
+
+    def scan_and_cache(self) -> list[NetworkInfo]:
+        """
+        Scan for networks and cache the results.
+
+        Call this BEFORE entering AP mode to ensure networks are available
+        when the mobile app requests them.
+
+        Returns:
+            List of discovered networks (also cached for later retrieval)
+        """
         ...
 
     def connect(self, ssid: str, password: str) -> bool:
@@ -64,8 +114,8 @@ class WiFiManager(Protocol):
 class NetworkManagerWiFi:
     """Real WiFi implementation using NetworkManager (nmcli)."""
 
-    def scan_networks(self) -> list[NetworkInfo]:
-        """Scan for available WiFi networks using nmcli."""
+    def _do_scan(self) -> list[NetworkInfo]:
+        """Perform actual WiFi scan using nmcli."""
         try:
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
@@ -112,6 +162,28 @@ class NetworkManagerWiFi:
 
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return []
+
+    def scan_networks(self) -> list[NetworkInfo]:
+        """
+        Scan for available WiFi networks.
+
+        Returns cached networks if available (e.g., when in AP mode),
+        otherwise performs a live scan.
+        """
+        # If cache is populated (we're likely in AP mode), return cached
+        if is_cache_populated():
+            return get_cached_networks()
+        return self._do_scan()
+
+    def scan_and_cache(self) -> list[NetworkInfo]:
+        """
+        Scan for networks and cache the results.
+
+        Call this BEFORE entering AP mode.
+        """
+        networks = self._do_scan()
+        set_cached_networks(networks)
+        return networks
 
     def connect(self, ssid: str, password: str) -> bool:
         """Connect to a WiFi network using nmcli."""
@@ -309,8 +381,8 @@ log-queries
 log-dhcp
 """
 
-    def scan_networks(self) -> list[NetworkInfo]:
-        """Scan for available WiFi networks using nmcli."""
+    def _do_scan(self) -> list[NetworkInfo]:
+        """Perform actual WiFi scan using nmcli."""
         try:
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list"],
@@ -354,6 +426,26 @@ log-dhcp
 
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return []
+
+    def scan_networks(self) -> list[NetworkInfo]:
+        """
+        Scan for available WiFi networks.
+
+        Returns cached networks if in AP mode, otherwise performs live scan.
+        """
+        if is_cache_populated():
+            return get_cached_networks()
+        return self._do_scan()
+
+    def scan_and_cache(self) -> list[NetworkInfo]:
+        """
+        Scan for networks and cache the results.
+
+        Call this BEFORE entering AP mode.
+        """
+        networks = self._do_scan()
+        set_cached_networks(networks)
+        return networks
 
     def connect(self, ssid: str, password: str) -> bool:
         """Connect to a WiFi network using nmcli."""
@@ -569,6 +661,11 @@ class SimulatedWiFi:
 
     def scan_networks(self) -> list[NetworkInfo]:
         """Return simulated network list."""
+        return self._simulated_networks
+
+    def scan_and_cache(self) -> list[NetworkInfo]:
+        """Scan and cache networks (simulation just returns the list)."""
+        set_cached_networks(self._simulated_networks)
         return self._simulated_networks
 
     def connect(self, ssid: str, password: str) -> bool:
