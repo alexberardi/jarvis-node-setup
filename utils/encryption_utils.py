@@ -78,9 +78,12 @@ def save_k2(k2_base64url: str, kid: str, created_at: datetime) -> None:
         ValueError: If K2 is not exactly 32 bytes after decoding
         FileNotFoundError: If K1 (encryption key) doesn't exist
     """
-    # Decode from base64url
+    # Decode from base64url (add padding if needed - mobile sends unpadded)
     try:
-        k2_raw = base64.urlsafe_b64decode(k2_base64url)
+        # Add padding if missing
+        padding_needed = (4 - len(k2_base64url) % 4) % 4
+        padded = k2_base64url + '=' * padding_needed
+        k2_raw = base64.urlsafe_b64decode(padded)
     except Exception as e:
         raise ValueError(f"Invalid base64url encoding: {e}") from e
 
