@@ -7,14 +7,17 @@ Provides endpoints for the mobile app to provision headless Pi Zero nodes.
 import json
 import os
 import platform
+import signal
 import threading
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import FastAPI, BackgroundTasks
 
 from provisioning.models import (
+    K2ProvisionRequest,
+    K2ProvisionResponse,
     NetworkInfo,
     NodeInfo,
     ProvisioningState,
@@ -24,7 +27,8 @@ from provisioning.models import (
     ScanNetworksResponse,
 )
 from provisioning.registration import register_with_command_center
-from provisioning.startup import mark_provisioned
+from provisioning.startup import is_provisioned, mark_provisioned
+from utils.encryption_utils import save_k2
 from provisioning.state_machine import ProvisioningStateMachine
 from provisioning.wifi_credentials import save_wifi_credentials
 from provisioning.wifi_manager import WiFiManager
@@ -137,12 +141,17 @@ def _update_config(room: str, command_center_url: str) -> bool:
         return False
 
 
-def create_provisioning_app(wifi_manager: WiFiManager) -> FastAPI:
+def create_provisioning_app(
+    wifi_manager: WiFiManager,
+    on_provisioned: Optional[Callable[[], None]] = None
+) -> FastAPI:
     """
     Create the FastAPI provisioning application.
 
     Args:
         wifi_manager: WiFi manager implementation (real or simulated)
+        on_provisioned: Optional callback when provisioning completes successfully.
+                       Used for auto-shutdown when running from main.py.
 
     Returns:
         FastAPI application instance
@@ -155,6 +164,7 @@ def create_provisioning_app(wifi_manager: WiFiManager) -> FastAPI:
 
     state_machine = ProvisioningStateMachine()
     _provisioning_lock = threading.Lock()
+    _on_provisioned = on_provisioned
 
     @app.get("/api/v1/info", response_model=NodeInfo)
     async def get_info() -> NodeInfo:
@@ -201,7 +211,8 @@ def create_provisioning_app(wifi_manager: WiFiManager) -> FastAPI:
                     ssid=request.wifi_ssid,
                     password=request.wifi_password,
                     room=request.room,
-                    command_center_url=request.command_center_url
+                    command_center_url=request.command_center_url,
+                    on_provisioned=_on_provisioned
                 )
             finally:
                 _provisioning_lock.release()
@@ -219,6 +230,53 @@ def create_provisioning_app(wifi_manager: WiFiManager) -> FastAPI:
         status = state_machine.get_status()
         return ProvisionStatus(**status)
 
+    @app.post("/api/v1/provision/k2", response_model=K2ProvisionResponse)
+    async def provision_k2(request: K2ProvisionRequest) -> K2ProvisionResponse:
+        """
+        Accept K2 encryption key from mobile app during provisioning.
+
+        K2 is used for end-to-end encryption of node settings during backup/sync.
+        This endpoint is only available during pairing mode (AP_MODE).
+        """
+        # Check if in pairing mode (AP_MODE)
+        if state_machine.state != ProvisioningState.AP_MODE:
+            # Also reject if already provisioned
+            if is_provisioned():
+                return K2ProvisionResponse(
+                    success=False,
+                    error="Node is already provisioned. Re-enter pairing mode to update K2."
+                )
+            # If in CONNECTING/REGISTERING/ERROR state, still allow K2
+            # as these are intermediate states during provisioning
+
+        # Validate node_id matches this node
+        actual_node_id = _get_node_id()
+        if request.node_id != actual_node_id:
+            return K2ProvisionResponse(
+                success=False,
+                error=f"Node ID mismatch: expected {actual_node_id}, got {request.node_id}"
+            )
+
+        # Save K2 encrypted with K1
+        try:
+            save_k2(request.k2, request.kid, request.created_at)
+        except ValueError as e:
+            return K2ProvisionResponse(
+                success=False,
+                error=str(e)
+            )
+        except FileNotFoundError as e:
+            return K2ProvisionResponse(
+                success=False,
+                error=f"Encryption key (K1) not found: {e}"
+            )
+
+        return K2ProvisionResponse(
+            success=True,
+            node_id=request.node_id,
+            kid=request.kid
+        )
+
     return app
 
 
@@ -228,12 +286,22 @@ def _run_provisioning(
     ssid: str,
     password: str,
     room: str,
-    command_center_url: str
+    command_center_url: str,
+    on_provisioned: Optional[Callable[[], None]] = None
 ) -> None:
     """
     Run the full provisioning flow.
 
     This runs in a background thread.
+
+    Args:
+        wifi_manager: WiFi manager for network operations
+        state_machine: State machine for tracking progress
+        ssid: WiFi network SSID
+        password: WiFi network password
+        room: Room name for this node
+        command_center_url: URL of the command center
+        on_provisioned: Optional callback when provisioning completes successfully
     """
     try:
         # Step 1: Save credentials
@@ -320,6 +388,13 @@ def _run_provisioning(
             "Provisioning complete! You can now start the main Jarvis service.",
             progress=100
         )
+
+        # Call the completion callback (e.g., to trigger server shutdown)
+        if on_provisioned:
+            # Small delay to allow status response to be returned
+            import time
+            time.sleep(1)
+            on_provisioned()
 
     except Exception as e:
         state_machine.set_error(str(e))

@@ -195,72 +195,41 @@ EOF
     fi
 fi
 
-# Step 6: Create systemd services
-log_step "Creating systemd services"
+# Step 6: Create systemd service
+log_step "Creating systemd service"
 
-if [ "$PROVISIONING_ONLY" = "1" ]; then
-    # Only create provisioning service for provisioning-only setup
-    # Note: Runs as root because hostapd/dnsmasq require root privileges
-    cat <<EOF | sudo tee /etc/systemd/system/jarvis-provisioning.service
-[Unit]
-Description=Jarvis Node Provisioning Service
-After=network.target
+# Clean up old provisioning service if it exists (from previous setup versions)
+if [ -f /etc/systemd/system/jarvis-provisioning.service ]; then
+    log_info "Removing old jarvis-provisioning.service (no longer needed)"
+    sudo systemctl stop jarvis-provisioning.service 2>/dev/null || true
+    sudo systemctl disable jarvis-provisioning.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/jarvis-provisioning.service
+fi
 
-[Service]
-ExecStart=$PI_PROJECT_DIR/.venv/bin/python $PI_PROJECT_DIR/scripts/run_provisioning.py
-Restart=on-failure
-Environment=PYTHONUNBUFFERED=1
-WorkingDirectory=$PI_PROJECT_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable jarvis-provisioning.service
-    log_success "Provisioning service created and enabled (runs as root for AP mode)"
-else
-    # Main jarvis-node service (runs after provisioning)
-    cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
+# Single jarvis-node service that handles both provisioning and normal operation
+# Runs as root for:
+# - AP mode during provisioning (hostapd/dnsmasq)
+# - Future system-level commands (volume, shutdown, etc.)
+cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
 [Unit]
 Description=Jarvis Node Service
 After=network.target
 
 [Service]
-ExecStart=$PI_PROJECT_DIR/.venv/bin/python $PI_PROJECT_DIR/scripts/main.py
+ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
 Restart=always
-User=$PI_USER
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=$PI_PROJECT_DIR
 WorkingDirectory=$PI_PROJECT_DIR
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Provisioning service (runs on first boot / when not provisioned)
-    # Note: Runs as root because hostapd/dnsmasq require root privileges
-    cat <<EOF | sudo tee /etc/systemd/system/jarvis-provisioning.service
-[Unit]
-Description=Jarvis Node Provisioning Service
-After=network.target
+sudo systemctl daemon-reload
+sudo systemctl enable jarvis-node.service
 
-[Service]
-ExecStart=$PI_PROJECT_DIR/.venv/bin/python $PI_PROJECT_DIR/scripts/run_provisioning.py
-Restart=on-failure
-Environment=PYTHONUNBUFFERED=1
-WorkingDirectory=$PI_PROJECT_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable jarvis-node.service
-    # Note: jarvis-provisioning.service is NOT enabled by default
-    # Enable it manually for first-time setup: sudo systemctl enable --now jarvis-provisioning.service
-
-    log_success "Systemd services created (jarvis-node enabled, jarvis-provisioning available)"
-fi
+log_success "Systemd service created and enabled (jarvis-node.service)"
 
 # Step 7: Verify
 verify_installation "$PI_PROJECT_DIR/.venv"
@@ -271,15 +240,16 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
 
     echo "📡 Local IP address: $(hostname -I | cut -d' ' -f1)"
     echo ""
-    echo "The provisioning service is enabled and will start on boot."
+    echo "The jarvis-node service is enabled and will start on boot."
+    echo "On first boot, it will automatically enter provisioning mode."
     echo ""
     echo "To start now:"
-    echo "  sudo systemctl start jarvis-provisioning.service"
+    echo "  sudo systemctl start jarvis-node.service"
     echo ""
     echo "To view logs:"
-    echo "  sudo journalctl -u jarvis-provisioning.service -f"
+    echo "  sudo journalctl -u jarvis-node.service -f"
     echo ""
-    echo "After provisioning completes, run full setup:"
+    echo "After provisioning completes via mobile app, run full setup:"
     echo "  ./setup/pi.sh"
     echo ""
 else
@@ -287,17 +257,18 @@ else
 
     echo "📡 Local IP address: $(hostname -I | cut -d' ' -f1)"
     echo ""
-    echo "For first-time setup (provisioning via mobile app):"
-    echo "  sudo systemctl start jarvis-provisioning.service"
-    echo "  # Connect to jarvis-XXXX AP from mobile app"
+    echo "The jarvis-node service is enabled and will start on boot."
     echo ""
-    echo "After provisioning, start the main service:"
-    echo "  sudo systemctl stop jarvis-provisioning.service"
+    echo "On first boot (not provisioned):"
+    echo "  - Node automatically enters AP mode (jarvis-XXXX)"
+    echo "  - Connect with mobile app to provision"
+    echo "  - After provisioning, service auto-restarts in normal mode"
+    echo ""
+    echo "To start now:"
     echo "  sudo systemctl start jarvis-node.service"
     echo ""
     echo "To view logs:"
     echo "  sudo journalctl -u jarvis-node.service -f"
-    echo "  sudo journalctl -u jarvis-provisioning.service -f"
     echo ""
     log_warn "Please reboot to activate the I2S DAC: sudo reboot"
 fi
