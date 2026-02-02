@@ -15,4 +15,4 @@ python-dotenv
 cryptography>=3.4,<4.0
 
 # Local jarvis packages (relative to /home/pi/projects/)
-jarvis-log-client @ file:///home/pi/projects/jarvis-log-client
+jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git

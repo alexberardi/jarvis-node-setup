@@ -13,7 +13,9 @@ Environment variables:
 """
 
 import os
+import signal
 import sys
+import threading
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +29,9 @@ from jarvis_log_client import init as init_logging, JarvisLogger
 
 from provisioning.api import create_provisioning_app
 from provisioning.wifi_manager import get_wifi_manager
+
+# Global flag for shutdown
+_shutdown_event = threading.Event()
 
 # Initialize logging
 init_logging(
@@ -45,8 +50,25 @@ def _is_raspberry_pi() -> bool:
         return False
 
 
-def main() -> None:
-    """Start the provisioning server."""
+def _trigger_shutdown() -> None:
+    """Trigger graceful shutdown of the provisioning server."""
+    logger.info("Provisioning complete, triggering server shutdown...")
+    _shutdown_event.set()
+    # Send SIGTERM to self to stop uvicorn gracefully
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def run_provisioning_server(auto_shutdown: bool = False) -> bool:
+    """
+    Start the provisioning server.
+
+    Args:
+        auto_shutdown: If True, server will automatically shutdown after
+                      successful provisioning. Used when called from main.py.
+
+    Returns:
+        True if provisioning completed successfully, False otherwise.
+    """
     # Get configuration from environment
     port = int(os.environ.get("JARVIS_PROVISIONING_PORT", "8080"))
     simulate = os.environ.get("JARVIS_SIMULATE_PROVISIONING", "false").lower()
@@ -88,13 +110,28 @@ def main() -> None:
             print(f"[provisioning] ⚠️ Could not start AP mode")
             logger.warning("Could not start AP mode, connect to node IP directly")
 
+    # Set up shutdown callback if auto_shutdown is enabled
+    on_provisioned = _trigger_shutdown if auto_shutdown else None
+
     # Create and run the app
-    app = create_provisioning_app(wifi_manager)
+    app = create_provisioning_app(wifi_manager, on_provisioned=on_provisioned)
 
     logger.info("API available", url=f"http://0.0.0.0:{port}/api/v1/")
     logger.info("Waiting for mobile app connection...")
 
+    if auto_shutdown:
+        print("[provisioning] Auto-shutdown enabled: server will stop after provisioning")
+        logger.info("Auto-shutdown enabled")
+
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+    # Return True if shutdown was triggered by successful provisioning
+    return _shutdown_event.is_set()
+
+
+def main() -> None:
+    """Start the provisioning server (standalone mode)."""
+    run_provisioning_server(auto_shutdown=False)
 
 
 if __name__ == "__main__":

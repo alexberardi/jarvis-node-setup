@@ -2,6 +2,7 @@
 Pydantic models for the provisioning API.
 """
 
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -59,3 +60,19 @@ class ProvisionStatus(BaseModel):
     message: str = Field(..., description="Human-readable status message")
     progress_percent: int = Field(default=0, ge=0, le=100, description="Progress percentage")
     error: Optional[str] = Field(default=None, description="Error message if state is ERROR")
+
+
+class K2ProvisionRequest(BaseModel):
+    """Request for POST /api/v1/provision/k2 - mobile provides K2 encryption key."""
+    node_id: str = Field(..., description="Node ID to provision K2 for")
+    kid: str = Field(..., description="Key identifier (e.g., k2-2026-01)")
+    k2: str = Field(..., description="Base64url-encoded 32-byte K2 key")
+    created_at: datetime = Field(..., description="When the key was created")
+
+
+class K2ProvisionResponse(BaseModel):
+    """Response for POST /api/v1/provision/k2."""
+    success: bool = Field(..., description="Whether K2 was accepted and stored")
+    node_id: Optional[str] = Field(default=None, description="Node ID if successful")
+    kid: Optional[str] = Field(default=None, description="Key ID if successful")
+    error: Optional[str] = Field(default=None, description="Error message if unsuccessful")
