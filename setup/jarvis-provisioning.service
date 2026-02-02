@@ -1,0 +1,16 @@
+[Unit]
+Description=Jarvis Node Provisioning Server
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jarvis/jarvis-node-setup
+Environment=CONFIG_PATH=/home/pi/jarvis/jarvis-node-setup/config.json
+Environment=JARVIS_SECRET_DIRECTORY=/home/pi/.jarvis
+ExecStart=/usr/bin/python3 scripts/run_provisioning.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
