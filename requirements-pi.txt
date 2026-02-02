@@ -27,5 +27,5 @@ fastapi>=0.100.0
 uvicorn>=0.22.0
 
 # Local jarvis packages (relative to /home/pi/projects/)
-jarvis-log-client @ file:///home/pi/projects/jarvis-log-client
-jarvis-config-client @ file:///home/pi/projects/jarvis-config-client
+jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git
+jarvis-config-client @ git+https://github.com/alexberardi/jarvis-config-client.git

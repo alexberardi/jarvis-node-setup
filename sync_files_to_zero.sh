@@ -19,6 +19,7 @@ ssh ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}"
 # Sync files using rsync (exclude common files that don't need syncing)
 rsync -avz --delete \
     --exclude='venv/' \
+    --exclude='.venv/' \
     --exclude='__pycache__/' \
     --exclude='*.pyc' \
     --exclude='.git/' \
