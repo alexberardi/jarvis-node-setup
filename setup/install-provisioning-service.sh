@@ -1,16 +1,27 @@
 #!/bin/bash
 # Install jarvis-provisioning systemd service
-# Run with: sudo bash setup/install-provisioning-service.sh
+# Run with: bash setup/install-provisioning-service.sh
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SERVICE_FILE="$SCRIPT_DIR/jarvis-provisioning.service"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SERVICE_TEMPLATE="$SCRIPT_DIR/jarvis-provisioning.service"
+
+# Detect current user (don't use root even if run with sudo)
+CURRENT_USER="${SUDO_USER:-$USER}"
+SECRET_DIR="/home/$CURRENT_USER/.jarvis"
 
 echo "Installing jarvis-provisioning service..."
+echo "  Project directory: $PROJECT_DIR"
+echo "  User: $CURRENT_USER"
+echo "  Secret directory: $SECRET_DIR"
 
-# Copy service file
-sudo cp "$SERVICE_FILE" /etc/systemd/system/
+# Generate service file with correct paths
+sed -e "s|__WORKING_DIR__|$PROJECT_DIR|g" \
+    -e "s|__USER__|$CURRENT_USER|g" \
+    -e "s|__SECRET_DIR__|$SECRET_DIR|g" \
+    "$SERVICE_TEMPLATE" | sudo tee /etc/systemd/system/jarvis-provisioning.service > /dev/null
 
 # Reload systemd
 sudo systemctl daemon-reload

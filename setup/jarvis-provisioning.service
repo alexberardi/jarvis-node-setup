@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/jarvis/jarvis-node-setup
-Environment=CONFIG_PATH=/home/pi/jarvis/jarvis-node-setup/config.json
-Environment=JARVIS_SECRET_DIRECTORY=/home/pi/.jarvis
+User=__USER__
+WorkingDirectory=__WORKING_DIR__
+Environment=CONFIG_PATH=__WORKING_DIR__/config.json
+Environment=JARVIS_SECRET_DIRECTORY=__SECRET_DIR__
 ExecStart=/usr/bin/python3 scripts/run_provisioning.py
 Restart=on-failure
 RestartSec=5
