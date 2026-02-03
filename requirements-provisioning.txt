@@ -12,7 +12,7 @@ pydantic
 python-dotenv
 
 # Encrypted credential storage
-cryptography>=3.4,<4.0
+cryptography>=41.0
 
 # Local jarvis packages (relative to /home/pi/projects/)
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git
