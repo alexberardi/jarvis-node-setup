@@ -12,7 +12,9 @@ class Config:
 
     @staticmethod
     def _load_config() -> None:
-        config_path: str = os.environ.get('CONFIG_PATH')
+        raw_path: str = os.environ.get('CONFIG_PATH', '')
+        # Expand shell variables ($HOME) and user paths (~)
+        config_path = os.path.expandvars(os.path.expanduser(raw_path))
         try:
             with open(config_path) as f:
                 Config._config_json = json.load(f)
