@@ -16,7 +16,7 @@ aiohttp
 tqdm
 zeroconf
 manuf
-cryptography>=3.4,<4.0
+cryptography>=41.0
 pysqlcipher3
 sqlalchemy
 alembic
