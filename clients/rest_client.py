@@ -59,3 +59,30 @@ class RestClient:
         except requests.RequestException as e:
             logger.error("REST GET request failed", url=url, error=str(e))
             return None
+
+    @staticmethod
+    def post_binary(
+        url: str,
+        data: Optional[Dict[str, Any]] = None,
+        timeout: int = 30
+    ) -> Optional[bytes]:
+        """POST request that returns binary content (e.g., audio/wav).
+
+        Args:
+            url: The URL to POST to
+            data: JSON body to send
+            timeout: Request timeout in seconds
+
+        Returns:
+            Response content as bytes, or None on error
+        """
+        headers: Dict[str, str] = RestClient._build_auth_header()
+        headers["Content-Type"] = "application/json"
+
+        try:
+            response = requests.post(url, json=data, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            return response.content
+        except requests.RequestException as e:
+            logger.error("REST POST binary request failed", url=url, error=str(e))
+            return None
