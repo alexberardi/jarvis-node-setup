@@ -30,12 +30,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pytest pytest-asyncio
-        pip install httpx pydantic sqlalchemy fastapi uvicorn aiohttp websockets cryptography pytz python-dotenv alembic
-        pip install git+https://github.com/alexberardi/jarvis-log-client.git
+        pip install httpx pydantic fastapi uvicorn cryptography
 
     - name: Run tests
+      # Run provisioning tests only - other tests require pysqlcipher3 (encrypted SQLite)
+      # which needs native compilation and is Pi-specific
       run: |
-        pytest tests/ -v --tb=short \
-          --ignore=tests/integration \
+        pytest tests/test_provisioning/ -v --tb=short \
           --ignore=tests/test_provisioning/test_hostapd_wifi_manager.py \
           --ignore=tests/test_provisioning/test_wifi_manager.py
