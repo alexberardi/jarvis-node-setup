@@ -30,11 +30,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pytest pytest-asyncio
-        pip install httpx pydantic sqlalchemy fastapi uvicorn aiohttp websockets cryptography pytz
+        pip install httpx pydantic sqlalchemy fastapi uvicorn aiohttp websockets cryptography pytz python-dotenv alembic
+        pip install git+https://github.com/alexberardi/jarvis-log-client.git
 
     - name: Run tests
       run: |
-        pytest -v --tb=short \
+        pytest tests/ -v --tb=short \
           --ignore=tests/integration \
           --ignore=tests/test_provisioning/test_hostapd_wifi_manager.py \
           --ignore=tests/test_provisioning/test_wifi_manager.py
