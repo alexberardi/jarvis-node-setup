@@ -77,13 +77,13 @@ def _get_from_json_config(config_key: str) -> Optional[str]:
         from utils.config_service import Config
         return Config.get_str(config_key)
     except Exception:
-        pass
+        pass  # Config service not available, try next
 
     try:
         from utils.config_loader import Config
         return Config.get(config_key)
     except Exception:
-        pass
+        pass  # Config loader not available
 
     return None
 
@@ -98,7 +98,7 @@ def _get_url(service_name: str) -> str:
             if url:
                 return url
         except Exception:
-            pass
+            pass  # Config client failed, fall back to JSON config
 
     # Fall back to JSON config
     config_key = _SERVICE_TO_CONFIG_KEY.get(service_name)
