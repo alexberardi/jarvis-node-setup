@@ -264,8 +264,8 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                             ip = parts[0]
                             if ipaddress.IPv4Address(ip) in subnet:
                                 active_hosts.append(ip)
-                        except:
-                            pass
+                        except ValueError:
+                            pass  # Invalid IP address format, skip
                             
                 return active_hosts
             else:
@@ -351,8 +351,8 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     writer.close()
                     await writer.wait_closed()
                     return port
-                except:
-                    return None
+                except (OSError, asyncio.TimeoutError):
+                    return None  # Port closed or connection failed
         
         tasks = [check_port(port) for port in ports]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -651,8 +651,8 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     writer.close()
                     await writer.wait_closed()
                     return port
-                except:
-                    return None
+                except (OSError, asyncio.TimeoutError):
+                    return None  # Port closed or connection failed
         
         tasks = [check_port(port) for port in ports]
         results = await asyncio.gather(*tasks, return_exceptions=True)
