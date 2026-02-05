@@ -50,7 +50,7 @@ def get_secret_value_int(key: str, scope: str):
     secret = get_secret(key, scope)
     try:
         return int(secret.value)
-    except:
+    except (TypeError, ValueError, AttributeError):
         raise ValueError(f"The stored {key} is not a number")
 
 def delete_secret(key: str, scope: str):
