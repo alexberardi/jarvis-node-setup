@@ -18,8 +18,8 @@ def set_secret(key: str, value: str, scope: str, value_type: str = "string"):
     if value_type == "int":
         try:
             store_value = str(int(value))
-        except Exception:
-            raise ValueError(f"Value '{value}' could not be converted to int.")
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Value '{value}' could not be converted to int: {e}")
     elif value_type == "bool":
         if isinstance(value, bool):
             store_value = "true" if value else "false"
@@ -50,7 +50,7 @@ def get_secret_value_int(key: str, scope: str):
     secret = get_secret(key, scope)
     try:
         return int(secret.value)
-    except:
+    except (TypeError, ValueError, AttributeError):
         raise ValueError(f"The stored {key} is not a number")
 
 def delete_secret(key: str, scope: str):
