@@ -30,7 +30,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pytest pytest-asyncio
-        pip install httpx pydantic fastapi uvicorn cryptography
+        pip install httpx pydantic fastapi uvicorn cryptography python-dotenv
 
     - name: Run provisioning tests
       # Provisioning tests - other tests require pysqlcipher3 (encrypted SQLite)
