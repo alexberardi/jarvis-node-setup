@@ -316,7 +316,17 @@ class JarvisCommandCenterClient:
         node_context = {
             "timezone": get_user_timezone()
         }
-        
+
+        # Add agent context (Home Assistant, etc.)
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+            agent_context = get_agent_scheduler_service().get_aggregated_context()
+            if agent_context:
+                node_context["agents"] = agent_context
+                logger.debug("Injected agent context", agents=list(agent_context.keys()))
+        except Exception as e:
+            logger.warning("Failed to get agent context", error=str(e))
+
         # Build available commands metadata for server-side tools
         available_commands = []
         for cmd in commands.values():
