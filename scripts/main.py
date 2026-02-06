@@ -6,6 +6,7 @@ from jarvis_log_client import init as init_logging, JarvisLogger
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
+from services.agent_scheduler_service import initialize_agent_scheduler
 from services.timer_service import initialize_timer_service
 from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
@@ -62,6 +63,10 @@ def main():
     restored_count = timer_service.restore_timers()
     if restored_count > 0:
         logger.info("Restored timers from previous session", count=restored_count)
+
+    # Initialize agent scheduler (Home Assistant, etc.)
+    agent_scheduler = initialize_agent_scheduler()
+    logger.info("Agent scheduler initialized")
 
     if Config.get("music_assistant_enabled"):
         ma_service = MusicAssistantService()

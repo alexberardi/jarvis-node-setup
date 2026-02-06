@@ -198,9 +198,9 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         ),
         CommandTest(
             "Who won the Super Bowl this year?",
-            "search_web", 
-            {"query": "Who won the Super Bowl this year?"},
-            "Recent sports championship search (web search better for championship questions)"
+            "get_sports_scores",
+            {"team_name": "", "resolved_datetimes": ["this_year"]},
+            "Sports championship question (either sports_scores or search_web acceptable)"
         ),
         CommandTest(
             "What's the current weather in Miami?",
@@ -658,6 +658,123 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         )
     ]
     tests.extend(timer_tests)
+
+    # ===== HOME ASSISTANT CONTROL DEVICE TESTS =====
+    # Uses real entity IDs from user's HA setup
+    control_device_tests = [
+        # Light control - turn on/off
+        CommandTest(
+            "Turn on my office lights",
+            "control_device",
+            {"entity_id": "light.my_office", "action": "turn_on"},
+            "Light control: turn on office"
+        ),
+        CommandTest(
+            "Turn off the basement lights",
+            "control_device",
+            {"entity_id": "light.basement", "action": "turn_off"},
+            "Light control: turn off basement"
+        ),
+        CommandTest(
+            "Switch on the upstairs lights",
+            "control_device",
+            {"entity_id": "light.upstairs", "action": "turn_on"},
+            "Light control: switch on upstairs"
+        ),
+        CommandTest(
+            "Turn off the bathroom light",
+            "control_device",
+            {"entity_id": "light.middle_bathroom", "action": "turn_off"},
+            "Light control: turn off bathroom"
+        ),
+        CommandTest(
+            "Turn on my office desk light",
+            "control_device",
+            {"entity_id": "light.office_desk", "action": "turn_on"},
+            "Light control: specific desk light"
+        ),
+        # Switch control (HA devices, not Jarvis timers)
+        CommandTest(
+            "Turn on the baby timer switch",
+            "control_device",
+            {"entity_id": "switch.baby_berardi_timer", "action": "turn_on"},
+            "Switch control: baby timer on"
+        ),
+        CommandTest(
+            "Turn off the baby Berardi switch",
+            "control_device",
+            {"entity_id": "switch.baby_berardi_timer", "action": "turn_off"},
+            "Switch control: baby timer off (alternate name)"
+        ),
+        # Scene activation
+        CommandTest(
+            "Activate the office desk read scene",
+            "control_device",
+            {"entity_id": "scene.office_desk_read", "action": "turn_on"},
+            "Scene: activate reading scene"
+        ),
+        CommandTest(
+            "Activate the basement bright scene",
+            "control_device",
+            {"entity_id": "scene.basement_bright", "action": "turn_on"},
+            "Scene: activate brightness scene"
+        ),
+        # Casual phrasing
+        CommandTest(
+            "Lights off in my office",
+            "control_device",
+            {"entity_id": "light.my_office", "action": "turn_off"},
+            "Casual: lights off phrasing"
+        ),
+        CommandTest(
+            "Kill the basement lights",
+            "control_device",
+            {"entity_id": "light.basement", "action": "turn_off"},
+            "Casual: kill the lights phrasing"
+        ),
+    ]
+    tests.extend(control_device_tests)
+
+    # ===== HOME ASSISTANT GET DEVICE STATUS TESTS =====
+    get_device_status_tests = [
+        CommandTest(
+            "Is the office light on?",
+            "get_device_status",
+            {"entity_id": "light.my_office"},
+            "Status: office light on/off check"
+        ),
+        CommandTest(
+            "Are the basement lights on?",
+            "get_device_status",
+            {"entity_id": "light.basement"},
+            "Status: basement lights check"
+        ),
+        CommandTest(
+            "What's the status of the upstairs lights?",
+            "get_device_status",
+            {"entity_id": "light.upstairs"},
+            "Status: explicit status query"
+        ),
+        CommandTest(
+            "Is the baby switch on?",
+            "get_device_status",
+            {"entity_id": "switch.baby_berardi_timer"},
+            "Status: switch/timer check"
+        ),
+        CommandTest(
+            "Check if the bathroom light is on",
+            "get_device_status",
+            {"entity_id": "light.middle_bathroom"},
+            "Status: check if phrasing"
+        ),
+        CommandTest(
+            "Is the rest light on?",
+            "get_device_status",
+            {"entity_id": "light.my_rest_light"},
+            "Status: rest light check"
+        ),
+    ]
+    tests.extend(get_device_status_tests)
 
     return tests
 
@@ -1382,7 +1499,19 @@ def main():
     # Get command discovery service and refresh commands
     command_service = get_command_discovery_service()
     command_service.refresh_now()
-    
+
+    # Start agent scheduler for HA device context
+    try:
+        from services.agent_scheduler_service import initialize_agent_scheduler
+        agent_scheduler = initialize_agent_scheduler()
+        # Wait briefly for first agent run to complete
+        print("⏳ Waiting for agent scheduler to fetch device context...")
+        import time as time_mod
+        time_mod.sleep(3)
+        print("✅ Agent scheduler started")
+    except Exception as e:
+        print(f"⚠️  Failed to start agent scheduler: {e} (HA device tests may fail)")
+
     # Get available commands
     available_commands = command_service.get_all_commands()
     
