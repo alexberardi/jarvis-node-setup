@@ -8,16 +8,38 @@ integration tests, ensuring consistency and reducing duplication.
 import sys
 from unittest.mock import MagicMock
 
-# Mock the db module BEFORE any imports that depend on it
-# This avoids the pysqlcipher3 dependency which requires native compilation
-mock_db = MagicMock()
-mock_db.SessionLocal = MagicMock()
-sys.modules['db'] = mock_db
 
-# Also mock secret_service to avoid db dependency chain
-mock_secret_service = MagicMock()
-mock_secret_service.get_secret_value = MagicMock(return_value=None)
-sys.modules['services.secret_service'] = mock_secret_service
+def pytest_configure(config):
+    """
+    Pytest hook that runs BEFORE test collection.
+
+    We use this to mock modules that have native/external dependencies
+    before pytest tries to import test files.
+    """
+    # Mock db module (requires pysqlcipher3 native compilation)
+    if 'db' not in sys.modules:
+        mock_db = MagicMock()
+        mock_db.SessionLocal = MagicMock()
+        sys.modules['db'] = mock_db
+
+    # Mock secret_service (imports db)
+    if 'services.secret_service' not in sys.modules:
+        mock_secret_service = MagicMock()
+        mock_secret_service.get_secret_value = MagicMock(return_value=None)
+        sys.modules['services.secret_service'] = mock_secret_service
+
+    # Mock jarvis_log_client (external package)
+    if 'jarvis_log_client' not in sys.modules:
+        mock_logger = MagicMock()
+        mock_logger.JarvisLogger = MagicMock(return_value=MagicMock())
+        sys.modules['jarvis_log_client'] = mock_logger
+
+    # Mock repositories (imports sqlalchemy for db operations)
+    if 'repositories' not in sys.modules:
+        mock_repo = MagicMock()
+        sys.modules['repositories'] = mock_repo
+        sys.modules['repositories.command_data_repository'] = mock_repo
+
 
 import pytest
 
