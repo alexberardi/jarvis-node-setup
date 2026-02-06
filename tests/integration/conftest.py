@@ -5,8 +5,21 @@ These fixtures provide common test infrastructure for all command
 integration tests, ensuring consistency and reducing duplication.
 """
 
-import pytest
+import sys
 from unittest.mock import MagicMock
+
+# Mock the db module BEFORE any imports that depend on it
+# This avoids the pysqlcipher3 dependency which requires native compilation
+mock_db = MagicMock()
+mock_db.SessionLocal = MagicMock()
+sys.modules['db'] = mock_db
+
+# Also mock secret_service to avoid db dependency chain
+mock_secret_service = MagicMock()
+mock_secret_service.get_secret_value = MagicMock(return_value=None)
+sys.modules['services.secret_service'] = mock_secret_service
+
+import pytest
 
 from core.request_information import RequestInformation
 
