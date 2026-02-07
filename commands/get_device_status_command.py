@@ -17,6 +17,7 @@ from services.home_assistant_service import (
     HomeAssistantService,
     get_domain_from_entity_id,
 )
+from utils.entity_resolver import resolve_entity_id
 
 
 class GetDeviceStatusCommand(IJarvisCommand):
@@ -106,51 +107,90 @@ class GetDeviceStatusCommand(IJarvisCommand):
         """Generate concise examples for prompt/tool registration."""
         return [
             CommandExample(
-                voice_command="Is the garage door open?",
-                expected_parameters={"entity_id": "cover.garage_door"},
+                voice_command="Is the office light on?",
+                expected_parameters={"entity_id": "light.my_office"},
                 is_primary=True,
-            ),
-            CommandExample(
-                voice_command="What's the thermostat set to?",
-                expected_parameters={"entity_id": "climate.thermostat"},
-            ),
-            CommandExample(
-                voice_command="Is the front door locked?",
-                expected_parameters={"entity_id": "lock.front_door"},
             ),
             CommandExample(
                 voice_command="Are the basement lights on?",
                 expected_parameters={"entity_id": "light.basement"},
             ),
+            CommandExample(
+                voice_command="Is the garage door open?",
+                expected_parameters={"entity_id": "cover.garage_door"},
+            ),
+            CommandExample(
+                voice_command="What's the thermostat set to?",
+                expected_parameters={"entity_id": "climate.thermostat"},
+            ),
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training."""
+        """Generate varied examples for adapter training.
+
+        Dynamically generates examples from real HA entities when available,
+        falling back to hardcoded static examples if HA is unreachable.
+        """
+        from utils.ha_training_data import generate_status_examples, get_ha_training_data
+
+        ha_data = get_ha_training_data()
+        if ha_data:
+            dynamic = generate_status_examples(
+                ha_data.get("device_controls", {}),
+                ha_data.get("light_controls", {}),
+            )
+            if dynamic:
+                return dynamic
+
+        return self._static_adapter_examples()
+
+    def _static_adapter_examples(self) -> List[CommandExample]:
+        """Fallback static examples when HA is unreachable."""
         items = [
+            # Light queries - office
+            ("Is the office light on?", {"entity_id": "light.my_office"}),
+            ("Are the office lights on?", {"entity_id": "light.my_office"}),
+            ("Check if the office lights are on", {"entity_id": "light.my_office"}),
+            ("Is the office light off?", {"entity_id": "light.my_office"}),
+            # Light queries - office desk
+            ("Is the desk light on?", {"entity_id": "light.office_desk"}),
+            ("Check the office desk light", {"entity_id": "light.office_desk"}),
+            # Light queries - office fan
+            ("Is the office fan light on?", {"entity_id": "light.office_fan"}),
+            # Light queries - basement
+            ("Are the basement lights on?", {"entity_id": "light.basement"}),
+            ("Is the basement light on?", {"entity_id": "light.basement"}),
+            ("Check if the basement lights are on", {"entity_id": "light.basement"}),
+            # Light queries - upstairs
+            ("Are the upstairs lights on?", {"entity_id": "light.upstairs"}),
+            ("What's the status of the upstairs lights?", {"entity_id": "light.upstairs"}),
+            ("Is the upstairs light on?", {"entity_id": "light.upstairs"}),
+            # Light queries - bathroom
+            ("Is the bathroom light on?", {"entity_id": "light.middle_bathroom"}),
+            ("Check if the bathroom light is on", {"entity_id": "light.middle_bathroom"}),
+            ("Is the bathroom light off?", {"entity_id": "light.middle_bathroom"}),
+            # Light queries - rest light
+            ("Is the rest light on?", {"entity_id": "light.my_rest_light"}),
+            ("Check the rest light", {"entity_id": "light.my_rest_light"}),
+            # Switch queries - baby berardi timer
+            ("Is the baby switch on?", {"entity_id": "switch.baby_berardi_timer"}),
+            ("Is the baby timer on?", {"entity_id": "switch.baby_berardi_timer"}),
+            ("Check the baby Berardi switch", {"entity_id": "switch.baby_berardi_timer"}),
+            ("Is the baby Berardi timer on?", {"entity_id": "switch.baby_berardi_timer"}),
             # Cover/garage door queries
             ("Is the garage door open?", {"entity_id": "cover.garage_door"}),
             ("Is the garage open?", {"entity_id": "cover.garage_door"}),
             ("Check the garage door", {"entity_id": "cover.garage_door"}),
-            ("What's the status of the garage?", {"entity_id": "cover.garage_door"}),
             ("Is the garage door closed?", {"entity_id": "cover.garage_door"}),
             # Lock queries
             ("Is the front door locked?", {"entity_id": "lock.front_door"}),
             ("Check if the front door is locked", {"entity_id": "lock.front_door"}),
             ("Is the back door unlocked?", {"entity_id": "lock.back_door"}),
-            ("Status of the front door lock", {"entity_id": "lock.front_door"}),
             # Climate/thermostat queries
             ("What's the thermostat set to?", {"entity_id": "climate.thermostat"}),
             ("What temperature is it inside?", {"entity_id": "climate.thermostat"}),
             ("Check the thermostat", {"entity_id": "climate.thermostat"}),
-            ("What's the current temperature?", {"entity_id": "climate.thermostat"}),
             ("Is the AC on?", {"entity_id": "climate.thermostat"}),
-            # Light queries
-            ("Are the basement lights on?", {"entity_id": "light.basement"}),
-            ("Is the office light on?", {"entity_id": "light.my_office"}),
-            ("Check if the living room lights are on", {"entity_id": "light.living_room"}),
-            # Switch queries
-            ("Is the coffee maker on?", {"entity_id": "switch.coffee_maker"}),
-            ("Check the porch light switch", {"entity_id": "switch.porch_light"}),
             # Generic status
             ("Status of the bedroom fan", {"entity_id": "fan.bedroom"}),
             ("What's the vacuum doing?", {"entity_id": "vacuum.roborock"}),
@@ -178,6 +218,9 @@ class GetDeviceStatusCommand(IJarvisCommand):
             CommandResponse with device state and attributes
         """
         entity_id = kwargs.get("entity_id")
+
+        if entity_id:
+            entity_id = resolve_entity_id(entity_id, request_info.voice_command)
 
         if not entity_id:
             return CommandResponse.error_response(
