@@ -25,7 +25,10 @@ class CommandResponse:
     
     # Whether Jarvis should wait for follow-up input
     wait_for_input: bool = True
-    
+
+    # Whether to clear conversation history before the next turn
+    clear_history: bool = False
+
     # Command-specific metadata (optional)
     metadata: Optional[Dict[str, Any]] = None
     
