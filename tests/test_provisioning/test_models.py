@@ -84,12 +84,14 @@ class TestProvisionRequest:
             wifi_ssid="HomeNetwork",
             wifi_password="secret123",
             room="kitchen",
-            command_center_url="http://192.168.1.50:8002"
+            command_center_url="http://192.168.1.50:8002",
+            household_id="test-household-uuid",
         )
         assert request.wifi_ssid == "HomeNetwork"
         assert request.wifi_password == "secret123"
         assert request.room == "kitchen"
         assert request.command_center_url == "http://192.168.1.50:8002"
+        assert request.household_id == "test-household-uuid"
 
     def test_missing_field_raises_error(self):
         with pytest.raises(ValidationError):
