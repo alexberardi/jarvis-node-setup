@@ -46,6 +46,8 @@ class ProvisionRequest(BaseModel):
     wifi_password: str = Field(..., description="Home WiFi network password")
     room: str = Field(..., description="Room name for this node (e.g., kitchen, bedroom)")
     command_center_url: str = Field(..., description="URL of the command center (e.g., http://192.168.1.50:8002)")
+    household_id: str = Field(..., description="UUID of the household this node belongs to")
+    admin_key: Optional[str] = Field(default=None, description="Admin API key for command center registration")
 
 
 class ProvisionResponse(BaseModel):
