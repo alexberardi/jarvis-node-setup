@@ -20,6 +20,7 @@ from services.home_assistant_service import (
     get_actions_for_domain,
     get_domain_from_entity_id,
 )
+from utils.entity_resolver import resolve_entity_id
 
 
 class ControlDeviceCommand(IJarvisCommand):
@@ -46,6 +47,10 @@ class ControlDeviceCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return [
+            "turn on",
+            "turn off",
+            "switch on",
+            "switch off",
             "open",
             "close",
             "lock",
@@ -55,6 +60,10 @@ class ControlDeviceCommand(IJarvisCommand):
             "set",
             "adjust",
             "control",
+            "activate",
+            "light",
+            "lights",
+            "scene",
             "garage",
             "door",
             "thermostat",
@@ -135,18 +144,25 @@ class ControlDeviceCommand(IJarvisCommand):
         """Generate concise examples for prompt/tool registration."""
         return [
             CommandExample(
-                voice_command="Open the garage door",
+                voice_command="Turn on my office lights",
                 expected_parameters={
-                    "entity_id": "cover.garage_door",
-                    "action": "open_cover",
+                    "entity_id": "light.my_office",
+                    "action": "turn_on",
                 },
                 is_primary=True,
             ),
             CommandExample(
-                voice_command="Lock the front door",
+                voice_command="Turn off the basement lights",
                 expected_parameters={
-                    "entity_id": "lock.front_door",
-                    "action": "lock",
+                    "entity_id": "light.basement",
+                    "action": "turn_off",
+                },
+            ),
+            CommandExample(
+                voice_command="Open the garage door",
+                expected_parameters={
+                    "entity_id": "cover.garage_door",
+                    "action": "open_cover",
                 },
             ),
             CommandExample(
@@ -158,17 +174,134 @@ class ControlDeviceCommand(IJarvisCommand):
                 },
             ),
             CommandExample(
-                voice_command="Close the blinds",
+                voice_command="Activate the office desk read scene",
                 expected_parameters={
-                    "entity_id": "cover.blinds",
-                    "action": "close_cover",
+                    "entity_id": "scene.office_desk_read",
+                    "action": "turn_on",
                 },
             ),
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
-        """Generate varied examples for adapter training."""
+        """Generate varied examples for adapter training.
+
+        Dynamically generates examples from real HA entities when available,
+        falling back to hardcoded static examples if HA is unreachable.
+        """
+        from utils.ha_training_data import generate_control_examples, get_ha_training_data
+
+        ha_data = get_ha_training_data()
+        if ha_data:
+            dynamic = generate_control_examples(
+                ha_data.get("device_controls", {}),
+                ha_data.get("light_controls", {}),
+            )
+            if dynamic:
+                return dynamic + self._generic_domain_examples(ha_data)
+
+        return self._static_adapter_examples()
+
+    def _generic_domain_examples(
+        self, ha_data: Dict[str, Any],
+    ) -> List[CommandExample]:
+        """Generate examples for domains NOT present in user's HA.
+
+        Ensures the adapter still learns patterns for cover, lock, climate, etc.
+        even if the user doesn't have those device types.
+
+        Args:
+            ha_data: HA training data with device_controls
+
+        Returns:
+            List of generic examples for missing domains
+        """
+        device_controls = ha_data.get("device_controls", {})
+        generic: List[CommandExample] = []
+
+        domain_examples = {
+            "cover": [
+                ("Open the garage door", {"entity_id": "cover.garage_door", "action": "open_cover"}),
+                ("Close the garage door", {"entity_id": "cover.garage_door", "action": "close_cover"}),
+                ("Open the blinds", {"entity_id": "cover.blinds", "action": "open_cover"}),
+            ],
+            "lock": [
+                ("Lock the front door", {"entity_id": "lock.front_door", "action": "lock"}),
+                ("Unlock the front door", {"entity_id": "lock.front_door", "action": "unlock"}),
+            ],
+            "climate": [
+                ("Set the thermostat to 72", {"entity_id": "climate.thermostat", "action": "set_temperature", "value": "72"}),
+                ("Turn on the AC", {"entity_id": "climate.thermostat", "action": "turn_on"}),
+                ("Turn off the heat", {"entity_id": "climate.thermostat", "action": "turn_off"}),
+            ],
+            "vacuum": [
+                ("Start the vacuum", {"entity_id": "vacuum.roborock", "action": "start"}),
+                ("Stop the vacuum", {"entity_id": "vacuum.roborock", "action": "stop"}),
+                ("Send vacuum home", {"entity_id": "vacuum.roborock", "action": "return_to_base"}),
+            ],
+            "fan": [
+                ("Turn on the bedroom fan", {"entity_id": "fan.bedroom", "action": "turn_on"}),
+                ("Turn off the fan", {"entity_id": "fan.bedroom", "action": "turn_off"}),
+            ],
+        }
+
+        for domain, examples in domain_examples.items():
+            if domain not in device_controls:
+                for utterance, params in examples:
+                    generic.append(CommandExample(
+                        voice_command=utterance,
+                        expected_parameters=params,
+                    ))
+
+        return generic
+
+    def _static_adapter_examples(self) -> List[CommandExample]:
+        """Fallback static examples when HA is unreachable."""
         items = [
+            # Light controls - office
+            ("Turn on my office lights", {"entity_id": "light.my_office", "action": "turn_on"}),
+            ("Turn off the office lights", {"entity_id": "light.my_office", "action": "turn_off"}),
+            ("Lights off in my office", {"entity_id": "light.my_office", "action": "turn_off"}),
+            ("Switch on the office light", {"entity_id": "light.my_office", "action": "turn_on"}),
+            ("Kill the office lights", {"entity_id": "light.my_office", "action": "turn_off"}),
+            # Light controls - office desk
+            ("Turn on my office desk light", {"entity_id": "light.office_desk", "action": "turn_on"}),
+            ("Turn off the desk light", {"entity_id": "light.office_desk", "action": "turn_off"}),
+            ("Switch on the office desk lamp", {"entity_id": "light.office_desk", "action": "turn_on"}),
+            # Light controls - office fan light
+            ("Turn on the office fan light", {"entity_id": "light.office_fan", "action": "turn_on"}),
+            ("Turn off the fan light", {"entity_id": "light.office_fan", "action": "turn_off"}),
+            # Light controls - basement
+            ("Turn on the basement lights", {"entity_id": "light.basement", "action": "turn_on"}),
+            ("Turn off the basement lights", {"entity_id": "light.basement", "action": "turn_off"}),
+            ("Kill the basement lights", {"entity_id": "light.basement", "action": "turn_off"}),
+            ("Basement lights on", {"entity_id": "light.basement", "action": "turn_on"}),
+            # Light controls - upstairs
+            ("Turn on the upstairs lights", {"entity_id": "light.upstairs", "action": "turn_on"}),
+            ("Turn off the upstairs lights", {"entity_id": "light.upstairs", "action": "turn_off"}),
+            ("Switch on the upstairs lights", {"entity_id": "light.upstairs", "action": "turn_on"}),
+            ("Upstairs lights off", {"entity_id": "light.upstairs", "action": "turn_off"}),
+            # Light controls - bathroom
+            ("Turn on the bathroom light", {"entity_id": "light.middle_bathroom", "action": "turn_on"}),
+            ("Turn off the bathroom light", {"entity_id": "light.middle_bathroom", "action": "turn_off"}),
+            ("Bathroom light on", {"entity_id": "light.middle_bathroom", "action": "turn_on"}),
+            # Light controls - rest light
+            ("Turn on the rest light", {"entity_id": "light.my_rest_light", "action": "turn_on"}),
+            ("Turn off the rest light", {"entity_id": "light.my_rest_light", "action": "turn_off"}),
+            # Switch controls - baby berardi timer
+            ("Turn on the baby timer switch", {"entity_id": "switch.baby_berardi_timer", "action": "turn_on"}),
+            ("Turn off the baby timer", {"entity_id": "switch.baby_berardi_timer", "action": "turn_off"}),
+            ("Turn on the baby Berardi switch", {"entity_id": "switch.baby_berardi_timer", "action": "turn_on"}),
+            ("Turn off the baby Berardi switch", {"entity_id": "switch.baby_berardi_timer", "action": "turn_off"}),
+            ("Baby timer on", {"entity_id": "switch.baby_berardi_timer", "action": "turn_on"}),
+            ("Baby timer off", {"entity_id": "switch.baby_berardi_timer", "action": "turn_off"}),
+            # Scene activation
+            ("Activate the office desk read scene", {"entity_id": "scene.office_desk_read", "action": "turn_on"}),
+            ("Set the office desk to read", {"entity_id": "scene.office_desk_read", "action": "turn_on"}),
+            ("Activate the basement bright scene", {"entity_id": "scene.basement_bright", "action": "turn_on"}),
+            ("Set the basement to bright", {"entity_id": "scene.basement_bright", "action": "turn_on"}),
+            ("Activate the office dimmed scene", {"entity_id": "scene.my_office_dimmed", "action": "turn_on"}),
+            ("Set the upstairs to relax", {"entity_id": "scene.upstairs_relax", "action": "turn_on"}),
+            ("Activate the bathroom nightlight", {"entity_id": "scene.middle_bathroom_nightlight", "action": "turn_on"}),
             # Cover/garage door controls
             ("Open the garage door", {"entity_id": "cover.garage_door", "action": "open_cover"}),
             ("Open the garage", {"entity_id": "cover.garage_door", "action": "open_cover"}),
@@ -177,30 +310,20 @@ class ControlDeviceCommand(IJarvisCommand):
             ("Stop the garage door", {"entity_id": "cover.garage_door", "action": "stop_cover"}),
             ("Open the blinds", {"entity_id": "cover.blinds", "action": "open_cover"}),
             ("Close the blinds", {"entity_id": "cover.blinds", "action": "close_cover"}),
-            ("Lower the shades", {"entity_id": "cover.shades", "action": "close_cover"}),
-            ("Raise the shades", {"entity_id": "cover.shades", "action": "open_cover"}),
             # Lock controls
             ("Lock the front door", {"entity_id": "lock.front_door", "action": "lock"}),
             ("Unlock the front door", {"entity_id": "lock.front_door", "action": "unlock"}),
             ("Lock the back door", {"entity_id": "lock.back_door", "action": "lock"}),
-            ("Unlock the garage door", {"entity_id": "lock.garage_door", "action": "unlock"}),
             # Climate controls
             ("Set the thermostat to 72", {"entity_id": "climate.thermostat", "action": "set_temperature", "value": "72"}),
             ("Set temperature to 68", {"entity_id": "climate.thermostat", "action": "set_temperature", "value": "68"}),
             ("Turn on the AC", {"entity_id": "climate.thermostat", "action": "turn_on"}),
             ("Turn off the heat", {"entity_id": "climate.thermostat", "action": "turn_off"}),
             ("Set thermostat to cool", {"entity_id": "climate.thermostat", "action": "set_hvac_mode", "value": "cool"}),
-            # Fan controls
-            ("Turn on the bedroom fan", {"entity_id": "fan.bedroom", "action": "turn_on"}),
-            ("Turn off the fan", {"entity_id": "fan.bedroom", "action": "turn_off"}),
-            ("Set fan to 50 percent", {"entity_id": "fan.bedroom", "action": "set_percentage", "value": "50"}),
             # Vacuum controls
             ("Start the vacuum", {"entity_id": "vacuum.roborock", "action": "start"}),
             ("Stop the vacuum", {"entity_id": "vacuum.roborock", "action": "stop"}),
             ("Send vacuum home", {"entity_id": "vacuum.roborock", "action": "return_to_base"}),
-            # Switch controls
-            ("Turn on the coffee maker", {"entity_id": "switch.coffee_maker", "action": "turn_on"}),
-            ("Turn off the porch light", {"entity_id": "switch.porch_light", "action": "turn_off"}),
             # Ambiguous (no action - should trigger clarification)
             ("Do something with the garage", {"entity_id": "cover.garage_door"}),
             ("Control the thermostat", {"entity_id": "climate.thermostat"}),
@@ -230,6 +353,9 @@ class ControlDeviceCommand(IJarvisCommand):
         entity_id = kwargs.get("entity_id")
         action = kwargs.get("action")
         value = kwargs.get("value")
+
+        if entity_id:
+            entity_id = resolve_entity_id(entity_id, request_info.voice_command)
 
         if not entity_id:
             return CommandResponse.error_response(

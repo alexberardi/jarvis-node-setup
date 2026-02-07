@@ -6,7 +6,7 @@ clarification flow, and command execution.
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from commands.control_device_command import ControlDeviceCommand
 from core.command_response import CommandResponse
@@ -87,8 +87,9 @@ class TestPromptExamples:
         assert "entity_id" in primary.expected_parameters
         assert "action" in primary.expected_parameters
 
-    def test_generate_adapter_examples_has_variety(self, command):
-        """Generates varied adapter examples across domains."""
+    @patch("utils.ha_training_data.get_ha_training_data", return_value=None)
+    def test_generate_adapter_examples_has_variety(self, mock_ha, command):
+        """Generates varied adapter examples across domains (static fallback)."""
         examples = command.generate_adapter_examples()
 
         assert len(examples) >= 20
@@ -102,7 +103,8 @@ class TestPromptExamples:
         assert "unlock" in actions
         assert "set_temperature" in actions
 
-    def test_adapter_examples_include_ambiguous(self, command):
+    @patch("utils.ha_training_data.get_ha_training_data", return_value=None)
+    def test_adapter_examples_include_ambiguous(self, mock_ha, command):
         """Adapter examples include ambiguous cases without action."""
         examples = command.generate_adapter_examples()
 
@@ -112,6 +114,91 @@ class TestPromptExamples:
             if "action" not in ex.expected_parameters
         ]
         assert len(no_action_examples) >= 1
+
+
+class TestDynamicAdapterExamples:
+    """Test dynamic adapter example generation from HA data."""
+
+    @patch("utils.ha_training_data.get_ha_training_data")
+    def test_dynamic_examples_use_real_entity_ids(self, mock_ha, command):
+        """Dynamic examples reference real HA entity IDs."""
+        mock_ha.return_value = {
+            "device_controls": {
+                "cover": [
+                    {"entity_id": "cover.garage_door", "name": "Garage Door", "state": "closed"},
+                ],
+            },
+            "light_controls": {
+                "Basement": {"entity_id": "light.basement", "state": "off", "type": "room_group"},
+                "My office": {"entity_id": "light.my_office", "state": "on", "type": "room_group"},
+            },
+        }
+
+        examples = command.generate_adapter_examples()
+
+        entity_ids = {ex.expected_parameters["entity_id"] for ex in examples}
+        assert "light.basement" in entity_ids
+        assert "light.my_office" in entity_ids
+        assert "cover.garage_door" in entity_ids
+
+    @patch("utils.ha_training_data.get_ha_training_data")
+    def test_generic_domain_examples_for_missing_domains(self, mock_ha, command):
+        """Adds generic examples for domains not in user's HA."""
+        mock_ha.return_value = {
+            "device_controls": {
+                # Only lights and covers - no lock, climate, vacuum, fan
+                "cover": [
+                    {"entity_id": "cover.garage_door", "name": "Garage Door", "state": "closed"},
+                ],
+            },
+            "light_controls": {
+                "Basement": {"entity_id": "light.basement", "state": "off", "type": "room_group"},
+            },
+        }
+
+        examples = command.generate_adapter_examples()
+
+        entity_ids = {ex.expected_parameters["entity_id"] for ex in examples}
+        # Should include generic lock, climate, vacuum examples
+        assert "lock.front_door" in entity_ids
+        assert "climate.thermostat" in entity_ids
+        assert "vacuum.roborock" in entity_ids
+
+    @patch("utils.ha_training_data.get_ha_training_data")
+    def test_no_generic_for_existing_domains(self, mock_ha, command):
+        """Doesn't add generic examples for domains the user already has."""
+        mock_ha.return_value = {
+            "device_controls": {
+                "cover": [
+                    {"entity_id": "cover.my_real_cover", "name": "My Cover", "state": "open"},
+                ],
+                "lock": [
+                    {"entity_id": "lock.my_real_lock", "name": "My Lock", "state": "locked"},
+                ],
+            },
+            "light_controls": {
+                "Kitchen": {"entity_id": "light.kitchen", "state": "on", "type": "room_group"},
+            },
+        }
+
+        examples = command.generate_adapter_examples()
+
+        entity_ids = {ex.expected_parameters["entity_id"] for ex in examples}
+        # Should NOT have generic lock/cover examples since user has real ones
+        assert "lock.front_door" not in entity_ids
+        assert "cover.garage_door" not in entity_ids
+        # But should have generic for missing domains
+        assert "climate.thermostat" in entity_ids
+
+    @patch("utils.ha_training_data.get_ha_training_data", return_value=None)
+    def test_fallback_to_static_when_ha_unavailable(self, mock_ha, command):
+        """Falls back to static examples when HA is unreachable."""
+        examples = command.generate_adapter_examples()
+
+        # Should return static examples with hardcoded entity IDs
+        assert len(examples) >= 20
+        entity_ids = {ex.expected_parameters["entity_id"] for ex in examples}
+        assert "light.my_office" in entity_ids  # Static hardcoded ID
 
 
 class TestActionValidation:
@@ -356,6 +443,50 @@ class TestExecuteControl:
 
             assert response.success is False
             assert "Connection refused" in response.error_details
+
+
+class TestEntityResolution:
+    """Test fuzzy entity resolution integration."""
+
+    @patch("commands.control_device_command.resolve_entity_id")
+    def test_resolver_called_with_correct_args(self, mock_resolve, command, request_info):
+        """Resolver is called with entity_id and voice_command."""
+        mock_resolve.return_value = "cover.garage_door"
+
+        with patch.object(command, "_execute_control") as mock_execute:
+            mock_execute.return_value = CommandResponse.success_response(
+                context_data={"action": "open_cover"},
+                wait_for_input=False,
+            )
+
+            command.run(request_info, entity_id="cover.garage", action="open_cover")
+
+        mock_resolve.assert_called_once_with("cover.garage", "open the garage door")
+
+    @patch("commands.control_device_command.resolve_entity_id")
+    def test_resolved_entity_used_downstream(self, mock_resolve, command, request_info):
+        """Resolved entity_id is passed to _execute_control."""
+        mock_resolve.return_value = "cover.garage_door"
+
+        with patch.object(command, "_execute_control") as mock_execute:
+            mock_execute.return_value = CommandResponse.success_response(
+                context_data={"action": "open_cover"},
+                wait_for_input=False,
+            )
+
+            command.run(request_info, entity_id="cover.garage", action="open_cover")
+
+        # asyncio.run wraps _execute_control, but we patched it as sync mock
+        mock_execute.assert_called_once()
+        # Verify the resolved entity_id was used
+        call_args = mock_execute.call_args
+        assert call_args[0][0] == "cover.garage_door"  # entity_id arg
+
+    @patch("commands.control_device_command.resolve_entity_id")
+    def test_resolver_not_called_when_entity_id_missing(self, mock_resolve, command, request_info):
+        """Resolver is not called when entity_id is None."""
+        command.run(request_info)
+        mock_resolve.assert_not_called()
 
 
 class TestWaitForInput:
