@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import Response, PlainTextResponse
 
 from provisioning.models import (
     K2ProvisionRequest,
@@ -202,6 +203,28 @@ def create_provisioning_app(
     state_machine = ProvisioningStateMachine()
     _provisioning_lock = threading.Lock()
     _on_provisioned = on_provisioned
+
+    # Captive portal endpoints - trick iOS/Android into thinking there's internet
+    # Without these, iOS may disconnect from the node's AP
+    @app.get("/generate_204")
+    async def generate_204() -> Response:
+        """Android captive portal check."""
+        return Response(status_code=204)
+
+    @app.get("/hotspot-detect.html")
+    async def hotspot_detect() -> PlainTextResponse:
+        """Apple captive portal check."""
+        return PlainTextResponse("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>")
+
+    @app.get("/library/test/success.html")
+    async def apple_success() -> PlainTextResponse:
+        """Apple captive portal check (alternate)."""
+        return PlainTextResponse("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>")
+
+    @app.get("/success.txt")
+    async def success_txt() -> PlainTextResponse:
+        """Generic captive portal check."""
+        return PlainTextResponse("success")
 
     @app.get("/api/v1/info", response_model=NodeInfo)
     async def get_info() -> NodeInfo:

@@ -376,7 +376,11 @@ bind-interfaces
 dhcp-range={dhcp_start},{dhcp_end},12h
 dhcp-option=3,{gateway_ip}
 dhcp-option=6,{gateway_ip}
-server=8.8.8.8
+
+# Redirect all DNS to ourselves (captive portal mode)
+# This makes iOS/Android captive portal detection hit our server
+address=/#/{gateway_ip}
+
 log-queries
 log-dhcp
 """
