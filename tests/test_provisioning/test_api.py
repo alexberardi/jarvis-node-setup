@@ -92,7 +92,8 @@ class TestProvision:
             "wifi_ssid": "HomeNetwork",
             "wifi_password": "password123",
             "room": "kitchen",
-            "command_center_url": "http://localhost:8002"
+            "command_center_url": "http://localhost:8002",
+            "household_id": "550e8400-e29b-41d4-a716-446655440000"
         })
         assert response.status_code == 200
 
@@ -113,7 +114,8 @@ class TestProvision:
             "wifi_ssid": "HomeNetwork",
             "wifi_password": "pass",
             "room": "room1",
-            "command_center_url": "http://localhost:8002"
+            "command_center_url": "http://localhost:8002",
+            "household_id": "550e8400-e29b-41d4-a716-446655440000"
         })
         assert response1.json()["success"] is True
 
@@ -162,7 +164,8 @@ class TestProvisioningFlow:
                         "wifi_ssid": "HomeNetwork",
                         "wifi_password": "pass",
                         "room": "kitchen",
-                        "command_center_url": "http://localhost:8002"
+                        "command_center_url": "http://localhost:8002",
+                        "household_id": "550e8400-e29b-41d4-a716-446655440000"
                     })
                     assert response.json()["success"] is True
 

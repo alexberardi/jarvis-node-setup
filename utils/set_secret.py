@@ -1,4 +1,14 @@
+#!/usr/bin/env python3
+"""CLI tool for managing secrets in the jarvis-node-setup database."""
+
 import argparse
+import sys
+from pathlib import Path
+
+# Add project root to path so this script can be run from anywhere
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from services import secret_service
 
 def main():
