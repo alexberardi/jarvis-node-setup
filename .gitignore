@@ -82,3 +82,6 @@ tmp/
 # Test result artifacts
 test_results*.json
 multi_turn_test_results*.json
+
+# User-specific HA device mappings (generated/customized per installation)
+additional_home_assistant_device_mappings.json
