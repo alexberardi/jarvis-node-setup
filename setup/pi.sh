@@ -213,13 +213,15 @@ fi
 cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
 [Unit]
 Description=Jarvis Node Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
 Restart=always
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=$PI_PROJECT_DIR
+Environment=CONFIG_PATH=$PI_PROJECT_DIR/config.json
 WorkingDirectory=$PI_PROJECT_DIR
 
 [Install]
