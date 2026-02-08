@@ -340,12 +340,28 @@ class HostapdWiFiManager:
 
     def _restore_network_services(self) -> None:
         """Restore NetworkManager, wpa_supplicant, and dnsmasq after AP mode."""
+        print(f"[hostapd] Restoring services: NM={self._nm_was_running}, wpa={self._wpa_was_running}")
+
         if self._wpa_was_running:
-            subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
+            result = subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
+            print(f"[hostapd] Started wpa_supplicant: rc={result.returncode}")
+
         if self._nm_was_running:
-            subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+            result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+            print(f"[hostapd] Started NetworkManager: rc={result.returncode}")
+        else:
+            # Always try to start NetworkManager even if we didn't track it
+            print("[hostapd] WARNING: NM wasn't tracked as running, starting anyway...")
+            result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+            print(f"[hostapd] Started NetworkManager (fallback): rc={result.returncode}")
+
         if self._dnsmasq_was_running:
-            subprocess.run(["systemctl", "start", "dnsmasq"], capture_output=True)
+            result = subprocess.run(["systemctl", "start", "dnsmasq"], capture_output=True)
+            print(f"[hostapd] Started dnsmasq: rc={result.returncode}")
+
+        # Give NetworkManager time to reconnect
+        import time
+        time.sleep(2)
 
     def _generate_hostapd_config(self, ssid: str, interface: str, channel: int) -> str:
         """Generate hostapd configuration file content."""
