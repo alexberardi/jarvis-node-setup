@@ -63,33 +63,48 @@ def _can_reach_command_center(url: str) -> bool:
         return False
 
 
-def is_provisioned() -> bool:
+def is_provisioned(max_retries: int = 10, retry_delay: float = 3.0) -> bool:
     """
     Check if the node is provisioned and can reach the command center.
 
     Logic:
     1. Check if ~/.jarvis/.provisioned marker exists
        - No → return False (needs provisioning)
-    2. Try to ping command center health endpoint
+    2. Try to ping command center health endpoint with retries
        - Success → return True (ready for normal operation)
-       - Fail → return False (network changed, needs re-provisioning)
+       - Fail after all retries → return False (network changed, needs re-provisioning)
+
+    Args:
+        max_retries: Number of attempts to reach command center (default 10)
+        retry_delay: Seconds between retries (default 3.0)
 
     Returns:
         True if provisioned and command center reachable, False otherwise.
     """
+    import time
+
     marker = _get_provisioned_marker()
 
     # Step 1: Check marker file
     if not marker.exists():
         return False
 
-    # Step 2: Check command center connectivity
+    # Step 2: Check command center connectivity with retries
+    # Network may take time to come up after boot
     url = _get_command_center_url()
     if not url:
         # No URL configured, consider not provisioned
         return False
 
-    return _can_reach_command_center(url)
+    for attempt in range(max_retries):
+        if _can_reach_command_center(url):
+            return True
+        if attempt < max_retries - 1:
+            print(f"[startup] Waiting for network... attempt {attempt + 1}/{max_retries}")
+            time.sleep(retry_delay)
+
+    print("[startup] Could not reach command center after retries")
+    return False
 
 
 def mark_provisioned() -> None:
