@@ -630,6 +630,21 @@ log-dhcp
                 timeout=10
             )
 
+            # Explicitly delete the AP route (flush doesn't always remove it)
+            subprocess.run(
+                ["ip", "route", "del", "192.168.4.0/24"],
+                capture_output=True,
+                timeout=10
+            )
+
+            # Verify hostapd is actually dead
+            result = subprocess.run(["pgrep", "hostapd"], capture_output=True)
+            if result.returncode == 0:
+                print("[hostapd] WARNING: hostapd still running, force killing...")
+                subprocess.run(["killall", "-9", "hostapd"], capture_output=True)
+                import time
+                time.sleep(1)
+
             self._ap_active = False
 
             # Restore network services
