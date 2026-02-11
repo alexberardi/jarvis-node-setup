@@ -22,7 +22,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:
@@ -44,7 +44,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:
@@ -66,7 +66,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:
@@ -80,7 +80,7 @@ class TestCreateProvisioningToken:
 
             assert result is not None
             assert result["node_id"] == "uuid-123"
-            assert result["provisioning_token"] == "tok_abc"
+            assert result["token"] == "tok_abc"
 
     def test_sends_household_id_in_payload(self):
         """Payload must contain household_id."""
@@ -89,7 +89,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:
@@ -111,7 +111,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:
@@ -134,7 +134,7 @@ class TestCreateProvisioningToken:
         mock_response.status_code = 201
         mock_response.json.return_value = {
             "node_id": "uuid-123",
-            "provisioning_token": "tok_abc",
+            "token": "tok_abc",
         }
 
         with patch("utils.authorize_node.httpx.Client") as mock_cls:

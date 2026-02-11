@@ -452,7 +452,7 @@ Examples:
         return 1
 
     node_id = token_result["node_id"]
-    provisioning_token = token_result["provisioning_token"]
+    provisioning_token = token_result["token"]
     print(f"Provisioning token created for node: {node_id}")
 
     # Step 2: Register using the token (no admin key needed)
