@@ -16,6 +16,7 @@ _initialized = False
 # Service name in config service -> JSON config key mapping
 _SERVICE_TO_CONFIG_KEY = {
     "jarvis-command-center": "jarvis_command_center_api_url",
+    "jarvis-auth": "jarvis_auth_api_url",
     "jarvis-whisper": "jarvis_whisper_api_url",
     "jarvis-tts": "jarvis_tts_api_url",
 }
@@ -23,6 +24,7 @@ _SERVICE_TO_CONFIG_KEY = {
 # Default URLs if nothing else works
 _DEFAULTS = {
     "jarvis-command-center": "http://localhost:8002",
+    "jarvis-auth": "http://localhost:8007",
     "jarvis-whisper": "http://localhost:9999",
     "jarvis-tts": "http://localhost:8009",
 }
@@ -124,3 +126,8 @@ def get_whisper_url() -> str:
 def get_tts_url() -> str:
     """Get jarvis-tts service URL."""
     return _get_url("jarvis-tts")
+
+
+def get_auth_url() -> str:
+    """Get jarvis-auth service URL."""
+    return _get_url("jarvis-auth")

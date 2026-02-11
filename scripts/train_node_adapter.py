@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -14,6 +13,7 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.rest_client import RestClient
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
+from utils.service_discovery import get_command_center_url, init as init_service_discovery
 
 
 def _build_available_commands(date_context) -> list[Dict[str, Any]]:
@@ -46,9 +46,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print payload and exit.")
     args = parser.parse_args()
 
-    base_url = Config.get_str("jarvis_command_center_api_url")
+    init_service_discovery()
+    base_url = get_command_center_url()
     if not base_url:
-        raise SystemExit("Missing jarvis_command_center_api_url in config.")
+        raise SystemExit("Could not resolve command center URL from config service, JSON config, or defaults.")
     if not args.base_model_id:
         raise SystemExit("Missing base_model_id. Provide --base-model-id or set jcc_adapter_base_model_id.")
     if args.base_model_id.endswith(".gguf") and not args.hf_base_model_id:
