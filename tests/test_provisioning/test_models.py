@@ -86,19 +86,49 @@ class TestProvisionRequest:
             room="kitchen",
             command_center_url="http://192.168.1.50:8002",
             household_id="test-household-uuid",
+            node_id="550e8400-e29b-41d4-a716-446655440000",
+            provisioning_token="tok_abc123",
         )
         assert request.wifi_ssid == "HomeNetwork"
         assert request.wifi_password == "secret123"
         assert request.room == "kitchen"
         assert request.command_center_url == "http://192.168.1.50:8002"
         assert request.household_id == "test-household-uuid"
+        assert request.node_id == "550e8400-e29b-41d4-a716-446655440000"
+        assert request.provisioning_token == "tok_abc123"
+
+    def test_missing_node_id_raises_error(self):
+        with pytest.raises(ValidationError):
+            ProvisionRequest(
+                wifi_ssid="HomeNetwork",
+                wifi_password="secret123",
+                room="kitchen",
+                command_center_url="http://192.168.1.50:8002",
+                household_id="test-household-uuid",
+                provisioning_token="tok_abc123",
+            )
+
+    def test_missing_provisioning_token_raises_error(self):
+        with pytest.raises(ValidationError):
+            ProvisionRequest(
+                wifi_ssid="HomeNetwork",
+                wifi_password="secret123",
+                room="kitchen",
+                command_center_url="http://192.168.1.50:8002",
+                household_id="test-household-uuid",
+                node_id="550e8400-e29b-41d4-a716-446655440000",
+            )
+
+    def test_admin_key_field_does_not_exist(self):
+        """admin_key must not exist on ProvisionRequest."""
+        assert "admin_key" not in ProvisionRequest.model_fields
 
     def test_missing_field_raises_error(self):
         with pytest.raises(ValidationError):
             ProvisionRequest(
                 wifi_ssid="Test",
                 wifi_password="test"
-                # missing room and command_center_url
+                # missing room, command_center_url, node_id, provisioning_token
             )
 
 

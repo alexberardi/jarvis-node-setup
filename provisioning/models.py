@@ -47,7 +47,8 @@ class ProvisionRequest(BaseModel):
     room: str = Field(..., description="Room name for this node (e.g., kitchen, bedroom)")
     command_center_url: str = Field(..., description="URL of the command center (e.g., http://192.168.1.50:8002)")
     household_id: str = Field(..., description="UUID of the household this node belongs to")
-    admin_key: Optional[str] = Field(default=None, description="Admin API key for command center registration")
+    node_id: str = Field(..., description="CC-assigned UUID for this node")
+    provisioning_token: str = Field(..., description="Short-lived provisioning token from command center")
 
 
 class ProvisionResponse(BaseModel):

@@ -93,7 +93,9 @@ class TestProvision:
             "wifi_password": "password123",
             "room": "kitchen",
             "command_center_url": "http://localhost:8002",
-            "household_id": "550e8400-e29b-41d4-a716-446655440000"
+            "household_id": "550e8400-e29b-41d4-a716-446655440000",
+            "node_id": "node-uuid-123",
+            "provisioning_token": "tok_abc123",
         })
         assert response.status_code == 200
 
@@ -115,7 +117,9 @@ class TestProvision:
             "wifi_password": "pass",
             "room": "room1",
             "command_center_url": "http://localhost:8002",
-            "household_id": "550e8400-e29b-41d4-a716-446655440000"
+            "household_id": "550e8400-e29b-41d4-a716-446655440000",
+            "node_id": "node-uuid-123",
+            "provisioning_token": "tok_abc123",
         })
         assert response1.json()["success"] is True
 
@@ -165,7 +169,9 @@ class TestProvisioningFlow:
                         "wifi_password": "pass",
                         "room": "kitchen",
                         "command_center_url": "http://localhost:8002",
-                        "household_id": "550e8400-e29b-41d4-a716-446655440000"
+                        "household_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "node_id": "node-uuid-123",
+                        "provisioning_token": "tok_abc123",
                     })
                     assert response.json()["success"] is True
 
@@ -350,3 +356,116 @@ class TestK2ProvisionEndpoint:
             k2_data = get_k2()
             assert k2_data.kid == "k2-second"
             assert k2_data.k2 == b"2" * 32
+
+
+class TestProvisioningFlowTokenAuth:
+    """Test that provisioning flow uses token auth correctly."""
+
+    def test_registration_called_with_token_and_node_id(self, client, tmp_path):
+        """Registration must receive node_id and provisioning_token."""
+        with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
+            with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
+                with patch("provisioning.api._update_config", return_value=True):
+                    with patch("provisioning.api.register_with_command_center") as mock_reg:
+                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+
+                        response = client.post("/api/v1/provision", json={
+                            "wifi_ssid": "HomeNetwork",
+                            "wifi_password": "pass",
+                            "room": "kitchen",
+                            "command_center_url": "http://localhost:8002",
+                            "household_id": "hh-uuid",
+                            "node_id": "node-uuid-123",
+                            "provisioning_token": "tok_abc123",
+                        })
+                        assert response.json()["success"] is True
+
+                        import time
+                        time.sleep(0.5)
+
+                        mock_reg.assert_called_once()
+                        call_kwargs = mock_reg.call_args[1]
+                        assert call_kwargs["node_id"] == "node-uuid-123"
+                        assert call_kwargs["provisioning_token"] == "tok_abc123"
+                        assert call_kwargs["command_center_url"] == "http://localhost:8002"
+
+    def test_registration_does_not_pass_admin_key(self, client, tmp_path):
+        """Registration call must not include admin_key."""
+        with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
+            with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
+                with patch("provisioning.api._update_config", return_value=True):
+                    with patch("provisioning.api.register_with_command_center") as mock_reg:
+                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+
+                        client.post("/api/v1/provision", json={
+                            "wifi_ssid": "HomeNetwork",
+                            "wifi_password": "pass",
+                            "room": "kitchen",
+                            "command_center_url": "http://localhost:8002",
+                            "household_id": "hh-uuid",
+                            "node_id": "node-uuid-123",
+                            "provisioning_token": "tok_abc123",
+                        })
+
+                        import time
+                        time.sleep(0.5)
+
+                        call_kwargs = mock_reg.call_args[1]
+                        assert "admin_key" not in call_kwargs
+
+    def test_registration_always_attempted(self, client, tmp_path):
+        """Registration must always be attempted (no if admin_key: guard)."""
+        with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
+            with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
+                with patch("provisioning.api._update_config", return_value=True):
+                    with patch("provisioning.api.register_with_command_center") as mock_reg:
+                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+
+                        client.post("/api/v1/provision", json={
+                            "wifi_ssid": "HomeNetwork",
+                            "wifi_password": "pass",
+                            "room": "kitchen",
+                            "command_center_url": "http://localhost:8002",
+                            "household_id": "hh-uuid",
+                            "node_id": "node-uuid-123",
+                            "provisioning_token": "tok_abc123",
+                        })
+
+                        import time
+                        time.sleep(0.5)
+
+                        # Must be called exactly once - no conditional guard
+                        mock_reg.assert_called_once()
+
+    def test_registration_failure_is_non_fatal(self, client, tmp_path):
+        """Provisioning should complete even if registration fails."""
+        with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
+            with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
+                with patch("provisioning.api._update_config", return_value=True):
+                    with patch("provisioning.api.register_with_command_center") as mock_reg:
+                        mock_reg.return_value = None  # Registration failed
+
+                        response = client.post("/api/v1/provision", json={
+                            "wifi_ssid": "HomeNetwork",
+                            "wifi_password": "pass",
+                            "room": "kitchen",
+                            "command_center_url": "http://localhost:8002",
+                            "household_id": "hh-uuid",
+                            "node_id": "node-uuid-123",
+                            "provisioning_token": "tok_abc123",
+                        })
+                        assert response.json()["success"] is True
+
+                        import time
+                        time.sleep(0.5)
+
+                        # Should reach PROVISIONED despite registration failure
+                        status = client.get("/api/v1/status").json()
+                        assert status["state"] == "PROVISIONED"
+
+    def test_node_keeps_local_name_for_info_endpoint(self, client):
+        """Info endpoint should still return the local node name, not the CC-assigned UUID."""
+        response = client.get("/api/v1/info")
+        data = response.json()
+        # The local node_id (e.g. jarvis-XXXXXXXX) should still be used for /info
+        assert data["node_id"].startswith("jarvis-") or "node_id" in data

@@ -19,14 +19,22 @@ The script will:
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_CC_URL = "http://localhost:8002"
+from utils.service_discovery import (
+    get_auth_url,
+    get_command_center_url,
+    init as init_service_discovery,
+)
+
 DEFAULT_CC_ADMIN_KEY = "admin_key"
-DEFAULT_AUTH_URL = "http://localhost:8007"  # Only used for household creation
 
 
 def _make_cc_request(
@@ -165,6 +173,93 @@ def update_node(
 
 
 # ============================================================
+# Provisioning Token Flow
+# ============================================================
+
+
+def create_provisioning_token(
+    cc_url: str,
+    admin_key: str,
+    household_id: str,
+    room: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a provisioning token via command center.
+
+    The command center generates a node UUID and a short-lived token.
+    The admin key is required to authorize token creation.
+
+    Args:
+        cc_url: Command center base URL
+        admin_key: Admin API key for command center
+        household_id: Household UUID for the new node
+        room: Optional room name
+        name: Optional friendly name
+
+    Returns:
+        Dict with node_id and provisioning_token on success, None on failure
+    """
+    url = f"{cc_url.rstrip('/')}/api/v0/provisioning/token"
+    payload: dict[str, str] = {"household_id": household_id}
+    if room is not None:
+        payload["room"] = room
+    if name is not None:
+        payload["name"] = name
+
+    headers = {"X-API-Key": admin_key}
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+
+            if resp.status_code in (200, 201):
+                return resp.json()
+
+            print(f"Failed to create provisioning token: {resp.status_code}", file=sys.stderr)
+            return None
+    except httpx.RequestError as e:
+        print(f"Network error creating provisioning token: {e}", file=sys.stderr)
+        return None
+
+
+def register_with_token(
+    cc_url: str,
+    node_id: str,
+    provisioning_token: str,
+) -> dict[str, Any] | None:
+    """Register a node using a provisioning token.
+
+    This does NOT require an admin key — the token authenticates the request.
+
+    Args:
+        cc_url: Command center base URL
+        node_id: CC-assigned node UUID
+        provisioning_token: Short-lived provisioning token
+
+    Returns:
+        Dict with node_id and node_key on success, None on failure
+    """
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/register"
+    payload = {
+        "node_id": node_id,
+        "provisioning_token": provisioning_token,
+    }
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(url, json=payload)
+
+            if resp.status_code in (200, 201):
+                return resp.json()
+
+            print(f"Failed to register node: {resp.status_code}", file=sys.stderr)
+            return None
+    except httpx.RequestError as e:
+        print(f"Network error registering node: {e}", file=sys.stderr)
+        return None
+
+
+# ============================================================
 # Household Creation (via jarvis-auth user API)
 # ============================================================
 
@@ -212,6 +307,8 @@ def create_household_via_user_api(
 
 
 def main() -> int:
+    init_service_discovery()
+
     parser = argparse.ArgumentParser(
         description="Authorize a node by registering with command center",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -235,10 +332,10 @@ Examples:
         """,
     )
 
-    # Service URLs
-    parser.add_argument("--cc-url", default=DEFAULT_CC_URL, help="command center base URL")
+    # Service URLs (defaults from service discovery, CLI args override)
+    parser.add_argument("--cc-url", default=get_command_center_url(), help="command center base URL")
     parser.add_argument("--cc-key", default=DEFAULT_CC_ADMIN_KEY, help="command center admin key")
-    parser.add_argument("--auth-url", default=DEFAULT_AUTH_URL, help="jarvis-auth URL (for household creation)")
+    parser.add_argument("--auth-url", default=get_auth_url(), help="jarvis-auth URL (for household creation)")
 
     # Actions
     parser.add_argument("--list", action="store_true", help="List all registered nodes")
@@ -290,9 +387,9 @@ Examples:
                     )
         return 0
 
-    # Require node-id for other actions
-    if not args.node_id:
-        parser.error("--node-id is required for this action")
+    # Delete and update require --node-id
+    if (args.delete or args.update) and not args.node_id:
+        parser.error("--node-id is required for --delete and --update")
 
     # Delete node
     if args.delete:
@@ -318,6 +415,8 @@ Examples:
             return 0
         return 1
 
+    # === Creation flow (provisioning token) ===
+
     # Create household if requested
     household_id = args.household_id
     if args.create_household:
@@ -339,26 +438,28 @@ Examples:
     if not household_id:
         parser.error("--household-id or --create-household required")
 
-    # Check if node already exists
-    existing = get_node(args.cc_url, args.cc_key, args.node_id)
-    if existing:
-        print(f"Node '{args.node_id}' already exists in room '{existing['room']}'")
-        print("Use --delete to remove it first, or --update to change settings")
-        return 1
-
-    # Create node
-    result = create_node(
+    # Step 1: Create provisioning token (admin key required)
+    token_result = create_provisioning_token(
         args.cc_url,
         args.cc_key,
-        args.node_id,
         household_id,
-        args.room,
+        room=args.room if args.room != "default" else None,
         name=args.name,
-        user=args.user,
-        voice_mode=args.voice_mode,
     )
 
+    if not token_result:
+        print("Failed to create provisioning token", file=sys.stderr)
+        return 1
+
+    node_id = token_result["node_id"]
+    provisioning_token = token_result["provisioning_token"]
+    print(f"Provisioning token created for node: {node_id}")
+
+    # Step 2: Register using the token (no admin key needed)
+    result = register_with_token(args.cc_url, node_id, provisioning_token)
+
     if not result:
+        print("Failed to register node with provisioning token", file=sys.stderr)
         return 1
 
     node_key = result.get("node_key", "")
@@ -367,13 +468,11 @@ Examples:
         print(json.dumps(result, indent=2, default=str))
     else:
         print(f"\nNode registered successfully!")
-        print(f"  node_id: {result['node_id']}")
-        print(f"  room: {result['room']}")
-        print(f"  user: {result['user']}")
-        print(f"  voice_mode: {result['voice_mode']}")
+        print(f"  node_id: {node_id}")
+        print(f"  room: {args.room}")
         print(f"\n  node_key: {node_key}")
         print("\nUpdate your config.json with:")
-        print(f'  "node_id": "{result["node_id"]}",')
+        print(f'  "node_id": "{node_id}",')
         print(f'  "api_key": "{node_key}"')
 
     # Update config file if requested
@@ -382,7 +481,7 @@ Examples:
             with open(args.update_config, "r") as f:
                 config = json.load(f)
 
-            config["node_id"] = result["node_id"]
+            config["node_id"] = node_id
             config["api_key"] = node_key
 
             with open(args.update_config, "w") as f:
