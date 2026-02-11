@@ -2,7 +2,7 @@
   "node_id": "node-123",
   "api_key": "1",
   "jarvis_whisper_api_url": "https://whisper.jarvisautomation.io",
-  "jarvis_command_center_api_url": "http://localhost:9998",
+  "jarvis_command_center_api_url": "http://localhost:8002",
   "room": "office",
   "user": "username",
   "voice": "en",
