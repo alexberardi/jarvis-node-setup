@@ -11,7 +11,7 @@ import signal
 import threading
 import uuid
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import Response, PlainTextResponse
@@ -181,7 +181,7 @@ def _update_config(room: str, command_center_url: str) -> bool:
 
 def create_provisioning_app(
     wifi_manager: WiFiManager,
-    on_provisioned: Optional[Callable[[], None]] = None
+    on_provisioned: Callable[[], None] | None = None
 ) -> FastAPI:
     """
     Create the FastAPI provisioning application.
@@ -273,7 +273,8 @@ def create_provisioning_app(
                     room=request.room,
                     command_center_url=request.command_center_url,
                     household_id=request.household_id,
-                    admin_key=request.admin_key,
+                    node_id=request.node_id,
+                    provisioning_token=request.provisioning_token,
                     on_provisioned=_on_provisioned
                 )
             finally:
@@ -350,8 +351,9 @@ def _run_provisioning(
     room: str,
     command_center_url: str,
     household_id: str,
-    admin_key: Optional[str] = None,
-    on_provisioned: Optional[Callable[[], None]] = None
+    node_id: str,
+    provisioning_token: str,
+    on_provisioned: Callable[[], None] | None = None
 ) -> None:
     """
     Run the full provisioning flow.
@@ -366,7 +368,8 @@ def _run_provisioning(
         room: Room name for this node
         command_center_url: URL of the command center
         household_id: UUID of the household this node belongs to
-        admin_key: Admin API key for command center (for registration)
+        node_id: CC-assigned UUID for this node
+        provisioning_token: Short-lived provisioning token from command center
         on_provisioned: Optional callback when provisioning completes successfully
     """
     try:
@@ -438,28 +441,20 @@ def _run_provisioning(
             progress=70
         )
 
-        node_id = _get_node_id()
+        # Register via command center using provisioning token
+        result = register_with_command_center(
+            command_center_url=command_center_url,
+            node_id=node_id,
+            provisioning_token=provisioning_token,
+            room=room,
+        )
 
-        # Register via command center (which forwards to jarvis-auth)
-        # This is the single gateway pattern - all registrations go through CC
-        if admin_key:
-            result = register_with_command_center(
-                command_center_url=command_center_url,
-                node_id=node_id,
-                room=room,
-                household_id=household_id,
-                admin_key=admin_key
-            )
-
-            if result:
-                # Save the returned node_key to config
-                node_key = result.get("node_key")
-                if node_key:
-                    _save_node_credentials(node_id, node_key)
-            else:
-                # Registration failure is not fatal for now
-                # The node may already exist, or admin_key may be invalid
-                pass
+        if result:
+            # Save the returned node_key to config
+            returned_node_id = result.get("node_id", node_id)
+            node_key = result.get("node_key")
+            if node_key:
+                _save_node_credentials(returned_node_id, node_key)
 
         state_machine.transition_to(
             ProvisioningState.REGISTERING,
