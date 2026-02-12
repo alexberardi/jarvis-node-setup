@@ -4,13 +4,16 @@ macOS Development Script for Jarvis Node
 Allows running different components for testing and development
 """
 
-import os
-import sys
 import argparse
 import subprocess
+import sys
 from pathlib import Path
-from utils.config_service import Config
+
 from dotenv import load_dotenv
+
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
 
 def setup_environment():
     """Setup environment for development"""
@@ -21,114 +24,106 @@ def setup_environment():
 
 def run_voice_listener():
     """Run the voice listener component"""
-    print("🎤 Starting voice listener...")
-    print("⚠️  Note: This requires a microphone and wake word detection")
-    print("   Press Ctrl+C to stop")
-    
+    logger.info("Starting voice listener", note="Requires microphone and wake word detection. Press Ctrl+C to stop")
+
     try:
         subprocess.run([
             sys.executable, "scripts/voice_listener.py"
         ], check=True)
     except KeyboardInterrupt:
-        print("\n🛑 Voice listener stopped")
+        logger.info("Voice listener stopped")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Voice listener failed: {e}")
+        logger.error("Voice listener failed", error=str(e))
 
 
 def run_mqtt_listener():
     """Run the MQTT listener component"""
-    print("📡 Starting MQTT listener...")
-    print("⚠️  Note: This requires an MQTT broker to be running")
-    print("   Press Ctrl+C to stop")
-    
+    logger.info("Starting MQTT listener", note="Requires MQTT broker to be running. Press Ctrl+C to stop")
+
     try:
         subprocess.run([
             sys.executable, "scripts/mqtt_tts_listener.py"
         ], check=True)
     except KeyboardInterrupt:
-        print("\n🛑 MQTT listener stopped")
+        logger.info("MQTT listener stopped")
     except subprocess.CalledProcessError as e:
-        print(f"❌ MQTT listener failed: {e}")
+        logger.error("MQTT listener failed", error=str(e))
 
 
 def run_speech_to_text():
     """Run speech-to-text test"""
-    print("🎙️ Testing speech-to-text...")
-    print("⚠️  Note: This requires a microphone")
-    print("   Speak after the prompt, then press Ctrl+C to stop")
-    
+    logger.info("Testing speech-to-text", note="Requires microphone. Speak after the prompt, then press Ctrl+C to stop")
+
     try:
         subprocess.run([
             sys.executable, "scripts/speech_to_text.py"
         ], check=True)
     except KeyboardInterrupt:
-        print("\n🛑 Speech-to-text test stopped")
+        logger.info("Speech-to-text test stopped")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Speech-to-text test failed: {e}")
+        logger.error("Speech-to-text test failed", error=str(e))
 
 
 def run_text_to_speech():
     """Run text-to-speech test"""
-    print("🔊 Testing text-to-speech...")
-    
+    logger.info("Testing text-to-speech")
+
     try:
         subprocess.run([
             sys.executable, "scripts/text_to_speech.py"
         ], check=True)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Text-to-speech test failed: {e}")
+        logger.error("Text-to-speech test failed", error=str(e))
 
 
 def run_device_discovery():
     """Run device discovery test"""
-    print("🔍 Running device discovery...")
-    
+    logger.info("Running device discovery")
+
     try:
         subprocess.run([
             sys.executable, "scripts/scan_and_save_devices.py"
         ], check=True)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Device discovery failed: {e}")
+        logger.error("Device discovery failed", error=str(e))
 
 
 def run_show_devices():
     """Show discovered devices"""
-    print("📱 Showing discovered devices...")
-    
+    logger.info("Showing discovered devices")
+
     try:
         subprocess.run([
             sys.executable, "scripts/show_discovered_devices.py"
         ], check=True)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Show devices failed: {e}")
+        logger.error("Show devices failed", error=str(e))
 
 
 def run_tests():
     """Run the test suite"""
-    print("🧪 Running tests...")
-    
+    logger.info("Running tests")
+
     try:
         subprocess.run([
             sys.executable, "run_tests_macos.py"
         ], check=True)
     except subprocess.CalledProcessError as e:
-        print(f"❌ Tests failed: {e}")
+        logger.error("Tests failed", error=str(e))
 
 
 def run_full_system():
     """Run the full Jarvis Node system"""
-    print("🚀 Starting full Jarvis Node system...")
-    print("⚠️  Note: This runs both voice and MQTT listeners")
-    print("   Press Ctrl+C to stop")
-    
+    logger.info("Starting full Jarvis Node system", note="Runs both voice and MQTT listeners. Press Ctrl+C to stop")
+
     try:
         subprocess.run([
             sys.executable, "scripts/main.py"
         ], check=True)
     except KeyboardInterrupt:
-        print("\n🛑 Full system stopped")
+        logger.info("Full system stopped")
     except subprocess.CalledProcessError as e:
-        print(f"❌ Full system failed: {e}")
+        logger.error("Full system failed", error=str(e))
 
 
 def main():
