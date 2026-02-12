@@ -1,5 +1,9 @@
 import time
 
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
+
 
 def get_user_timezone() -> str:
     """
@@ -16,8 +20,6 @@ def get_user_timezone() -> str:
         # Convert offset to hours
         offset_hours = abs(local_offset) // 3600
         offset_minutes = (abs(local_offset) % 3600) // 60
-        
-        # print(f"🔍 Timezone detection: local_offset={local_offset}, offset_hours={offset_hours}, offset_minutes={offset_minutes}")
         
         # Determine if it's ahead or behind UTC
         # Negative offset means ahead of UTC, positive means behind UTC
@@ -60,11 +62,10 @@ def get_user_timezone() -> str:
                 sign = "-"
                 result = f"UTC{sign}{offset_hours:02d}:{offset_minutes:02d}"
         
-        # print(f"🔍 Timezone detection result: {result}")
         return result
         
     except Exception as e:
-        print(f"⚠️  Timezone detection failed: {e}, falling back to UTC")
+        logger.warning("Timezone detection failed, falling back to UTC", error=str(e))
         # Fallback to UTC if detection fails
         return "UTC"
 
@@ -170,8 +171,6 @@ def convert_utc_to_local(utc_datetime_str: str, fallback_to_utc: bool = True):
         
         # Always convert UTC times to local timezone - don't make assumptions about what's already local
         user_tz = get_user_timezone()
-        # print(f"🔍 Converting UTC time {parsed_time} to timezone: {user_tz}")
-        
         try:
             import pytz
             utc_tz = pytz.UTC
@@ -181,17 +180,15 @@ def convert_utc_to_local(utc_datetime_str: str, fallback_to_utc: bool = True):
             if parsed_time.tzinfo is not None:
                 # If it's already timezone-aware, just convert to local time
                 local_time = parsed_time.astimezone(local_tz)
-                # print(f"🔍 Conversion successful: {parsed_time} → {local_time} {user_tz}")
                 return local_time
             else:
                 # If it's naive, localize it first then convert
                 utc_aware = utc_tz.localize(parsed_time)
                 local_time = utc_aware.astimezone(local_tz)
-                # print(f"🔍 Conversion successful: {parsed_time} UTC → {local_time} {user_tz}")
                 return local_time
             
         except Exception as tz_error:
-            print(f"⚠️  Timezone conversion failed: {tz_error}")
+            logger.warning("Timezone conversion failed", error=str(tz_error))
             # If pytz is not available or timezone conversion fails
             if fallback_to_utc:
                 return parsed_time
@@ -199,7 +196,7 @@ def convert_utc_to_local(utc_datetime_str: str, fallback_to_utc: bool = True):
                 return None
                 
     except Exception as parse_error:
-        print(f"⚠️  Date parsing failed: {parse_error}")
+        logger.warning("Date parsing failed", error=str(parse_error))
         # If datetime parsing fails
         if fallback_to_utc:
             return None
@@ -231,7 +228,7 @@ def format_datetime_local(datetime_obj, format_str: str = "%Y-%m-%d %I:%M %p") -
                 local_time = datetime_obj.astimezone(local_tz)
                 return local_time.strftime(format_str)
             except Exception as tz_error:
-                print(f"⚠️  Timezone conversion failed in format_datetime_local: {tz_error}")
+                logger.warning("Timezone conversion failed in format_datetime_local", error=str(tz_error))
                 # Fallback to UTC formatting
                 return datetime_obj.strftime(format_str)
         else:
@@ -239,5 +236,5 @@ def format_datetime_local(datetime_obj, format_str: str = "%Y-%m-%d %I:%M %p") -
             return datetime_obj.strftime(format_str)
             
     except Exception as e:
-        print(f"⚠️  Error in format_datetime_local: {e}")
+        logger.error("Error in format_datetime_local", error=str(e))
         return "TBD"
