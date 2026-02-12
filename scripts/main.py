@@ -22,9 +22,8 @@ logger = JarvisLogger(service="jarvis-node")
 
 def _run_provisioning_and_restart() -> None:
     """Run provisioning server and restart main.py after completion."""
-    logger.info("Starting provisioning server...")
-    print("[jarvis-node] Not provisioned - entering provisioning mode")
-    print("[jarvis-node] Connect to the node's WiFi AP and use the mobile app to provision")
+    logger.info("Not provisioned - entering provisioning mode")
+    logger.info("Connect to the node's WiFi AP and use the mobile app to provision")
 
     from scripts.run_provisioning import run_provisioning_server
 
@@ -33,12 +32,10 @@ def _run_provisioning_and_restart() -> None:
 
     if success:
         logger.info("Provisioning complete, restarting main service...")
-        print("[jarvis-node] Provisioning complete! Restarting...")
         # Re-exec ourselves to start the main service
         os.execv(sys.executable, [sys.executable] + sys.argv)
     else:
         logger.error("Provisioning server stopped without completing")
-        print("[jarvis-node] Provisioning was not completed")
         sys.exit(1)
 
 
