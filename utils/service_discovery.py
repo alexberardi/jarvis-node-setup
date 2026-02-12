@@ -78,13 +78,13 @@ def _get_from_json_config(config_key: str) -> Optional[str]:
     try:
         from utils.config_service import Config
         return Config.get_str(config_key)
-    except Exception:
+    except (ImportError, AttributeError):
         pass  # Config service not available, try next
 
     try:
         from utils.config_loader import Config
         return Config.get(config_key)
-    except Exception:
+    except (ImportError, AttributeError):
         pass  # Config loader not available
 
     return None
@@ -99,7 +99,7 @@ def _get_url(service_name: str) -> str:
             url = get_service_url(service_name)
             if url:
                 return url
-        except Exception:
+        except (ImportError, AttributeError):
             pass  # Config client failed, fall back to JSON config
 
     # Fall back to JSON config

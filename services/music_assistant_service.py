@@ -147,7 +147,7 @@ class MusicAssistantService:
                         "name": player.name,
                         "state": player.state.value if hasattr(player, 'state') and player.state else "unknown"
                     }
-            except Exception:
+            except Exception as e:
                 pass  # Fall back to manual search
 
         # Manual fuzzy search
