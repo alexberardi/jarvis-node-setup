@@ -226,7 +226,7 @@ class SportsScoreCommand(IJarvisCommand):
                         team_games = espn_service.get_team_scores(team_name, espn_date)
                         if team_games:
                             all_games.extend(team_games)
-                    except Exception:
+                    except Exception as e:
                         continue
             
             # If no games found

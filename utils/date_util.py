@@ -235,7 +235,7 @@ def extract_date_from_datetime(datetime_value: str) -> str:
             
         return None
         
-    except Exception:
+    except (ValueError, TypeError, IndexError):
         return None
 
 

@@ -296,7 +296,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     return None
                 except asyncio.TimeoutError:
                     return None
-                except Exception:
+                except OSError:
                     return None
                 
         tasks = []
@@ -571,7 +571,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     return None
                 except asyncio.TimeoutError:
                     return None
-                except Exception:
+                except OSError:
                     return None
                 
         tasks = []

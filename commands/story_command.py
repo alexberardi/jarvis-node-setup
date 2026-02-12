@@ -131,7 +131,7 @@ class StoryCommand(IJarvisCommand):
         else:
             try:
                 word_count = int(raw_wc) if raw_wc is not None else 750
-            except Exception:
+            except (ValueError, TypeError):
                 word_count = 750
 
         # subject
@@ -146,11 +146,11 @@ class StoryCommand(IJarvisCommand):
         if age is None:
             try:
                 age = get_secret_value_int("JARVIS_STORY_TARGET_AUDIENCE_AGE_DEFAULT", "integration")
-            except Exception:
+            except (KeyError, ValueError, TypeError):
                 age = None
         try:
             target_age = int(age) if age is not None else 5
-        except Exception:
+        except (ValueError, TypeError):
             target_age = 5
 
         # ---- LLM client ----
