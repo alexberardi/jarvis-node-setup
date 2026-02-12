@@ -9,7 +9,7 @@
   "voice": "en",
   "mqtt_broker": "your-mqtt-broker.local",
   "mqtt_port": 1884,
-  "mqtt_topic": "home/nodes/your-node-id/#",
+  "mqtt_topic": "jarvis/nodes/your-node-id/#",
   "mqtt_username": "",
   "mqtt_password": "",
   "porcupine_key": "your_porcupine_key_here",
