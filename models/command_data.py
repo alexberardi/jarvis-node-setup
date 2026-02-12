@@ -15,7 +15,6 @@ Example uses:
 """
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import Column, DateTime, String, Text, UniqueConstraint
 
