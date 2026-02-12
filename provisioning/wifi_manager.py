@@ -676,7 +676,7 @@ log-dhcp
             # Still try to restore network services
             try:
                 self._restore_network_services()
-            except Exception:
+            except Exception as e:
                 pass
             return True  # Best effort - still return True
 

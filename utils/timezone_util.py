@@ -128,7 +128,7 @@ def is_dst_active(timezone_name: str) -> bool:
         
         return current_month in dst_months
         
-    except Exception:
+    except (OSError, OverflowError):
         return False
 
 
@@ -142,7 +142,7 @@ def get_current_timezone_offset() -> int:
     try:
         local_offset = time.timezone if not time.daylight else time.altzone
         return -(local_offset // 3600)  # Convert to hours and flip sign for intuitive use
-    except Exception:
+    except (OSError, AttributeError):
         return 0
 
 

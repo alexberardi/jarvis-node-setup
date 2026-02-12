@@ -228,7 +228,7 @@ class OpenWeatherCommand(IJarvisCommand):
                                 "weather_type": "current"
                             }
                         )
-            except Exception:
+            except Exception as e:
                 pass
 
         # Handle forecast for specific datetimes
