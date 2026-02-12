@@ -72,10 +72,9 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     """
     # Initialize K1 encryption key if not present (required for K2 storage)
     secret_dir = get_secret_dir()
-    print(f"[provisioning] Secret directory: {secret_dir}")
     logger.info("Initializing encryption key", secret_dir=str(secret_dir))
     initialize_encryption_key()
-    print("[provisioning] ✅ Encryption key (K1) ready")
+    logger.info("Encryption key (K1) ready")
 
     # Get configuration from environment
     port = int(os.environ.get("JARVIS_PROVISIONING_PORT", "8080"))
@@ -86,7 +85,6 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     backend = os.environ.get("JARVIS_WIFI_BACKEND", "").lower()
     if not backend and _is_raspberry_pi() and not is_simulated:
         os.environ["JARVIS_WIFI_BACKEND"] = "hostapd"
-        print("[provisioning] Auto-detected Raspberry Pi, using hostapd backend")
         logger.info("Auto-detected Raspberry Pi, using hostapd backend")
 
     # Get appropriate WiFi manager
@@ -94,15 +92,12 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
 
     mode = "SIMULATION" if is_simulated else "REAL"
     backend_name = os.environ.get("JARVIS_WIFI_BACKEND", "networkmanager")
-    print(f"[provisioning] Starting server mode={mode} port={port} backend={backend_name}")
     logger.info("Starting provisioning server", mode=mode, port=port, backend=backend_name)
 
     if is_simulated:
-        print("[provisioning] Using simulated WiFi manager")
         logger.info("Using simulated WiFi manager")
     else:
-        print(f"[provisioning] Using {backend_name} for WiFi operations")
-        logger.info(f"Using {backend_name} for WiFi operations")
+        logger.info("Using backend for WiFi operations", backend=backend_name)
 
     # On real Pi, scan networks BEFORE entering AP mode, then start AP
     if not is_simulated:
@@ -112,22 +107,17 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
 
         # Scan and cache networks BEFORE entering AP mode
         # (WiFi adapter can't scan while acting as an AP)
-        print("[provisioning] Scanning for available networks...")
         logger.info("Scanning networks before AP mode")
         networks = wifi_manager.scan_and_cache()
-        print(f"[provisioning] Found {len(networks)} networks")
         logger.info("Network scan complete", count=len(networks))
         for net in networks[:5]:  # Log first 5
-            print(f"  - {net.ssid} ({net.signal_strength} dBm)")
+            logger.debug("Found network", ssid=net.ssid, signal_strength=net.signal_strength)
 
         # Now start AP mode
-        print(f"[provisioning] Starting AP mode with SSID: {ap_ssid}")
         logger.info("Starting AP mode", ssid=ap_ssid)
         if wifi_manager.start_ap_mode(ap_ssid):
-            print(f"[provisioning] ✅ AP mode active: {ap_ssid}")
             logger.info("AP mode active", ssid=ap_ssid)
         else:
-            print(f"[provisioning] ⚠️ Could not start AP mode")
             logger.warning("Could not start AP mode, connect to node IP directly")
 
     # Set up shutdown callback if auto_shutdown is enabled
@@ -140,7 +130,6 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     logger.info("Waiting for mobile app connection...")
 
     if auto_shutdown:
-        print("[provisioning] Auto-shutdown enabled: server will stop after provisioning")
         logger.info("Auto-shutdown enabled")
 
     uvicorn.run(app, host="0.0.0.0", port=port)
