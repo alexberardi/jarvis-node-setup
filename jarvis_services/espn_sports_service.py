@@ -1,7 +1,10 @@
-from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
-from enum import Enum
 import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Dict, List, Optional, Tuple
+
+import requests
 
 
 class League(Enum):
@@ -525,10 +528,6 @@ class TeamNameResolver:
         
         return matches
 
-
-import requests
-from datetime import datetime, timedelta
-from typing import Optional
 
 # NOTE: ESPN API returns all dates in UTC format (e.g., "2025-08-19T18:20Z")
 # We convert these to the user's local timezone for display

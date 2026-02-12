@@ -786,10 +786,10 @@ def _maybe_parse_list_string(value: Any) -> Optional[list]:
         return None
     try:
         parsed = json.loads(stripped)
-    except Exception:
+    except (json.JSONDecodeError, ValueError, TypeError):
         try:
             parsed = ast.literal_eval(stripped)
-        except Exception:
+        except (ValueError, SyntaxError):
             return None
     return parsed if isinstance(parsed, list) else None
 
@@ -807,7 +807,7 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
         mapping["tomorrow"] = [date_context.relative_dates.tomorrow.date[:10] if hasattr(date_context.relative_dates.tomorrow, 'date') else date_context.relative_dates.tomorrow.utc_start_of_day[:10]]
         mapping["yesterday"] = [date_context.relative_dates.yesterday.date[:10] if hasattr(date_context.relative_dates.yesterday, 'date') else date_context.relative_dates.yesterday.utc_start_of_day[:10]]
         mapping["day_after_tomorrow"] = [date_context.relative_dates.day_after_tomorrow.date[:10] if hasattr(date_context.relative_dates.day_after_tomorrow, 'date') else date_context.relative_dates.day_after_tomorrow.utc_start_of_day[:10]]
-    except Exception:
+    except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
     # Weekend dates (lists)
@@ -818,7 +818,7 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
             mapping["last_weekend"] = [d.date[:10] for d in date_context.weekend.last_weekend]
         if date_context.weekend.next_weekend:
             mapping["next_weekend"] = [d.date[:10] for d in date_context.weekend.next_weekend]
-    except Exception:
+    except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
     # Week dates (lists)
@@ -829,7 +829,7 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
             mapping["this_week"] = [d.date[:10] for d in date_context.weeks.this_week]
         if date_context.weeks.last_week:
             mapping["last_week"] = [d.date[:10] for d in date_context.weeks.last_week]
-    except Exception:
+    except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
     # Weekday dates
@@ -841,7 +841,7 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
         mapping["next_friday"] = [date_context.weekdays.next_friday.date[:10]]
         mapping["next_saturday"] = [date_context.weekdays.next_saturday.date[:10]]
         mapping["next_sunday"] = [date_context.weekdays.next_sunday.date[:10]]
-    except Exception:
+    except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
     # Time-of-day variants map to same date as their base
@@ -860,7 +860,7 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
         mapping["yesterday_morning"] = [yesterday_date]
         mapping["yesterday_afternoon"] = [yesterday_date]
         mapping["yesterday_evening"] = [yesterday_date]
-    except Exception:
+    except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
     return mapping
@@ -887,7 +887,7 @@ def _normalize_datetime_value(value: Any, date_key_map: Optional[Dict[str, List[
         try:
             local_tz = ZoneInfo("America/New_York")
         except Exception:
-            local_tz = datetime.timezone(datetime.timedelta(hours=-5))
+            local_tz = datetime.timezone(datetime.timedelta(hours=-5))  # noqa: DTZ001
 
     if isinstance(value, datetime.datetime):
         if value.tzinfo is not None:
@@ -914,7 +914,7 @@ def _normalize_datetime_value(value: Any, date_key_map: Optional[Dict[str, List[
             local_dt = parsed.astimezone(local_tz)
             return local_dt.date().isoformat()
         return parsed.date().isoformat()
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         pass
     # Fallback: if it looks like a date string, extract it
     if len(stripped) >= 10 and stripped[4:5] == "-" and stripped[7:8] == "-":
@@ -982,7 +982,7 @@ def _normalize_tool_call(tool_call: Any) -> Optional[dict]:
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
-        except Exception:
+        except (json.JSONDecodeError, ValueError, TypeError):
             pass
     if arguments is None:
         arguments = {}
@@ -1006,7 +1006,7 @@ def _extract_tool_call_from_assistant_message(response: Any, response_dict: Opti
         return None
     try:
         parsed = json.loads(message.strip())
-    except Exception:
+    except (json.JSONDecodeError, ValueError, TypeError):
         return None
     if not isinstance(parsed, dict):
         return None
@@ -1162,7 +1162,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         try:
             if date_context and date_context.timezone and date_context.timezone.user_timezone:
                 local_tz = ZoneInfo(date_context.timezone.user_timezone)
-        except Exception:
+        except (KeyError, AttributeError, ValueError):
             pass  # Will fall back to EST default in normalization
 
         # test_index is now passed as a parameter
@@ -1794,7 +1794,7 @@ def main():
     print(f"✅ Results written to {args.output}")
 
     # Also write to JCC temp location for server-side tooling
-    jcc_results_path = "/home/alex/jarvis/jarvis-command-center/temp/test_results.json"
+    jcc_results_path = "/Users/alexanderberardi/jarvis/jarvis-command-center/temp/test_results.json"
     write_results_to_file(jcc_results_path, {
         "summary": {
             "total_tests": len(test_commands_to_run),
