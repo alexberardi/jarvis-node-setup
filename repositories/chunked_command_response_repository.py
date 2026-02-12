@@ -1,5 +1,4 @@
 from typing import Optional, List
-from uuid import UUID
 from sqlalchemy.orm import Session
 
 from models.chunked_command_response import (

@@ -1,4 +1,4 @@
-from typing import List, Any, Optional
+from typing import List
 from pydantic import BaseModel
 
 from constants.relative_date_keys import RelativeDateKeys
@@ -7,10 +7,9 @@ from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 from core.command_response import CommandResponse
-from jarvis_services.espn_sports_service import ESPNSportsService, League
+from jarvis_services.espn_sports_service import ESPNSportsService
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from utils.config_service import Config
-from utils.date_util import extract_dates_from_datetimes
 from utils.timezone_util import format_datetime_local
 
 
