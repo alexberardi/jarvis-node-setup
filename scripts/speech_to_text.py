@@ -1,12 +1,13 @@
-import json
-import os
-from typing import List, Any
+from typing import List
 
 import numpy as np
 import pyaudio
 import wave
 
+from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 def get_audio_config() -> dict:
@@ -48,7 +49,7 @@ def calculate_rms(audio_data: bytes) -> float:
 
 
 def listen() -> str:
-    print("🎙️ Listening for speech...")
+    logger.info("Listening for speech...")
     
     config = get_audio_config()
     OUTPUT_FILENAME: str = "/tmp/command.wav"
@@ -70,8 +71,7 @@ def listen() -> str:
     min_record_frames: int = int(config["min_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
     max_record_frames: int = int(config["max_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
     
-    print(f"🔊 Silence threshold: {config['silence_threshold']} RMS, Duration: {config['silence_duration']}s")
-    print(f"⏱️ Min: {config['min_record_seconds']}s, Max: {config['max_record_seconds']}s")
+    logger.debug("Audio config", silence_threshold=config['silence_threshold'], silence_duration=config['silence_duration'], min_seconds=config['min_record_seconds'], max_seconds=config['max_record_seconds'])
 
     for frame_count in range(max_record_frames):
         data: bytes = stream.read(config["frames_per_buffer"], exception_on_overflow=False)
@@ -89,16 +89,16 @@ def listen() -> str:
         # Stop if we've had enough silence and minimum recording time
         if (silence_frames >= silence_threshold_frames and 
             frame_count >= min_record_frames):
-            print(f"🔇 Detected {config['silence_duration']}s of silence, stopping recording")
+            logger.debug("Silence detected, stopping recording", silence_duration=config['silence_duration'])
             break
         
         # Optional: Print progress for debugging
         if frame_count % 50 == 0:  # Every ~1.6 seconds at 48kHz
             elapsed = frame_count * config["frames_per_buffer"] / config["sample_rate"]
-            print(f"⏱️ Recording: {elapsed:.1f}s, RMS: {rms:.0f}, Silence: {silence_frames}/{silence_threshold_frames}")
+            logger.debug("Recording progress", elapsed=f"{elapsed:.1f}s", rms=f"{rms:.0f}", silence_frames=silence_frames, silence_threshold_frames=silence_threshold_frames)
 
     actual_duration = len(frames) * config["frames_per_buffer"] / config["sample_rate"]
-    print(f"🛑 Recording complete. Duration: {actual_duration:.2f}s")
+    logger.info("Recording complete", duration=f"{actual_duration:.2f}s")
 
     stream.stop_stream()
     stream.close()
