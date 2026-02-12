@@ -14,7 +14,6 @@ from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
 from services.home_assistant_service import (
-    DOMAIN_ACTIONS,
     HomeAssistantService,
     get_action_display_name,
     get_actions_for_domain,

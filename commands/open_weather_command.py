@@ -1,6 +1,6 @@
 import datetime
 import requests
-from typing import List, Any, Optional
+from typing import List
 
 from jarvis_log_client import JarvisLogger
 

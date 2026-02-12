@@ -7,7 +7,6 @@ Provides endpoints for the mobile app to provision headless Pi Zero nodes.
 import json
 import os
 import platform
-import signal
 import threading
 import uuid
 from pathlib import Path
@@ -19,7 +18,6 @@ from fastapi.responses import Response, PlainTextResponse
 from provisioning.models import (
     K2ProvisionRequest,
     K2ProvisionResponse,
-    NetworkInfo,
     NodeInfo,
     ProvisioningState,
     ProvisionRequest,
