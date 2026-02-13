@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+from jarvis_log_client import JarvisLogger
+
 from utils.timezone_util import get_user_timezone
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 def get_example_date_with_offset(offset: Optional[int] = 0, user_timezone: str = None) -> str:
@@ -49,7 +53,7 @@ def get_example_date_with_offset(offset: Optional[int] = 0, user_timezone: str =
         
     except ImportError:
         # Fallback if pytz is not available
-        print(f"⚠️  pytz not available, using fallback timezone calculation for {user_timezone}")
+        logger.warning("pytz not available, using fallback timezone calculation", timezone=user_timezone)
         
         # Simple offset-based calculation (less accurate but functional)
         from timezone_util import get_timezone_offset

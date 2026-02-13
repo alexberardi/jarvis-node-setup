@@ -123,7 +123,7 @@ class OpenWeatherCommand(IJarvisCommand):
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("city", "string", required=False, default=None, description="City name as spoken. Optional; omit to use the user's default location."),
-            JarvisParameter("resolved_datetimes", "array<string>", required=True, description="Date keys like 'today', 'tomorrow', 'this_weekend' (max 5 days). Always required; use 'today' for current weather."),
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys like 'today', 'tomorrow', 'this_weekend' (max 5 days). Always required; use 'today' for current weather."),
             JarvisParameter("unit_system", "string", required=False, default=None, description="Unit system: 'metric' or 'imperial'. Omit to use the user's default."),
         ]
 

@@ -1,12 +1,15 @@
 import asyncio
 import json
 import threading
-import time
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 import websockets
 
+from jarvis_log_client import JarvisLogger
+
 from utils.config_service import Config
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class MusicAssistantService:
@@ -34,7 +37,7 @@ class MusicAssistantService:
             self.connected = True
             await self._get_players_async()
         except Exception as e:
-            print(f"[MA] Connection failed: {e}")
+            logger.error("Music Assistant connection failed", error=str(e))
             self.connected = False
             await asyncio.sleep(5)
             await self._connect()
@@ -48,7 +51,7 @@ class MusicAssistantService:
 
     async def _send_command(self, command: str, payload: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         if not self.ws or self.ws.closed:
-            print("[MA] WebSocket not open. Reconnecting...")
+            logger.warning("Music Assistant WebSocket not open, reconnecting")
             await self._connect()
 
         self.message_id += 1
@@ -66,7 +69,7 @@ class MusicAssistantService:
                 response: str = await self.ws.recv()
                 return json.loads(response)
         except Exception as e:
-            print(f"[MA] Command failed: {e}")
+            logger.error("Music Assistant command failed", error=str(e))
             self.connected = False
             return None
 
@@ -88,7 +91,7 @@ class MusicAssistantService:
             player = self.player_cache.get(player_name)
 
         if not player:
-            print(f"[MA] Player '{player_name}' not found.")
+            logger.warning("Music Assistant player not found", player_name=player_name)
             return None
 
         payload: Dict[str, Any] = {

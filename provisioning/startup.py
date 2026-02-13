@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from jarvis_log_client import JarvisLogger
 
 from utils.encryption_utils import get_secret_dir
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 def _get_provisioned_marker() -> Path:
@@ -100,10 +103,10 @@ def is_provisioned(max_retries: int = 10, retry_delay: float = 3.0) -> bool:
         if _can_reach_command_center(url):
             return True
         if attempt < max_retries - 1:
-            print(f"[startup] Waiting for network... attempt {attempt + 1}/{max_retries}")
+            logger.info(f"Waiting for network... attempt {attempt + 1}/{max_retries}")
             time.sleep(retry_delay)
 
-    print("[startup] Could not reach command center after retries")
+    logger.warning("Could not reach command center after retries")
     return False
 
 

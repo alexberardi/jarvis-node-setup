@@ -1,13 +1,13 @@
 {
   "summary": {
-    "total_tests": 89,
-    "passed": 88,
-    "failed": 1,
-    "success_rate": 98.88,
-    "avg_response_time": 0.852,
-    "min_response_time": 0.679,
-    "max_response_time": 3.621,
-    "test_run_timestamp": "2026-02-07 13:57:53"
+    "total_tests": 72,
+    "passed": 48,
+    "failed": 24,
+    "success_rate": 66.67,
+    "avg_response_time": 2.663,
+    "min_response_time": 1.755,
+    "max_response_time": 30.006,
+    "test_run_timestamp": "2026-02-13 16:29:11"
   },
   "test_results": [
     {
@@ -27,30 +27,28 @@
         "command": "get_weather",
         "parameters": {
           "resolved_datetimes": [
-            "today"
-          ],
-          "city": "",
-          "unit_system": "imperial"
+            "2026-02-13T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 3.621,
-      "conversation_id": "e31786a7-c637-472d-9053-fdc279ef2c4a",
+      "response_time_seconds": 2.156,
+      "conversation_id": "0b87246a-f316-4809-aa04-c1578822ec4b",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the weather like?",
-          "conversation_id": "e31786a7-c637-472d-9053-fdc279ef2c4a"
+          "conversation_id": "0b87246a-f316-4809-aa04-c1578822ec4b"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_4621e9ae4715",
+            "id": "call_3f3d69bf8e8d",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"city\": \"\", \"unit_system\": \"imperial\"}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -59,7 +57,7 @@
     },
     {
       "test_number": 1,
-      "passed": true,
+      "passed": false,
       "description": "Current weather with city specified",
       "voice_command": "What's the weather in Miami?",
       "expected": {
@@ -74,31 +72,27 @@
       "actual": {
         "command": "get_weather",
         "parameters": {
-          "city": "Miami",
-          "resolved_datetimes": [
-            "today"
-          ],
-          "unit_system": "imperial"
+          "city": "Miami"
         }
       },
-      "response_time_seconds": 0.919,
-      "conversation_id": "47bd375a-daf6-471a-b18a-d56ff3fb5010",
-      "failure_reason": null,
+      "response_time_seconds": 2.014,
+      "conversation_id": "15e6bfcb-3f9f-4a2d-86cc-ae141656fd16",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the weather in Miami?",
-          "conversation_id": "47bd375a-daf6-471a-b18a-d56ff3fb5010"
+          "conversation_id": "15e6bfcb-3f9f-4a2d-86cc-ae141656fd16"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_9f53728a0738",
+            "id": "call_a423f74a2445",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"Miami\", \"resolved_datetimes\": [\"today\"], \"unit_system\": \"imperial\"}"
+              "arguments": "{\"city\": \"Miami\"}"
             }
           }
         ],
@@ -124,29 +118,28 @@
         "parameters": {
           "city": "New York",
           "resolved_datetimes": [
-            "today"
-          ],
-          "unit_system": "imperial"
+            "2026-02-13T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.946,
-      "conversation_id": "c129902e-9b41-4fd9-842d-a29181f2622d",
+      "response_time_seconds": 2.454,
+      "conversation_id": "67b7a3cc-d2cf-4f92-8efe-710567ff957d",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How's the weather in New York today?",
-          "conversation_id": "c129902e-9b41-4fd9-842d-a29181f2622d"
+          "conversation_id": "67b7a3cc-d2cf-4f92-8efe-710567ff957d"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_d1bb74938668",
+            "id": "call_bfe44ba94249",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"New York\", \"resolved_datetimes\": [\"today\"], \"unit_system\": \"imperial\"}"
+              "arguments": "{\"city\": \"New York\", \"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -172,29 +165,28 @@
         "parameters": {
           "city": "Los Angeles",
           "resolved_datetimes": [
-            "tomorrow"
-          ],
-          "unit_system": "imperial"
+            "2026-02-14T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.942,
-      "conversation_id": "50f83672-5d2a-4ab2-9d30-f191b63d9c8c",
+      "response_time_seconds": 2.481,
+      "conversation_id": "e6fbddae-f0a4-42dc-855c-2a1d0f2fc0e9",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the forecast for Los Angeles tomorrow?",
-          "conversation_id": "50f83672-5d2a-4ab2-9d30-f191b63d9c8c"
+          "conversation_id": "e6fbddae-f0a4-42dc-855c-2a1d0f2fc0e9"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_bb888a2e3940",
+            "id": "call_c7fbd503cb8a",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"Los Angeles\", \"resolved_datetimes\": [\"tomorrow\"], \"unit_system\": \"imperial\"}"
+              "arguments": "{\"city\": \"Los Angeles\", \"resolved_datetimes\": [\"2026-02-14T05:00:00Z\"]}"
             }
           }
         ],
@@ -219,29 +211,30 @@
         "command": "get_weather",
         "parameters": {
           "city": "Chicago",
+          "day_key": "day_after_tomorrow",
           "resolved_datetimes": [
-            "day_after_tomorrow"
+            "2026-02-15T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.871,
-      "conversation_id": "5476952b-3fa9-4ad2-a531-7e748bc1bdb9",
+      "response_time_seconds": 2.46,
+      "conversation_id": "f713cdda-d38d-4f3d-a64b-c5633d306a6f",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Weather forecast for Chicago on the day after tomorrow",
-          "conversation_id": "5476952b-3fa9-4ad2-a531-7e748bc1bdb9"
+          "conversation_id": "f713cdda-d38d-4f3d-a64b-c5633d306a6f"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_4edace89df5d",
+            "id": "call_ba5ad8ea4881",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"Chicago\", \"resolved_datetimes\": [\"day_after_tomorrow\"]}"
+              "arguments": "{\"city\": \"Chicago\", \"day_key\": \"day_after_tomorrow\", \"resolved_datetimes\": [\"2026-02-15T05:00:00Z\"]}"
             }
           }
         ],
@@ -250,7 +243,7 @@
     },
     {
       "test_number": 5,
-      "passed": true,
+      "passed": false,
       "description": "Current weather with unit system specified",
       "voice_command": "What's the weather like in metric units?",
       "expected": {
@@ -265,30 +258,30 @@
       "actual": {
         "command": "get_weather",
         "parameters": {
+          "location": "metric",
           "resolved_datetimes": [
-            "today"
-          ],
-          "unit_system": "metric"
+            "2026-02-13T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.817,
-      "conversation_id": "c697aded-11ef-45a8-8a60-37d14faca279",
-      "failure_reason": null,
+      "response_time_seconds": 2.882,
+      "conversation_id": "236f5d05-0947-4e5a-8be8-be9d89676719",
+      "failure_reason": "Parameter validation failed: Missing: unit_system. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the weather like in metric units?",
-          "conversation_id": "c697aded-11ef-45a8-8a60-37d14faca279"
+          "conversation_id": "236f5d05-0947-4e5a-8be8-be9d89676719"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_521e96c2ed47",
+            "id": "call_0fb8cf614c89",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"unit_system\": \"metric\"}"
+              "arguments": "{\"location\": \"metric\", \"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -314,29 +307,28 @@
         "parameters": {
           "city": "Seattle",
           "resolved_datetimes": [
-            "this_weekend"
-          ],
-          "unit_system": "imperial"
+            "2026-02-14T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.947,
-      "conversation_id": "50e0b43b-6ed2-462c-b82b-b34fcc263f6d",
+      "response_time_seconds": 2.44,
+      "conversation_id": "ef8c9b34-bc7e-490c-b855-5072195c2105",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What is the forecast for Seattle this weekend",
-          "conversation_id": "50e0b43b-6ed2-462c-b82b-b34fcc263f6d"
+          "conversation_id": "ef8c9b34-bc7e-490c-b855-5072195c2105"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_29f48b947546",
+            "id": "call_21c343f4409a",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"Seattle\", \"resolved_datetimes\": [\"this_weekend\"], \"unit_system\": \"imperial\"}"
+              "arguments": "{\"city\": \"Seattle\", \"resolved_datetimes\": [\"2026-02-14T05:00:00Z\"]}"
             }
           }
         ],
@@ -360,28 +352,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "today"
+            "2026-02-13T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.763,
-      "conversation_id": "4594daa5-19a2-4c80-af9d-0b4c39ad4a7b",
+      "response_time_seconds": 2.179,
+      "conversation_id": "b3f8a081-83cb-4a24-8ff4-59761959fd5d",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's on my calendar today?",
-          "conversation_id": "4594daa5-19a2-4c80-af9d-0b4c39ad4a7b"
+          "conversation_id": "b3f8a081-83cb-4a24-8ff4-59761959fd5d"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_a908abbabb54",
+            "id": "call_29a2d161b4d0",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"today\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -405,28 +397,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "tomorrow"
+            "2026-02-14T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.771,
-      "conversation_id": "1486da6e-adeb-4a68-ae45-b785c5eae2a5",
+      "response_time_seconds": 2.214,
+      "conversation_id": "81e68e23-5fd0-4a26-8976-1326575f6070",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Show me my schedule for tomorrow",
-          "conversation_id": "1486da6e-adeb-4a68-ae45-b785c5eae2a5"
+          "conversation_id": "81e68e23-5fd0-4a26-8976-1326575f6070"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_6285453d69c9",
+            "id": "call_c4d6a3cf5d5e",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"tomorrow\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-14T05:00:00Z\"]}"
             }
           }
         ],
@@ -450,28 +442,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "day_after_tomorrow"
+            "2026-02-15T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.822,
-      "conversation_id": "1ad845bd-14b6-413b-b231-0873c61e9cfb",
+      "response_time_seconds": 2.378,
+      "conversation_id": "4090952e-3e80-4f62-9f0b-fcaec9081ec2",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What appointments do I have the day after tomorrow?",
-          "conversation_id": "1ad845bd-14b6-413b-b231-0873c61e9cfb"
+          "conversation_id": "4090952e-3e80-4f62-9f0b-fcaec9081ec2"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_1a53e785f9b4",
+            "id": "call_5e616ee8fc24",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"day_after_tomorrow\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-15T05:00:00Z\"]}"
             }
           }
         ],
@@ -495,28 +487,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "this_weekend"
+            "2026-02-14T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.767,
-      "conversation_id": "48ebbc91-7a9b-4ae9-a8f2-de984c098cbf",
+      "response_time_seconds": 1.972,
+      "conversation_id": "45406e98-6858-4ef2-a02a-a14789d536bd",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Show my calendar for this weekend",
-          "conversation_id": "48ebbc91-7a9b-4ae9-a8f2-de984c098cbf"
+          "conversation_id": "45406e98-6858-4ef2-a02a-a14789d536bd"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_58cd54bf0be1",
+            "id": "call_1e7084b8051e",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"this_weekend\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-14T05:00:00Z\"]}"
             }
           }
         ],
@@ -540,28 +532,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "next_week"
+            "2026-02-15T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.772,
-      "conversation_id": "78384cc8-ba8e-4f22-a8f0-19d5cf3fff3b",
+      "response_time_seconds": 2.243,
+      "conversation_id": "aab96e4f-13c2-453a-a59a-f605a7b4144d",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What meetings do I have next week?",
-          "conversation_id": "78384cc8-ba8e-4f22-a8f0-19d5cf3fff3b"
+          "conversation_id": "aab96e4f-13c2-453a-a59a-f605a7b4144d"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_37f4421cb1d4",
+            "id": "call_baa0a3fa0666",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"next_week\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-15T05:00:00Z\"]}"
             }
           }
         ],
@@ -585,28 +577,28 @@
         "command": "get_calendar_events",
         "parameters": {
           "resolved_datetimes": [
-            "today"
+            "2026-02-13T05:00:00Z"
           ]
         }
       },
-      "response_time_seconds": 0.763,
-      "conversation_id": "50fddf6f-194e-4fd1-9dfb-4fb7b7523246",
+      "response_time_seconds": 2.177,
+      "conversation_id": "c82236c9-0a0b-4a69-bcf3-c384fac36c26",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Read my calendar",
-          "conversation_id": "50fddf6f-194e-4fd1-9dfb-4fb7b7523246"
+          "conversation_id": "c82236c9-0a0b-4a69-bcf3-c384fac36c26"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_969e739ce275",
+            "id": "call_873de9ed3fb6",
             "type": "function",
             "function": {
               "name": "get_calendar_events",
-              "arguments": "{\"resolved_datetimes\": [\"today\"]}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -615,7 +607,7 @@
     },
     {
       "test_number": 13,
-      "passed": true,
+      "passed": false,
       "description": "Basic knowledge question",
       "voice_command": "What is the capital of France?",
       "expected": {
@@ -627,27 +619,27 @@
       "actual": {
         "command": "answer_question",
         "parameters": {
-          "query": "What is the capital of France?"
+          "question": "What is the capital of France?"
         }
       },
-      "response_time_seconds": 0.767,
-      "conversation_id": "9541196a-338d-43b3-8a57-e7132c6a5e9e",
-      "failure_reason": null,
+      "response_time_seconds": 2.254,
+      "conversation_id": "b96e68d4-c77b-41f7-96bd-83b7450a1791",
+      "failure_reason": "Parameter validation failed: Missing: query. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What is the capital of France?",
-          "conversation_id": "9541196a-338d-43b3-8a57-e7132c6a5e9e"
+          "conversation_id": "b96e68d4-c77b-41f7-96bd-83b7450a1791"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_7b9f3c00579c",
+            "id": "call_5f26187b2436",
             "type": "function",
             "function": {
               "name": "answer_question",
-              "arguments": "{\"query\": \"What is the capital of France?\"}"
+              "arguments": "{\"question\": \"What is the capital of France?\"}"
             }
           }
         ],
@@ -671,20 +663,20 @@
           "query": "Who was Albert Einstein?"
         }
       },
-      "response_time_seconds": 0.759,
-      "conversation_id": "71a825c2-d8e5-4657-b091-8970faff69c2",
+      "response_time_seconds": 2.171,
+      "conversation_id": "e9a1fa2f-84bb-4880-a1e1-973719d620b7",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Who was Albert Einstein?",
-          "conversation_id": "71a825c2-d8e5-4657-b091-8970faff69c2"
+          "conversation_id": "e9a1fa2f-84bb-4880-a1e1-973719d620b7"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_5c17dfa4e387",
+            "id": "call_d978246616cf",
             "type": "function",
             "function": {
               "name": "answer_question",
@@ -697,7 +689,7 @@
     },
     {
       "test_number": 15,
-      "passed": true,
+      "passed": false,
       "description": "Historical knowledge question",
       "voice_command": "When did World War II end?",
       "expected": {
@@ -709,27 +701,27 @@
       "actual": {
         "command": "answer_question",
         "parameters": {
-          "query": "When did World War II end?"
+          "question": "When did World War II end?"
         }
       },
-      "response_time_seconds": 0.785,
-      "conversation_id": "65b38a54-87d8-4491-b61e-bc7ffddfdd72",
-      "failure_reason": null,
+      "response_time_seconds": 2.246,
+      "conversation_id": "95b7be5e-bb5e-4cac-9c3d-14202dc44f63",
+      "failure_reason": "Parameter validation failed: Missing: query. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "When did World War II end?",
-          "conversation_id": "65b38a54-87d8-4491-b61e-bc7ffddfdd72"
+          "conversation_id": "95b7be5e-bb5e-4cac-9c3d-14202dc44f63"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_1e3a74e9a950",
+            "id": "call_597c1d6a2e96",
             "type": "function",
             "function": {
               "name": "answer_question",
-              "arguments": "{\"query\": \"When did World War II end?\"}"
+              "arguments": "{\"question\": \"When did World War II end?\"}"
             }
           }
         ],
@@ -753,20 +745,20 @@
           "query": "How does photosynthesis work?"
         }
       },
-      "response_time_seconds": 0.752,
-      "conversation_id": "7c8f3272-799c-4252-aefc-cd23e68dd624",
+      "response_time_seconds": 2.206,
+      "conversation_id": "050ca3b6-9969-4848-917c-4ae0863646bc",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How does photosynthesis work?",
-          "conversation_id": "7c8f3272-799c-4252-aefc-cd23e68dd624"
+          "conversation_id": "050ca3b6-9969-4848-917c-4ae0863646bc"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_51f616f40f68",
+            "id": "call_3d2ecfe8ebe6",
             "type": "function",
             "function": {
               "name": "answer_question",
@@ -779,7 +771,7 @@
     },
     {
       "test_number": 17,
-      "passed": true,
+      "passed": false,
       "description": "Geography knowledge question",
       "voice_command": "Where is Mount Everest located?",
       "expected": {
@@ -789,28 +781,28 @@
         }
       },
       "actual": {
-        "command": "answer_question",
+        "command": "get_location",
         "parameters": {
           "query": "Where is Mount Everest located?"
         }
       },
-      "response_time_seconds": 0.766,
-      "conversation_id": "fa1b5767-0d08-4416-99e5-a654489c37ef",
-      "failure_reason": null,
+      "response_time_seconds": 2.203,
+      "conversation_id": "dfdb90b0-bebe-48b8-9e32-76b9bdd6d87b",
+      "failure_reason": "Command mismatch: expected 'answer_question', got 'get_location'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Where is Mount Everest located?",
-          "conversation_id": "fa1b5767-0d08-4416-99e5-a654489c37ef"
+          "conversation_id": "dfdb90b0-bebe-48b8-9e32-76b9bdd6d87b"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_e47434ebd73b",
+            "id": "call_937e2550407c",
             "type": "function",
             "function": {
-              "name": "answer_question",
+              "name": "get_location",
               "arguments": "{\"query\": \"Where is Mount Everest located?\"}"
             }
           }
@@ -820,7 +812,7 @@
     },
     {
       "test_number": 18,
-      "passed": true,
+      "passed": false,
       "description": "Complex topic explanation request",
       "voice_command": "Explain quantum physics",
       "expected": {
@@ -830,29 +822,29 @@
         }
       },
       "actual": {
-        "command": "answer_question",
+        "command": "explain_concept",
         "parameters": {
-          "query": "Explain quantum physics"
+          "concept": "quantum physics"
         }
       },
-      "response_time_seconds": 0.746,
-      "conversation_id": "0fcee1fb-683a-4d2e-b056-ef9e7cfd3966",
-      "failure_reason": null,
+      "response_time_seconds": 2.156,
+      "conversation_id": "938b3313-115b-40fc-b51d-dd124207d1f3",
+      "failure_reason": "Command mismatch: expected 'answer_question', got 'explain_concept'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Explain quantum physics",
-          "conversation_id": "0fcee1fb-683a-4d2e-b056-ef9e7cfd3966"
+          "conversation_id": "938b3313-115b-40fc-b51d-dd124207d1f3"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_887158595a8f",
+            "id": "call_5a31cc717531",
             "type": "function",
             "function": {
-              "name": "answer_question",
-              "arguments": "{\"query\": \"Explain quantum physics\"}"
+              "name": "explain_concept",
+              "arguments": "{\"concept\": \"quantum physics\"}"
             }
           }
         ],
@@ -861,7 +853,7 @@
     },
     {
       "test_number": 19,
-      "passed": true,
+      "passed": false,
       "description": "Current election results search",
       "voice_command": "Who won the senate race in Pennsylvania?",
       "expected": {
@@ -871,29 +863,30 @@
         }
       },
       "actual": {
-        "command": "get_web_search_results",
+        "command": "get_sports_schedule",
         "parameters": {
-          "query": "Who won the senate race in Pennsylvania?"
+          "location": "Pennsylvania",
+          "team_name": "Senate"
         }
       },
-      "response_time_seconds": 0.812,
-      "conversation_id": "ab373ba2-e27d-48da-b15e-47e78392e82e",
-      "failure_reason": null,
+      "response_time_seconds": 2.33,
+      "conversation_id": "5e96c93e-e4fd-4af0-aaf0-fee716f29ec8",
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Who won the senate race in Pennsylvania?",
-          "conversation_id": "ab373ba2-e27d-48da-b15e-47e78392e82e"
+          "conversation_id": "5e96c93e-e4fd-4af0-aaf0-fee716f29ec8"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_14d796ff670b",
+            "id": "call_c11cf0268ed2",
             "type": "function",
             "function": {
-              "name": "get_web_search_results",
-              "arguments": "{\"query\": \"Who won the senate race in Pennsylvania?\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"location\": \"Pennsylvania\", \"team_name\": \"Senate\"}"
             }
           }
         ],
@@ -917,20 +910,20 @@
           "location": "California"
         }
       },
-      "response_time_seconds": 0.693,
-      "conversation_id": "2ab5e2b4-12fc-408e-88cf-a4eccc71d1a5",
+      "response_time_seconds": 2.041,
+      "conversation_id": "b1e1b7bb-1018-4f36-8e07-8269dc2074b2",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What time is it in California?",
-          "conversation_id": "2ab5e2b4-12fc-408e-88cf-a4eccc71d1a5"
+          "conversation_id": "b1e1b7bb-1018-4f36-8e07-8269dc2074b2"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_4244452e3ca6",
+            "id": "call_8059d1a3b1c7",
             "type": "function",
             "function": {
               "name": "get_current_time",
@@ -955,27 +948,27 @@
       "actual": {
         "command": "search_web",
         "parameters": {
-          "query": "Tesla stock latest news"
+          "query": "What's the latest news about Tesla stock?"
         }
       },
-      "response_time_seconds": 0.721,
-      "conversation_id": "200c66c3-882a-477b-b7ce-56480684ec8d",
+      "response_time_seconds": 2.319,
+      "conversation_id": "5d64e3ae-ee97-41c5-adec-d4d8b374744d",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the latest news about Tesla stock?",
-          "conversation_id": "200c66c3-882a-477b-b7ce-56480684ec8d"
+          "conversation_id": "5d64e3ae-ee97-41c5-adec-d4d8b374744d"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_6ebeea731075",
+            "id": "call_432c6bb1fe30",
             "type": "function",
             "function": {
               "name": "search_web",
-              "arguments": "{\"query\": \"Tesla stock latest news\"}"
+              "arguments": "{\"query\": \"What's the latest news about Tesla stock?\"}"
             }
           }
         ],
@@ -984,7 +977,7 @@
     },
     {
       "test_number": 22,
-      "passed": true,
+      "passed": false,
       "description": "Upcoming event search",
       "voice_command": "When is the next SpaceX launch?",
       "expected": {
@@ -994,29 +987,29 @@
         }
       },
       "actual": {
-        "command": "search_web",
+        "command": "get_sports_schedule",
         "parameters": {
-          "query": "Next SpaceX launch"
+          "team_name": "SpaceX"
         }
       },
-      "response_time_seconds": 0.707,
-      "conversation_id": "e950c058-869c-4192-a2c4-03950ba954c4",
-      "failure_reason": null,
+      "response_time_seconds": 2.078,
+      "conversation_id": "a5ce90cf-c55b-4fcf-8973-c16272cdad6b",
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "When is the next SpaceX launch?",
-          "conversation_id": "e950c058-869c-4192-a2c4-03950ba954c4"
+          "conversation_id": "a5ce90cf-c55b-4fcf-8973-c16272cdad6b"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_57e99a45dee9",
+            "id": "call_d36c6e8b1e86",
             "type": "function",
             "function": {
-              "name": "search_web",
-              "arguments": "{\"query\": \"Next SpaceX launch\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"SpaceX\"}"
             }
           }
         ],
@@ -1025,7 +1018,7 @@
     },
     {
       "test_number": 23,
-      "passed": true,
+      "passed": false,
       "description": "Sports championship question (either sports_scores or search_web acceptable)",
       "voice_command": "Who won the Super Bowl this year?",
       "expected": {
@@ -1040,30 +1033,31 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
+          "team_name": "Super Bowl",
           "resolved_datetimes": [
-            "this_year"
-          ],
-          "team_name": "Super Bowl"
+            "2026-01-01T05:00:00Z",
+            "2026-12-31T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.892,
-      "conversation_id": "22d63360-93fc-46ab-8c31-89d2bcb5768d",
-      "failure_reason": null,
+      "response_time_seconds": 2.162,
+      "conversation_id": "ac707808-d0b1-44a7-8a8d-5874c1b4932e",
+      "failure_reason": "Parameter validation failed: Mismatched: resolved_datetimes: expected ['this_year'], got ['2026-01-01T05:00:00Z', '2026-12-31T05:00:00Z']",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Who won the Super Bowl this year?",
-          "conversation_id": "22d63360-93fc-46ab-8c31-89d2bcb5768d"
+          "conversation_id": "ac707808-d0b1-44a7-8a8d-5874c1b4932e"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_e70615d3e2c3",
+            "id": "call_ecaad25dbfaa",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"this_year\"], \"team_name\": \"Super Bowl\"}"
+              "arguments": "{\"team_name\": \"Super Bowl\", \"resolved_datetimes\": [\"2026-01-01T05:00:00Z\", \"2026-12-31T05:00:00Z\"]}"
             }
           }
         ],
@@ -1072,7 +1066,7 @@
     },
     {
       "test_number": 24,
-      "passed": true,
+      "passed": false,
       "description": "Current weather query (should use weather command, not web search)",
       "voice_command": "What's the current weather in Miami?",
       "expected": {
@@ -1087,31 +1081,27 @@
       "actual": {
         "command": "get_weather",
         "parameters": {
-          "city": "Miami",
-          "resolved_datetimes": [
-            "today"
-          ],
-          "unit_system": "imperial"
+          "city": "Miami"
         }
       },
-      "response_time_seconds": 0.925,
-      "conversation_id": "dfbd677a-9e6c-433f-87b4-59b628d8de81",
-      "failure_reason": null,
+      "response_time_seconds": 2.042,
+      "conversation_id": "9f157b2b-09ef-41ce-8325-92193dbcfaf6",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the current weather in Miami?",
-          "conversation_id": "dfbd677a-9e6c-433f-87b4-59b628d8de81"
+          "conversation_id": "9f157b2b-09ef-41ce-8325-92193dbcfaf6"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_bde5f1bc5a80",
+            "id": "call_b2959716d8fd",
             "type": "function",
             "function": {
               "name": "get_weather",
-              "arguments": "{\"city\": \"Miami\", \"resolved_datetimes\": [\"today\"], \"unit_system\": \"imperial\"}"
+              "arguments": "{\"city\": \"Miami\"}"
             }
           }
         ],
@@ -1132,27 +1122,27 @@
       "actual": {
         "command": "search_web",
         "parameters": {
-          "query": "Breaking news artificial intelligence"
+          "query": "Search for breaking news about artificial intelligence"
         }
       },
-      "response_time_seconds": 0.733,
-      "conversation_id": "94971cc6-05f0-4174-84bd-9ad745e95990",
+      "response_time_seconds": 2.226,
+      "conversation_id": "2b81b943-ddb6-4bed-b943-b35191c0800a",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Search for breaking news about artificial intelligence",
-          "conversation_id": "94971cc6-05f0-4174-84bd-9ad745e95990"
+          "conversation_id": "2b81b943-ddb6-4bed-b943-b35191c0800a"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_b2b17ad35624",
+            "id": "call_0962861b6a46",
             "type": "function",
             "function": {
               "name": "search_web",
-              "arguments": "{\"query\": \"Breaking news artificial intelligence\"}"
+              "arguments": "{\"query\": \"Search for breaking news about artificial intelligence\"}"
             }
           }
         ],
@@ -1173,27 +1163,27 @@
       "actual": {
         "command": "search_web",
         "parameters": {
-          "query": "latest information about COVID vaccines"
+          "query": "Find the latest information about COVID vaccines"
         }
       },
-      "response_time_seconds": 0.762,
-      "conversation_id": "581ddb7b-6600-4f37-8f2f-65d9ba18459a",
+      "response_time_seconds": 2.252,
+      "conversation_id": "1c63987d-ae01-4fac-af50-aac151ea415f",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Find the latest information about COVID vaccines",
-          "conversation_id": "581ddb7b-6600-4f37-8f2f-65d9ba18459a"
+          "conversation_id": "1c63987d-ae01-4fac-af50-aac151ea415f"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_650188638ade",
+            "id": "call_6247cd9bbbc6",
             "type": "function",
             "function": {
               "name": "search_web",
-              "arguments": "{\"query\": \"latest information about COVID vaccines\"}"
+              "arguments": "{\"query\": \"Find the latest information about COVID vaccines\"}"
             }
           }
         ],
@@ -1215,20 +1205,20 @@
           "topic": ""
         }
       },
-      "response_time_seconds": 0.679,
-      "conversation_id": "4ddd70a8-8cb9-4335-85c5-9fa951f51773",
+      "response_time_seconds": 2.004,
+      "conversation_id": "6142b443-4d20-4129-a916-30e5f5548f24",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Tell me a joke",
-          "conversation_id": "4ddd70a8-8cb9-4335-85c5-9fa951f51773"
+          "conversation_id": "6142b443-4d20-4129-a916-30e5f5548f24"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_b2ca22d63040",
+            "id": "call_ebf186e7e869",
             "type": "function",
             "function": {
               "name": "tell_joke",
@@ -1256,20 +1246,20 @@
           "topic": "programming"
         }
       },
-      "response_time_seconds": 0.693,
-      "conversation_id": "4d6a5bfa-e2e9-4145-8d9d-443b2b65b721",
+      "response_time_seconds": 2.073,
+      "conversation_id": "26a1be73-25bc-4bdd-954b-7115c51e1053",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Tell me a joke about programming",
-          "conversation_id": "4d6a5bfa-e2e9-4145-8d9d-443b2b65b721"
+          "conversation_id": "26a1be73-25bc-4bdd-954b-7115c51e1053"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_2644b740cf2a",
+            "id": "call_9da65e1c932f",
             "type": "function",
             "function": {
               "name": "tell_joke",
@@ -1297,20 +1287,20 @@
           "topic": "animals"
         }
       },
-      "response_time_seconds": 0.712,
-      "conversation_id": "84b48bc0-5e98-4ba1-b80e-03bfea7e4188",
+      "response_time_seconds": 2.085,
+      "conversation_id": "e68a4c6b-9676-46ee-bd9c-6d40725a05c1",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Tell me a joke about animals",
-          "conversation_id": "84b48bc0-5e98-4ba1-b80e-03bfea7e4188"
+          "conversation_id": "e68a4c6b-9676-46ee-bd9c-6d40725a05c1"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ab24a7a992d5",
+            "id": "call_2ec6413a11f2",
             "type": "function",
             "function": {
               "name": "tell_joke",
@@ -1338,20 +1328,20 @@
           "topic": "technology"
         }
       },
-      "response_time_seconds": 0.729,
-      "conversation_id": "90ddc2d9-7de7-4e48-b002-c5ce245cf738",
+      "response_time_seconds": 2.041,
+      "conversation_id": "87a6949d-79e7-4fbc-8ace-20aa1364ee9c",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Make me laugh with a joke about technology",
-          "conversation_id": "90ddc2d9-7de7-4e48-b002-c5ce245cf738"
+          "conversation_id": "87a6949d-79e7-4fbc-8ace-20aa1364ee9c"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_488c0a46c7ed",
+            "id": "call_1d78f354d551",
             "type": "function",
             "function": {
               "name": "tell_joke",
@@ -1383,20 +1373,20 @@
           "operation": "add"
         }
       },
-      "response_time_seconds": 0.771,
-      "conversation_id": "3cf7aeeb-5691-4977-82a8-a67388b1febd",
+      "response_time_seconds": 2.553,
+      "conversation_id": "856ffb52-8323-4f6b-8fff-1147c2aa9c3d",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's 5 plus 3?",
-          "conversation_id": "3cf7aeeb-5691-4977-82a8-a67388b1febd"
+          "conversation_id": "856ffb52-8323-4f6b-8fff-1147c2aa9c3d"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_3075479dcfb9",
+            "id": "call_3f6d8b6dd965",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1428,20 +1418,20 @@
           "operation": "subtract"
         }
       },
-      "response_time_seconds": 0.88,
-      "conversation_id": "6621670e-f876-4635-8ce3-e259c313a1e7",
+      "response_time_seconds": 2.341,
+      "conversation_id": "bb67aabb-e0fa-446d-9ed2-826c0dce6848",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Calculate 10 minus 4",
-          "conversation_id": "6621670e-f876-4635-8ce3-e259c313a1e7"
+          "conversation_id": "bb67aabb-e0fa-446d-9ed2-826c0dce6848"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_71c1251bae2e",
+            "id": "call_f33f637fcedc",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1473,20 +1463,20 @@
           "operation": "multiply"
         }
       },
-      "response_time_seconds": 0.876,
-      "conversation_id": "7ae3f6f8-2d29-47fa-8679-2b27f37222f3",
+      "response_time_seconds": 2.574,
+      "conversation_id": "883bbdfb-105d-49b6-a15a-d213c4bc365e",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What is 6 times 7?",
-          "conversation_id": "7ae3f6f8-2d29-47fa-8679-2b27f37222f3"
+          "conversation_id": "883bbdfb-105d-49b6-a15a-d213c4bc365e"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_0ebf1f5c759f",
+            "id": "call_b8ebd6c1eeb0",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1518,20 +1508,20 @@
           "operation": "divide"
         }
       },
-      "response_time_seconds": 0.893,
-      "conversation_id": "540a36d5-e09d-47e9-9718-50ba56917240",
+      "response_time_seconds": 2.567,
+      "conversation_id": "230ee4fb-ea0b-4060-85f1-216d00c7f637",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Divide 20 by 5",
-          "conversation_id": "540a36d5-e09d-47e9-9718-50ba56917240"
+          "conversation_id": "230ee4fb-ea0b-4060-85f1-216d00c7f637"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_d716e601910e",
+            "id": "call_2217f5f4cdf2",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1563,20 +1553,20 @@
           "operation": "add"
         }
       },
-      "response_time_seconds": 0.887,
-      "conversation_id": "422d9abb-d326-4fee-a869-a59962f27f51",
+      "response_time_seconds": 2.288,
+      "conversation_id": "01e7aa65-213d-4471-b505-8b42661de1ab",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Add 15 and 25 together",
-          "conversation_id": "422d9abb-d326-4fee-a869-a59962f27f51"
+          "conversation_id": "01e7aa65-213d-4471-b505-8b42661de1ab"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_7a8b9d732899",
+            "id": "call_aba1da3b7aaf",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1608,20 +1598,20 @@
           "operation": "add"
         }
       },
-      "response_time_seconds": 0.893,
-      "conversation_id": "3766a1ef-edfb-46d7-96ba-631ca83bd822",
+      "response_time_seconds": 2.593,
+      "conversation_id": "f5ae8ba7-425e-4c6d-86f1-07f2427e67c0",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the sum of 8 and 12?",
-          "conversation_id": "3766a1ef-edfb-46d7-96ba-631ca83bd822"
+          "conversation_id": "f5ae8ba7-425e-4c6d-86f1-07f2427e67c0"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_8e308ea1b826",
+            "id": "call_a4ffe3510331",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1653,20 +1643,20 @@
           "operation": "add"
         }
       },
-      "response_time_seconds": 0.883,
-      "conversation_id": "67344fb8-723b-492c-bd9a-ee3d54d3e301",
+      "response_time_seconds": 2.557,
+      "conversation_id": "c485f59d-6b52-4204-abc6-d5661fa65704",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's five plus 3?",
-          "conversation_id": "67344fb8-723b-492c-bd9a-ee3d54d3e301"
+          "conversation_id": "c485f59d-6b52-4204-abc6-d5661fa65704"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_4f9537c95519",
+            "id": "call_7a0341636d96",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1698,20 +1688,20 @@
           "operation": "subtract"
         }
       },
-      "response_time_seconds": 0.889,
-      "conversation_id": "08d14db7-7894-4892-8e26-6c94ec713b74",
+      "response_time_seconds": 2.56,
+      "conversation_id": "bc08a244-9b4a-435b-b4b7-1b803ed46592",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Calculate ten minus four",
-          "conversation_id": "08d14db7-7894-4892-8e26-6c94ec713b74"
+          "conversation_id": "bc08a244-9b4a-435b-b4b7-1b803ed46592"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_5b187689b2d0",
+            "id": "call_9c89872b2c43",
             "type": "function",
             "function": {
               "name": "calculate",
@@ -1724,7 +1714,7 @@
     },
     {
       "test_number": 39,
-      "passed": true,
+      "passed": false,
       "description": "Basic sports score request (no city, no dates)",
       "voice_command": "How did the Giants do?",
       "expected": {
@@ -1737,32 +1727,29 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Giants"
         }
       },
-      "response_time_seconds": 0.863,
-      "conversation_id": "ed2e7de3-ef68-42ff-89d6-41b0acad471b",
-      "failure_reason": null,
+      "response_time_seconds": 2.166,
+      "conversation_id": "8b4c78a0-eb5e-4095-b705-e90aefaae71c",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Giants do?",
-          "conversation_id": "ed2e7de3-ef68-42ff-89d6-41b0acad471b"
+          "conversation_id": "8b4c78a0-eb5e-4095-b705-e90aefaae71c"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_1276e3a29593",
+            "id": "call_c00ce0f320f4",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Giants\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Giants\"}"
             }
           }
         ],
@@ -1771,7 +1758,7 @@
     },
     {
       "test_number": 40,
-      "passed": true,
+      "passed": false,
       "description": "Sports score request with different team",
       "voice_command": "What's the score of the Yankees game?",
       "expected": {
@@ -1786,30 +1773,27 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Yankees"
         }
       },
-      "response_time_seconds": 0.89,
-      "conversation_id": "c6b3d258-8cc8-4f43-9dba-9107265bbd23",
-      "failure_reason": null,
+      "response_time_seconds": 2.206,
+      "conversation_id": "17578826-bad4-4d87-9676-588c373a2c07",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the score of the Yankees game?",
-          "conversation_id": "c6b3d258-8cc8-4f43-9dba-9107265bbd23"
+          "conversation_id": "17578826-bad4-4d87-9676-588c373a2c07"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_53d373adbbc9",
+            "id": "call_025b29468d4a",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Yankees\"}"
+              "arguments": "{\"team_name\": \"Yankees\"}"
             }
           }
         ],
@@ -1818,7 +1802,7 @@
     },
     {
       "test_number": 41,
-      "passed": true,
+      "passed": false,
       "description": "Sports score request with location disambiguation",
       "voice_command": "How did the New York Giants do?",
       "expected": {
@@ -1831,32 +1815,32 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
           "resolved_datetimes": [
-            "today"
+            "2026-02-13T05:00:00Z"
           ],
           "team_name": "New York Giants"
         }
       },
-      "response_time_seconds": 0.883,
-      "conversation_id": "b66d226a-9db1-4989-9c20-2551e88b233b",
-      "failure_reason": null,
+      "response_time_seconds": 2.461,
+      "conversation_id": "3d823669-772c-4997-a31f-e891507fb84c",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the New York Giants do?",
-          "conversation_id": "b66d226a-9db1-4989-9c20-2551e88b233b"
+          "conversation_id": "3d823669-772c-4997-a31f-e891507fb84c"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_5b1e411a4938",
+            "id": "call_d28121c638c4",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"New York Giants\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"], \"team_name\": \"New York Giants\"}"
             }
           }
         ],
@@ -1865,7 +1849,7 @@
     },
     {
       "test_number": 42,
-      "passed": true,
+      "passed": false,
       "description": "Sports score request with different location/team combination",
       "voice_command": "What's the score of the Carolina Panthers game?",
       "expected": {
@@ -1880,30 +1864,27 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Carolina Panthers"
         }
       },
-      "response_time_seconds": 0.878,
-      "conversation_id": "8a33399b-9124-47d4-93f9-a735b787e73b",
-      "failure_reason": null,
+      "response_time_seconds": 2.223,
+      "conversation_id": "d4413072-ad5d-4e25-8edd-2d33b8bce366",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the score of the Carolina Panthers game?",
-          "conversation_id": "8a33399b-9124-47d4-93f9-a735b787e73b"
+          "conversation_id": "d4413072-ad5d-4e25-8edd-2d33b8bce366"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_5b8b99295598",
+            "id": "call_16ea6b38f295",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Carolina Panthers\"}"
+              "arguments": "{\"team_name\": \"Carolina Panthers\"}"
             }
           }
         ],
@@ -1912,7 +1893,7 @@
     },
     {
       "test_number": 43,
-      "passed": true,
+      "passed": false,
       "description": "Sports score request with relative date",
       "voice_command": "How did the Giants do yesterday?",
       "expected": {
@@ -1925,32 +1906,32 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
           "resolved_datetimes": [
-            "yesterday"
+            "2026-02-12T05:00:00Z"
           ],
           "team_name": "Giants"
         }
       },
-      "response_time_seconds": 0.881,
-      "conversation_id": "4754befc-e4ed-46a4-97f4-c7faf437eacc",
-      "failure_reason": null,
+      "response_time_seconds": 2.384,
+      "conversation_id": "ac8a4120-2c1d-472c-9130-3474127372b3",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Giants do yesterday?",
-          "conversation_id": "4754befc-e4ed-46a4-97f4-c7faf437eacc"
+          "conversation_id": "ac8a4120-2c1d-472c-9130-3474127372b3"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_66b66417b853",
+            "id": "call_3c3bbe9e1f0f",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"yesterday\"], \"team_name\": \"Giants\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-12T05:00:00Z\"], \"team_name\": \"Giants\"}"
             }
           }
         ],
@@ -1975,29 +1956,29 @@
         "command": "get_sports_scores",
         "parameters": {
           "resolved_datetimes": [
-            "yesterday"
+            "2026-02-12T05:00:00Z"
           ],
           "team_name": "Yankees"
         }
       },
-      "response_time_seconds": 0.908,
-      "conversation_id": "79507071-aba5-43bd-bbf8-2ff5812801da",
+      "response_time_seconds": 2.435,
+      "conversation_id": "a996652a-e436-426c-838f-272af7fea37f",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What was the score of the Yankees game yesterday?",
-          "conversation_id": "79507071-aba5-43bd-bbf8-2ff5812801da"
+          "conversation_id": "a996652a-e436-426c-838f-272af7fea37f"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_34b3968fb389",
+            "id": "call_324010655c69",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"yesterday\"], \"team_name\": \"Yankees\"}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-12T05:00:00Z\"], \"team_name\": \"Yankees\"}"
             }
           }
         ],
@@ -2006,7 +1987,7 @@
     },
     {
       "test_number": 45,
-      "passed": true,
+      "passed": false,
       "description": "Sports score with date range",
       "voice_command": "How did the Baltimore Orioles do last weekend?",
       "expected": {
@@ -2019,32 +2000,31 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
           "resolved_datetimes": [
-            "last_weekend"
-          ],
-          "team_name": "Baltimore Orioles"
+            "2026-02-07T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.912,
-      "conversation_id": "4f6968ba-ac32-4326-91c2-50c98ac647d2",
-      "failure_reason": null,
+      "response_time_seconds": 2.487,
+      "conversation_id": "3f4b52cd-5237-453a-9576-34b547885543",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Baltimore Orioles do last weekend?",
-          "conversation_id": "4f6968ba-ac32-4326-91c2-50c98ac647d2"
+          "conversation_id": "3f4b52cd-5237-453a-9576-34b547885543"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_1cdda6ed6035",
+            "id": "call_afe00551f705",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"last_weekend\"], \"team_name\": \"Baltimore Orioles\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-07T05:00:00Z\"]}"
             }
           }
         ],
@@ -2068,30 +2048,32 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
+          "team_name": "Chicago Bulls",
+          "date_string": "last_weekend",
           "resolved_datetimes": [
-            "last_weekend"
-          ],
-          "team_name": "Chicago Bulls"
+            "2026-02-07T05:00:00Z",
+            "2026-02-08T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.891,
-      "conversation_id": "aa8d0ac0-6d1d-4f27-b794-d97caf15b7c5",
+      "response_time_seconds": 2.545,
+      "conversation_id": "9e438e3e-199a-47e7-b939-d156e8ea366b",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What was the Chicago Bulls score last weekend?",
-          "conversation_id": "aa8d0ac0-6d1d-4f27-b794-d97caf15b7c5"
+          "conversation_id": "9e438e3e-199a-47e7-b939-d156e8ea366b"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ddff4891b300",
+            "id": "call_602af7e8948c",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"last_weekend\"], \"team_name\": \"Chicago Bulls\"}"
+              "arguments": "{\"team_name\": \"Chicago Bulls\", \"date_string\": \"last_weekend\", \"resolved_datetimes\": [\"2026-02-07T05:00:00Z\", \"2026-02-08T05:00:00Z\"]}"
             }
           }
         ],
@@ -2100,7 +2082,7 @@
     },
     {
       "test_number": 47,
-      "passed": true,
+      "passed": false,
       "description": "Sports score with explicit today date",
       "voice_command": "How did the Cowboys do?",
       "expected": {
@@ -2113,32 +2095,29 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Cowboys"
         }
       },
-      "response_time_seconds": 0.86,
-      "conversation_id": "43041f4d-6fba-4b93-bf15-f2fd40913c28",
-      "failure_reason": null,
+      "response_time_seconds": 2.175,
+      "conversation_id": "e860f33b-4d40-4721-9429-93588c488194",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Cowboys do?",
-          "conversation_id": "43041f4d-6fba-4b93-bf15-f2fd40913c28"
+          "conversation_id": "e860f33b-4d40-4721-9429-93588c488194"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_7b5f5439736c",
+            "id": "call_66b3c2cecb4a",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Cowboys\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Cowboys\"}"
             }
           }
         ],
@@ -2163,29 +2142,29 @@
         "command": "get_sports_scores",
         "parameters": {
           "resolved_datetimes": [
-            "tomorrow"
+            "2026-02-14T05:00:00Z"
           ],
           "team_name": "Warriors"
         }
       },
-      "response_time_seconds": 0.877,
-      "conversation_id": "becb567b-d0f9-487a-987c-6be287bc14a0",
+      "response_time_seconds": 2.573,
+      "conversation_id": "ca761786-fb4e-41ec-b4ca-3b3e2fbb9c4c",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the score of the Warriors game tomorrow?",
-          "conversation_id": "becb567b-d0f9-487a-987c-6be287bc14a0"
+          "conversation_id": "ca761786-fb4e-41ec-b4ca-3b3e2fbb9c4c"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_482c97fa5e31",
+            "id": "call_47a42f0872f5",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"tomorrow\"], \"team_name\": \"Warriors\"}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-14T05:00:00Z\"], \"team_name\": \"Warriors\"}"
             }
           }
         ],
@@ -2194,7 +2173,7 @@
     },
     {
       "test_number": 49,
-      "passed": true,
+      "passed": false,
       "description": "Sports score with relative date",
       "voice_command": "What was the score of the Panthers game yesterday?",
       "expected": {
@@ -2209,30 +2188,28 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
-          "resolved_datetimes": [
-            "yesterday"
-          ],
-          "team_name": "Panthers"
+          "team_name": "Panthers",
+          "date_yesterday": true
         }
       },
-      "response_time_seconds": 0.877,
-      "conversation_id": "4bf91b82-4558-4d4c-be06-f9ad6a10ed3c",
-      "failure_reason": null,
+      "response_time_seconds": 2.34,
+      "conversation_id": "eaea9072-6ae6-484a-9429-49cf9da8dcd8",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What was the score of the Panthers game yesterday?",
-          "conversation_id": "4bf91b82-4558-4d4c-be06-f9ad6a10ed3c"
+          "conversation_id": "eaea9072-6ae6-484a-9429-49cf9da8dcd8"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_d2b295425e09",
+            "id": "call_1336d3de07cf",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"yesterday\"], \"team_name\": \"Panthers\"}"
+              "arguments": "{\"team_name\": \"Panthers\", \"date_yesterday\": true}"
             }
           }
         ],
@@ -2241,7 +2218,7 @@
     },
     {
       "test_number": 50,
-      "passed": true,
+      "passed": false,
       "description": "Sports score with date range",
       "voice_command": "How did the Eagles do last weekend?",
       "expected": {
@@ -2254,32 +2231,33 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
+          "team_name": "Eagles",
           "resolved_datetimes": [
-            "last_weekend"
-          ],
-          "team_name": "Eagles"
+            "2026-02-07T05:00:00Z",
+            "2026-02-08T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.901,
-      "conversation_id": "1902a5d2-6392-47b4-84b7-68b594d6adb8",
-      "failure_reason": null,
+      "response_time_seconds": 2.224,
+      "conversation_id": "5a9480c5-a084-4ba0-a766-3142353d733f",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Eagles do last weekend?",
-          "conversation_id": "1902a5d2-6392-47b4-84b7-68b594d6adb8"
+          "conversation_id": "5a9480c5-a084-4ba0-a766-3142353d733f"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_a5b47e743495",
+            "id": "call_5eb1f781359b",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"last_weekend\"], \"team_name\": \"Eagles\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Eagles\", \"resolved_datetimes\": [\"2026-02-07T05:00:00Z\", \"2026-02-08T05:00:00Z\"]}"
             }
           }
         ],
@@ -2303,30 +2281,30 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
+          "team_name": "Lakers",
           "resolved_datetimes": [
-            "today"
-          ],
-          "team_name": "Lakers"
+            "2026-02-13T05:00:00Z"
+          ]
         }
       },
-      "response_time_seconds": 0.878,
-      "conversation_id": "f185c903-d384-41f4-9b9a-886a395d6e91",
+      "response_time_seconds": 2.545,
+      "conversation_id": "ba415543-2728-4716-859b-f71c730f86e0",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What's the score of the Lakers game today?",
-          "conversation_id": "f185c903-d384-41f4-9b9a-886a395d6e91"
+          "conversation_id": "ba415543-2728-4716-859b-f71c730f86e0"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_97d821682b74",
+            "id": "call_5a324ecb34cf",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Lakers\"}"
+              "arguments": "{\"team_name\": \"Lakers\", \"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
             }
           }
         ],
@@ -2335,7 +2313,7 @@
     },
     {
       "test_number": 52,
-      "passed": true,
+      "passed": false,
       "description": "Sports score with explicit today date",
       "voice_command": "How did the Buccaneers do?",
       "expected": {
@@ -2348,32 +2326,29 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Buccaneers"
         }
       },
-      "response_time_seconds": 0.897,
-      "conversation_id": "280a460e-4aaf-4a67-8acc-bd9829c32086",
-      "failure_reason": null,
+      "response_time_seconds": 2.257,
+      "conversation_id": "2142500e-12bd-44c8-93d2-7a7df4e59439",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How did the Buccaneers do?",
-          "conversation_id": "280a460e-4aaf-4a67-8acc-bd9829c32086"
+          "conversation_id": "2142500e-12bd-44c8-93d2-7a7df4e59439"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_dd1a8b3b6eab",
+            "id": "call_192765e15285",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Buccaneers\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Buccaneers\"}"
             }
           }
         ],
@@ -2382,7 +2357,7 @@
     },
     {
       "test_number": 53,
-      "passed": true,
+      "passed": false,
       "description": "Flexibility test: 'Did X win' pattern",
       "voice_command": "Did the Steelers win?",
       "expected": {
@@ -2395,32 +2370,32 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
+        "command": "get_sports_schedule",
         "parameters": {
           "resolved_datetimes": [
-            "today"
+            "2026-02-13T05:00:00Z"
           ],
           "team_name": "Steelers"
         }
       },
-      "response_time_seconds": 0.856,
-      "conversation_id": "926620cb-bf9f-4503-a261-32055f1f7198",
-      "failure_reason": null,
+      "response_time_seconds": 2.481,
+      "conversation_id": "4b58d6d7-8b89-4b1e-860d-ffa10b415d18",
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Did the Steelers win?",
-          "conversation_id": "926620cb-bf9f-4503-a261-32055f1f7198"
+          "conversation_id": "4b58d6d7-8b89-4b1e-860d-ffa10b415d18"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_8b92ab037a8b",
+            "id": "call_881d13058e20",
             "type": "function",
             "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Steelers\"}"
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"], \"team_name\": \"Steelers\"}"
             }
           }
         ],
@@ -2429,7 +2404,7 @@
     },
     {
       "test_number": 54,
-      "passed": true,
+      "passed": false,
       "description": "Flexibility test: 'What was the X score' pattern",
       "voice_command": "What was the Mets score?",
       "expected": {
@@ -2444,30 +2419,27 @@
       "actual": {
         "command": "get_sports_scores",
         "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
           "team_name": "Mets"
         }
       },
-      "response_time_seconds": 0.864,
-      "conversation_id": "3c99493b-dc3b-435f-8538-198890fdb7f6",
-      "failure_reason": null,
+      "response_time_seconds": 2.168,
+      "conversation_id": "e10e4420-3d0f-4fed-ab9c-08965d770d39",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "What was the Mets score?",
-          "conversation_id": "3c99493b-dc3b-435f-8538-198890fdb7f6"
+          "conversation_id": "e10e4420-3d0f-4fed-ab9c-08965d770d39"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_c817276d0247",
+            "id": "call_4fba265b27fe",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Mets\"}"
+              "arguments": "{\"team_name\": \"Mets\"}"
             }
           }
         ],
@@ -2476,7 +2448,7 @@
     },
     {
       "test_number": 55,
-      "passed": true,
+      "passed": false,
       "description": "Flexibility test: 'Final score for X' with full team name",
       "voice_command": "Final score for the Denver Broncos?",
       "expected": {
@@ -2489,37 +2461,13 @@
         }
       },
       "actual": {
-        "command": "get_sports_scores",
-        "parameters": {
-          "resolved_datetimes": [
-            "today"
-          ],
-          "team_name": "Denver Broncos"
-        }
+        "command": null,
+        "parameters": null
       },
-      "response_time_seconds": 0.871,
-      "conversation_id": "4c5cfd5a-f25d-45d3-9a4c-918ba3c79c7a",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Final score for the Denver Broncos?",
-          "conversation_id": "4c5cfd5a-f25d-45d3-9a4c-918ba3c79c7a"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_152844b761dc",
-            "type": "function",
-            "function": {
-              "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"today\"], \"team_name\": \"Denver Broncos\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
+      "response_time_seconds": 30.006,
+      "conversation_id": "dfccddfd-da69-46ea-967b-c9ac5922a708",
+      "failure_reason": "No response received from JCC",
+      "full_response": {}
     },
     {
       "test_number": 56,
@@ -2539,29 +2487,29 @@
         "command": "get_sports_scores",
         "parameters": {
           "resolved_datetimes": [
-            "last_night"
+            "2026-02-13T01:00:00Z"
           ],
           "team_name": "Packers"
         }
       },
-      "response_time_seconds": 0.892,
-      "conversation_id": "c71c1865-6bff-44ae-ab28-99f5380cf37f",
+      "response_time_seconds": 2.543,
+      "conversation_id": "be0c9f0f-344f-4be2-a138-b7f396441524",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "How'd the Packers do last night?",
-          "conversation_id": "c71c1865-6bff-44ae-ab28-99f5380cf37f"
+          "conversation_id": "be0c9f0f-344f-4be2-a138-b7f396441524"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_2278de1a1048",
+            "id": "call_bac90178087b",
             "type": "function",
             "function": {
               "name": "get_sports_scores",
-              "arguments": "{\"resolved_datetimes\": [\"last_night\"], \"team_name\": \"Packers\"}"
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T01:00:00Z\"], \"team_name\": \"Packers\"}"
             }
           }
         ],
@@ -2582,28 +2530,27 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 30,
-          "label": ""
+          "duration_seconds": 30
         }
       },
-      "response_time_seconds": 0.786,
-      "conversation_id": "17d9bc0a-c296-4649-84a1-2ef450876442",
+      "response_time_seconds": 1.876,
+      "conversation_id": "2426f80c-86d4-4505-b982-dc296ea1bee4",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a timer for 30 seconds",
-          "conversation_id": "17d9bc0a-c296-4649-84a1-2ef450876442"
+          "conversation_id": "2426f80c-86d4-4505-b982-dc296ea1bee4"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ca7a76cd5c1e",
+            "id": "call_28bed38fa55d",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 30, \"label\": \"\"}"
+              "arguments": "{\"duration_seconds\": 30}"
             }
           }
         ],
@@ -2624,28 +2571,27 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 45,
-          "label": ""
+          "duration_seconds": 45
         }
       },
-      "response_time_seconds": 0.774,
-      "conversation_id": "3fed137a-2ac5-41df-92f0-3c5184164628",
+      "response_time_seconds": 1.869,
+      "conversation_id": "c5cd6921-143c-495d-bc36-02fe6cd53df5",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Timer for 45 seconds",
-          "conversation_id": "3fed137a-2ac5-41df-92f0-3c5184164628"
+          "conversation_id": "c5cd6921-143c-495d-bc36-02fe6cd53df5"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ef6d5d2b457f",
+            "id": "call_1802d80b122b",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 45, \"label\": \"\"}"
+              "arguments": "{\"duration_seconds\": 45}"
             }
           }
         ],
@@ -2666,28 +2612,27 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 300,
-          "label": "none"
+          "duration_seconds": 300
         }
       },
-      "response_time_seconds": 0.785,
-      "conversation_id": "70e8b24b-df3e-4863-a27b-4c5275a25e1a",
+      "response_time_seconds": 2.048,
+      "conversation_id": "26d4e91d-ce25-4d98-b756-f26df376c3b2",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a timer for 5 minutes",
-          "conversation_id": "70e8b24b-df3e-4863-a27b-4c5275a25e1a"
+          "conversation_id": "26d4e91d-ce25-4d98-b756-f26df376c3b2"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_33cf4aade7ce",
+            "id": "call_55b41c96e11f",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 300, \"label\": \"none\"}"
+              "arguments": "{\"duration_seconds\": 300}"
             }
           }
         ],
@@ -2709,27 +2654,27 @@
         "command": "set_timer",
         "parameters": {
           "duration_seconds": 600,
-          "label": "none"
+          "label": "ten_minutes"
         }
       },
-      "response_time_seconds": 0.809,
-      "conversation_id": "5be4e887-cba4-45e9-a589-831023264936",
+      "response_time_seconds": 2.356,
+      "conversation_id": "28e54bef-f728-4738-b82a-830dd287845e",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Timer for ten minutes",
-          "conversation_id": "5be4e887-cba4-45e9-a589-831023264936"
+          "conversation_id": "28e54bef-f728-4738-b82a-830dd287845e"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_c5487e5a4d2d",
+            "id": "call_a0860b5dc680",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 600, \"label\": \"none\"}"
+              "arguments": "{\"duration_seconds\": 600, \"label\": \"ten_minutes\"}"
             }
           }
         ],
@@ -2751,27 +2696,27 @@
         "command": "set_timer",
         "parameters": {
           "duration_seconds": 900,
-          "label": "15 minute timer"
+          "label": ""
         }
       },
-      "response_time_seconds": 0.819,
-      "conversation_id": "4b0ebd47-bc0b-4ebb-ab5b-d18ba1cf26b7",
+      "response_time_seconds": 2.275,
+      "conversation_id": "5a1b252e-d9dc-4792-8f87-bb9f8790e52b",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a 15 minute timer",
-          "conversation_id": "4b0ebd47-bc0b-4ebb-ab5b-d18ba1cf26b7"
+          "conversation_id": "5a1b252e-d9dc-4792-8f87-bb9f8790e52b"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ea7b487e8091",
+            "id": "call_65803f0c6821",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 900, \"label\": \"15 minute timer\"}"
+              "arguments": "{\"duration_seconds\": 900, \"label\": \"\"}"
             }
           }
         ],
@@ -2793,27 +2738,27 @@
         "command": "set_timer",
         "parameters": {
           "duration_seconds": 3600,
-          "label": "1 hour"
+          "label": ""
         }
       },
-      "response_time_seconds": 0.825,
-      "conversation_id": "f577795c-bfb9-4cfe-b695-ee67ac774b06",
+      "response_time_seconds": 2.313,
+      "conversation_id": "8981e65c-24a1-4142-a18e-44d961c994b6",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a timer for 1 hour",
-          "conversation_id": "f577795c-bfb9-4cfe-b695-ee67ac774b06"
+          "conversation_id": "8981e65c-24a1-4142-a18e-44d961c994b6"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_54c6030b5a71",
+            "id": "call_77463a4613ef",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 3600, \"label\": \"1 hour\"}"
+              "arguments": "{\"duration_seconds\": 3600, \"label\": \"\"}"
             }
           }
         ],
@@ -2834,28 +2779,27 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 7200,
-          "label": ""
+          "duration_seconds": 7200
         }
       },
-      "response_time_seconds": 0.795,
-      "conversation_id": "05e4285a-421f-4e68-9244-8e829f9b2997",
+      "response_time_seconds": 1.755,
+      "conversation_id": "ee0ef617-ecc8-4e9c-9c0d-cf5f1766f16f",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Timer for 2 hours",
-          "conversation_id": "05e4285a-421f-4e68-9244-8e829f9b2997"
+          "conversation_id": "ee0ef617-ecc8-4e9c-9c0d-cf5f1766f16f"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_e5ef5924d4a9",
+            "id": "call_683601cbc478",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 7200, \"label\": \"\"}"
+              "arguments": "{\"duration_seconds\": 7200}"
             }
           }
         ],
@@ -2864,7 +2808,7 @@
     },
     {
       "test_number": 64,
-      "passed": true,
+      "passed": false,
       "description": "Compound timer: 1h 30m",
       "voice_command": "Set a timer for 1 hour and 30 minutes",
       "expected": {
@@ -2876,27 +2820,28 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 5400
+          "duration_seconds": 900,
+          "label": "1 hour and 30 minutes"
         }
       },
-      "response_time_seconds": 0.718,
-      "conversation_id": "540fa09e-2f6f-4517-a314-b9875a1f4074",
-      "failure_reason": null,
+      "response_time_seconds": 2.487,
+      "conversation_id": "6223f90e-ad44-4fc9-9e39-ca6d6137b23c",
+      "failure_reason": "Parameter validation failed: Mismatched: duration_seconds: expected 5400, got 900",
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a timer for 1 hour and 30 minutes",
-          "conversation_id": "540fa09e-2f6f-4517-a314-b9875a1f4074"
+          "conversation_id": "6223f90e-ad44-4fc9-9e39-ca6d6137b23c"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_348bd392f204",
+            "id": "call_90d2f9d2b943",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 5400}"
+              "arguments": "{\"duration_seconds\": 900, \"label\": \"1 hour and 30 minutes\"}"
             }
           }
         ],
@@ -2918,27 +2863,27 @@
         "command": "set_timer",
         "parameters": {
           "duration_seconds": 150,
-          "label": "brief"
+          "label": "2 minutes 30 seconds"
         }
       },
-      "response_time_seconds": 0.792,
-      "conversation_id": "e1fa0edd-a129-42b0-aae5-446a715ea24b",
+      "response_time_seconds": 2.414,
+      "conversation_id": "65772a5b-9d9d-4345-8a2c-e9608a532f0a",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Timer for 2 minutes 30 seconds",
-          "conversation_id": "e1fa0edd-a129-42b0-aae5-446a715ea24b"
+          "conversation_id": "65772a5b-9d9d-4345-8a2c-e9608a532f0a"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_0c5ae5e9bf1f",
+            "id": "call_84fb0b178ea4",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 150, \"label\": \"brief\"}"
+              "arguments": "{\"duration_seconds\": 150, \"label\": \"2 minutes 30 seconds\"}"
             }
           }
         ],
@@ -2964,20 +2909,20 @@
           "label": "pasta"
         }
       },
-      "response_time_seconds": 0.695,
-      "conversation_id": "c4f40f92-23a3-443a-8009-7b49ef1899a2",
+      "response_time_seconds": 2.125,
+      "conversation_id": "039502d2-3ea2-4310-a5ae-5e2c35acde77",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a 10 minute timer for pasta",
-          "conversation_id": "c4f40f92-23a3-443a-8009-7b49ef1899a2"
+          "conversation_id": "039502d2-3ea2-4310-a5ae-5e2c35acde77"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_8aae940418f6",
+            "id": "call_ac35e21f56b3",
             "type": "function",
             "function": {
               "name": "set_timer",
@@ -3007,20 +2952,20 @@
           "label": "laundry"
         }
       },
-      "response_time_seconds": 0.728,
-      "conversation_id": "773c4980-38f8-4214-938d-8c451151b6d6",
+      "response_time_seconds": 2.348,
+      "conversation_id": "7bdfc03f-ffd2-41b9-ba35-46f861db16ed",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Timer for 20 minutes for the laundry",
-          "conversation_id": "773c4980-38f8-4214-938d-8c451151b6d6"
+          "conversation_id": "7bdfc03f-ffd2-41b9-ba35-46f861db16ed"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_645310dd445a",
+            "id": "call_329d656ebf9a",
             "type": "function",
             "function": {
               "name": "set_timer",
@@ -3050,20 +2995,20 @@
           "label": "nap"
         }
       },
-      "response_time_seconds": 0.798,
-      "conversation_id": "878f3c75-ca69-46a1-a963-ebc901308883",
+      "response_time_seconds": 2.334,
+      "conversation_id": "827ec51b-517d-4c35-8b70-0e515356c7e3",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Set a nap timer for 30 minutes",
-          "conversation_id": "878f3c75-ca69-46a1-a963-ebc901308883"
+          "conversation_id": "827ec51b-517d-4c35-8b70-0e515356c7e3"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_efa177ec33c7",
+            "id": "call_f66bac0638a9",
             "type": "function",
             "function": {
               "name": "set_timer",
@@ -3092,20 +3037,20 @@
           "label": ""
         }
       },
-      "response_time_seconds": 0.764,
-      "conversation_id": "1ee9e99a-047c-4183-8792-631f03c6afbd",
+      "response_time_seconds": 1.949,
+      "conversation_id": "fc4caf18-691e-4456-bee5-26fd508f35ce",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Remind me in 15 minutes",
-          "conversation_id": "1ee9e99a-047c-4183-8792-631f03c6afbd"
+          "conversation_id": "fc4caf18-691e-4456-bee5-26fd508f35ce"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_ac144b61bfd8",
+            "id": "call_ce31e77dbfd6",
             "type": "function",
             "function": {
               "name": "set_timer",
@@ -3130,27 +3075,28 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 1800
+          "duration_seconds": 1800,
+          "label": ""
         }
       },
-      "response_time_seconds": 0.725,
-      "conversation_id": "94a38b5a-4c61-4a25-9b01-26f9df46d34d",
+      "response_time_seconds": 2.298,
+      "conversation_id": "ba8d4241-460b-4674-b84a-eb6c2b286980",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Wake me up in 30 minutes",
-          "conversation_id": "94a38b5a-4c61-4a25-9b01-26f9df46d34d"
+          "conversation_id": "ba8d4241-460b-4674-b84a-eb6c2b286980"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_2958941ade58",
+            "id": "call_c1cd9f7d21a5",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 1800}"
+              "arguments": "{\"duration_seconds\": 1800, \"label\": \"\"}"
             }
           }
         ],
@@ -3171,749 +3117,27 @@
       "actual": {
         "command": "set_timer",
         "parameters": {
-          "duration_seconds": 3600,
-          "label": "timer"
+          "duration_seconds": 3600
         }
       },
-      "response_time_seconds": 0.797,
-      "conversation_id": "5002b021-a0e8-4952-9952-eb56445650ab",
+      "response_time_seconds": 2.089,
+      "conversation_id": "5d08a9ad-3ee1-4164-975d-1f72c705f9c5",
       "failure_reason": null,
       "full_response": {
         "commands": [],
         "request_information": {
           "voice_command": "Let me know in an hour",
-          "conversation_id": "5002b021-a0e8-4952-9952-eb56445650ab"
+          "conversation_id": "5d08a9ad-3ee1-4164-975d-1f72c705f9c5"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_171cc6d8f5b2",
+            "id": "call_bd0998e6b843",
             "type": "function",
             "function": {
               "name": "set_timer",
-              "arguments": "{\"duration_seconds\": 3600, \"label\": \"timer\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 72,
-      "passed": true,
-      "description": "Light control: turn on office",
-      "voice_command": "Turn on my office lights",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.my_office",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_on",
-          "entity_id": "light.my_office"
-        }
-      },
-      "response_time_seconds": 0.824,
-      "conversation_id": "6e8e3fd4-5639-4fb8-8e9d-09e78715b3d8",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn on my office lights",
-          "conversation_id": "6e8e3fd4-5639-4fb8-8e9d-09e78715b3d8"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_ef961dd56f98",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_on\", \"entity_id\": \"light.my_office\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 73,
-      "passed": true,
-      "description": "Light control: turn off basement",
-      "voice_command": "Turn off the basement lights",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.basement",
-          "action": "turn_off"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.basement",
-          "action": "turn_off"
-        }
-      },
-      "response_time_seconds": 0.841,
-      "conversation_id": "0da5bcaf-aff4-410d-b298-ce7537bb3749",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn off the basement lights",
-          "conversation_id": "0da5bcaf-aff4-410d-b298-ce7537bb3749"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_4cd2e542d677",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"entity_id\": \"light.basement\", \"action\": \"turn_off\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 74,
-      "passed": true,
-      "description": "Light control: switch on upstairs",
-      "voice_command": "Switch on the upstairs lights",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.upstairs",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_on",
-          "entity_id": "light.upstairs"
-        }
-      },
-      "response_time_seconds": 0.827,
-      "conversation_id": "83f8bf70-e619-46eb-8311-ea8d438c9fc4",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Switch on the upstairs lights",
-          "conversation_id": "83f8bf70-e619-46eb-8311-ea8d438c9fc4"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_3bb9b8837619",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_on\", \"entity_id\": \"light.upstairs\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 75,
-      "passed": true,
-      "description": "Light control: turn off bathroom",
-      "voice_command": "Turn off the bathroom light",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.middle_bathroom",
-          "action": "turn_off"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.middle_bathroom",
-          "action": "turn_off"
-        }
-      },
-      "response_time_seconds": 0.845,
-      "conversation_id": "6d15d781-130f-4576-9e58-6bfbca95b26c",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn off the bathroom light",
-          "conversation_id": "6d15d781-130f-4576-9e58-6bfbca95b26c"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_eff79abdda7d",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"entity_id\": \"light.middle_bathroom\", \"action\": \"turn_off\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 76,
-      "passed": true,
-      "description": "Light control: specific desk light",
-      "voice_command": "Turn on my office desk light",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.office_desk",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.office_desk",
-          "action": "turn_on"
-        }
-      },
-      "response_time_seconds": 0.842,
-      "conversation_id": "374f3925-2892-40d1-8bbf-7f10229b19d4",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn on my office desk light",
-          "conversation_id": "374f3925-2892-40d1-8bbf-7f10229b19d4"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_3f6a6aa770d7",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"entity_id\": \"light.office_desk\", \"action\": \"turn_on\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 77,
-      "passed": true,
-      "description": "Switch control: baby timer on",
-      "voice_command": "Turn on the baby timer switch",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "switch.baby_berardi_timer",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_on",
-          "entity_id": "switch.baby_berardi_timer"
-        }
-      },
-      "response_time_seconds": 0.87,
-      "conversation_id": "09370c5a-a0bd-40d8-99fe-f2ec96165a8e",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn on the baby timer switch",
-          "conversation_id": "09370c5a-a0bd-40d8-99fe-f2ec96165a8e"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_b3e9ed8108d6",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_on\", \"entity_id\": \"switch.baby_berardi_timer\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 78,
-      "passed": true,
-      "description": "Switch control: baby timer off (alternate name)",
-      "voice_command": "Turn off the baby Berardi switch",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "switch.baby_berardi_timer",
-          "action": "turn_off"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_off",
-          "entity_id": "switch.baby_berardi_timer"
-        }
-      },
-      "response_time_seconds": 0.876,
-      "conversation_id": "678e55a3-bcd4-49a9-a5ae-345cc6f1a0c4",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Turn off the baby Berardi switch",
-          "conversation_id": "678e55a3-bcd4-49a9-a5ae-345cc6f1a0c4"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_122ad1a40205",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_off\", \"entity_id\": \"switch.baby_berardi_timer\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 79,
-      "passed": true,
-      "description": "Scene: activate reading scene",
-      "voice_command": "Activate the office desk read scene",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "scene.office_desk_read",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_on",
-          "entity_id": "scene.office_desk_read",
-          "value": ""
-        }
-      },
-      "response_time_seconds": 0.932,
-      "conversation_id": "381417fb-8e9a-40e9-be3f-6f0e679d34f8",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Activate the office desk read scene",
-          "conversation_id": "381417fb-8e9a-40e9-be3f-6f0e679d34f8"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_ffbbf5be75eb",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_on\", \"entity_id\": \"scene.office_desk_read\", \"value\": \"\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 80,
-      "passed": true,
-      "description": "Scene: activate brightness scene",
-      "voice_command": "Activate the basement bright scene",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "scene.basement_bright",
-          "action": "turn_on"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_on",
-          "entity_id": "scene.basement_bright",
-          "value": ""
-        }
-      },
-      "response_time_seconds": 0.887,
-      "conversation_id": "ca0fc0a8-b216-48bc-8ded-5cdc070321f0",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Activate the basement bright scene",
-          "conversation_id": "ca0fc0a8-b216-48bc-8ded-5cdc070321f0"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_3f2e8b81f786",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_on\", \"entity_id\": \"scene.basement_bright\", \"value\": \"\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 81,
-      "passed": true,
-      "description": "Casual: lights off phrasing",
-      "voice_command": "Lights off in my office",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.my_office",
-          "action": "turn_off"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "action": "turn_off",
-          "entity_id": "light.my_office"
-        }
-      },
-      "response_time_seconds": 0.84,
-      "conversation_id": "72052333-7dc9-4fae-a084-35cfaf89cf9d",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Lights off in my office",
-          "conversation_id": "72052333-7dc9-4fae-a084-35cfaf89cf9d"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_a9a9ab04a24e",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"action\": \"turn_off\", \"entity_id\": \"light.my_office\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 82,
-      "passed": true,
-      "description": "Casual: kill the lights phrasing",
-      "voice_command": "Kill the basement lights",
-      "expected": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.basement",
-          "action": "turn_off"
-        }
-      },
-      "actual": {
-        "command": "control_device",
-        "parameters": {
-          "entity_id": "light.basement",
-          "action": "turn_off"
-        }
-      },
-      "response_time_seconds": 0.849,
-      "conversation_id": "0b06c86a-d0c6-4bd5-8a3c-92852e2fc4f4",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Kill the basement lights",
-          "conversation_id": "0b06c86a-d0c6-4bd5-8a3c-92852e2fc4f4"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_4f6261d005a5",
-            "type": "function",
-            "function": {
-              "name": "control_device",
-              "arguments": "{\"entity_id\": \"light.basement\", \"action\": \"turn_off\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 83,
-      "passed": false,
-      "description": "Status: office light on/off check",
-      "voice_command": "Is the office light on?",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.my_office"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.office_desk"
-        }
-      },
-      "response_time_seconds": 0.75,
-      "conversation_id": "4f3f7bb5-1e6d-4044-bfd9-ca0af140c62f",
-      "failure_reason": "Parameter validation failed: Mismatched: entity_id: expected light.my_office, got light.office_desk",
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Is the office light on?",
-          "conversation_id": "4f3f7bb5-1e6d-4044-bfd9-ca0af140c62f"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_c700db3b8d65",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.office_desk\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 84,
-      "passed": true,
-      "description": "Status: basement lights check",
-      "voice_command": "Are the basement lights on?",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.basement"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.basement"
-        }
-      },
-      "response_time_seconds": 0.754,
-      "conversation_id": "e9a6467d-3862-447f-b232-a52f10b366cc",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Are the basement lights on?",
-          "conversation_id": "e9a6467d-3862-447f-b232-a52f10b366cc"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_2b9740a8f3ae",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.basement\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 85,
-      "passed": true,
-      "description": "Status: explicit status query",
-      "voice_command": "What's the status of the upstairs lights?",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.upstairs"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.upstairs"
-        }
-      },
-      "response_time_seconds": 0.739,
-      "conversation_id": "7fb8914c-483f-4948-8ffe-a990a848157f",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "What's the status of the upstairs lights?",
-          "conversation_id": "7fb8914c-483f-4948-8ffe-a990a848157f"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_3e72f237cec1",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.upstairs\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 86,
-      "passed": true,
-      "description": "Status: switch/timer check",
-      "voice_command": "Is the baby switch on?",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "switch.baby_berardi_timer"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "switch.baby_berardi_timer"
-        }
-      },
-      "response_time_seconds": 0.78,
-      "conversation_id": "1132d93e-09e8-400b-b703-06ca010693b7",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Is the baby switch on?",
-          "conversation_id": "1132d93e-09e8-400b-b703-06ca010693b7"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_4bd466d6cf4e",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"switch.baby_berardi_timer\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 87,
-      "passed": true,
-      "description": "Status: check if phrasing",
-      "voice_command": "Check if the bathroom light is on",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.middle_bathroom"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.middle_bathroom"
-        }
-      },
-      "response_time_seconds": 0.756,
-      "conversation_id": "e6008e23-d8b6-4518-9121-c9977ceed354",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Check if the bathroom light is on",
-          "conversation_id": "e6008e23-d8b6-4518-9121-c9977ceed354"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_ca7ed6c67779",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.middle_bathroom\"}"
-            }
-          }
-        ],
-        "validation_request": null
-      }
-    },
-    {
-      "test_number": 88,
-      "passed": true,
-      "description": "Status: rest light check",
-      "voice_command": "Is the rest light on?",
-      "expected": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.my_rest_light"
-        }
-      },
-      "actual": {
-        "command": "get_device_status",
-        "parameters": {
-          "entity_id": "light.my_rest_light"
-        }
-      },
-      "response_time_seconds": 0.757,
-      "conversation_id": "0d2b7062-b74d-42f3-8d3a-2ba54525d51b",
-      "failure_reason": null,
-      "full_response": {
-        "commands": [],
-        "request_information": {
-          "voice_command": "Is the rest light on?",
-          "conversation_id": "0d2b7062-b74d-42f3-8d3a-2ba54525d51b"
-        },
-        "stop_reason": "tool_calls",
-        "assistant_message": "",
-        "tool_calls": [
-          {
-            "id": "call_e68fff7b5d6f",
-            "type": "function",
-            "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.my_rest_light\"}"
+              "arguments": "{\"duration_seconds\": 3600}"
             }
           }
         ],
@@ -3923,50 +3147,813 @@
   ],
   "failed_test_details": [
     {
-      "test_number": 83,
-      "description": "Status: office light on/off check",
-      "voice_command": "Is the office light on?",
-      "expected_command": "get_device_status",
+      "test_number": 1,
+      "description": "Current weather with city specified",
+      "voice_command": "What's the weather in Miami?",
+      "expected_command": "get_weather",
       "expected_params": {
-        "entity_id": "light.my_office"
+        "city": "Miami",
+        "resolved_datetimes": [
+          "today"
+        ]
       },
-      "failure_reason": "Parameter validation failed: Mismatched: entity_id: expected light.my_office, got light.office_desk",
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
       "actual_response": {
         "commands": [],
         "request_information": {
-          "voice_command": "Is the office light on?",
-          "conversation_id": "4f3f7bb5-1e6d-4044-bfd9-ca0af140c62f"
+          "voice_command": "What's the weather in Miami?",
+          "conversation_id": "15e6bfcb-3f9f-4a2d-86cc-ae141656fd16"
         },
         "stop_reason": "tool_calls",
         "assistant_message": "",
         "tool_calls": [
           {
-            "id": "call_c700db3b8d65",
+            "id": "call_a423f74a2445",
             "type": "function",
             "function": {
-              "name": "get_device_status",
-              "arguments": "{\"entity_id\": \"light.office_desk\"}"
+              "name": "get_weather",
+              "arguments": "{\"city\": \"Miami\"}"
             }
           }
         ],
         "validation_request": null
       },
-      "conversation_id": "4f3f7bb5-1e6d-4044-bfd9-ca0af140c62f"
+      "conversation_id": "15e6bfcb-3f9f-4a2d-86cc-ae141656fd16"
+    },
+    {
+      "test_number": 5,
+      "description": "Current weather with unit system specified",
+      "voice_command": "What's the weather like in metric units?",
+      "expected_command": "get_weather",
+      "expected_params": {
+        "unit_system": "metric",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: unit_system. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What's the weather like in metric units?",
+          "conversation_id": "236f5d05-0947-4e5a-8be8-be9d89676719"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_0fb8cf614c89",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"location\": \"metric\", \"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "236f5d05-0947-4e5a-8be8-be9d89676719"
+    },
+    {
+      "test_number": 13,
+      "description": "Basic knowledge question",
+      "voice_command": "What is the capital of France?",
+      "expected_command": "answer_question",
+      "expected_params": {
+        "query": "What is the capital of France?"
+      },
+      "failure_reason": "Parameter validation failed: Missing: query. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What is the capital of France?",
+          "conversation_id": "b96e68d4-c77b-41f7-96bd-83b7450a1791"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_5f26187b2436",
+            "type": "function",
+            "function": {
+              "name": "answer_question",
+              "arguments": "{\"question\": \"What is the capital of France?\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "b96e68d4-c77b-41f7-96bd-83b7450a1791"
+    },
+    {
+      "test_number": 15,
+      "description": "Historical knowledge question",
+      "voice_command": "When did World War II end?",
+      "expected_command": "answer_question",
+      "expected_params": {
+        "query": "When did World War II end?"
+      },
+      "failure_reason": "Parameter validation failed: Missing: query. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "When did World War II end?",
+          "conversation_id": "95b7be5e-bb5e-4cac-9c3d-14202dc44f63"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_597c1d6a2e96",
+            "type": "function",
+            "function": {
+              "name": "answer_question",
+              "arguments": "{\"question\": \"When did World War II end?\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "95b7be5e-bb5e-4cac-9c3d-14202dc44f63"
+    },
+    {
+      "test_number": 17,
+      "description": "Geography knowledge question",
+      "voice_command": "Where is Mount Everest located?",
+      "expected_command": "answer_question",
+      "expected_params": {
+        "query": "Where is Mount Everest located?"
+      },
+      "failure_reason": "Command mismatch: expected 'answer_question', got 'get_location'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Where is Mount Everest located?",
+          "conversation_id": "dfdb90b0-bebe-48b8-9e32-76b9bdd6d87b"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_937e2550407c",
+            "type": "function",
+            "function": {
+              "name": "get_location",
+              "arguments": "{\"query\": \"Where is Mount Everest located?\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "dfdb90b0-bebe-48b8-9e32-76b9bdd6d87b"
+    },
+    {
+      "test_number": 18,
+      "description": "Complex topic explanation request",
+      "voice_command": "Explain quantum physics",
+      "expected_command": "answer_question",
+      "expected_params": {
+        "query": "Explain quantum physics"
+      },
+      "failure_reason": "Command mismatch: expected 'answer_question', got 'explain_concept'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Explain quantum physics",
+          "conversation_id": "938b3313-115b-40fc-b51d-dd124207d1f3"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_5a31cc717531",
+            "type": "function",
+            "function": {
+              "name": "explain_concept",
+              "arguments": "{\"concept\": \"quantum physics\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "938b3313-115b-40fc-b51d-dd124207d1f3"
+    },
+    {
+      "test_number": 19,
+      "description": "Current election results search",
+      "voice_command": "Who won the senate race in Pennsylvania?",
+      "expected_command": "search_web",
+      "expected_params": {
+        "query": "Who won the senate race in Pennsylvania?"
+      },
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Who won the senate race in Pennsylvania?",
+          "conversation_id": "5e96c93e-e4fd-4af0-aaf0-fee716f29ec8"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_c11cf0268ed2",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"location\": \"Pennsylvania\", \"team_name\": \"Senate\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "5e96c93e-e4fd-4af0-aaf0-fee716f29ec8"
+    },
+    {
+      "test_number": 22,
+      "description": "Upcoming event search",
+      "voice_command": "When is the next SpaceX launch?",
+      "expected_command": "search_web",
+      "expected_params": {
+        "query": "When is the next SpaceX launch?"
+      },
+      "failure_reason": "Command mismatch: expected 'search_web', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "When is the next SpaceX launch?",
+          "conversation_id": "a5ce90cf-c55b-4fcf-8973-c16272cdad6b"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_d36c6e8b1e86",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"SpaceX\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "a5ce90cf-c55b-4fcf-8973-c16272cdad6b"
+    },
+    {
+      "test_number": 23,
+      "description": "Sports championship question (either sports_scores or search_web acceptable)",
+      "voice_command": "Who won the Super Bowl this year?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "",
+        "resolved_datetimes": [
+          "this_year"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Mismatched: resolved_datetimes: expected ['this_year'], got ['2026-01-01T05:00:00Z', '2026-12-31T05:00:00Z']",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Who won the Super Bowl this year?",
+          "conversation_id": "ac707808-d0b1-44a7-8a8d-5874c1b4932e"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_ecaad25dbfaa",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"Super Bowl\", \"resolved_datetimes\": [\"2026-01-01T05:00:00Z\", \"2026-12-31T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "ac707808-d0b1-44a7-8a8d-5874c1b4932e"
+    },
+    {
+      "test_number": 24,
+      "description": "Current weather query (should use weather command, not web search)",
+      "voice_command": "What's the current weather in Miami?",
+      "expected_command": "get_weather",
+      "expected_params": {
+        "city": "Miami",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What's the current weather in Miami?",
+          "conversation_id": "9f157b2b-09ef-41ce-8325-92193dbcfaf6"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_b2959716d8fd",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\": \"Miami\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "9f157b2b-09ef-41ce-8325-92193dbcfaf6"
+    },
+    {
+      "test_number": 39,
+      "description": "Basic sports score request (no city, no dates)",
+      "voice_command": "How did the Giants do?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Giants",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Giants do?",
+          "conversation_id": "8b4c78a0-eb5e-4095-b705-e90aefaae71c"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_c00ce0f320f4",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Giants\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "8b4c78a0-eb5e-4095-b705-e90aefaae71c"
+    },
+    {
+      "test_number": 40,
+      "description": "Sports score request with different team",
+      "voice_command": "What's the score of the Yankees game?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Yankees",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What's the score of the Yankees game?",
+          "conversation_id": "17578826-bad4-4d87-9676-588c373a2c07"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_025b29468d4a",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"Yankees\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "17578826-bad4-4d87-9676-588c373a2c07"
+    },
+    {
+      "test_number": 41,
+      "description": "Sports score request with location disambiguation",
+      "voice_command": "How did the New York Giants do?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "New York Giants",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the New York Giants do?",
+          "conversation_id": "3d823669-772c-4997-a31f-e891507fb84c"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_d28121c638c4",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"], \"team_name\": \"New York Giants\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "3d823669-772c-4997-a31f-e891507fb84c"
+    },
+    {
+      "test_number": 42,
+      "description": "Sports score request with different location/team combination",
+      "voice_command": "What's the score of the Carolina Panthers game?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Carolina Panthers",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What's the score of the Carolina Panthers game?",
+          "conversation_id": "d4413072-ad5d-4e25-8edd-2d33b8bce366"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_16ea6b38f295",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"Carolina Panthers\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "d4413072-ad5d-4e25-8edd-2d33b8bce366"
+    },
+    {
+      "test_number": 43,
+      "description": "Sports score request with relative date",
+      "voice_command": "How did the Giants do yesterday?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Giants",
+        "resolved_datetimes": [
+          "yesterday"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Giants do yesterday?",
+          "conversation_id": "ac8a4120-2c1d-472c-9130-3474127372b3"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_3c3bbe9e1f0f",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-12T05:00:00Z\"], \"team_name\": \"Giants\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "ac8a4120-2c1d-472c-9130-3474127372b3"
+    },
+    {
+      "test_number": 45,
+      "description": "Sports score with date range",
+      "voice_command": "How did the Baltimore Orioles do last weekend?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Baltimore Orioles",
+        "resolved_datetimes": [
+          "last_weekend"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Baltimore Orioles do last weekend?",
+          "conversation_id": "3f4b52cd-5237-453a-9576-34b547885543"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_afe00551f705",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-07T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "3f4b52cd-5237-453a-9576-34b547885543"
+    },
+    {
+      "test_number": 47,
+      "description": "Sports score with explicit today date",
+      "voice_command": "How did the Cowboys do?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Cowboys",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Cowboys do?",
+          "conversation_id": "e860f33b-4d40-4721-9429-93588c488194"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_66b3c2cecb4a",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Cowboys\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "e860f33b-4d40-4721-9429-93588c488194"
+    },
+    {
+      "test_number": 49,
+      "description": "Sports score with relative date",
+      "voice_command": "What was the score of the Panthers game yesterday?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Panthers",
+        "resolved_datetimes": [
+          "yesterday"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What was the score of the Panthers game yesterday?",
+          "conversation_id": "eaea9072-6ae6-484a-9429-49cf9da8dcd8"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_1336d3de07cf",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"Panthers\", \"date_yesterday\": true}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "eaea9072-6ae6-484a-9429-49cf9da8dcd8"
+    },
+    {
+      "test_number": 50,
+      "description": "Sports score with date range",
+      "voice_command": "How did the Eagles do last weekend?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Eagles",
+        "resolved_datetimes": [
+          "last_weekend"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Eagles do last weekend?",
+          "conversation_id": "5a9480c5-a084-4ba0-a766-3142353d733f"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_5eb1f781359b",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Eagles\", \"resolved_datetimes\": [\"2026-02-07T05:00:00Z\", \"2026-02-08T05:00:00Z\"]}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "5a9480c5-a084-4ba0-a766-3142353d733f"
+    },
+    {
+      "test_number": 52,
+      "description": "Sports score with explicit today date",
+      "voice_command": "How did the Buccaneers do?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Buccaneers",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "How did the Buccaneers do?",
+          "conversation_id": "2142500e-12bd-44c8-93d2-7a7df4e59439"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_192765e15285",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"team_name\": \"Buccaneers\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "2142500e-12bd-44c8-93d2-7a7df4e59439"
+    },
+    {
+      "test_number": 53,
+      "description": "Flexibility test: 'Did X win' pattern",
+      "voice_command": "Did the Steelers win?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Steelers",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Command mismatch: expected 'get_sports_scores', got 'get_sports_schedule'",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Did the Steelers win?",
+          "conversation_id": "4b58d6d7-8b89-4b1e-860d-ffa10b415d18"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_881d13058e20",
+            "type": "function",
+            "function": {
+              "name": "get_sports_schedule",
+              "arguments": "{\"resolved_datetimes\": [\"2026-02-13T05:00:00Z\"], \"team_name\": \"Steelers\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "4b58d6d7-8b89-4b1e-860d-ffa10b415d18"
+    },
+    {
+      "test_number": 54,
+      "description": "Flexibility test: 'What was the X score' pattern",
+      "voice_command": "What was the Mets score?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Mets",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. ",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "What was the Mets score?",
+          "conversation_id": "e10e4420-3d0f-4fed-ab9c-08965d770d39"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_4fba265b27fe",
+            "type": "function",
+            "function": {
+              "name": "get_sports_scores",
+              "arguments": "{\"team_name\": \"Mets\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "e10e4420-3d0f-4fed-ab9c-08965d770d39"
+    },
+    {
+      "test_number": 55,
+      "description": "Flexibility test: 'Final score for X' with full team name",
+      "voice_command": "Final score for the Denver Broncos?",
+      "expected_command": "get_sports_scores",
+      "expected_params": {
+        "team_name": "Denver Broncos",
+        "resolved_datetimes": [
+          "today"
+        ]
+      },
+      "failure_reason": "No response received from JCC",
+      "actual_response": {},
+      "conversation_id": "dfccddfd-da69-46ea-967b-c9ac5922a708"
+    },
+    {
+      "test_number": 64,
+      "description": "Compound timer: 1h 30m",
+      "voice_command": "Set a timer for 1 hour and 30 minutes",
+      "expected_command": "set_timer",
+      "expected_params": {
+        "duration_seconds": 5400
+      },
+      "failure_reason": "Parameter validation failed: Mismatched: duration_seconds: expected 5400, got 900",
+      "actual_response": {
+        "commands": [],
+        "request_information": {
+          "voice_command": "Set a timer for 1 hour and 30 minutes",
+          "conversation_id": "6223f90e-ad44-4fc9-9e39-ca6d6137b23c"
+        },
+        "stop_reason": "tool_calls",
+        "assistant_message": "",
+        "tool_calls": [
+          {
+            "id": "call_90d2f9d2b943",
+            "type": "function",
+            "function": {
+              "name": "set_timer",
+              "arguments": "{\"duration_seconds\": 900, \"label\": \"1 hour and 30 minutes\"}"
+            }
+          }
+        ],
+        "validation_request": null
+      },
+      "conversation_id": "6223f90e-ad44-4fc9-9e39-ca6d6137b23c"
     }
   ],
   "analysis": {
     "command_success_rates": {
-      "get_device_status": {
-        "success_rate": 83.33,
+      "get_sports_scores": {
+        "success_rate": 26.32,
         "passed": 5,
-        "failed": 1,
+        "failed": 14,
+        "total": 19
+      },
+      "answer_question": {
+        "success_rate": 33.33,
+        "passed": 2,
+        "failed": 4,
         "total": 6
       },
+      "search_web": {
+        "success_rate": 60.0,
+        "passed": 3,
+        "failed": 2,
+        "total": 5
+      },
       "get_weather": {
-        "success_rate": 100.0,
-        "passed": 8,
-        "failed": 0,
+        "success_rate": 62.5,
+        "passed": 5,
+        "failed": 3,
         "total": 8
+      },
+      "set_timer": {
+        "success_rate": 93.33,
+        "passed": 14,
+        "failed": 1,
+        "total": 15
       },
       "get_calendar_events": {
         "success_rate": 100.0,
@@ -3974,29 +3961,11 @@
         "failed": 0,
         "total": 6
       },
-      "answer_question": {
-        "success_rate": 100.0,
-        "passed": 6,
-        "failed": 0,
-        "total": 6
-      },
-      "search_web": {
-        "success_rate": 100.0,
-        "passed": 5,
-        "failed": 0,
-        "total": 5
-      },
       "get_current_time": {
         "success_rate": 100.0,
         "passed": 1,
         "failed": 0,
         "total": 1
-      },
-      "get_sports_scores": {
-        "success_rate": 100.0,
-        "passed": 19,
-        "failed": 0,
-        "total": 19
       },
       "tell_joke": {
         "success_rate": 100.0,
@@ -4009,36 +3978,229 @@
         "passed": 8,
         "failed": 0,
         "total": 8
-      },
-      "set_timer": {
-        "success_rate": 100.0,
-        "passed": 15,
-        "failed": 0,
-        "total": 15
-      },
-      "control_device": {
-        "success_rate": 100.0,
-        "passed": 11,
-        "failed": 0,
-        "total": 11
       }
     },
-    "command_confusion_matrix": {},
+    "command_confusion_matrix": {
+      "get_sports_scores \u2192 get_sports_schedule": 8,
+      "search_web \u2192 get_sports_schedule": 2,
+      "answer_question \u2192 get_location": 1,
+      "answer_question \u2192 explain_concept": 1
+    },
     "parameter_extraction_issues": {
-      "get_device_status": [
+      "get_weather": [
         {
-          "voice_command": "Is the office light on?",
+          "voice_command": "What's the weather in Miami?",
           "expected_params": {
-            "entity_id": "light.my_office"
+            "city": "Miami",
+            "resolved_datetimes": [
+              "today"
+            ]
           },
           "actual_params": {
-            "entity_id": "light.office_desk"
+            "city": "Miami"
           },
-          "failure_reason": "Parameter validation failed: Mismatched: entity_id: expected light.my_office, got light.office_desk"
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        },
+        {
+          "voice_command": "What's the weather like in metric units?",
+          "expected_params": {
+            "unit_system": "metric",
+            "resolved_datetimes": [
+              "today"
+            ]
+          },
+          "actual_params": {
+            "location": "metric",
+            "resolved_datetimes": [
+              "2026-02-13T05:00:00Z"
+            ]
+          },
+          "failure_reason": "Parameter validation failed: Missing: unit_system. "
+        },
+        {
+          "voice_command": "What's the current weather in Miami?",
+          "expected_params": {
+            "city": "Miami",
+            "resolved_datetimes": [
+              "today"
+            ]
+          },
+          "actual_params": {
+            "city": "Miami"
+          },
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        }
+      ],
+      "answer_question": [
+        {
+          "voice_command": "What is the capital of France?",
+          "expected_params": {
+            "query": "What is the capital of France?"
+          },
+          "actual_params": {
+            "question": "What is the capital of France?"
+          },
+          "failure_reason": "Parameter validation failed: Missing: query. "
+        },
+        {
+          "voice_command": "When did World War II end?",
+          "expected_params": {
+            "query": "When did World War II end?"
+          },
+          "actual_params": {
+            "question": "When did World War II end?"
+          },
+          "failure_reason": "Parameter validation failed: Missing: query. "
+        }
+      ],
+      "get_sports_scores": [
+        {
+          "voice_command": "Who won the Super Bowl this year?",
+          "expected_params": {
+            "team_name": "",
+            "resolved_datetimes": [
+              "this_year"
+            ]
+          },
+          "actual_params": {
+            "team_name": "Super Bowl",
+            "resolved_datetimes": [
+              "2026-01-01T05:00:00Z",
+              "2026-12-31T05:00:00Z"
+            ]
+          },
+          "failure_reason": "Parameter validation failed: Mismatched: resolved_datetimes: expected ['this_year'], got ['2026-01-01T05:00:00Z', '2026-12-31T05:00:00Z']"
+        },
+        {
+          "voice_command": "What's the score of the Yankees game?",
+          "expected_params": {
+            "team_name": "Yankees",
+            "resolved_datetimes": [
+              "today"
+            ]
+          },
+          "actual_params": {
+            "team_name": "Yankees"
+          },
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        },
+        {
+          "voice_command": "What's the score of the Carolina Panthers game?",
+          "expected_params": {
+            "team_name": "Carolina Panthers",
+            "resolved_datetimes": [
+              "today"
+            ]
+          },
+          "actual_params": {
+            "team_name": "Carolina Panthers"
+          },
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        },
+        {
+          "voice_command": "What was the score of the Panthers game yesterday?",
+          "expected_params": {
+            "team_name": "Panthers",
+            "resolved_datetimes": [
+              "yesterday"
+            ]
+          },
+          "actual_params": {
+            "team_name": "Panthers",
+            "date_yesterday": true
+          },
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        },
+        {
+          "voice_command": "What was the Mets score?",
+          "expected_params": {
+            "team_name": "Mets",
+            "resolved_datetimes": [
+              "today"
+            ]
+          },
+          "actual_params": {
+            "team_name": "Mets"
+          },
+          "failure_reason": "Parameter validation failed: Missing: resolved_datetimes. "
+        }
+      ],
+      "set_timer": [
+        {
+          "voice_command": "Set a timer for 1 hour and 30 minutes",
+          "expected_params": {
+            "duration_seconds": 5400
+          },
+          "actual_params": {
+            "duration_seconds": 900,
+            "label": "1 hour and 30 minutes"
+          },
+          "failure_reason": "Parameter validation failed: Mismatched: duration_seconds: expected 5400, got 900"
         }
       ]
     },
-    "recommendations": []
+    "recommendations": [
+      {
+        "priority": "HIGH",
+        "command": "get_sports_scores",
+        "issue": "Low success rate: 26.32%",
+        "suggestion": "Review and improve command description. Consider adding more specific use cases and anti-patterns to distinguish from similar commands."
+      },
+      {
+        "priority": "HIGH",
+        "command": "answer_question",
+        "issue": "Low success rate: 33.33%",
+        "suggestion": "Review and improve command description. Consider adding more specific use cases and anti-patterns to distinguish from similar commands."
+      },
+      {
+        "priority": "HIGH",
+        "command": "search_web",
+        "issue": "Low success rate: 60.0%",
+        "suggestion": "Review and improve command description. Consider adding more specific use cases and anti-patterns to distinguish from similar commands."
+      },
+      {
+        "priority": "HIGH",
+        "command": "get_weather",
+        "issue": "Low success rate: 62.5%",
+        "suggestion": "Review and improve command description. Consider adding more specific use cases and anti-patterns to distinguish from similar commands."
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "get_sports_scores",
+        "issue": "Confused with 'get_sports_schedule' 8 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'get_sports_scores' description: 'Do NOT use for [actual command use case]. Use get_sports_schedule instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "search_web",
+        "issue": "Confused with 'get_sports_schedule' 2 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'search_web' description: 'Do NOT use for [actual command use case]. Use get_sports_schedule instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "answer_question",
+        "issue": "Confused with 'get_location' 1 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'answer_question' description: 'Do NOT use for [actual command use case]. Use get_location instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "answer_question",
+        "issue": "Confused with 'explain_concept' 1 time(s)",
+        "suggestion": "Add explicit anti-pattern in 'answer_question' description: 'Do NOT use for [actual command use case]. Use explain_concept instead.'"
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "get_weather",
+        "issue": "3 parameter extraction failures",
+        "suggestion": "Review parameter descriptions and add more inline examples of valid values and formats."
+      },
+      {
+        "priority": "MEDIUM",
+        "command": "get_sports_scores",
+        "issue": "5 parameter extraction failures",
+        "suggestion": "Review parameter descriptions and add more inline examples of valid values and formats."
+      }
+    ]
   },
   "slow_tests": []
 }

@@ -1,6 +1,6 @@
 {
-  "node_id": "node-123",
-  "api_key": "1",
+  "node_id": "76a0ca5a-c308-4afd-9c8e-c26a1cdd8d67",
+  "api_key": "87qTlx681oJ70rVsySxr-J4L33omScK0pNVEALBFIC13oIpSri-IcgFqe-TPS0bd",
   "jarvis_whisper_api_url": "https://whisper.jarvisautomation.io",
   "jarvis_command_center_api_url": "http://localhost:8002",
   "room": "office",

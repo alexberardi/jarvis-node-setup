@@ -10,7 +10,10 @@ from typing import Any, Dict, Optional
 
 from clients.rest_client import RestClient
 from core.ijarvis_wake_response_provider import IJarvisWakeResponseProvider
+from jarvis_log_client import JarvisLogger
 from utils.service_discovery import get_command_center_url
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class JarvisTTSWakeResponseProvider(IJarvisWakeResponseProvider):
@@ -29,7 +32,7 @@ class JarvisTTSWakeResponseProvider(IJarvisWakeResponseProvider):
         try:
             command_center_url = get_command_center_url()
             if not command_center_url:
-                print("[wake-response] command_center_url not configured")
+                logger.error("command_center_url not configured", context={"provider": "wake-response"})
                 return None
 
             # Call command-center's wake response proxy endpoint
@@ -40,12 +43,12 @@ class JarvisTTSWakeResponseProvider(IJarvisWakeResponseProvider):
             if response and isinstance(response, dict):
                 text = response.get("text", "").strip()
                 if text:
-                    print(f"[wake-response] Generated: {text}")
+                    logger.info(f"Generated wake response: {text}")
                     return text
 
-            print("[wake-response] No text received from API")
+            logger.warning("No text received from wake response API")
             return None
 
         except Exception as e:
-            print(f"[wake-response] Failed to fetch next greeting: {e}")
+            logger.error(f"Failed to fetch next greeting: {e}")
             return None

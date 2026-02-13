@@ -23,7 +23,8 @@ def fetch_date_keys() -> dict:
 
 def generate_constants_file(data: dict) -> str:
     """Generate Python constants file from API response."""
-    keys = data.get("keys", [])
+    # Support both old ("keys") and new ("static_keys") response formats
+    keys = data.get("static_keys") or data.get("keys", [])
     version = data.get("version", "unknown")
 
     lines = [
@@ -59,7 +60,8 @@ def generate_constants_file(data: dict) -> str:
 def main() -> None:
     print(f"Fetching date keys from {LLM_PROXY_URL}...")
     data = fetch_date_keys()
-    print(f"Found {len(data.get('keys', []))} keys")
+    keys = data.get("static_keys") or data.get("keys", [])
+    print(f"Found {len(keys)} keys (version {data.get('version', 'unknown')})")
 
     content = generate_constants_file(data)
 

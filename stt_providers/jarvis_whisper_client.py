@@ -11,7 +11,10 @@ from typing import Any, Dict, Optional
 
 from clients.rest_client import RestClient
 from core.ijarvis_speech_to_text_provider import IJarvisSpeechToTextProvider
+from jarvis_log_client import JarvisLogger
 from utils.service_discovery import get_command_center_url
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class JarvisWhisperClient(IJarvisSpeechToTextProvider):
@@ -32,7 +35,7 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
         """
         command_center_url = get_command_center_url()
         if not command_center_url:
-            print("[whisper] command_center_url not configured")
+            logger.error("command_center_url not configured", context={"provider": "whisper"})
             return None
 
         # Call command-center's Whisper proxy endpoint
