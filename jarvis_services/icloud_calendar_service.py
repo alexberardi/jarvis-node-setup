@@ -4,7 +4,11 @@ from typing import List, Dict, Any, Optional
 
 import requests
 
+from jarvis_log_client import JarvisLogger
+
 from utils.date_util import parse_ical_datetime
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 @dataclass
@@ -63,10 +67,10 @@ class ICloudCalendarService:
             self._auth_cache_time and 
             self.calendar_home_url and
             (datetime.now() - self._auth_cache_time).seconds < self._auth_cache_duration):
-            print(f"Using cached authentication (age: {(datetime.now() - self._auth_cache_time).seconds}s)")
+            logger.debug("Using cached authentication", cache_age_seconds=(datetime.now() - self._auth_cache_time).seconds)
             return True
         
-        print("Authentication cache expired or missing, performing full authentication...")
+        logger.info("Authentication cache expired or missing, performing full authentication")
         
         try:
             # Set up basic auth as per OneCal article
@@ -151,7 +155,7 @@ class ICloudCalendarService:
                                         self._authenticated = True
                                         self.calendar_home_url = calendar_home_url
                                         self._auth_cache_time = datetime.now()
-                                        print("Authentication successful, caching credentials for 1 hour")
+                                        logger.info("Authentication successful, caching credentials for 1 hour")
                                         return True
                                     
                 except Exception as e:
@@ -308,7 +312,7 @@ class ICloudCalendarService:
             
             # Use the discovered calendar home URL directly (it already contains /calendars/)
             if not hasattr(self, 'calendar_home_url'):
-                print(f"DEBUG: No calendar_home_url found - returning empty list")
+                logger.debug("No calendar_home_url found, returning empty list")
                 return []
                 
             calendars_url = self.calendar_home_url
@@ -329,15 +333,15 @@ class ICloudCalendarService:
             }
             
             try:
-                print(f"DEBUG: Discovering calendars at URL: {calendars_url}")
+                logger.debug("Discovering calendars", url=calendars_url)
                 calendars_response = self.session.request('PROPFIND', calendars_url, data=propfind_query, headers=propfind_headers)
-                print(f"DEBUG: Calendar discovery response status: {calendars_response.status_code}")
+                logger.debug("Calendar discovery response", status_code=calendars_response.status_code)
                 
                 if calendars_response.status_code in [200, 207]:
                     # Parse the calendar list to find the specific calendar we want
                     calendar_url = self._find_calendar_url(calendars_response.text, self.calendar_name)
                     if not calendar_url:
-                        print(f"DEBUG: Calendar '{self.calendar_name}' not found in response - returning empty list")
+                        logger.debug("Calendar not found in response, returning empty list", calendar_name=self.calendar_name)
                         return []
                     
                     # Construct the full calendar URL
@@ -350,7 +354,7 @@ class ICloudCalendarService:
                     # This follows the OneCal article's approach
                     
                     # Debug: Show the exact dates being used
-                    print(f"DEBUG: Querying calendar for date range: {date.strftime('%Y-%m-%d %H:%M:%S')} to {end_date.strftime('%Y-%m-%d %H:%M:%S')}")
+                    logger.debug("Querying calendar for date range", start=date.strftime('%Y-%m-%d %H:%M:%S'), end=end_date.strftime('%Y-%m-%d %H:%M:%S'))
                     
                     calendar_query = f"""<?xml version="1.0" encoding="utf-8" ?>
 <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
@@ -377,10 +381,10 @@ class ICloudCalendarService:
                     response = self.session.request('REPORT', full_calendar_url, data=calendar_query, headers=headers)
                     
                     if response.status_code in [200, 207]:  # CalDAV returns 207 Multi-Status for successful queries
-                        print(f"DEBUG: Calendar query successful (status: {response.status_code})")
+                        logger.debug("Calendar query successful", status_code=response.status_code)
                         return self._parse_calendar_response(response.text, date, end_date)
                     else:
-                        print(f"DEBUG: Calendar query failed with status: {response.status_code}")
+                        logger.warning("Calendar query failed", status_code=response.status_code)
                         return []
                         
                 else:

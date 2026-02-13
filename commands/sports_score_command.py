@@ -134,7 +134,7 @@ class SportsScoreCommand(IJarvisCommand):
     def parameters(self) -> List[IJarvisParameter]:
         return [
             JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said (e.g., 'Lakers', 'Alabama'). Must be valid Big 4 or College team."),
-            JarvisParameter("resolved_datetimes", "array<string>", required=True, description="Date keys like 'today', 'yesterday', 'last_weekend'. Always required; use 'today' if user doesn't specify a date.")
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys like 'today', 'yesterday', 'last_weekend'. Always required; use 'today' if user doesn't specify a date.")
         ]
     
     @property

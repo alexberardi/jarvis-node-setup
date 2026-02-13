@@ -24,4 +24,4 @@ pydantic
 dotenv
 fastapi>=0.100.0
 uvicorn>=0.22.0
-jarvis-log-client @ file:///home/alex/jarvis/jarvis-log-client
+jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git

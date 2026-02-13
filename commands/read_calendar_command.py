@@ -104,7 +104,7 @@ class ReadCalendarCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("resolved_datetimes", "array<string>", description="Date keys like 'today', 'tomorrow', 'yesterday', 'this_weekend', 'next_week', etc. The server resolves these to actual dates.", required=True)
+            JarvisParameter("resolved_datetimes", "array<datetime>", description="Date keys like 'today', 'tomorrow', 'yesterday', 'this_weekend', 'next_week', etc. The server resolves these to actual dates.", required=True)
         ]
 
     @property

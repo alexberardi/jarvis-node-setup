@@ -1,11 +1,12 @@
 import os
 import subprocess
 import tempfile
-from typing import Optional
 
 from core.ijarvis_text_to_speech_provider import IJarvisTextToSpeechProvider
 from core.platform_audio import platform_audio
-from utils.config_service import Config
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class EspeakTTS(IJarvisTextToSpeechProvider):
@@ -14,7 +15,7 @@ class EspeakTTS(IJarvisTextToSpeechProvider):
         return "espeak"
 
     def speak(self, include_chime: bool, text: str) -> None:
-        print(f"Speaking {text}")
+        logger.info(f"Speaking '{text}' via espeak")
 
         if include_chime:
             self.play_chime()
