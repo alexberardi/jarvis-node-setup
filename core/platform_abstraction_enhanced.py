@@ -9,11 +9,14 @@ for network discovery.
 import os
 import platform
 import asyncio
-import socket
 import ipaddress
 import subprocess
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Any, Tuple
+
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
 
 class AudioProvider(ABC):
     """Abstract interface for audio operations"""
@@ -103,7 +106,7 @@ class MacOSAudioProvider(AudioProvider):
             )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error playing audio file: {e}")
+            logger.error(f"Error playing audio file: {e}")
             return False
     
     def play_chime(self, chime_path: str) -> bool:
@@ -130,7 +133,7 @@ class MacOSAudioProvider(AudioProvider):
             
             return devices
         except Exception as e:
-            print(f"Error getting audio devices: {e}")
+            logger.error(f"Error getting audio devices: {e}")
             return []
 
 
@@ -151,7 +154,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
             if result.returncode == 0:
                 services["dns_sd"] = self._parse_dns_sd_output(result.stdout)
         except Exception as e:
-            print(f"Error in dns-sd discovery: {e}")
+            logger.error(f"Error in dns-sd discovery: {e}")
         
         # Use dig for specific services
         dig_services = [
@@ -173,7 +176,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                 if result.returncode == 0 and result.stdout.strip():
                     services[service] = result.stdout.strip().split('\n')
             except Exception as e:
-                print(f"Error querying {service}: {e}")
+                logger.error(f"Error querying {service}: {e}")
         
         return services
     
@@ -230,7 +233,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                 if result.returncode == 0:
                     active_hosts.append(ip)
         except Exception as e:
-            print(f"Error scanning network: {e}")
+            logger.error(f"Error scanning network: {e}")
         
         return active_hosts
     
@@ -273,7 +276,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                 return await self._ping_sweep_async(network_range)
                 
         except Exception as e:
-            print(f"Error in async network scan: {e}")
+            logger.error(f"Error in async network scan: {e}")
             return []
     
     async def _ping_sweep_async(self, network_range: str) -> List[str]:
@@ -331,7 +334,7 @@ class MacOSNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     if mac != "ff:ff:ff:ff:ff:ff" and not mac.startswith("incomplete"):
                         entries.append((ip, mac))
         except Exception as e:
-            print(f"Error getting ARP table: {e}")
+            logger.error(f"Error getting ARP table: {e}")
             
         return entries
         
@@ -387,7 +390,7 @@ class PiAudioProvider(AudioProvider):
                 )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error playing audio file: {e}")
+            logger.error(f"Error playing audio file: {e}")
             return False
     
     def play_chime(self, chime_path: str) -> bool:
@@ -400,7 +403,7 @@ class PiAudioProvider(AudioProvider):
             )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error playing chime: {e}")
+            logger.error(f"Error playing chime: {e}")
             return False
     
     def get_audio_devices(self) -> List[Dict[str, Any]]:
@@ -425,7 +428,7 @@ class PiAudioProvider(AudioProvider):
             
             return devices
         except Exception as e:
-            print(f"Error getting audio devices: {e}")
+            logger.error(f"Error getting audio devices: {e}")
             return []
 
 
@@ -447,7 +450,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
             if result.returncode == 0:
                 services["avahi"] = self._parse_avahi_output(result.stdout)
         except Exception as e:
-            print(f"Error in avahi-browse discovery: {e}")
+            logger.error(f"Error in avahi-browse discovery: {e}")
         
         # Use systemd-resolve for additional discovery
         try:
@@ -461,7 +464,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
             if result.returncode == 0:
                 services["systemd_resolve"] = result.stdout
         except Exception as e:
-            print(f"Error in systemd-resolve discovery: {e}")
+            logger.error(f"Error in systemd-resolve discovery: {e}")
         
         return services
     
@@ -518,7 +521,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                         ip = line.split()[-1].strip('()')
                         active_hosts.append(ip)
         except Exception as e:
-            print(f"Error scanning network: {e}")
+            logger.error(f"Error scanning network: {e}")
         
         return active_hosts
     
@@ -547,7 +550,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                 return await self._ping_sweep_async(network_range)
                 
         except Exception as e:
-            print(f"Error in async network scan: {e}")
+            logger.error(f"Error in async network scan: {e}")
             # Fallback to ping sweep
             return await self._ping_sweep_async(network_range)
     
@@ -612,7 +615,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
             if entries:
                 return entries
         except Exception as e:
-            print(f"Error getting ARP table with ip neigh: {e}")
+            logger.error(f"Error getting ARP table with ip neigh: {e}")
         
         # Fallback to arp command
         try:
@@ -631,7 +634,7 @@ class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
                     if mac != "ff:ff:ff:ff:ff:ff" and not mac.startswith("incomplete"):
                         entries.append((ip, mac))
         except Exception as e:
-            print(f"Error getting ARP table with arp -a: {e}")
+            logger.error(f"Error getting ARP table with arp -a: {e}")
             
         return entries
         
@@ -694,7 +697,7 @@ class PiSystemProvider(SystemProvider):
                 )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error installing package {package_name}: {e}")
+            logger.error(f"Error installing package {package_name}: {e}")
             return False
     
     def get_audio_config_path(self) -> str:
@@ -724,7 +727,7 @@ class MacOSSystemProvider(SystemProvider):
             )
             return result.returncode == 0
         except Exception as e:
-            print(f"Error installing package {package_name}: {e}")
+            logger.error(f"Error installing package {package_name}: {e}")
             return False
     
     def get_audio_config_path(self) -> str:

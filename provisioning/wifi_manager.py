@@ -17,7 +17,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Protocol
 
+from jarvis_log_client import JarvisLogger
+
 from provisioning.models import NetworkInfo
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 # Global network cache for sharing between manager instances
@@ -340,24 +344,24 @@ class HostapdWiFiManager:
 
     def _restore_network_services(self) -> None:
         """Restore NetworkManager, wpa_supplicant, and dnsmasq after AP mode."""
-        print(f"[hostapd] Restoring services: NM={self._nm_was_running}, wpa={self._wpa_was_running}")
+        logger.info(f"Restoring services: NM={self._nm_was_running}, wpa={self._wpa_was_running}")
 
         if self._wpa_was_running:
             result = subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
-            print(f"[hostapd] Started wpa_supplicant: rc={result.returncode}")
+            logger.info(f"Started wpa_supplicant: rc={result.returncode}")
 
         if self._nm_was_running:
             result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
-            print(f"[hostapd] Started NetworkManager: rc={result.returncode}")
+            logger.info(f"Started NetworkManager: rc={result.returncode}")
         else:
             # Always try to start NetworkManager even if we didn't track it
-            print("[hostapd] WARNING: NM wasn't tracked as running, starting anyway...")
+            logger.warning("NM wasn't tracked as running, starting anyway...")
             result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
-            print(f"[hostapd] Started NetworkManager (fallback): rc={result.returncode}")
+            logger.info(f"Started NetworkManager (fallback): rc={result.returncode}")
 
         if self._dnsmasq_was_running:
             result = subprocess.run(["systemctl", "start", "dnsmasq"], capture_output=True)
-            print(f"[hostapd] Started dnsmasq: rc={result.returncode}")
+            logger.info(f"Started dnsmasq: rc={result.returncode}")
 
         # Give NetworkManager time to reconnect
         import time
@@ -521,7 +525,7 @@ log-dhcp
 
         try:
             # Stop network services that might be using the interface
-            print("[hostapd] Stopping NetworkManager and wpa_supplicant...")
+            logger.info("Stopping NetworkManager and wpa_supplicant...")
             self._stop_network_services()
 
             # Create config directory
@@ -544,7 +548,7 @@ log-dhcp
             )
 
             # Flush existing IP and assign new one
-            print(f"[hostapd] Configuring interface {self._interface}...")
+            logger.info(f"Configuring interface {self._interface}...")
             subprocess.run(
                 ["ip", "addr", "flush", "dev", self._interface],
                 capture_output=True,
@@ -562,7 +566,7 @@ log-dhcp
             )
 
             # Start hostapd
-            print(f"[hostapd] Starting hostapd with SSID: {ssid}")
+            logger.info(f"Starting hostapd with SSID: {ssid}")
             self._hostapd_process = subprocess.Popen(
                 ["hostapd", str(hostapd_conf)],
                 stdout=subprocess.PIPE,
@@ -576,12 +580,12 @@ log-dhcp
             if self._hostapd_process.poll() is not None:
                 # hostapd exited - read error output
                 _, stderr = self._hostapd_process.communicate()
-                print(f"[hostapd] ERROR: hostapd failed to start: {stderr.decode()}")
+                logger.error(f"hostapd failed to start: {stderr.decode()}")
                 self._restore_network_services()
                 return False
 
             # Start dnsmasq
-            print("[hostapd] Starting dnsmasq for DHCP...")
+            logger.info("Starting dnsmasq for DHCP...")
             self._dnsmasq_process = subprocess.Popen(
                 ["dnsmasq", "-C", str(dnsmasq_conf), "-d"],
                 stdout=subprocess.PIPE,
@@ -589,11 +593,11 @@ log-dhcp
             )
 
             self._ap_active = True
-            print(f"[hostapd] ✅ AP mode active - SSID: {ssid}, IP: {self.DEFAULT_AP_IP}")
+            logger.info(f"AP mode active - SSID: {ssid}, IP: {self.DEFAULT_AP_IP}")
             return True
 
         except (FileNotFoundError, PermissionError, OSError) as e:
-            print(f"[hostapd] ERROR: {e}")
+            logger.error(f"AP mode start failed: {e}")
             # Clean up on failure
             self.stop_ap_mode()
             return False
@@ -608,12 +612,12 @@ log-dhcp
         3. Remove IP from interface
         4. Restore NetworkManager/wpa_supplicant
         """
-        print("[hostapd] Stopping AP mode...")
+        logger.info("Stopping AP mode...")
 
         try:
             # Terminate hostapd
             if self._hostapd_process:
-                print("[hostapd] Terminating hostapd...")
+                logger.info("Terminating hostapd...")
                 self._hostapd_process.terminate()
                 try:
                     self._hostapd_process.wait(timeout=3)
@@ -627,7 +631,7 @@ log-dhcp
 
             # Terminate dnsmasq
             if self._dnsmasq_process:
-                print("[hostapd] Terminating dnsmasq...")
+                logger.info("Terminating dnsmasq...")
                 self._dnsmasq_process.terminate()
                 try:
                     self._dnsmasq_process.wait(timeout=3)
@@ -656,7 +660,7 @@ log-dhcp
             # Verify hostapd is actually dead
             result = subprocess.run(["pgrep", "hostapd"], capture_output=True)
             if result.returncode == 0:
-                print("[hostapd] WARNING: hostapd still running, force killing...")
+                logger.warning("hostapd still running, force killing...")
                 subprocess.run(["killall", "-9", "hostapd"], capture_output=True)
                 import time
                 time.sleep(1)
@@ -664,14 +668,14 @@ log-dhcp
             self._ap_active = False
 
             # Restore network services
-            print("[hostapd] Restoring network services...")
+            logger.info("Restoring network services...")
             self._restore_network_services()
 
-            print("[hostapd] ✅ AP mode stopped")
+            logger.info("AP mode stopped")
             return True
 
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-            print(f"[hostapd] Error during stop: {e}")
+            logger.error(f"Error during AP mode stop: {e}")
             self._ap_active = False
             # Still try to restore network services
             try:

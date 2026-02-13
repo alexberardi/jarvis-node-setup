@@ -12,7 +12,10 @@ from typing import Optional
 from clients.rest_client import RestClient
 from core.ijarvis_text_to_speech_provider import IJarvisTextToSpeechProvider
 from core.platform_audio import platform_audio
+from jarvis_log_client import JarvisLogger
 from utils.service_discovery import get_command_center_url
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class JarvisTTS(IJarvisTextToSpeechProvider):
@@ -29,7 +32,7 @@ class JarvisTTS(IJarvisTextToSpeechProvider):
             include_chime: Whether to play a chime before speaking
             text: The text to speak
         """
-        print(f"Speaking '{text}' via command-center TTS proxy")
+        logger.info(f"Speaking '{text}' via command-center TTS proxy")
 
         command_center_url = get_command_center_url()
         if not command_center_url:
