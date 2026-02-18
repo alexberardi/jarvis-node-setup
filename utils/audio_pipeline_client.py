@@ -24,8 +24,8 @@ class AudioPipelineClient:
     Client for TTS → Whisper audio pipeline (full mode testing)
 
     Requires:
-    - jarvis-tts running (default: http://localhost:8000)
-    - jarvis-whisper-api running (default: http://localhost:9999)
+    - jarvis-tts running (default: http://localhost:7707)
+    - jarvis-whisper-api running (default: http://localhost:7706)
     """
 
     def __init__(
@@ -38,12 +38,12 @@ class AudioPipelineClient:
         Initialize the audio pipeline client.
 
         Args:
-            tts_url: URL for jarvis-tts service (default from config or localhost:8000)
-            whisper_url: URL for jarvis-whisper-api (default from config or localhost:9999)
+            tts_url: URL for jarvis-tts service (default from config or localhost:7707)
+            whisper_url: URL for jarvis-whisper-api (default from config or localhost:7706)
             save_audio_dir: Optional directory to save audio files for debugging
         """
-        self.tts_url = tts_url or Config.get("jarvis_tts_api_url", "http://localhost:8000")
-        self.whisper_url = whisper_url or Config.get("jarvis_whisper_api_url", "http://localhost:9999")
+        self.tts_url = tts_url or Config.get("jarvis_tts_api_url", "http://localhost:7707")
+        self.whisper_url = whisper_url or Config.get("jarvis_whisper_api_url", "http://localhost:7706")
         self.save_audio_dir = save_audio_dir
 
         # Build auth header from node credentials

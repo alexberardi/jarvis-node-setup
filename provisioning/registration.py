@@ -19,7 +19,7 @@ def register_with_command_center(
     Register this node with the command center using a provisioning token.
 
     Args:
-        command_center_url: Base URL of the command center (e.g., http://192.168.1.50:8002)
+        command_center_url: Base URL of the command center (e.g., http://192.168.1.50:7703)
         node_id: CC-assigned UUID for this node
         provisioning_token: Short-lived provisioning token from command center
         room: Room name for this node (optional)
