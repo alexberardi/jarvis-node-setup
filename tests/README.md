@@ -354,7 +354,7 @@ python3 run_tests.py --test test_wake_response_providers.py
 ```json
 {
   "wake_response_provider": "jarvis-tts-api",
-  "jarvis_tts_api_url": "http://localhost:8001"
+  "jarvis_tts_api_url": "http://localhost:7707"
 }
 ```
 

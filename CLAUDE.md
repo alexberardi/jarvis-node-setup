@@ -72,11 +72,25 @@ Uses Porcupine for local wake word detection. Configured in settings.
 
 ## Dependencies
 
+**Python Libraries:**
 - PyAudio, SoundDevice (audio capture)
 - paho-mqtt (MQTT integration)
 - pvporcupine (wake word)
 - httpx (REST client to command-center)
 - SQLAlchemy, pysqlcipher3 (local encrypted DB)
+
+**Service Dependencies:**
+- ✅ **Required**: `jarvis-command-center` (7703) - Voice command processing
+- ⚠️ **Optional**: `jarvis-tts` (7707) - Text-to-speech for responses
+- ⚠️ **Optional**: `jarvis-config-service` (7700) - Service discovery
+
+**Used By:**
+- End users (voice interaction via Pi Zero nodes)
+
+**Impact if Down:**
+- ⚠️ That specific node cannot capture voice input
+- ✅ Other nodes continue to work
+- ✅ All backend services continue to work
 
 ## Key Features
 
@@ -128,9 +142,9 @@ python test_multi_turn_conversation.py --full -t 0 1 2 --save-audio ./audio_arti
 ```
 
 **Required services for tests:**
-- `jarvis-command-center` (port 8002)
-- `jarvis-llm-proxy-api` (port 8000)
-- For full mode: `jarvis-tts` (port 8009) + `jarvis-whisper-api` (port 8012)
+- `jarvis-command-center` (port 7703)
+- `jarvis-llm-proxy-api` (port 7704)
+- For full mode: `jarvis-tts` (port 7707) + `jarvis-whisper-api` (port 7706)
 
 **Service startup:**
 ```bash

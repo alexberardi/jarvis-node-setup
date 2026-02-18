@@ -1,8 +1,8 @@
 {
   "node_id": "your-node-id",
   "api_key": "your_api_key_here",
-  "jarvis_command_center_api_url": "http://your-command-center:8002",
-  "jarvis_llm_proxy_api_url": "http://localhost:8000",
+  "jarvis_command_center_api_url": "http://your-command-center:7703",
+  "jarvis_llm_proxy_api_url": "http://localhost:7704",
   "jcc_adapter_base_model_id": "llm-proxy-model-name",
   "room": "your-room-name",
   "user": "your-username",

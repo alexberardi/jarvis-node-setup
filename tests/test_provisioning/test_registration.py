@@ -30,14 +30,14 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
                 room="kitchen",
             )
 
             called_url = mock_client.post.call_args[1].get("url") or mock_client.post.call_args[0][0]
-            assert called_url == "http://10.0.0.1:8002/api/v0/nodes/register"
+            assert called_url == "http://10.0.0.1:7703/api/v0/nodes/register"
 
     def test_sends_node_id_and_token_in_payload(self):
         """Payload must contain node_id and provisioning_token."""
@@ -56,7 +56,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
                 room="kitchen",
@@ -83,7 +83,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
             )
@@ -110,7 +110,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
                 room=None,
@@ -136,7 +136,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
                 room="kitchen",
@@ -162,7 +162,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             result = register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
             )
@@ -184,7 +184,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             result = register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_expired",
             )
@@ -204,7 +204,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             result = register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
             )
@@ -221,7 +221,7 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             result = register_with_command_center(
-                command_center_url="http://10.0.0.1:8002",
+                command_center_url="http://10.0.0.1:7703",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
             )
@@ -245,11 +245,11 @@ class TestRegisterWithCommandCenter:
             mock_client_cls.return_value = mock_client
 
             register_with_command_center(
-                command_center_url="http://10.0.0.1:8002/",
+                command_center_url="http://10.0.0.1:7703/",
                 node_id="node-uuid-123",
                 provisioning_token="tok_abc",
             )
 
             called_url = mock_client.post.call_args[0][0]
-            assert called_url == "http://10.0.0.1:8002/api/v0/nodes/register"
+            assert called_url == "http://10.0.0.1:7703/api/v0/nodes/register"
             assert "//" not in called_url.split("://")[1]

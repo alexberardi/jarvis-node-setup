@@ -20,6 +20,19 @@ _SERVICE_TO_CONFIG_KEY = {
     "tts": "jarvis_tts_api_url",
 }
 
+# Default URLs if nothing else works
+_DEFAULTS = {
+    "jarvis-command-center": "http://localhost:7703",
+    "jarvis-auth": "http://localhost:7701",
+    "jarvis-whisper": "http://localhost:7706",
+    "jarvis-tts": "http://localhost:7707",
+}
+
+# TODO: jarvis-llm-proxy is currently accessed directly by some commands
+# (story_command.py, sync_date_keys.py). This should be refactored to go
+# through jarvis-command-center instead. See jarvis_llm_proxy_api_url in
+# config files.
+
 
 def init() -> bool:
     """

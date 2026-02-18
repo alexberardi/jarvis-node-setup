@@ -92,7 +92,7 @@ class TestProvision:
             "wifi_ssid": "HomeNetwork",
             "wifi_password": "password123",
             "room": "kitchen",
-            "command_center_url": "http://localhost:8002",
+            "command_center_url": "http://localhost:7703",
             "household_id": "550e8400-e29b-41d4-a716-446655440000",
             "node_id": "node-uuid-123",
             "provisioning_token": "tok_abc123",
@@ -116,7 +116,7 @@ class TestProvision:
             "wifi_ssid": "HomeNetwork",
             "wifi_password": "pass",
             "room": "room1",
-            "command_center_url": "http://localhost:8002",
+            "command_center_url": "http://localhost:7703",
             "household_id": "550e8400-e29b-41d4-a716-446655440000",
             "node_id": "node-uuid-123",
             "provisioning_token": "tok_abc123",
@@ -168,7 +168,7 @@ class TestProvisioningFlow:
                         "wifi_ssid": "HomeNetwork",
                         "wifi_password": "pass",
                         "room": "kitchen",
-                        "command_center_url": "http://localhost:8002",
+                        "command_center_url": "http://localhost:7703",
                         "household_id": "550e8400-e29b-41d4-a716-446655440000",
                         "node_id": "node-uuid-123",
                         "provisioning_token": "tok_abc123",
@@ -373,7 +373,7 @@ class TestProvisioningFlowTokenAuth:
                             "wifi_ssid": "HomeNetwork",
                             "wifi_password": "pass",
                             "room": "kitchen",
-                            "command_center_url": "http://localhost:8002",
+                            "command_center_url": "http://localhost:7703",
                             "household_id": "hh-uuid",
                             "node_id": "node-uuid-123",
                             "provisioning_token": "tok_abc123",
@@ -387,7 +387,7 @@ class TestProvisioningFlowTokenAuth:
                         call_kwargs = mock_reg.call_args[1]
                         assert call_kwargs["node_id"] == "node-uuid-123"
                         assert call_kwargs["provisioning_token"] == "tok_abc123"
-                        assert call_kwargs["command_center_url"] == "http://localhost:8002"
+                        assert call_kwargs["command_center_url"] == "http://localhost:7703"
 
     def test_registration_does_not_pass_admin_key(self, client, tmp_path):
         """Registration call must not include admin_key."""
@@ -401,7 +401,7 @@ class TestProvisioningFlowTokenAuth:
                             "wifi_ssid": "HomeNetwork",
                             "wifi_password": "pass",
                             "room": "kitchen",
-                            "command_center_url": "http://localhost:8002",
+                            "command_center_url": "http://localhost:7703",
                             "household_id": "hh-uuid",
                             "node_id": "node-uuid-123",
                             "provisioning_token": "tok_abc123",
@@ -425,7 +425,7 @@ class TestProvisioningFlowTokenAuth:
                             "wifi_ssid": "HomeNetwork",
                             "wifi_password": "pass",
                             "room": "kitchen",
-                            "command_center_url": "http://localhost:8002",
+                            "command_center_url": "http://localhost:7703",
                             "household_id": "hh-uuid",
                             "node_id": "node-uuid-123",
                             "provisioning_token": "tok_abc123",
@@ -449,7 +449,7 @@ class TestProvisioningFlowTokenAuth:
                             "wifi_ssid": "HomeNetwork",
                             "wifi_password": "pass",
                             "room": "kitchen",
-                            "command_center_url": "http://localhost:8002",
+                            "command_center_url": "http://localhost:7703",
                             "household_id": "hh-uuid",
                             "node_id": "node-uuid-123",
                             "provisioning_token": "tok_abc123",

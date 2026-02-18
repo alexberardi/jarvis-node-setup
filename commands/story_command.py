@@ -153,7 +153,7 @@ class StoryCommand(IJarvisCommand):
             target_age = 5
 
         # ---- LLM client ----
-        base_url = Config.get_str("jarvis_llm_proxy_api_url", "http://localhost:8000")
+        base_url = Config.get_str("jarvis_llm_proxy_api_url", "http://localhost:7704")
         client = JarvisCommandCenterClient(base_url)
 
         # ---- chunking strategy ----
@@ -252,7 +252,7 @@ class StoryCommand(IJarvisCommand):
             )
         
         # Get the LLM client
-        base_url = Config.get_str("jarvis_llm_proxy_api_url", "http://localhost:8000")
+        base_url = Config.get_str("jarvis_llm_proxy_api_url", "http://localhost:7704")
         client = JarvisCommandCenterClient(base_url)
         
         # Get the current content to find the last few words for continuity

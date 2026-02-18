@@ -2,7 +2,7 @@
   "node_id": "76a0ca5a-c308-4afd-9c8e-c26a1cdd8d67",
   "api_key": "87qTlx681oJ70rVsySxr-J4L33omScK0pNVEALBFIC13oIpSri-IcgFqe-TPS0bd",
   "jarvis_whisper_api_url": "https://whisper.jarvisautomation.io",
-  "jarvis_command_center_api_url": "http://localhost:8002",
+  "jarvis_command_center_api_url": "http://localhost:7703",
   "room": "office",
   "user": "username",
   "voice": "en",
@@ -13,8 +13,8 @@
   "mic_sample_rate": 48000,
   "stt_provider": "jarvis-whisper-api",
   "tts_provider": "jarvis-tts-api",
-  "jarvis_tts_api_url": "http://raspberrypi.local:8001",
-  "jarvis_tts_generate_wake_response_url": "http://raspberrypi.local:8001/generate-wake-response",
+  "jarvis_tts_api_url": "http://raspberrypi.local:7707",
+  "jarvis_tts_generate_wake_response_url": "http://raspberrypi.local:7707/generate-wake-response",
   "music_assistant_enabled": true,
   "music_assistant_player_id": "ma_2ccf67b25567"
 }

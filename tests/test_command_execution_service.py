@@ -75,7 +75,7 @@ def _make_tool_calls_response(tool_calls: list[ToolCall]) -> ToolCallingResponse
 def mock_deps():
     """Patch all CommandExecutionService dependencies."""
     with (
-        patch("utils.command_execution_service.get_command_center_url", return_value="http://localhost:8002"),
+        patch("utils.command_execution_service.get_command_center_url", return_value="http://localhost:7703"),
         patch("utils.command_execution_service.Config") as mock_config,
         patch("utils.command_execution_service.get_command_discovery_service") as mock_discovery_fn,
         patch("utils.command_execution_service.JarvisCommandCenterClient") as mock_client_cls,
