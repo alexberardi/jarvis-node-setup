@@ -32,10 +32,10 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "admin_key", "hh-uuid")
+            fn("http://cc:7703", "admin_key", "hh-uuid")
 
             called_url = mock_client.post.call_args[0][0]
-            assert called_url == "http://cc:8002/api/v0/provisioning/token"
+            assert called_url == "http://cc:7703/api/v0/provisioning/token"
 
     def test_sends_admin_key_in_header(self):
         """Must send X-API-Key header with admin key."""
@@ -54,7 +54,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "my-admin-key", "hh-uuid")
+            fn("http://cc:7703", "my-admin-key", "hh-uuid")
 
             call_kwargs = mock_client.post.call_args[1]
             assert call_kwargs["headers"]["X-API-Key"] == "my-admin-key"
@@ -76,7 +76,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            result = fn("http://cc:8002", "admin_key", "hh-uuid")
+            result = fn("http://cc:7703", "admin_key", "hh-uuid")
 
             assert result is not None
             assert result["node_id"] == "uuid-123"
@@ -99,7 +99,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "admin_key", "hh-uuid")
+            fn("http://cc:7703", "admin_key", "hh-uuid")
 
             payload = mock_client.post.call_args[1]["json"]
             assert payload["household_id"] == "hh-uuid"
@@ -121,7 +121,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "admin_key", "hh-uuid", room="kitchen", name="Kitchen Node")
+            fn("http://cc:7703", "admin_key", "hh-uuid", room="kitchen", name="Kitchen Node")
 
             payload = mock_client.post.call_args[1]["json"]
             assert payload["room"] == "kitchen"
@@ -144,7 +144,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "admin_key", "hh-uuid")
+            fn("http://cc:7703", "admin_key", "hh-uuid")
 
             payload = mock_client.post.call_args[1]["json"]
             assert "room" not in payload
@@ -164,7 +164,7 @@ class TestCreateProvisioningToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            result = fn("http://cc:8002", "admin_key", "hh-uuid")
+            result = fn("http://cc:7703", "admin_key", "hh-uuid")
             assert result is None
 
 
@@ -192,10 +192,10 @@ class TestRegisterWithToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "uuid-123", "tok_abc")
+            fn("http://cc:7703", "uuid-123", "tok_abc")
 
             called_url = mock_client.post.call_args[0][0]
-            assert called_url == "http://cc:8002/api/v0/nodes/register"
+            assert called_url == "http://cc:7703/api/v0/nodes/register"
 
     def test_sends_node_id_and_token_in_payload(self):
         """Payload must contain node_id and provisioning_token."""
@@ -214,7 +214,7 @@ class TestRegisterWithToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "uuid-123", "tok_abc")
+            fn("http://cc:7703", "uuid-123", "tok_abc")
 
             payload = mock_client.post.call_args[1]["json"]
             assert payload["node_id"] == "uuid-123"
@@ -237,7 +237,7 @@ class TestRegisterWithToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            fn("http://cc:8002", "uuid-123", "tok_abc")
+            fn("http://cc:7703", "uuid-123", "tok_abc")
 
             call_kwargs = mock_client.post.call_args[1]
             headers = call_kwargs.get("headers", {})
@@ -260,7 +260,7 @@ class TestRegisterWithToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            result = fn("http://cc:8002", "uuid-123", "tok_abc")
+            result = fn("http://cc:7703", "uuid-123", "tok_abc")
 
             assert result is not None
             assert result["node_id"] == "uuid-123"
@@ -279,7 +279,7 @@ class TestRegisterWithToken:
             mock_client.post.return_value = mock_response
             mock_cls.return_value = mock_client
 
-            result = fn("http://cc:8002", "uuid-123", "tok_expired")
+            result = fn("http://cc:7703", "uuid-123", "tok_expired")
             assert result is None
 
     def test_returns_none_on_network_error(self):
@@ -293,7 +293,7 @@ class TestRegisterWithToken:
             mock_client.post.side_effect = httpx.ConnectError("Connection refused")
             mock_cls.return_value = mock_client
 
-            result = fn("http://cc:8002", "uuid-123", "tok_abc")
+            result = fn("http://cc:7703", "uuid-123", "tok_abc")
             assert result is None
 
 
@@ -306,10 +306,10 @@ class TestExistingAdminOperationsUnchanged:
         with patch("utils.authorize_node._make_cc_request") as mock_req:
             mock_req.return_value = (200, [])
 
-            list_nodes("http://cc:8002", "my-admin-key")
+            list_nodes("http://cc:7703", "my-admin-key")
 
             mock_req.assert_called_once_with(
-                "GET", "http://cc:8002/api/v0/admin/nodes", "my-admin-key"
+                "GET", "http://cc:7703/api/v0/admin/nodes", "my-admin-key"
             )
 
     def test_delete_node_uses_admin_key(self):
@@ -318,10 +318,10 @@ class TestExistingAdminOperationsUnchanged:
         with patch("utils.authorize_node._make_cc_request") as mock_req:
             mock_req.return_value = (200, None)
 
-            delete_node("http://cc:8002", "my-admin-key", "node-1")
+            delete_node("http://cc:7703", "my-admin-key", "node-1")
 
             mock_req.assert_called_once_with(
-                "DELETE", "http://cc:8002/api/v0/admin/nodes/node-1", "my-admin-key"
+                "DELETE", "http://cc:7703/api/v0/admin/nodes/node-1", "my-admin-key"
             )
 
     def test_update_node_uses_admin_key(self):
@@ -330,11 +330,11 @@ class TestExistingAdminOperationsUnchanged:
         with patch("utils.authorize_node._make_cc_request") as mock_req:
             mock_req.return_value = (200, {"node_id": "node-1"})
 
-            update_node("http://cc:8002", "my-admin-key", "node-1", room="bedroom")
+            update_node("http://cc:7703", "my-admin-key", "node-1", room="bedroom")
 
             mock_req.assert_called_once_with(
                 "PATCH",
-                "http://cc:8002/api/v0/admin/nodes/node-1",
+                "http://cc:7703/api/v0/admin/nodes/node-1",
                 "my-admin-key",
                 {"room": "bedroom"},
             )

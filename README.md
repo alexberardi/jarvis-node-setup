@@ -185,9 +185,9 @@ python test_multi_turn_conversation.py -c validation
 ```
 
 **Required services for E2E tests:**
-- `jarvis-command-center` (port 8002)
-- `jarvis-llm-proxy-api` (port 8000)
-- For full mode: `jarvis-tts` (port 8009) + `jarvis-whisper-api` (port 8012)
+- `jarvis-command-center` (port 7703)
+- `jarvis-llm-proxy-api` (port 7704)
+- For full mode: `jarvis-tts` (port 7707) + `jarvis-whisper-api` (port 7706)
 
 ## Dependencies
 

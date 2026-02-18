@@ -84,7 +84,7 @@ class TestProvisionRequest:
             wifi_ssid="HomeNetwork",
             wifi_password="secret123",
             room="kitchen",
-            command_center_url="http://192.168.1.50:8002",
+            command_center_url="http://192.168.1.50:7703",
             household_id="test-household-uuid",
             node_id="550e8400-e29b-41d4-a716-446655440000",
             provisioning_token="tok_abc123",
@@ -92,7 +92,7 @@ class TestProvisionRequest:
         assert request.wifi_ssid == "HomeNetwork"
         assert request.wifi_password == "secret123"
         assert request.room == "kitchen"
-        assert request.command_center_url == "http://192.168.1.50:8002"
+        assert request.command_center_url == "http://192.168.1.50:7703"
         assert request.household_id == "test-household-uuid"
         assert request.node_id == "550e8400-e29b-41d4-a716-446655440000"
         assert request.provisioning_token == "tok_abc123"
@@ -103,7 +103,7 @@ class TestProvisionRequest:
                 wifi_ssid="HomeNetwork",
                 wifi_password="secret123",
                 room="kitchen",
-                command_center_url="http://192.168.1.50:8002",
+                command_center_url="http://192.168.1.50:7703",
                 household_id="test-household-uuid",
                 provisioning_token="tok_abc123",
             )
@@ -114,7 +114,7 @@ class TestProvisionRequest:
                 wifi_ssid="HomeNetwork",
                 wifi_password="secret123",
                 room="kitchen",
-                command_center_url="http://192.168.1.50:8002",
+                command_center_url="http://192.168.1.50:7703",
                 household_id="test-household-uuid",
                 node_id="550e8400-e29b-41d4-a716-446655440000",
             )

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import requests
 
-LLM_PROXY_URL = os.getenv("JARVIS_LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
+LLM_PROXY_URL = os.getenv("JARVIS_LLM_PROXY_URL", "http://localhost:7704").rstrip("/")
 OUTPUT_FILE = Path(__file__).parent.parent / "constants" / "relative_date_keys.py"
 
 
