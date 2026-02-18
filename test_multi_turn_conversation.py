@@ -652,7 +652,7 @@ def run_tests(
 
         if not service_status["tts"]:
             print("❌ TTS service not available (required for full mode)")
-            print("   Start jarvis-tts: cd jarvis-tts && uvicorn app.main:app --port 8000")
+            print("   Start jarvis-tts: cd jarvis-tts && uvicorn app.main:app --port 7707")
             return []
 
         if not service_status["whisper"]:

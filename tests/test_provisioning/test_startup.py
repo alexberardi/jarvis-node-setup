@@ -82,7 +82,7 @@ class TestIsProvisioned:
     def test_returns_false_if_command_center_unreachable(self, temp_secret_dir):
         mark_provisioned()
 
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:8002"):
+        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
             with patch("provisioning.startup._can_reach_command_center", return_value=False):
                 result = is_provisioned()
                 assert result is False
@@ -90,7 +90,7 @@ class TestIsProvisioned:
     def test_returns_true_if_provisioned_and_reachable(self, temp_secret_dir):
         mark_provisioned()
 
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:8002"):
+        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
                 result = is_provisioned()
                 assert result is True
@@ -102,7 +102,7 @@ class TestCommandCenterUrl:
     def test_gets_url_from_env(self, temp_secret_dir):
         mark_provisioned()
 
-        with patch.dict(os.environ, {"COMMAND_CENTER_URL": "http://env.example.com:8002"}):
+        with patch.dict(os.environ, {"COMMAND_CENTER_URL": "http://env.example.com:7703"}):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
                 result = is_provisioned()
                 # If it uses the env URL and can reach it, should return True
@@ -112,7 +112,7 @@ class TestCommandCenterUrl:
         mark_provisioned()
 
         config_file = tmp_path / "config.json"
-        config_file.write_text('{"jarvis_command_center_api_url": "http://config.example.com:8002"}')
+        config_file.write_text('{"jarvis_command_center_api_url": "http://config.example.com:7703"}')
 
         # Clear env var to force config.json fallback
         env_without_url = {k: v for k, v in os.environ.items() if k != "COMMAND_CENTER_URL"}
@@ -140,7 +140,7 @@ class TestCanReachCommandCenter:
 
         with patch("httpx.Client") as mock_client:
             mock_client.return_value.__enter__.return_value.get.return_value = mock_response
-            result = _can_reach_command_center("http://localhost:8002")
+            result = _can_reach_command_center("http://localhost:7703")
             assert result is True
 
     def test_returns_false_on_error(self, temp_secret_dir):
@@ -149,7 +149,7 @@ class TestCanReachCommandCenter:
 
         with patch("httpx.Client") as mock_client:
             mock_client.return_value.__enter__.return_value.get.side_effect = httpx.RequestError("Connection failed")
-            result = _can_reach_command_center("http://localhost:8002")
+            result = _can_reach_command_center("http://localhost:7703")
             assert result is False
 
     def test_returns_false_on_non_200(self, temp_secret_dir):
@@ -160,7 +160,7 @@ class TestCanReachCommandCenter:
 
         with patch("httpx.Client") as mock_client:
             mock_client.return_value.__enter__.return_value.get.return_value = mock_response
-            result = _can_reach_command_center("http://localhost:8002")
+            result = _can_reach_command_center("http://localhost:7703")
             assert result is False
 
 
@@ -174,7 +174,7 @@ class TestProvisioningFlow:
 
     def test_mark_then_check(self, temp_secret_dir):
         """After marking, node should be provisioned (if command center reachable)."""
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:8002"):
+        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
                 mark_provisioned()
                 result = is_provisioned()
@@ -182,7 +182,7 @@ class TestProvisioningFlow:
 
     def test_clear_then_check(self, temp_secret_dir):
         """After clearing, node should not be provisioned."""
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:8002"):
+        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
                 mark_provisioned()
                 assert is_provisioned() is True
