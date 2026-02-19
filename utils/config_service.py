@@ -2,7 +2,10 @@ import os
 import json
 from typing import Any, Dict, Optional
 
+from dotenv import load_dotenv
 from jarvis_log_client import JarvisLogger
+
+load_dotenv()
 
 logger = JarvisLogger(service="jarvis-node")
 

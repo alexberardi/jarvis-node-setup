@@ -659,122 +659,227 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
     ]
     tests.extend(timer_tests)
 
-    # # ===== HOME ASSISTANT CONTROL DEVICE TESTS =====
-    # # Uses real entity IDs from user's HA setup
-    # control_device_tests = [
-    #     # Light control - turn on/off
-    #     CommandTest(
-    #         "Turn on my office lights",
-    #         "control_device",
-    #         {"entity_id": "light.my_office", "action": "turn_on"},
-    #         "Light control: turn on office"
-    #     ),
-    #     CommandTest(
-    #         "Turn off the basement lights",
-    #         "control_device",
-    #         {"entity_id": "light.basement", "action": "turn_off"},
-    #         "Light control: turn off basement"
-    #     ),
-    #     CommandTest(
-    #         "Switch on the upstairs lights",
-    #         "control_device",
-    #         {"entity_id": "light.upstairs", "action": "turn_on"},
-    #         "Light control: switch on upstairs"
-    #     ),
-    #     CommandTest(
-    #         "Turn off the bathroom light",
-    #         "control_device",
-    #         {"entity_id": "light.middle_bathroom", "action": "turn_off"},
-    #         "Light control: turn off bathroom"
-    #     ),
-    #     CommandTest(
-    #         "Turn on my office desk light",
-    #         "control_device",
-    #         {"entity_id": "light.office_desk", "action": "turn_on"},
-    #         "Light control: specific desk light"
-    #     ),
-    #     # Switch control (HA devices, not Jarvis timers)
-    #     CommandTest(
-    #         "Turn on the baby timer switch",
-    #         "control_device",
-    #         {"entity_id": "switch.baby_berardi_timer", "action": "turn_on"},
-    #         "Switch control: baby timer on"
-    #     ),
-    #     CommandTest(
-    #         "Turn off the baby Berardi switch",
-    #         "control_device",
-    #         {"entity_id": "switch.baby_berardi_timer", "action": "turn_off"},
-    #         "Switch control: baby timer off (alternate name)"
-    #     ),
-    #     # Scene activation
-    #     CommandTest(
-    #         "Activate the office desk read scene",
-    #         "control_device",
-    #         {"entity_id": "scene.office_desk_read", "action": "turn_on"},
-    #         "Scene: activate reading scene"
-    #     ),
-    #     CommandTest(
-    #         "Activate the basement bright scene",
-    #         "control_device",
-    #         {"entity_id": "scene.basement_bright", "action": "turn_on"},
-    #         "Scene: activate brightness scene"
-    #     ),
-    #     # Casual phrasing
-    #     CommandTest(
-    #         "Lights off in my office",
-    #         "control_device",
-    #         {"entity_id": "light.my_office", "action": "turn_off"},
-    #         "Casual: lights off phrasing"
-    #     ),
-    #     CommandTest(
-    #         "Kill the basement lights",
-    #         "control_device",
-    #         {"entity_id": "light.basement", "action": "turn_off"},
-    #         "Casual: kill the lights phrasing"
-    #     ),
-    # ]
-    # tests.extend(control_device_tests)
+    # ===== PLAY MUSIC COMMAND TESTS =====
+    play_music_tests = [
+        # Artist plays
+        CommandTest(
+            "Play Radiohead",
+            "play_music",
+            {"query": "Radiohead", "media_type": "artist"},
+            "Play artist by name"
+        ),
+        CommandTest(
+            "Put on some Beatles",
+            "play_music",
+            {"query": "Beatles", "media_type": "artist"},
+            "Play artist with casual phrasing"
+        ),
+        CommandTest(
+            "Play Taylor Swift",
+            "play_music",
+            {"query": "Taylor Swift", "media_type": "artist"},
+            "Play artist with full name"
+        ),
 
-    # # ===== HOME ASSISTANT GET DEVICE STATUS TESTS =====
-    # get_device_status_tests = [
-    #     CommandTest(
-    #         "Is the office light on?",
-    #         "get_device_status",
-    #         {"entity_id": "light.my_office"},
-    #         "Status: office light on/off check"
-    #     ),
-    #     CommandTest(
-    #         "Are the basement lights on?",
-    #         "get_device_status",
-    #         {"entity_id": "light.basement"},
-    #         "Status: basement lights check"
-    #     ),
-    #     CommandTest(
-    #         "What's the status of the upstairs lights?",
-    #         "get_device_status",
-    #         {"entity_id": "light.upstairs"},
-    #         "Status: explicit status query"
-    #     ),
-    #     CommandTest(
-    #         "Is the baby switch on?",
-    #         "get_device_status",
-    #         {"entity_id": "switch.baby_berardi_timer"},
-    #         "Status: switch/timer check"
-    #     ),
-    #     CommandTest(
-    #         "Check if the bathroom light is on",
-    #         "get_device_status",
-    #         {"entity_id": "light.middle_bathroom"},
-    #         "Status: check if phrasing"
-    #     ),
-    #     CommandTest(
-    #         "Is the rest light on?",
-    #         "get_device_status",
-    #         {"entity_id": "light.my_rest_light"},
-    #         "Status: rest light check"
-    #     ),
-    # ]
-    # tests.extend(get_device_status_tests)
+        # Album plays
+        CommandTest(
+            "Play OK Computer",
+            "play_music",
+            {"query": "OK Computer", "media_type": "album"},
+            "Play album by name"
+        ),
+        CommandTest(
+            "Play the album Abbey Road",
+            "play_music",
+            {"query": "Abbey Road", "media_type": "album"},
+            "Play album with 'the album' prefix"
+        ),
+
+        # Track plays
+        CommandTest(
+            "Play Karma Police",
+            "play_music",
+            {"query": "Karma Police", "media_type": "track"},
+            "Play track by name"
+        ),
+        CommandTest(
+            "Play the song Bohemian Rhapsody",
+            "play_music",
+            {"query": "Bohemian Rhapsody", "media_type": "track"},
+            "Play track with 'the song' prefix"
+        ),
+
+        # Radio/genre plays
+        CommandTest(
+            "Play some jazz",
+            "play_music",
+            {"query": "jazz", "media_type": "radio"},
+            "Play genre as radio"
+        ),
+        CommandTest(
+            "Put on classical music",
+            "play_music",
+            {"query": "classical", "media_type": "radio"},
+            "Play genre with casual phrasing"
+        ),
+        CommandTest(
+            "Play relaxing music",
+            "play_music",
+            {"query": "relaxing", "media_type": "radio"},
+            "Play mood-based radio"
+        ),
+
+        # With player specified
+        CommandTest(
+            "Play Beatles in the kitchen",
+            "play_music",
+            {"query": "Beatles", "media_type": "artist", "player": "kitchen"},
+            "Play with room/player specified"
+        ),
+        CommandTest(
+            "Play jazz in the living room",
+            "play_music",
+            {"query": "jazz", "media_type": "radio", "player": "living room"},
+            "Play radio with room specified"
+        ),
+
+        # Queue options
+        CommandTest(
+            "Add Bohemian Rhapsody to the queue",
+            "play_music",
+            {"query": "Bohemian Rhapsody", "media_type": "track", "queue_option": "add"},
+            "Add track to queue"
+        ),
+        CommandTest(
+            "Play Stairway to Heaven next",
+            "play_music",
+            {"query": "Stairway to Heaven", "media_type": "track", "queue_option": "next"},
+            "Play track next in queue"
+        ),
+    ]
+    tests.extend(play_music_tests)
+
+    # ===== CONTROL MUSIC COMMAND TESTS =====
+    control_music_tests = [
+        # Basic playback controls
+        CommandTest(
+            "Pause the music",
+            "control_music",
+            {"action": "pause"},
+            "Pause playback"
+        ),
+        CommandTest(
+            "Resume",
+            "control_music",
+            {"action": "resume"},
+            "Resume playback"
+        ),
+        CommandTest(
+            "Stop the music",
+            "control_music",
+            {"action": "stop"},
+            "Stop playback"
+        ),
+
+        # Skip/navigation
+        CommandTest(
+            "Skip this song",
+            "control_music",
+            {"action": "next"},
+            "Skip to next track"
+        ),
+        CommandTest(
+            "Next song",
+            "control_music",
+            {"action": "next"},
+            "Next track with different phrasing"
+        ),
+        CommandTest(
+            "Go back",
+            "control_music",
+            {"action": "previous"},
+            "Previous track"
+        ),
+        CommandTest(
+            "Previous song",
+            "control_music",
+            {"action": "previous"},
+            "Previous track explicit"
+        ),
+
+        # Volume controls
+        CommandTest(
+            "Turn up the volume",
+            "control_music",
+            {"action": "volume_up"},
+            "Volume up"
+        ),
+        CommandTest(
+            "Louder",
+            "control_music",
+            {"action": "volume_up"},
+            "Volume up casual"
+        ),
+        CommandTest(
+            "Turn it down",
+            "control_music",
+            {"action": "volume_down"},
+            "Volume down"
+        ),
+        CommandTest(
+            "Quieter",
+            "control_music",
+            {"action": "volume_down"},
+            "Volume down casual"
+        ),
+        CommandTest(
+            "Set volume to 50",
+            "control_music",
+            {"action": "volume_set", "volume_level": 50},
+            "Set specific volume"
+        ),
+        CommandTest(
+            "Mute",
+            "control_music",
+            {"action": "mute"},
+            "Mute audio"
+        ),
+
+        # Shuffle and repeat
+        CommandTest(
+            "Turn on shuffle",
+            "control_music",
+            {"action": "shuffle_on"},
+            "Enable shuffle"
+        ),
+        CommandTest(
+            "Shuffle off",
+            "control_music",
+            {"action": "shuffle_off"},
+            "Disable shuffle"
+        ),
+        CommandTest(
+            "Repeat this song",
+            "control_music",
+            {"action": "repeat_one"},
+            "Repeat current track"
+        ),
+        CommandTest(
+            "Stop repeating",
+            "control_music",
+            {"action": "repeat_off"},
+            "Disable repeat"
+        ),
+
+        # With player specified
+        CommandTest(
+            "Pause the kitchen speaker",
+            "control_music",
+            {"action": "pause", "player": "kitchen"},
+            "Pause specific player"
+        ),
+    ]
+    tests.extend(control_music_tests)
 
     return tests
 
