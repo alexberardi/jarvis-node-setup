@@ -86,6 +86,12 @@ class ControlMusicCommand(IJarvisCommand):
                 "integration",
                 "string"
             ),
+            JarvisSecret(
+                "MUSIC_ASSISTANT_TOKEN",
+                "Music Assistant auth token",
+                "integration",
+                "string"
+            ),
         ]
 
     @property
@@ -279,7 +285,8 @@ class ControlMusicCommand(IJarvisCommand):
     def _get_music_service(self) -> MusicAssistantService:
         """Get a MusicAssistantService instance"""
         ma_url = get_secret_value("MUSIC_ASSISTANT_URL", "integration")
-        return MusicAssistantService(ma_url)
+        ma_token = get_secret_value("MUSIC_ASSISTANT_TOKEN", "integration")
+        return MusicAssistantService(ma_url, ma_token)
 
     async def _resolve_player(
         self,

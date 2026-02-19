@@ -84,6 +84,12 @@ class PlayMusicCommand(IJarvisCommand):
                 "integration",
                 "string"
             ),
+            JarvisSecret(
+                "MUSIC_ASSISTANT_TOKEN",
+                "Music Assistant auth token (run test_music_assistant.py --login to generate)",
+                "integration",
+                "string"
+            ),
         ]
 
     @property
@@ -218,45 +224,102 @@ class PlayMusicCommand(IJarvisCommand):
 
     def init_data(self) -> Dict[str, Any]:
         """
-        Sync Music Assistant players to Command Center devices table.
+        Setup Music Assistant integration.
+
+        Handles:
+        1. Prompting for Music Assistant URL if not configured
+        2. Logging in to get an auth token
+        3. Listing available players
 
         Called manually on first install:
             python scripts/init_data.py --command play_music
         """
-        ma_url = get_secret_value("MUSIC_ASSISTANT_URL", "integration")
-        if not ma_url:
-            return {"status": "error", "message": "MUSIC_ASSISTANT_URL not configured"}
+        import getpass
+        from services.secret_service import set_secret
+        from services.music_assistant_service import login_with_token
 
-        async def sync():
-            service = MusicAssistantService(ma_url)
+        ma_url = get_secret_value("MUSIC_ASSISTANT_URL", "integration")
+        ma_token = get_secret_value("MUSIC_ASSISTANT_TOKEN", "integration")
+
+        # Step 1: Get URL if not configured
+        if not ma_url:
+            print("\n=== Music Assistant Setup ===\n")
+            ma_url = input("Music Assistant URL (e.g., ws://10.0.0.244:8095/ws): ").strip()
+            if not ma_url:
+                return {"status": "error", "message": "URL is required"}
+            if not ma_url.startswith("ws://") and not ma_url.startswith("wss://"):
+                return {"status": "error", "message": "URL must start with ws:// or wss://"}
+            set_secret("MUSIC_ASSISTANT_URL", ma_url, "integration", "string")
+            print(f"✓ Saved URL: {ma_url}")
+
+        # Step 2: Get token if not configured
+        if not ma_token:
+            print("\n=== Music Assistant Authentication ===\n")
+            print(f"Server: {ma_url}")
+            print("\nOptions:")
+            print("  1. Enter a Long Lived Token (create in Music Assistant UI → Profile → Tokens)")
+            print("  2. Login with username/password")
+            print()
+            choice = input("Choice [1/2]: ").strip()
+
+            if choice == "1":
+                # Manual token entry
+                ma_token = input("Paste your token: ").strip()
+                if not ma_token:
+                    return {"status": "error", "message": "Token is required"}
+                set_secret("MUSIC_ASSISTANT_TOKEN", ma_token, "integration", "string")
+                print("✓ Token saved")
+            else:
+                # Username/password login
+                username = input("Username: ").strip()
+                password = getpass.getpass("Password: ")
+
+                if not username or not password:
+                    return {"status": "error", "message": "Username and password are required"}
+
+                # Convert ws:// to http:// for login
+                http_url = ma_url.replace("ws://", "http://").replace("wss://", "https://")
+                if http_url.endswith("/ws"):
+                    http_url = http_url[:-3]
+
+                async def do_login():
+                    user, token = await login_with_token(http_url, username, password, "jarvis")
+                    return user, token
+
+                try:
+                    user, ma_token = asyncio.run(do_login())
+                    set_secret("MUSIC_ASSISTANT_TOKEN", ma_token, "integration", "string")
+                    print(f"✓ Logged in as: {user.get('name', username)}")
+                    print("✓ Auth token saved")
+                except Exception as e:
+                    return {"status": "error", "message": f"Login failed: {e}"}
+
+        # Step 3: Test connection and list players
+        async def test_and_list():
+            service = MusicAssistantService(ma_url, ma_token)
             try:
                 await service.connect()
                 players = await service.get_players()
-
-                # TODO: Sync players to Command Center devices table
-                # cc = CommandCenterClient()
-                # for player in players:
-                #     await cc.upsert_device({
-                #         "name": player["name"],
-                #         "type": "speaker",
-                #         "metadata": {
-                #             "source": "music_assistant",
-                #             "ma_player_id": player["id"],
-                #         }
-                #     })
-
                 await service.disconnect()
-                return len(players)
+                return players
             except Exception as e:
-                await service.disconnect()
+                try:
+                    await service.disconnect()
+                except Exception:
+                    pass
                 raise e
 
         try:
-            count = asyncio.run(sync())
+            players = asyncio.run(test_and_list())
+            print(f"\n=== Available Players ({len(players)}) ===\n")
+            for p in players:
+                print(f"  • {p['name']} ({p['state']})")
+
             return {
                 "status": "success",
-                "devices_synced": count,
-                "message": f"Found {count} Music Assistant players"
+                "players_found": len(players),
+                "players": [p["name"] for p in players],
+                "message": f"Music Assistant configured with {len(players)} player(s)"
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
@@ -355,7 +418,8 @@ class PlayMusicCommand(IJarvisCommand):
     def _get_music_service(self) -> MusicAssistantService:
         """Get a MusicAssistantService instance"""
         ma_url = get_secret_value("MUSIC_ASSISTANT_URL", "integration")
-        return MusicAssistantService(ma_url)
+        ma_token = get_secret_value("MUSIC_ASSISTANT_TOKEN", "integration")
+        return MusicAssistantService(ma_url, ma_token)
 
     async def _resolve_player(
         self,
