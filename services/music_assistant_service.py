@@ -40,8 +40,43 @@ except ImportError:
 # Import the client when available
 try:
     from music_assistant_client import MusicAssistantClient
+    from music_assistant_client import login_with_token as ma_login_with_token
 except ImportError:
     MusicAssistantClient = None  # type: ignore
+    ma_login_with_token = None  # type: ignore
+
+
+async def login_with_token(
+    http_url: str,
+    username: str,
+    password: str,
+    token_name: str = "jarvis"
+) -> tuple[dict, str]:
+    """
+    Login to Music Assistant and get a long-lived token.
+
+    Args:
+        http_url: Music Assistant HTTP URL (e.g., "http://192.168.1.50:8095")
+        username: Username
+        password: Password
+        token_name: Name for the token (default: "jarvis")
+
+    Returns:
+        Tuple of (user_info, token)
+    """
+    if ma_login_with_token is None:
+        raise ImportError(
+            "music-assistant-client is not installed. "
+            "Install it with: pip install music-assistant-client"
+        )
+
+    user, token = await ma_login_with_token(
+        http_url,
+        username,
+        password,
+        token_name=token_name
+    )
+    return user, token
 
 
 class MusicAssistantService:
@@ -63,14 +98,16 @@ class MusicAssistantService:
         await service.disconnect()
     """
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, token: Optional[str] = None):
         """
         Initialize the service.
 
         Args:
             url: Music Assistant WebSocket URL (e.g., "ws://192.168.1.50:8095/ws")
+            token: Authentication token (required for server schema >= 28)
         """
         self.url = url
+        self.token = token
         self._client: Optional[Any] = None
         self._connected = False
 
@@ -85,6 +122,7 @@ class MusicAssistantService:
 
         Raises:
             ConnectionError: If connection fails
+            AuthenticationRequired: If token is needed but not provided
         """
         if MusicAssistantClient is None:
             raise ImportError(
@@ -92,7 +130,7 @@ class MusicAssistantService:
                 "Install it with: pip install music-assistant-client"
             )
 
-        self._client = MusicAssistantClient(self.url, None)
+        self._client = MusicAssistantClient(self.url, None, token=self.token)
         await self._client.connect()
         # Fetch initial state to populate players list
         await self._client.players.fetch_state()
@@ -252,11 +290,18 @@ class MusicAssistantService:
         if not self._client:
             return {"success": False, "error": "Not connected"}
 
-        # Build media types to search
+        # Build media types to search - only use common types that most providers support
         if media_type:
             media_types = [media_type]
         else:
-            media_types = list(MediaType)
+            # Don't include PODCAST, AUDIOBOOK, GENRE as not all providers support them
+            media_types = [
+                MediaType.TRACK,
+                MediaType.ALBUM,
+                MediaType.ARTIST,
+                MediaType.PLAYLIST,
+                MediaType.RADIO,
+            ]
 
         # Search
         results = await self._client.music.search(query, media_types, limit=10)
