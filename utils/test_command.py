@@ -2,6 +2,12 @@ import sys
 import time
 import uuid
 import json
+from pathlib import Path
+
+# Add repo root to path for imports
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.responses.jarvis_command_center import DateContext
