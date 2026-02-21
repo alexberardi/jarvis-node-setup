@@ -1707,7 +1707,11 @@ def main():
             print("after")
             if success:
                 print(f"✅ Conversation started successfully for test {i}")
-                
+
+                # Wait for warmup KV cache to populate (simulates wake word →
+                # user finishes speaking delay in production)
+                time.sleep(3)
+
                 # Run the test with this conversation and track timing
                 start_time = time.time()
                 test_success, failure_reason, actual_response = run_command_test(jcc_client, test, test_conversation_id, date_context, i)
