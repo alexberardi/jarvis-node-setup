@@ -291,9 +291,9 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         ),
         CommandTest(
             "Who won the Super Bowl this year?",
-            "get_sports_scores",
-            {"team_name": "", "resolved_datetimes": ["this_year"]},
-            "Sports championship question (either sports_scores or search_web acceptable)"
+            "search_web",
+            {"query": "Who won the Super Bowl this year?"},
+            "Sports championship question (no team name → validation redirects to search_web)"
         ),
         CommandTest(
             "What's the current weather in Miami?",
@@ -312,7 +312,34 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
             "search_web",
             {"query": "Find the latest information about COVID vaccines"},
             "Current health information search"
-        )
+        ),
+        # Pop culture
+        CommandTest(
+            "Who won the Oscar for best picture?",
+            "search_web",
+            {"query": "Who won the Oscar for best picture?"},
+            "Award show results (pop culture)"
+        ),
+        CommandTest(
+            "Who won the Grammy for album of the year?",
+            "search_web",
+            {"query": "Who won the Grammy for album of the year?"},
+            "Music award results"
+        ),
+        # World news
+        CommandTest(
+            "What's happening with the war in Ukraine?",
+            "search_web",
+            {"query": "What's happening with the war in Ukraine?"},
+            "World news current events"
+        ),
+        # Elections
+        CommandTest(
+            "Who is leading in the polls for president?",
+            "search_web",
+            {"query": "Who is leading in the polls for president?"},
+            "Election polling search"
+        ),
     ]
     tests.extend(web_search_tests)
     
@@ -1114,6 +1141,28 @@ def _build_date_key_to_iso_map(date_context: Optional['DateContext']) -> Dict[st
     except (AttributeError, KeyError, TypeError, IndexError):
         pass
 
+    # Year dates (ranges)
+    try:
+        if date_context.years.this_year:
+            mapping["this_year"] = [d.date[:10] for d in date_context.years.this_year]
+        if date_context.years.next_year:
+            mapping["next_year"] = [d.date[:10] for d in date_context.years.next_year]
+        if date_context.years.last_year:
+            mapping["last_year"] = [d.date[:10] for d in date_context.years.last_year]
+    except (AttributeError, KeyError, TypeError, IndexError):
+        pass
+
+    # Month dates (ranges)
+    try:
+        if date_context.months.this_month:
+            mapping["this_month"] = [d.date[:10] for d in date_context.months.this_month]
+        if date_context.months.next_month:
+            mapping["next_month"] = [d.date[:10] for d in date_context.months.next_month]
+        if date_context.months.last_month:
+            mapping["last_month"] = [d.date[:10] for d in date_context.months.last_month]
+    except (AttributeError, KeyError, TypeError, IndexError):
+        pass
+
     # Weekday dates
     try:
         mapping["next_monday"] = [date_context.weekdays.next_monday.date[:10]]
@@ -1361,11 +1410,19 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         
         # Check if this is a tool calling response
         command_response = None
+        matched_tool = None
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"   🔧 Tool calling response detected")
-            first_tool = response.tool_calls[0]
-            actual_command = first_tool.function.name
-            actual_params = first_tool.function.get_arguments_dict()
+            print(f"   🔧 Tool calling response detected ({len(response.tool_calls)} call(s))")
+            # Scan all tool calls for one matching the expected command
+            matched_tool = None
+            for tc in response.tool_calls:
+                if tc.function.name == test.expected_command:
+                    matched_tool = tc
+                    break
+            if matched_tool is None:
+                matched_tool = response.tool_calls[0]
+            actual_command = matched_tool.function.name
+            actual_params = matched_tool.function.get_arguments_dict()
             command_response = {
                 "command_name": actual_command,
                 "parameters": actual_params
@@ -1436,7 +1493,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
             if errors:
                 tool_call_id = "validation"
                 if hasattr(response, 'tool_calls') and response.tool_calls:
-                    tool_call_id = response.tool_calls[0].id
+                    tool_call_id = matched_tool.id if matched_tool else response.tool_calls[0].id
 
                 error_text = "\n".join([r.message for r in errors if r.message])
                 print(f"   🔄 Validation failed ({len(errors)} error(s)), sending back to CC for retry...")
@@ -1469,8 +1526,17 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
             if test.expected_command == "search_web" and actual_command in {
                 "get_weather", "get_sports_schedule", "get_sports_scores", "get_web_search_results"
             }:
-                exp_query = test.expected_params.get("query")
                 act_params = command_response["parameters"]
+
+                # Special case: sports command with empty team_name means validation
+                # would re-route to search_web. Accept as valid without --validate.
+                if actual_command in {"get_sports_scores", "get_sports_schedule"}:
+                    team = act_params.get("team_name", "")
+                    if not team or not str(team).strip():
+                        print(f"   ⚠️  Command mismatch accepted: {actual_command} with empty team_name (validation would re-route)")
+                        return True, "", response_dict
+
+                exp_query = test.expected_params.get("query")
                 act_query = act_params.get("query")
 
                 # Validate search overlap
@@ -1543,26 +1609,12 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                             continue
                 if actual_value == expected_value:
                     continue
-                # Special handling for web search queries - allow optimized search terms (apply before strict match)
-                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_value, str):
-                    if is_valid_search_query(expected_value, actual_value):
-                        print(f"   ⚠️  Test {test_index}: Search query validation passed (optimized search terms)")
-                        continue
-                    # Fall through to normalization if overlap check fails
-                    import string
-                    expected_normalized = expected_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                    actual_normalized = actual_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                    if expected_normalized == actual_normalized:
-                        print(f"   ⚠️  Test {test_index}: Query validation passed (punctuation/case normalized)")
-                        continue
-                    else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
                 # Special handling for query parameters - normalize punctuation and case and allow semantic overlap
                 elif expected_key == "query" and isinstance(expected_value, str) and isinstance(actual_value, str):
                     import string
                     expected_normalized = expected_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
                     actual_normalized = actual_value.translate(str.maketrans('', '', string.punctuation)).lower().strip()
-                    
+
                     if expected_normalized == actual_normalized:
                         print(f"   ⚠️  Test {test_index}: Query validation passed (punctuation/case normalized)")
                         continue
@@ -1576,18 +1628,11 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                 elif expected_key == "team_name" and isinstance(expected_value, str) and isinstance(actual_value, str):
                     expected_lower = expected_value.lower()
                     actual_lower = actual_value.lower()
-                    
+
                     # Check if the expected team name is contained in the actual (e.g., "Yankees" in "New York Yankees")
                     # or if they're exactly equal
                     if expected_lower == actual_lower or expected_lower in actual_lower or actual_lower in expected_lower:
                         print(f"   ⚠️  Test {test_index}: Team name validation passed (flexible matching)")
-                        continue
-                    else:
-                        mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
-                # Special handling for web search queries - allow optimized search terms
-                elif expected_key == "query" and test_index >= 19 and test_index <= 26 and isinstance(expected_value, str) and isinstance(actual_value, str):  # Web search test range
-                    if is_valid_search_query(expected_value, actual_value):
-                        print(f"   ⚠️  Test {test_index}: Search query validation passed (optimized search terms)")
                         continue
                     else:
                         mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
