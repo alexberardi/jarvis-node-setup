@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, List
 from pydantic import BaseModel
 
 from constants.relative_date_keys import RelativeDateKeys
@@ -7,6 +7,7 @@ from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 from core.command_response import CommandResponse
+from core.validation_result import ValidationResult
 from jarvis_services.espn_sports_service import ESPNSportsService
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from utils.config_service import Config
@@ -40,7 +41,7 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Get scores/results for completed or in-progress games. PAST results only."
+        return "Get scores/results for completed or in-progress games between athletic teams. Requires a specific team name. PAST results only."
     
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the sports score command with varied verbiage"""
@@ -145,7 +146,7 @@ class SportsScoreCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "PAST results only. No date mentioned → use 'today'.",
-            "Championship/season outcomes ('who won the Super Bowl') → use search_web.",
+            "Requires a specific team name. Not for championships, award shows, or general 'who won' questions without a team.",
         ]
 
     @property
@@ -157,10 +158,52 @@ class SportsScoreCommand(IJarvisCommand):
             ),
             CommandAntipattern(
                 command_name="search_web",
-                description="Championship winners, season outcomes, 'who won the Super Bowl/World Series/NBA Finals', general web searches, news, or non-sports queries."
+                description="General web searches, news, or queries without a specific team name."
             ),
         ]
     
+    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
+        """Validate team_name resolves to a known sports team.
+
+        If team_name is empty or doesn't match any team in the ESPN resolver,
+        return a validation error guiding the LLM to re-route the query.
+        """
+        results = super().validate_call(**kwargs)
+
+        team_name: str = kwargs.get("team_name", "")
+        if not team_name or not team_name.strip():
+            results.append(ValidationResult(
+                success=False,
+                param_name="team_name",
+                command_name=self.command_name,
+                message=(
+                    "team_name is empty. get_sports_scores requires a specific "
+                    "team name (e.g., 'Lakers', 'Giants', 'Yankees'). This query "
+                    "may be better handled by a different tool."
+                ),
+            ))
+            return results
+
+        try:
+            espn_service = ESPNSportsService()
+            teams = espn_service.resolve_team(team_name.strip())
+            if not teams:
+                results.append(ValidationResult(
+                    success=False,
+                    param_name="team_name",
+                    command_name=self.command_name,
+                    message=(
+                        f"'{team_name}' did not match any known sports team. "
+                        "get_sports_scores requires an actual team name "
+                        "(e.g., 'Lakers', 'Giants', 'Yankees'). This query "
+                        "may be better handled by a different tool."
+                    ),
+                ))
+        except Exception:
+            pass  # If resolution fails, let run() handle it
+
+        return results
+
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         # Get parameters
         team_name = kwargs.get("team_name")
