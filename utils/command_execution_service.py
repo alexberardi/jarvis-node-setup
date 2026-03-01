@@ -1,3 +1,5 @@
+import queue
+import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable
@@ -8,6 +10,7 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.responses.jarvis_command_center import ToolCallingResponse, ToolCall, ValidationRequest
 from core.command_response import CommandResponse
 from core.helpers import get_tts_provider
+from core.platform_audio import platform_audio
 from core.request_information import RequestInformation
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
@@ -35,12 +38,15 @@ class CommandExecutionService:
         # Force initial discovery
         self.command_discovery.refresh_now()
 
-    def register_tools_for_conversation(self, conversation_id: str) -> bool:
+    def register_tools_for_conversation(
+        self, conversation_id: str, speaker_user_id: Optional[int] = None
+    ) -> bool:
         """
         Register available client-side tools with the Command Center for a conversation
 
         Args:
             conversation_id: The conversation identifier
+            speaker_user_id: Optional speaker identity from voice recognition
 
         Returns:
             True if successful, False otherwise
@@ -58,7 +64,9 @@ class CommandExecutionService:
             date_context = self.client.get_date_context()
 
             # Start conversation with available commands
-            success = self.client.start_conversation(conversation_id, commands, date_context)
+            success = self.client.start_conversation(
+                conversation_id, commands, date_context, speaker_user_id=speaker_user_id
+            )
 
             if success:
                 logger.info("Successfully registered tools", count=len(commands))
@@ -71,26 +79,72 @@ class CommandExecutionService:
             logger.error("Error registering tools", error=str(e))
             return False
 
+    def _play_streaming_audio(
+        self,
+        response: Any,
+        audio_meta: Dict[str, str],
+    ) -> bool:
+        """Play streamed PCM audio from an HTTP response.
+
+        Uses a queue + thread to decouple network I/O from audio playback.
+
+        Args:
+            response: Streaming HTTP response (requests.Response) to iterate over.
+            audio_meta: Dict with sample_rate, channels, sample_width strings.
+
+        Returns:
+            True if any audio was played, False otherwise.
+        """
+        sample_rate = int(audio_meta.get("sample_rate", "22050"))
+        channels = int(audio_meta.get("channels", "1"))
+        sample_width = int(audio_meta.get("sample_width", "2"))
+
+        audio_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=50)
+
+        def audio_player() -> None:
+            platform_audio.play_pcm_stream(
+                iter(audio_queue.get, None),  # sentinel = None
+                sample_rate=sample_rate,
+                channels=channels,
+                sample_width=sample_width,
+            )
+
+        player_thread = threading.Thread(target=audio_player, daemon=True)
+        player_thread.start()
+
+        has_audio = False
+        try:
+            for chunk in response.iter_content(chunk_size=4096):
+                if chunk:
+                    has_audio = True
+                    audio_queue.put(chunk)
+        finally:
+            audio_queue.put(None)
+            player_thread.join(timeout=30)
+            response.close()
+
+        return has_audio
+
     def process_voice_command(
         self,
         voice_command: str,
         validation_handler: Optional[Callable[[ValidationRequest], str]] = None,
-        register_tools: bool = True
+        register_tools: bool = True,
+        speaker_user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Process a voice command through the tool calling pipeline:
-        1. Optionally register available tools with the server
-        2. Send to Jarvis Command Center for LLM processing
-        3. Loop on response stop_reason:
-           - tool_call: Execute tools locally and send results back
-           - validation: Ask user for clarification and send response back
-           - stop/complete: Return final message
+        Process a voice command through the unified streaming endpoint.
+
+        Makes a single request to /voice/command/stream which handles all
+        cases: conversational responses (streamed audio), tool calls, and
+        validation. No fallback to a second endpoint.
 
         Args:
             voice_command: The transcribed voice command
             validation_handler: Optional callback to handle validation requests
                                If None, default behavior is used
             register_tools: Whether to register available tools before processing (default: True)
+            speaker_user_id: Optional speaker identity from voice recognition
 
         Returns:
             Execution result dictionary with success, message, conversation_id,
@@ -103,15 +157,42 @@ class CommandExecutionService:
         try:
             # Register available tools if requested
             if register_tools:
-                self.register_tools_for_conversation(conversation_id)
+                self.register_tools_for_conversation(conversation_id, speaker_user_id=speaker_user_id)
 
-            # Initial request to Command Center
-            response = self.client.send_command(voice_command, conversation_id)
+            # Single unified request — handles audio, tool calls, and validation
+            tag, payload = self.client.send_command_unified(voice_command, conversation_id)
 
-            if not response:
-                return self._handle_error("Failed to communicate with Command Center", conversation_id)
+            if tag == "audio":
+                # Streamed PCM audio — play it directly
+                response, audio_meta = payload
+                text = audio_meta.get("assistant_message", "")
+                played = self._play_streaming_audio(response, audio_meta)
+                if played:
+                    logger.info("Streaming audio response played successfully")
+                    return {
+                        "success": True,
+                        "message": text or "(streamed audio)",
+                        "conversation_id": conversation_id,
+                        "wait_for_input": False,
+                        "clear_history": False,
+                    }
+                # No audio bytes — fall back to the text we got from the header
+                if text:
+                    return {
+                        "success": True,
+                        "message": text,
+                        "conversation_id": conversation_id,
+                        "wait_for_input": False,
+                        "clear_history": False,
+                    }
+                return self._handle_error("Empty audio response from server", conversation_id)
 
-            return self._run_conversation_loop(response, conversation_id, validation_handler, voice_command)
+            if tag == "control":
+                # JSON response (tool calls, validation, complete, error)
+                return self._run_conversation_loop(payload, conversation_id, validation_handler, voice_command)
+
+            # tag == "error"
+            return self._handle_error(f"Command failed: {payload}", conversation_id)
 
         except Exception as e:
             logger.error("Error processing command", error=str(e))

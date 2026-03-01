@@ -119,10 +119,7 @@ class ReadCalendarCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Always call this tool to read calendar events; do NOT ask for a date first",
-            "Always include resolved_datetimes; use today's date if the user asks for 'today'.",
-            "'the day after tomorrow' is a SINGLE date token 'day_after_tomorrow' - do NOT split it into multiple dates like 'tomorrow' + 'day_after_tomorrow'",
-            "ALWAYS use symbolic date tokens in resolved_datetimes: 'today', 'tomorrow', 'day_after_tomorrow', 'this_weekend', 'next_week', etc. NEVER output literal dates like '2024-01-29' or '2026-01-29'"
+            "'day after tomorrow' = single key 'day_after_tomorrow', NOT two separate dates.",
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:

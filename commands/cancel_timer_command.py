@@ -23,10 +23,7 @@ class CancelTimerCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return (
-            "Cancel an active timer. Can cancel by label (e.g., 'pasta timer'), "
-            "cancel all timers with 'all', or cancel the only running timer if just one exists."
-        )
+        return "Cancel timer by label, 'all' to cancel all, or omit label for single timer."
 
     @property
     def keywords(self) -> List[str]:

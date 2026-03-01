@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .validation_result import ValidationResult
 
 
 @dataclass
@@ -115,4 +120,25 @@ class CommandResponse:
             metadata=metadata,
             is_chunked_response=True,
             chunk_session_id=session_id
+        )
+
+    @classmethod
+    def validation_error(
+        cls,
+        results: list[ValidationResult],
+    ) -> CommandResponse:
+        """Create a response indicating parameter validation failure."""
+        errors = [r for r in results if not r.success]
+        messages = [r.message for r in errors if r.message]
+        return cls(
+            context_data={
+                "_validation_error": True,
+                "errors": [
+                    {"param": r.param_name, "message": r.message, "valid_values": r.valid_values}
+                    for r in errors
+                ],
+            },
+            success=False,
+            error_details="\n".join(messages),
+            wait_for_input=False,
         )
