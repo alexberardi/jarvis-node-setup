@@ -167,13 +167,6 @@ class WebSearchCommand(IJarvisCommand):
         return "Live web search for current/real-time info: news, stocks, elections, events."
 
     @property
-    def critical_rules(self) -> List[str]:
-        return [
-            "For current/live info only. Not for stable facts—use answer_question.",
-            "Championship winners ('who won the Super Bowl') belong here, not get_sports_scores.",
-        ]
-
-    @property
     def antipatterns(self) -> List[CommandAntipattern]:
         return [
             CommandAntipattern(
@@ -284,7 +277,6 @@ class WebSearchCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "For current/live info only. Not for stable facts—use answer_question.",
-            "Championship winners ('who won the Super Bowl') belong here, not get_sports_scores.",
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:
