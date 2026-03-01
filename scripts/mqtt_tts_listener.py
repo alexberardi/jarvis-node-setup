@@ -158,5 +158,9 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     client.on_message = on_message
 
     logger.info("MQTT listener starting", broker=config["broker"], port=config["port"])
-    client.connect(config["broker"], config["port"], 60)
+    try:
+        client.connect(config["broker"], config["port"], 60)
+    except (ConnectionRefusedError, OSError) as e:
+        logger.warning("MQTT broker not reachable, continuing without MQTT", broker=config["broker"], error=str(e))
+        return
     client.loop_forever()

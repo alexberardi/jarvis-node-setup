@@ -8,11 +8,15 @@ Uses domain-based action validation with clarification flow.
 import asyncio
 from typing import Any, Dict, List, Optional
 
+from jarvis_log_client import JarvisLogger
+
 from core.command_response import CommandResponse
+from core.ijarvis_authentication import AuthenticationConfig
 from core.ijarvis_command import CommandExample, IJarvisCommand
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
+from core.validation_result import ValidationResult
 from services.home_assistant_service import (
     HomeAssistantService,
     get_action_display_name,
@@ -20,6 +24,22 @@ from services.home_assistant_service import (
     get_domain_from_entity_id,
 )
 from utils.entity_resolver import resolve_entity_id
+
+logger = JarvisLogger(service="jarvis-node")
+
+# Maps voice command action verbs to domain-specific HA service actions.
+# Used when entity resolution changes the domain and the original action
+# is no longer valid (e.g., switch.turn_on → lock needs "lock" not "turn_on").
+VOICE_VERB_TO_ACTION: dict[str, dict[str, str]] = {
+    "lock": {"lock": "lock"},
+    "unlock": {"lock": "unlock"},
+    "open": {"cover": "open_cover"},
+    "close": {"cover": "close_cover"},
+    "start": {"vacuum": "start"},
+    "stop": {"vacuum": "stop", "cover": "stop_cover"},
+    "play": {"media_player": "media_play"},
+    "pause": {"media_player": "media_pause"},
+}
 
 
 class ControlDeviceCommand(IJarvisCommand):
@@ -39,8 +59,9 @@ class ControlDeviceCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Control a Home Assistant device: open/close covers, lock/unlock doors, "
-            "adjust thermostat, etc. If action is unclear, will ask for clarification."
+            "Control a HA device: turn on/off, lock/unlock, open/close, set temperature. "
+            "Use for ACTION commands (imperative verbs). "
+            "Domain: lock/unlock→lock.*, open/close→cover.*, on/off→light.*/switch.*."
         )
 
     @property
@@ -78,9 +99,8 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "Home Assistant entity ID (e.g., 'cover.garage_door', "
-                    "'lock.front_door', 'climate.thermostat'). "
-                    "Find in device_controls context."
+                    "Entity ID from device_controls. Select by [area] tag, not name. "
+                    "Verify domain matches action verb. NEVER invent entity IDs."
                 ),
             ),
             JarvisParameter(
@@ -88,12 +108,25 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description=(
-                    "Action to perform. Domain-specific: "
-                    "covers use open_cover/close_cover/stop_cover, "
-                    "locks use lock/unlock, "
-                    "climate uses set_temperature/set_hvac_mode/turn_on/turn_off. "
+                    "Action to perform. MUST match the entity domain. "
+                    "Pick ONE: "
+                    "lock.* → 'lock' or 'unlock'; "
+                    "cover.* → 'open_cover' or 'close_cover' or 'stop_cover'; "
+                    "light.*/switch.* → 'turn_on' or 'turn_off' or 'toggle'; "
+                    "climate.* → 'set_temperature' or 'set_hvac_mode' or 'turn_on' or 'turn_off'. "
                     "If unsure, omit and system will ask."
                 ),
+                enum_values=[
+                    "turn_on", "turn_off", "toggle",
+                    "lock", "unlock",
+                    "open_cover", "close_cover", "stop_cover",
+                    "set_temperature", "set_hvac_mode",
+                    "start", "stop", "return_to_base",
+                    "set_percentage",
+                    "media_play", "media_pause", "media_stop",
+                    "volume_up", "volume_down",
+                    "trigger",
+                ],
             ),
             JarvisParameter(
                 "value",
@@ -124,9 +157,88 @@ class ControlDeviceCommand(IJarvisCommand):
         ]
 
     @property
+    def authentication(self) -> AuthenticationConfig:
+        return AuthenticationConfig(
+            type="oauth",
+            provider="home_assistant",
+            client_id="http://jarvis-node-mobile",
+            keys=["access_token"],
+            authorize_path="/auth/authorize",
+            exchange_path="/auth/token",
+            discovery_port=8123,
+            discovery_probe_path="/api/",
+            send_redirect_uri_in_exchange=False,
+        )
+
+    def store_auth_values(self, values: dict[str, str]) -> None:
+        """Receive short-lived OAuth token, create LLAT, store HA secrets.
+
+        The mobile app discovers HA on the LAN, runs generic OAuth,
+        and pushes the short-lived token + base URL here. The node
+        creates a long-lived token via WebSocket (same LAN as HA)
+        and stores all credentials as secrets.
+        """
+        access_token = values["access_token"]
+        base_url = values["_base_url"]
+        ws_url = base_url.replace("http", "ws") + "/api/websocket"
+
+        # Create long-lived token via HA WebSocket API
+        llat = self._create_long_lived_token(ws_url, access_token)
+
+        from services.secret_service import set_secret
+        set_secret("HOME_ASSISTANT_REST_URL", base_url, "integration")
+        set_secret("HOME_ASSISTANT_WS_URL", ws_url, "integration")
+        set_secret("HOME_ASSISTANT_API_KEY", llat, "integration")
+
+        # Clear re-auth flag
+        from services.command_auth_service import clear_auth_flag
+        clear_auth_flag("home_assistant")
+
+    def _create_long_lived_token(self, ws_url: str, access_token: str) -> str:
+        """Create a long-lived access token via HA WebSocket API.
+
+        Args:
+            ws_url: WebSocket URL (e.g., ws://192.168.1.100:8123/api/websocket)
+            access_token: Short-lived OAuth access token
+
+        Returns:
+            Long-lived access token string
+
+        Raises:
+            RuntimeError: If token creation fails
+        """
+        import json
+        import websocket
+
+        ws = websocket.create_connection(ws_url)
+        try:
+            # Step 1: Receive auth_required message
+            ws.recv()
+
+            # Step 2: Authenticate with short-lived token
+            ws.send(json.dumps({"type": "auth", "access_token": access_token}))
+            auth_result = json.loads(ws.recv())
+            if auth_result.get("type") != "auth_ok":
+                raise RuntimeError(f"HA WebSocket auth failed: {auth_result}")
+
+            # Step 3: Create long-lived access token
+            ws.send(json.dumps({
+                "id": 1,
+                "type": "auth/long_lived_access_token",
+                "client_name": "Jarvis Node",
+                "lifespan": 365,
+            }))
+            result = json.loads(ws.recv())
+            if not result.get("success"):
+                raise RuntimeError(f"Failed to create LLAT: {result}")
+            return result["result"]
+        finally:
+            ws.close()
+
+    @property
     def rules(self) -> List[str]:
         return [
-            "Check device_controls in context to find entity_id",
+            "Find device by [area] tag in device_controls — match user's room name to area",
             "If user intent is clear (e.g., 'open the garage'), include the action",
             "If action is ambiguous, omit it and let system ask for clarification",
             "For temperature settings, include value parameter",
@@ -135,8 +247,9 @@ class ControlDeviceCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use entity_id from device_controls context, not invented IDs",
-            "Match action to the device domain (covers use open_cover, locks use lock)",
+            "Select entity by [area] tag, NOT name similarity. 'Hue Play' ≠ 'Play room'.",
+            "lock/unlock → lock.* (NEVER switch.*), open/close → cover.*, on/off → light.*/switch.*.",
+            "Floor commands ('downstairs'): find ALL areas on that floor, call once per device.",
         ]
 
     def generate_prompt_examples(self) -> List[CommandExample]:
@@ -158,6 +271,13 @@ class ControlDeviceCommand(IJarvisCommand):
                 },
             ),
             CommandExample(
+                voice_command="Lock the front door",
+                expected_parameters={
+                    "entity_id": "lock.front_door",
+                    "action": "lock",
+                },
+            ),
+            CommandExample(
                 voice_command="Open the garage door",
                 expected_parameters={
                     "entity_id": "cover.garage_door",
@@ -173,10 +293,10 @@ class ControlDeviceCommand(IJarvisCommand):
                 },
             ),
             CommandExample(
-                voice_command="Activate the office desk read scene",
+                voice_command="Turn off the lights downstairs",
                 expected_parameters={
-                    "entity_id": "scene.office_desk_read",
-                    "action": "turn_on",
+                    "entity_id": "light.living_room",
+                    "action": "turn_off",
                 },
             ),
         ]
@@ -353,6 +473,7 @@ class ControlDeviceCommand(IJarvisCommand):
         action = kwargs.get("action")
         value = kwargs.get("value")
 
+        original_entity_id = entity_id
         if entity_id:
             entity_id = resolve_entity_id(entity_id, request_info.voice_command)
 
@@ -378,13 +499,31 @@ class ControlDeviceCommand(IJarvisCommand):
                 context_data={"error": "unknown_domain", "domain": domain},
             )
 
+        # If entity resolution changed the domain (cross-domain fix), the
+        # original action may be invalid. Infer the correct action from the
+        # voice command verbs.
+        original_domain = get_domain_from_entity_id(original_entity_id or "") if original_entity_id else None
+        if action and action not in allowed_actions and original_domain != domain:
+            inferred = self._infer_action_from_voice(
+                request_info.voice_command, domain,
+            )
+            if inferred:
+                action = inferred
+
         # If no action provided, either auto-select (single option) or ask
         if not action:
             if len(allowed_actions) == 1:
                 # Single-action domains (scene, script): auto-select
                 action = allowed_actions[0]
             else:
-                return self._request_action_clarification(entity_id, domain, allowed_actions)
+                # Try to infer from voice command before asking
+                inferred = self._infer_action_from_voice(
+                    request_info.voice_command, domain,
+                )
+                if inferred:
+                    action = inferred
+                else:
+                    return self._request_action_clarification(entity_id, domain, allowed_actions)
 
         # Validate action is allowed for this domain
         if action not in allowed_actions:
@@ -395,8 +534,43 @@ class ControlDeviceCommand(IJarvisCommand):
                 invalid_action=action,
             )
 
+        # Log what the LLM sent vs what we resolved
+        resolved = entity_id != original_entity_id
+        logger.info(
+            "control_device executing",
+            llm_entity_id=original_entity_id,
+            resolved_entity_id=entity_id if resolved else "(exact match)",
+            action=action,
+            domain=domain,
+            voice_command=request_info.voice_command,
+        )
+
         # Execute the action
         return asyncio.run(self._execute_control(entity_id, domain, action, value))
+
+    def _infer_action_from_voice(self, voice_command: str, domain: str) -> Optional[str]:
+        """Infer the correct action from voice command verbs and target domain.
+
+        Used when entity resolution changes the domain (cross-domain fix) and
+        the LLM's original action is no longer valid, or when no action was
+        provided.
+
+        Args:
+            voice_command: Original voice command text
+            domain: The resolved entity domain
+
+        Returns:
+            Inferred action string or None if no match
+        """
+        if not voice_command:
+            return None
+
+        cmd_words = set(voice_command.lower().split())
+        for verb, domain_actions in VOICE_VERB_TO_ACTION.items():
+            if verb in cmd_words and domain in domain_actions:
+                return domain_actions[domain]
+
+        return None
 
     def _request_action_clarification(
         self,
@@ -441,6 +615,130 @@ class ControlDeviceCommand(IJarvisCommand):
                 "prompt": message,
             },
         )
+
+    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
+        """Validate entity_id against known HA entities.
+
+        Runs default enum/type checks first, then validates entity_id
+        against cached HA data. Auto-corrects when unambiguous; returns
+        error with alternatives when ambiguous.
+        """
+        results = super().validate_call(**kwargs)
+
+        entity_id = kwargs.get("entity_id", "")
+        if not entity_id:
+            results.append(ValidationResult(
+                success=False,
+                param_name="entity_id",
+                command_name=self.command_name,
+                message="entity_id is required. Call get_ha_entities first.",
+            ))
+            return results
+
+        known = ControlDeviceCommand._get_known_entities()
+        if not known or entity_id in known:
+            return results
+
+        # Try fuzzy auto-correct
+        best = self._find_best_match(entity_id, known)
+        if best:
+            results.append(ValidationResult(
+                success=True,
+                param_name="entity_id",
+                command_name=self.command_name,
+                suggested_value=best,
+            ))
+        else:
+            domain = entity_id.split(".")[0] if "." in entity_id else ""
+            alts = [eid for eid in known if eid.startswith(f"{domain}.")]
+            alt_lines = [f"  - {eid}" for eid in alts[:20]]
+            results.append(ValidationResult(
+                success=False,
+                param_name="entity_id",
+                command_name=self.command_name,
+                message=(
+                    f"Entity '{entity_id}' not found. "
+                    f"Valid {domain or 'all'} entities:\n" + "\n".join(alt_lines)
+                    + "\nYou MUST re-call the same tool with a correct entity_id "
+                    "from the list above. Do NOT answer directly."
+                ),
+                valid_values=alts,
+            ))
+        return results
+
+    @staticmethod
+    def _get_known_entities() -> dict[str, str]:
+        """Get entity_id -> friendly_name map from cached HA context.
+
+        Returns empty dict if HA data is unavailable.
+        """
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+            context = get_agent_scheduler_service().get_aggregated_context()
+            ha_data = context.get("home_assistant", {})
+        except Exception:
+            return {}
+
+        entities: dict[str, str] = {}
+
+        # Light controls
+        for name, info in ha_data.get("light_controls", {}).items():
+            eid = info.get("entity_id", "")
+            if eid:
+                entities[eid] = name
+
+        # Device controls (all domains)
+        for domain_devices in ha_data.get("device_controls", {}).values():
+            for dev in domain_devices:
+                if dev.get("state") == "unavailable":
+                    continue
+                eid = dev.get("entity_id", "")
+                if eid and eid not in entities:
+                    entities[eid] = dev.get("name", "")
+
+        return entities
+
+    @staticmethod
+    def _find_best_match(entity_id: str, known: dict[str, str]) -> str | None:
+        """Find unambiguous auto-correction for a wrong entity_id.
+
+        Returns corrected entity_id if there's exactly one strong match
+        in the same domain, or None if ambiguous/no match.
+        """
+        if "." not in entity_id:
+            return None
+
+        domain_prefix = entity_id.split(".")[0]
+        guessed_slug = entity_id.split(".", 1)[1]
+        guessed_words = set(guessed_slug.split("_"))
+
+        candidates: list[tuple[str, int]] = []
+        for eid in known:
+            if not eid.startswith(f"{domain_prefix}."):
+                continue
+            known_slug = eid.split(".", 1)[1] if "." in eid else eid
+
+            # Containment check
+            if known_slug in guessed_slug or guessed_slug in known_slug:
+                candidates.append((eid, 2))
+                continue
+
+            # Word overlap
+            known_words = set(known_slug.split("_"))
+            overlap = len(guessed_words & known_words)
+            if overlap > 0:
+                candidates.append((eid, overlap))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        if len(candidates) == 1:
+            return candidates[0][0]
+        if candidates[0][1] > candidates[1][1]:
+            return candidates[0][0]
+
+        return None
 
     async def _execute_control(
         self,

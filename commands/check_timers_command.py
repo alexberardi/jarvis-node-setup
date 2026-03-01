@@ -23,10 +23,7 @@ class CheckTimersCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return (
-            "Check the status and remaining time of active timers. "
-            "Can check a specific timer by label or get status of all timers."
-        )
+        return "Check remaining time on active timers. Optional label for specific timer."
 
     @property
     def keywords(self) -> List[str]:

@@ -155,7 +155,7 @@ pytest
 
 ### E2E Command Parsing Tests
 
-Tests intent classification and parameter extraction:
+Tests intent classification and parameter extraction across 82 voice commands covering weather, calendar, sports, timers, calculator, Home Assistant, and more.
 
 ```bash
 # Run all tests
@@ -168,6 +168,26 @@ python test_command_parsing.py -l
 python test_command_parsing.py -t 5 7 11
 python test_command_parsing.py -c calculate get_weather
 ```
+
+#### Benchmark Results
+
+All benchmarks run on the 82-test E2E suite with `Llama32_3B_Compressed` prompt provider (text-based `<function=name>{args}</function>` tool calling). Server-side HA entity resolution enabled.
+
+| Model | Quant | Size | Score | Avg Latency | Notes |
+|-------|-------|------|-------|-------------|-------|
+| Llama 3.2 3B Instruct | f16 | 6.0 GB | **90.2%** (74/82) | 1.19s | Recommended for 3B tier |
+| Llama 3.2 3B Instruct | Q4_K_M | 1.9 GB | **84.2%** (69/82) | 0.82s | For memory-constrained hardware (Pi 5 4GB, AI HAT+) |
+
+**8B model benchmarks** (using model-specific prompt providers):
+
+| Model | Quant | Size | Score | Avg Latency | Notes |
+|-------|-------|------|-------|-------------|-------|
+| Qwen 2.5 7B Instruct | Q4_K_M | 4.4 GB | **95.1%** (78/82) | 1.10s | Best overall (compressed provider) |
+| Llama 3.1 8B Instruct | Q6_K | 6.1 GB | **93.1%** (67/72) | 1.30s | Strong general-purpose |
+| Gemma 2 9B Instruct | Q4_K_M | 5.4 GB | **93.1%** (67/72) | 2.50s | Accurate but slower |
+| Hermes 3 8B (Llama 3.1) | Q4_K_M | 4.6 GB | **91.5%** (75/82) | 1.38s | Good with custom prompts |
+
+*8B benchmarks from 72-test or 82-test suites depending on when last run. 3B benchmarks include HA tests (server-side entity resolution).*
 
 ### Multi-Turn Conversation Tests
 

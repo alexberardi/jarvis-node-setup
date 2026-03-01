@@ -55,11 +55,7 @@ class ChatCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use ONLY for casual conversation, greetings, small talk, and opinions",
-            "Do NOT use for factual questions - use answer_question instead",
-            "Do NOT use for web lookups - use search_web instead",
-            "Do NOT use for weather, timers, calculations, or device control",
-            "Do NOT use for music playback - use play_music or control_music instead",
+            "Casual conversation only. NOT for facts, weather, timers, music, or devices.",
         ]
 
     @property

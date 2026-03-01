@@ -28,7 +28,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Retrieve current weather conditions or up-to-5-day forecast. Use for ALL weather-related queries, including those requesting metric or imperial units."
+        return "Get weather conditions or forecast (up to 5 days). Use for ALL weather queries including metric/imperial."
 
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise example utterances with expected parameters using date keys.
@@ -122,9 +122,9 @@ class OpenWeatherCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("city", "string", required=False, default=None, description="City name as spoken. Optional; omit to use the user's default location."),
-            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys like 'today', 'tomorrow', 'this_weekend' (max 5 days). Always required; use 'today' for current weather."),
-            JarvisParameter("unit_system", "string", required=False, default=None, description="Unit system: 'metric' or 'imperial'. Omit to use the user's default."),
+            JarvisParameter("city", "string", required=False, default=None, description="City name. Omit for default location."),
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys: 'today','tomorrow','this_weekend', etc. (max 5 days). Default 'today'."),
+            JarvisParameter("unit_system", "string", required=False, default=None, description="'metric' or 'imperial'. Omit for default."),
         ]
 
     @property
@@ -138,12 +138,8 @@ class OpenWeatherCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this command ONLY for weather-related queries (temperature, conditions, forecast, precipitation)",
-            "Always call this tool for weather; do NOT answer from memory or ask follow-up questions",
-            "Extract the city name into the 'city' parameter (NOT 'query'). Example: 'What's the weather in Miami?' -> city='Miami'",
-            "resolved_datetimes is required (use today's date for current weather). city is optional.",
-            "Do NOT use this for time queries; those are not weather requests",
-            "This tool has NO 'query' parameter. Use 'city' for location and 'unit_system' for units."
+            "city param for location (NOT 'query'). This tool has NO 'query' parameter.",
+            "Not for time queries—use get_current_time.",
         ]
 
     @property
