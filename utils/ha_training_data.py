@@ -157,8 +157,8 @@ STATUS_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
 def get_ha_training_data() -> Optional[Dict[str, Any]]:
     """Fetch HA device data, with module-level caching.
 
-    Returns device_controls and light_controls dicts from HomeAssistantAgent,
-    or None if HA is unreachable or secrets are missing.
+    Returns device_controls and light_controls dicts from HomeAssistantService
+    (via HomeAssistantAgent wrapper), or None if HA is unreachable or secrets are missing.
 
     Returns:
         Dict with 'device_controls' and 'light_controls' keys, or None

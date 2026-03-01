@@ -8,11 +8,15 @@ Returns state and relevant attributes for the LLM to describe.
 import asyncio
 from typing import Any, Dict, List, Optional
 
+from typing import Any
+
 from core.command_response import CommandResponse
+from core.ijarvis_authentication import AuthenticationConfig
 from core.ijarvis_command import CommandExample, IJarvisCommand
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
+from core.validation_result import ValidationResult
 from services.home_assistant_service import (
     HomeAssistantService,
     get_domain_from_entity_id,
@@ -34,9 +38,9 @@ class GetDeviceStatusCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Query the current status of a Home Assistant device. "
-            "Returns state and attributes like temperature, position, etc. "
-            "Use device_controls in context to find entity IDs."
+            "Query HA device state (read-only). Use ONLY for QUESTIONS about current state "
+            "(e.g., 'is the door locked?', 'what's the temperature?'). "
+            "Do NOT use for control actions — use control_device instead."
         )
 
     @property
@@ -45,15 +49,9 @@ class GetDeviceStatusCommand(IJarvisCommand):
             "status",
             "state",
             "check",
-            "is",
-            "are",
-            "what",
-            "open",
-            "closed",
-            "locked",
-            "unlocked",
-            "on",
-            "off",
+            "is it",
+            "are the",
+            "what is",
             "temperature",
         ]
 
@@ -88,6 +86,20 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 "string",
             ),
         ]
+
+    @property
+    def authentication(self) -> AuthenticationConfig:
+        return AuthenticationConfig(
+            type="oauth",
+            provider="home_assistant",
+            client_id="http://jarvis-node-mobile",
+            keys=["access_token"],
+            authorize_path="/auth/authorize",
+            exchange_path="/auth/token",
+            discovery_port=8123,
+            discovery_probe_path="/api/",
+            send_redirect_uri_in_exchange=False,
+        )
 
     @property
     def rules(self) -> List[str]:
@@ -206,6 +218,56 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 )
             )
         return examples
+
+    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
+        """Validate entity_id against known HA entities.
+
+        Delegates to ControlDeviceCommand's shared helpers.
+        """
+        from commands.control_device_command import ControlDeviceCommand
+
+        results = super().validate_call(**kwargs)
+
+        entity_id = kwargs.get("entity_id", "")
+        if not entity_id:
+            results.append(ValidationResult(
+                success=False,
+                param_name="entity_id",
+                command_name=self.command_name,
+                message="entity_id is required. Call get_ha_entities first.",
+            ))
+            return results
+
+        # Reuse ControlDeviceCommand's HA entity helpers
+        known = ControlDeviceCommand._get_known_entities()
+        if not known or entity_id in known:
+            return results
+
+        best = ControlDeviceCommand._find_best_match(entity_id, known)
+        if best:
+            results.append(ValidationResult(
+                success=True,
+                param_name="entity_id",
+                command_name=self.command_name,
+                suggested_value=best,
+            ))
+        else:
+            domain = entity_id.split(".")[0] if "." in entity_id else ""
+            alts = [eid for eid in known if eid.startswith(f"{domain}.")]
+            alt_lines = [f"  - {eid}" for eid in alts[:20]]
+            results.append(ValidationResult(
+                success=False,
+                param_name="entity_id",
+                command_name=self.command_name,
+                message=(
+                    f"Entity '{entity_id}' not found. "
+                    f"Valid {domain or 'all'} entities:\n" + "\n".join(alt_lines)
+                    + "\nYou MUST re-call the same tool with a correct entity_id "
+                    "from the list above. Do NOT answer directly."
+                ),
+                valid_values=alts,
+            ))
+        return results
 
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
         """Execute the get device status command.

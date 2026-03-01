@@ -251,14 +251,44 @@ class NetworkManagerWiFi:
     def stop_ap_mode(self) -> bool:
         """Stop AP mode by deactivating the hotspot connection."""
         try:
-            # Find and deactivate the hotspot connection
+            # Bring down known default hotspot name first.
             result = subprocess.run(
                 ["nmcli", "connection", "down", "Hotspot"],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+
+            # Fallback: identify any active AP-mode connection and bring it down.
+            active = subprocess.run(
+                ["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if active.returncode != 0:
+                return False
+
+            for line in active.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(":")
+                if len(parts) < 3:
+                    continue
+                conn_name, conn_type, device = parts[0], parts[1], parts[2]
+                if conn_type == "wifi" and device == "wlan0":
+                    down = subprocess.run(
+                        ["nmcli", "connection", "down", conn_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if down.returncode == 0:
+                        return True
+
+            return False
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
@@ -524,6 +554,8 @@ log-dhcp
         import time
 
         try:
+            dnsmasq_conf = self._config_dir / "dnsmasq.conf"
+
             # Stop network services that might be using the interface
             logger.info("Stopping NetworkManager and wpa_supplicant...")
             self._stop_network_services()
@@ -533,8 +565,6 @@ log-dhcp
 
             # Write config files
             hostapd_conf = self._config_dir / "hostapd.conf"
-            dnsmasq_conf = self._config_dir / "dnsmasq.conf"
-
             hostapd_conf.write_text(
                 self._generate_hostapd_config(ssid, self._interface, self.DEFAULT_CHANNEL)
             )
@@ -585,12 +615,23 @@ log-dhcp
                 return False
 
             # Start dnsmasq
+            # Pre-clean any stale Jarvis AP dnsmasq from previous crashes.
+            subprocess.run(
+                ["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"],
+                capture_output=True
+            )
             logger.info("Starting dnsmasq for DHCP...")
             self._dnsmasq_process = subprocess.Popen(
                 ["dnsmasq", "-C", str(dnsmasq_conf), "-d"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
+            time.sleep(1)
+            if self._dnsmasq_process.poll() is not None:
+                _, stderr = self._dnsmasq_process.communicate()
+                logger.error(f"dnsmasq failed to start: {stderr.decode()}")
+                self.stop_ap_mode()
+                return False
 
             self._ap_active = True
             logger.info(f"AP mode active - SSID: {ssid}, IP: {self.DEFAULT_AP_IP}")
@@ -640,8 +681,11 @@ log-dhcp
                     self._dnsmasq_process.wait(timeout=2)
                 self._dnsmasq_process = None
 
-            # Also pkill any stray dnsmasq processes we started
-            subprocess.run(["pkill", "-9", "-f", "dnsmasq.*jarvis-ap"], capture_output=True)
+            # Also pkill any stray dnsmasq processes we started.
+            subprocess.run(
+                ["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"],
+                capture_output=True
+            )
 
             # Remove IP from interface
             subprocess.run(

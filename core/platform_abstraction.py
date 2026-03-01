@@ -18,21 +18,61 @@ logger = JarvisLogger(service="jarvis-node")
 
 class AudioProvider(ABC):
     """Abstract interface for audio operations"""
-    
+
     @abstractmethod
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
         """Play an audio file"""
         pass
-    
+
     @abstractmethod
     def play_chime(self, chime_path: str) -> bool:
         """Play a chime sound"""
         pass
-    
+
     @abstractmethod
     def get_audio_devices(self) -> List[Dict[str, Any]]:
         """Get available audio devices"""
         pass
+
+    def play_pcm_stream(
+        self,
+        pcm_iterator,
+        sample_rate: int = 22050,
+        channels: int = 1,
+        sample_width: int = 2,
+    ) -> bool:
+        """Play raw PCM audio from an iterator of byte chunks.
+
+        Args:
+            pcm_iterator: Iterator yielding raw PCM byte chunks
+            sample_rate: Audio sample rate in Hz
+            channels: Number of audio channels
+            sample_width: Sample width in bytes (2 = 16-bit)
+
+        Returns:
+            True if playback succeeded
+        """
+        try:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            stream = p.open(
+                format=p.get_format_from_width(sample_width),
+                channels=channels,
+                rate=sample_rate,
+                output=True,
+            )
+            try:
+                for chunk in pcm_iterator:
+                    if chunk:
+                        stream.write(chunk)
+            finally:
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+            return True
+        except Exception as e:
+            logger.error(f"Error playing PCM stream: {e}")
+            return False
 
 
 class NetworkDiscoveryProvider(ABC):

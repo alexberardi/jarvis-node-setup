@@ -18,7 +18,7 @@ class GeneralKnowledgeCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Answer questions about stable facts, definitions, history, science, geography, and biographies. Use ONLY for established, non-changing knowledge."
+        return "Answer stable knowledge: facts, definitions, history, science, geography, biographies."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -111,10 +111,7 @@ class GeneralKnowledgeCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this command for ESTABLISHED facts, historical information, scientific concepts, and timeless knowledge",
-            "Do NOT use this for current events, recent news, live data, or information that changes frequently",
-            "Do NOT use a live lookup for non-time-sensitive facts (e.g., locations, definitions, biographies)",
-            "If the request is about 'latest', 'current', 'recent', or other time-sensitive info, do not use this command"
+            "Stable knowledge only. 'latest'/'current'/'recent' → use search_web.",
         ]
 
     @property

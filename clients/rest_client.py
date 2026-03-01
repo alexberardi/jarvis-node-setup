@@ -61,6 +61,40 @@ class RestClient:
             return None
 
     @staticmethod
+    def post_stream(
+        url: str,
+        data: Optional[Dict[str, Any]] = None,
+        timeout: int = 30,
+        chunk_size: int = 4096,
+    ) -> Optional[requests.Response]:
+        """POST request that returns a streaming response for iteration.
+
+        Args:
+            url: The URL to POST to
+            data: JSON body to send
+            timeout: Request timeout in seconds
+            chunk_size: Size of chunks for iter_content
+
+        Returns:
+            Response object with stream=True, or None on error.
+            Caller should iterate via response.iter_content(chunk_size).
+        """
+        headers: Dict[str, str] = RestClient._build_auth_header()
+        headers["Content-Type"] = "application/json"
+
+        try:
+            response = requests.post(
+                url, json=data, headers=headers, timeout=timeout, stream=True
+            )
+            # Allow 2xx range (200 audio, 202 JSON) — only raise on 3xx+
+            if response.status_code >= 300:
+                response.raise_for_status()
+            return response
+        except requests.RequestException as e:
+            logger.error("REST POST stream request failed", url=url, error=str(e))
+            return None
+
+    @staticmethod
     def post_binary(
         url: str,
         data: Optional[Dict[str, Any]] = None,

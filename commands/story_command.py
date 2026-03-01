@@ -23,7 +23,7 @@ class StoryCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Generate an original story delivered in chunks, customizable by subject matter and target audience age."
+        return "Tell a story in chunks. Optional subject and audience age."
 
     @property
     def parameters(self) -> List[IJarvisParameter]:

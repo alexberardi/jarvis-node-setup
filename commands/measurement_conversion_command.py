@@ -72,7 +72,7 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Convert units for distance, volume, weight/mass, and temperature. Use for explicit unit-to-unit conversions ONLY. Do NOT use for weather queries that mention 'metric units' or 'imperial units'."
+        return "Convert units: distance, volume, weight, temperature. Explicit conversions ONLY."
     
     @property
     def keywords(self) -> List[str]:
@@ -98,10 +98,7 @@ class MeasurementConversionCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Only use this command for explicit unit-to-unit conversions (e.g., 'convert 5 miles to kilometers', '350 Fahrenheit in Celsius')",
-            "NEVER use this command when the user mentions 'weather' anywhere in the request - use get_weather instead",
-            "Phrases like 'weather in metric units', 'weather in imperial', 'weather in Celsius', 'forecast in metric' are ALL weather requests, NOT conversions",
-            "The user must be asking to convert a specific numeric value between two named units; display preferences for weather are NOT conversions"
+            "NOT for weather display preferences ('weather in metric'). That's get_weather.",
         ]
 
     @property

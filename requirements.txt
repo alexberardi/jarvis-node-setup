@@ -1,6 +1,6 @@
 paho-mqtt
 httpx
-pvporcupine
+openwakeword
 pyaudio
 vosk
 sounddevice

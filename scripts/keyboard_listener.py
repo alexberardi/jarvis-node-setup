@@ -6,12 +6,14 @@ No audio dependencies required (no pyaudio, pvporcupine, numpy, scipy).
 
 Usage:
     python scripts/keyboard_listener.py
+    python scripts/keyboard_listener.py --speaker-user-id 42
 
 Commands:
     /new    - Start a fresh conversation (clear context)
     quit, exit, bye, Ctrl+C, Ctrl+D - Exit
 """
 
+import argparse
 import os
 import sys
 
@@ -49,12 +51,33 @@ def keyboard_validation_handler(validation: ValidationRequest) -> str:
 
 def main() -> None:
     """Run the keyboard-based Jarvis REPL."""
+    parser = argparse.ArgumentParser(description="Jarvis Keyboard Mode")
+    parser.add_argument(
+        "--speaker-user-id", type=int, default=None,
+        help="Simulate a recognized speaker (pass a user ID from jarvis-auth)",
+    )
+    args = parser.parse_args()
+
+    speaker_user_id: int | None = args.speaker_user_id
+
     print("Jarvis Keyboard Mode")
+    if speaker_user_id is not None:
+        print(f"Speaker: user_id={speaker_user_id}")
     print("Type your commands. Type 'quit', 'exit', or 'bye' to stop.")
     print("Type '/new' to start a fresh conversation.\n")
 
     service = CommandExecutionService()
     active_conversation_id: str | None = None
+
+    # Warm up the LLM by sending a throwaway request through the full
+    # pipeline (tool registration → system prompt → KV cache).  This
+    # primes llama.cpp's prefix cache so the first real command is fast.
+    print("Warming up LLM...", end=" ", flush=True)
+    service.process_voice_command(
+        "hello",
+        speaker_user_id=speaker_user_id,
+    )
+    print("ready.\n")
 
     while True:
         try:
@@ -88,6 +111,7 @@ def main() -> None:
             result = service.process_voice_command(
                 stripped,
                 validation_handler=keyboard_validation_handler,
+                speaker_user_id=speaker_user_id,
             )
 
         # Display response

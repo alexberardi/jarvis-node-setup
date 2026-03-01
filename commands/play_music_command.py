@@ -32,10 +32,7 @@ class PlayMusicCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return (
-            "Play music - search for artists, albums, songs, playlists, "
-            "or radio stations via Music Assistant"
-        )
+        return "Search and play music: artists, albums, songs, playlists, or radio."
 
     @property
     def keywords(self) -> List[str]:
@@ -109,9 +106,7 @@ class PlayMusicCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "If user specifies a speaker/player, use the 'player' parameter",
-            "If no player specified, the room's default speaker will be used",
-            "For 'play some jazz' or genre requests, use media_type='radio'",
+            "Genre requests ('play some jazz') → media_type='radio'.",
         ]
 
     @property

@@ -60,11 +60,19 @@ class IJarvisParameter(ABC):
         # Type validation
         if not self._validate_type(value):
             return False, f"Parameter '{self.name}' must be of type {self.param_type}"
-        
+
+        # Enum validation
+        if self.enum_values and value is not None:
+            if str(value) not in self.enum_values:
+                return False, (
+                    f"Invalid value '{value}' for '{self.name}'. "
+                    f"Must be one of: {', '.join(self.enum_values)}"
+                )
+
         # Custom validation
         if self.validation_function and not self.validation_function(value):
             return False, self.validation_error_message
-            
+
         return True, None
 
     def _validate_type(self, value: Any) -> bool:
@@ -100,6 +108,9 @@ class IJarvisParameter(ABC):
         if expected_type is None:
             return True  # Unknown type, assume valid
             
+        # Allow int values for float parameters (JSON has no int/float distinction)
+        if expected_type is float and isinstance(value, int):
+            return True
         return isinstance(value, expected_type)
 
     def to_dict(self) -> Dict[str, Any]:

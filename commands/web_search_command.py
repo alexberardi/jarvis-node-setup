@@ -164,17 +164,13 @@ class WebSearchCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Perform a live web search for current information, stock prices, news, election results, or any real-time data. Use for dynamic, changing information."
+        return "Live web search for current/real-time info: news, stocks, elections, events."
 
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this for up-to-date or real-time info (news, stock moves, live scores, ongoing events).",
-            "Use this for championship winners or season outcomes (e.g., 'Who won the Super Bowl this year?').",
-            "Always call this tool for web search queries; do NOT answer directly from memory or ask clarifying questions first.",
-            "Do NOT use this for stable facts or geography/location definitions.",
-            "Only use this for questions that require up-to-date information.",
-            "For 'what time is it in [location]' queries, use get_current_time instead."
+            "For current/live info only. Not for stable facts—use answer_question.",
+            "Championship winners ('who won the Super Bowl') belong here, not get_sports_scores.",
         ]
 
     @property
@@ -287,9 +283,8 @@ class WebSearchCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this command for questions requiring CURRENT, LIVE, or UP-TO-DATE information",
-            "This command performs actual web searches - use for recent events, current data, real-time information",
-            "Do NOT use this for established facts, historical information, or general knowledge that doesn't change"
+            "For current/live info only. Not for stable facts—use answer_question.",
+            "Championship winners ('who won the Super Bowl') belong here, not get_sports_scores.",
         ]
 
     def run(self, request_info, **kwargs) -> CommandResponse:

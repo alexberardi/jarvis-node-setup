@@ -28,7 +28,7 @@ class SportsScheduleCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Retrieve upcoming sports games and schedules for Big 4 (NFL, NBA, MLB, NHL) or College teams ONLY. Use for future games and matchups."
+        return "Get upcoming games/schedules for Big 4 or College teams. FUTURE only."
     
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the sports schedule command with varied verbiage"""
@@ -94,8 +94,8 @@ class SportsScheduleCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said (e.g., 'Chicago Bulls', 'Ohio State')."),
-            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys like 'today', 'tomorrow', 'this_weekend'. Always required; use 'today' if user doesn't specify a date.")
+            JarvisParameter("team_name", "string", required=True, description="Team name as spoken (e.g., 'Chicago Bulls', 'Ohio State')."),
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys: 'today','tomorrow','this_weekend'. Default 'today'.")
         ]
     
     @property
@@ -105,10 +105,7 @@ class SportsScheduleCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this command for questions about FUTURE games, schedules, and upcoming events only",
-            "Always include resolved_datetimes; if no date is specified, use today's start of day (current.utc_start_of_day from date context)",
-            "Do NOT use this for ambiguous past results or results that could be far in the past",
-            "This command is for 'when do they play next', 'what time is the game', 'who do they play', etc."
+            "FUTURE games only: 'when do they play next', 'what time is the game'.",
         ]
 
     @property

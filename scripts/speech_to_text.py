@@ -13,10 +13,12 @@ logger = JarvisLogger(service="jarvis-node")
 def get_audio_config() -> dict:
     """Get audio configuration at runtime"""
     sample_rate = Config.get_int("mic_sample_rate", 48000)
+    mic_index_str: str | None = Config.get_str("mic_device_index")
+    device_index: int | None = int(mic_index_str) if mic_index_str is not None else None
     return {
         "sample_rate": sample_rate,
         "channels": 1,
-        "device_index": Config.get_int("mic_device_index", 1),
+        "device_index": device_index,
         "frames_per_buffer": int(sample_rate * 0.032),  # 32ms
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "silence_threshold": Config.get_int("silence_threshold", 500),  # RMS threshold for silence
@@ -56,14 +58,16 @@ def listen() -> str:
     
     audio: pyaudio.PyAudio = pyaudio.PyAudio()
 
-    stream: pyaudio.Stream = audio.open(
+    open_kwargs: dict = dict(
         format=pyaudio.paInt16,
         channels=config["channels"],
         rate=config["sample_rate"],
         input=True,
-        input_device_index=config["device_index"],
         frames_per_buffer=config["frames_per_buffer"],
     )
+    if config["device_index"] is not None:
+        open_kwargs["input_device_index"] = config["device_index"]
+    stream: pyaudio.Stream = audio.open(**open_kwargs)
 
     frames: List[bytes] = []
     silence_frames: int = 0

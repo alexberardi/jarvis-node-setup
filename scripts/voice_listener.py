@@ -4,9 +4,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pvporcupine
+import openwakeword
+from openwakeword.model import Model as OWWModel
 import pyaudio
-from scipy.signal import resample
 from jarvis_log_client import JarvisLogger
 
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
@@ -20,28 +20,20 @@ logger = JarvisLogger(service="jarvis-node")
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
 
+WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
+WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.5)
 
-PORCUPINE_KEY = Config.get_str("porcupine_key", "")
-MIC_SAMPLE_RATE = Config.get_int("mic_sample_rate", 48000) or 48000
-FRAMES_PER_BUFFER = int(MIC_SAMPLE_RATE * 0.032)  # ~32ms chunk
+# openWakeWord needs 16 kHz audio in 1280-sample (80 ms) chunks
+OWW_RATE = 16000
+OWW_CHUNK = 1280
 
-MIC_DEVICE_INDEX = Config.get_int("mic_device_index", 1) or 1
-pa = pyaudio.PyAudio()
-
-
-def create_audio_stream():
-    return pa.open(
-        rate=MIC_SAMPLE_RATE,
-        channels=1,
-        format=pyaudio.paInt16,
-        input=True,
-        frames_per_buffer=FRAMES_PER_BUFFER,
-        # input_device_index=MIC_DEVICE_INDEX,
-    )
+_mic_index_str: str | None = Config.get_str("mic_device_index")
+MIC_DEVICE_INDEX: int | None = int(_mic_index_str) if _mic_index_str is not None else None
 
 
 def handle_keyword_detected():
     logger.info("Wake word detected, listening for command")
+    print("Wake word detected! Listening...")
     tts_provider = get_tts_provider()
     if WAKE_FILE.exists():
         wake_text = WAKE_FILE.read_text().strip()
@@ -72,21 +64,19 @@ def fetch_next_wake_response():
         logger.error("Failed to fetch next greeting", error=str(e))
 
 
-def close_audio(audio_stream):
-    audio_stream.stop_stream()
-    audio_stream.close()
-    pa.terminate()
-
-
 def send_for_transcription(filename):
     logger.info("Sending audio to transcription server")
     stt_provider = get_stt_provider()
-    response = stt_provider.transcribe(filename)
+    result = stt_provider.transcribe_with_speaker(filename)
 
-    if response is not None:
-        # The response is the transcription text directly
-        transcription = response
-        logger.info("Transcription received", text=transcription)
+    if result.text:
+        transcription = result.text
+        speaker_user_id = result.speaker_user_id
+        if speaker_user_id:
+            logger.info("Transcription received", text=transcription,
+                        speaker_user_id=speaker_user_id, speaker_confidence=result.speaker_confidence)
+        else:
+            logger.info("Transcription received", text=transcription)
 
         # Process the command through the command execution service
         command_service = CommandExecutionService()
@@ -121,7 +111,9 @@ def send_for_transcription(filename):
                 return "I didn't catch that, sorry."
 
         # Process with validation handler
-        result = command_service.process_voice_command(transcription, validation_handler)
+        result = command_service.process_voice_command(
+            transcription, validation_handler, speaker_user_id=speaker_user_id
+        )
         command_service.speak_result(result)
 
         return result
@@ -131,45 +123,100 @@ def send_for_transcription(filename):
         return None
 
 
-def start_voice_listener(ma_service):
-    porcupine = pvporcupine.create(access_key=PORCUPINE_KEY, keywords=["jarvis"])
-    pa = pyaudio.PyAudio()
-    audio_stream = create_audio_stream()
+def _start_keyboard_listener() -> None:
+    """Fallback listener: press Enter to trigger a command (no wake word)."""
+    logger.info("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
+    print("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
+    try:
+        while True:
+            input()  # block until Enter
+            try:
+                handle_keyword_detected()
+            except Exception as e:
+                logger.warning("Wake response TTS failed, continuing", error=str(e))
 
-    logger.info("Waiting for wake word")
+            audio_file = listen()
+
+            start = time.perf_counter()
+            send_for_transcription(audio_file)
+            end = time.perf_counter()
+
+            logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+            logger.info("Press Enter to speak another command")
+    except KeyboardInterrupt:
+        logger.info("Stopping voice listener")
+
+
+def _create_oww_stream(pa_instance: pyaudio.PyAudio):
+    """Open a 16 kHz mono stream sized for openWakeWord (1280 samples = 80 ms)."""
+    kwargs: dict = dict(
+        rate=OWW_RATE,
+        channels=1,
+        format=pyaudio.paInt16,
+        input=True,
+        frames_per_buffer=OWW_CHUNK,
+    )
+    if MIC_DEVICE_INDEX is not None:
+        kwargs["input_device_index"] = MIC_DEVICE_INDEX
+    return pa_instance.open(**kwargs)
+
+
+def start_voice_listener(ma_service):
+    # Download model if needed and initialise openWakeWord
+    try:
+        openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
+        oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
+    except Exception as e:
+        logger.warning("openWakeWord init failed, falling back to keyboard trigger", error=str(e))
+        _start_keyboard_listener()
+        return
+
+    pa = pyaudio.PyAudio()
+    oww_stream = _create_oww_stream(pa)
+
+    logger.info("Waiting for wake word", model=WAKE_WORD_MODEL, threshold=WAKE_WORD_THRESHOLD)
+    print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
 
     try:
         while True:
-            raw_data = audio_stream.read(
-                audio_stream._frames_per_buffer, exception_on_overflow=False
-            )
+            raw_data = oww_stream.read(OWW_CHUNK, exception_on_overflow=False)
             samples = np.frombuffer(raw_data, dtype=np.int16)
 
-            # Resample from 48000 → 16000 Hz
-            resampled = resample(samples, porcupine.frame_length).astype(np.int16)
+            predictions = oww.predict(samples)
+            if predictions.get(WAKE_WORD_MODEL, 0) > WAKE_WORD_THRESHOLD:
+                oww.reset()
 
-            keyword_index = porcupine.process(resampled.tolist())
-            if keyword_index >= 0:
-                handle_keyword_detected()
+                # Stop wake-word stream before recording
+                oww_stream.stop_stream()
+                oww_stream.close()
+                pa.terminate()
 
-                close_audio(audio_stream)
+                try:
+                    handle_keyword_detected()
+                except Exception as e:
+                    logger.warning("Wake response TTS failed, continuing", error=str(e))
 
-                audio_file = listen()
+                try:
+                    audio_file = listen()
 
-                start = time.perf_counter()
-                command = send_for_transcription(audio_file)
-                end = time.perf_counter()
+                    start = time.perf_counter()
+                    send_for_transcription(audio_file)
+                    end = time.perf_counter()
 
-                logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+                    logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+                except Exception as e:
+                    logger.warning("Command processing failed, resuming listener", error=str(e))
+                    print(f"Command failed: {e}")
 
-                # reinitialize porcupine + pyaudio
+                # Reopen wake-word stream
                 pa = pyaudio.PyAudio()
-                audio_stream = create_audio_stream()
+                oww_stream = _create_oww_stream(pa)
+                print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
 
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
     finally:
-        audio_stream.stop_stream()
-        audio_stream.close()
+        oww_stream.stop_stream()
+        oww_stream.close()
         pa.terminate()
-        porcupine.delete()
+        del oww

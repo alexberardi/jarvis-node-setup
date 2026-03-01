@@ -54,25 +54,44 @@ def main():
         logger.info("Using JSON config for service URLs")
 
     # Initialize timer service with TTS callback
-    timer_service = initialize_timer_service()
+    try:
+        timer_service = initialize_timer_service()
 
-    # Restore any persisted timers from previous session
-    restored_count = timer_service.restore_timers()
-    if restored_count > 0:
-        logger.info("Restored timers from previous session", count=restored_count)
+        # Restore any persisted timers from previous session
+        restored_count = timer_service.restore_timers()
+        if restored_count > 0:
+            logger.info("Restored timers from previous session", count=restored_count)
+    except Exception as e:
+        logger.warning("Timer service unavailable (pysqlcipher3 not installed?), continuing without timers", error=str(e))
 
     # Initialize agent scheduler (Home Assistant, etc.)
     agent_scheduler = initialize_agent_scheduler()
     logger.info("Agent scheduler initialized")
 
-    if Config.get("music_assistant_enabled"):
+    if Config.get_bool("music_assistant_enabled", False):
         ma_service = MusicAssistantService()
     else:
         ma_service = DummyMusicAssistantService()
 
-    # Start MQTT listener in thread
-    mqtt_thread = threading.Thread(target=start_mqtt_listener, args=(ma_service,), daemon=True)
-    mqtt_thread.start()
+    # Start MQTT listener in thread (skip if disabled in config)
+    mqtt_enabled: bool = Config.get_bool("mqtt_enabled", True) is not False
+    if mqtt_enabled:
+        mqtt_thread = threading.Thread(target=start_mqtt_listener, args=(ma_service,), daemon=True)
+        mqtt_thread.start()
+    else:
+        logger.info("MQTT disabled in config, skipping MQTT listener")
+
+    # Warm up the LLM by sending a throwaway request through the full
+    # pipeline (tool registration → system prompt → KV cache).  This
+    # primes llama.cpp's prefix cache so the first real voice command is fast.
+    try:
+        from utils.command_execution_service import CommandExecutionService
+        warmup_service = CommandExecutionService()
+        logger.info("Warming up LLM pipeline")
+        warmup_service.process_voice_command("hello")
+        logger.info("LLM warmup complete")
+    except Exception as e:
+        logger.warning("LLM warmup failed (non-fatal)", error=str(e))
 
     # Start voice listener in main thread
     start_voice_listener(ma_service)

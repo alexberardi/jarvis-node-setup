@@ -36,10 +36,7 @@ class ControlMusicCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return (
-            "Control music playback: pause, resume, skip, volume, shuffle, repeat. "
-            "Does not search for content - use play_music for playing specific songs/artists."
-        )
+        return "Playback control: pause/resume/skip/volume/shuffle/repeat. Not for searching content."
 
     @property
     def keywords(self) -> List[str]:
@@ -106,8 +103,7 @@ class ControlMusicCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use 'resume' not 'play' when continuing paused music",
-            "This command is for playback control only, not for playing specific content",
+            "Use 'resume' not 'play' for unpausing.",
         ]
 
     @property
