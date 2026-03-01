@@ -1,4 +1,6 @@
+import json
 from typing import Any, Type, TypeVar, Optional, List, Dict
+from urllib.parse import unquote
 
 from jarvis_log_client import JarvisLogger
 from pydantic import BaseModel
@@ -70,6 +72,129 @@ class JarvisCommandCenterClient:
             logger.error("Failed to send command", error=str(e))
             return None
     
+    def send_command_stream(
+        self,
+        voice_command: str,
+        conversation_id: str,
+        chunk_size: int = 4096,
+    ) -> tuple[Any | None, dict[str, str]]:
+        """Send a voice command and get streaming PCM audio back.
+
+        Args:
+            voice_command: The transcribed voice command
+            conversation_id: Unique conversation identifier
+            chunk_size: Size of audio chunks to iterate
+
+        Returns:
+            Tuple of (response object for iteration, audio metadata dict).
+            Returns (None, {}) if streaming fails.
+        """
+        payload = {
+            "voice_command": voice_command,
+            "conversation_id": conversation_id,
+        }
+
+        logger.info(
+            "Sending streaming voice command",
+            command=voice_command,
+            conversation_id=conversation_id,
+        )
+
+        try:
+            response = RestClient.post_stream(
+                f"{self.base_url}/api/v0/voice/command/stream",
+                timeout=30,
+                data=payload,
+                chunk_size=chunk_size,
+            )
+
+            if not response:
+                return None, {}
+
+            # Read audio format from response headers
+            audio_meta = {
+                "sample_rate": response.headers.get("X-Audio-Sample-Rate", "22050"),
+                "channels": response.headers.get("X-Audio-Channels", "1"),
+                "sample_width": response.headers.get("X-Audio-Sample-Width", "2"),
+            }
+
+            return response, audio_meta
+        except Exception as e:
+            logger.error("Failed to send streaming command", error=str(e))
+            return None, {}
+
+    def send_command_unified(
+        self,
+        voice_command: str,
+        conversation_id: str,
+    ) -> tuple[str, Any]:
+        """Send a voice command to the unified streaming endpoint.
+
+        The endpoint returns either streamed audio (200) or JSON control
+        data (202). This method inspects the status code and returns a
+        tagged result so the caller knows which path to take.
+
+        Args:
+            voice_command: The transcribed voice command
+            conversation_id: Unique conversation identifier
+
+        Returns:
+            A tuple of (tag, payload):
+            - ("audio", (response, audio_meta)) — caller streams PCM
+            - ("control", ToolCallingResponse) — caller enters tool loop
+            - ("error", message) — something went wrong
+        """
+        payload = {
+            "voice_command": voice_command,
+            "conversation_id": conversation_id,
+        }
+
+        logger.info(
+            "Sending unified voice command",
+            command=voice_command,
+            conversation_id=conversation_id,
+        )
+
+        try:
+            response = RestClient.post_stream(
+                f"{self.base_url}/api/v0/voice/command/stream",
+                timeout=30,
+                data=payload,
+            )
+
+            if not response:
+                return ("error", "No response from command center")
+
+            if response.status_code == 200:
+                # Streamed audio response
+                raw_msg = response.headers.get("X-Assistant-Message", "")
+                audio_meta = {
+                    "sample_rate": response.headers.get("X-Audio-Sample-Rate", "22050"),
+                    "channels": response.headers.get("X-Audio-Channels", "1"),
+                    "sample_width": response.headers.get("X-Audio-Sample-Width", "2"),
+                    "assistant_message": unquote(raw_msg) if raw_msg else "",
+                }
+                return ("audio", (response, audio_meta))
+
+            if response.status_code == 202:
+                # JSON control response (tool calls, validation, etc.)
+                try:
+                    body = json.loads(response.content)
+                    tool_response = ToolCallingResponse.model_validate(body)
+                    response.close()
+                    return ("control", tool_response)
+                except Exception as parse_err:
+                    response.close()
+                    return ("error", f"Failed to parse 202 response: {parse_err}")
+
+            # Unexpected status code
+            response.close()
+            return ("error", f"Unexpected status {response.status_code}")
+
+        except Exception as e:
+            logger.error("Unified command failed", error=str(e))
+            return ("error", str(e))
+
     def send_tool_results(
         self,
         conversation_id: str,
@@ -293,7 +418,14 @@ class JarvisCommandCenterClient:
 
             return None
 
-    def start_conversation(self, conversation_id: str, commands: dict[str, IJarvisCommand], date_context: Optional[DateContext] = None) -> bool:
+    def start_conversation(
+        self,
+        conversation_id: str,
+        commands: dict[str, IJarvisCommand],
+        date_context: Optional[DateContext] = None,
+        speaker_user_id: Optional[int] = None,
+        agents: Optional[dict] = None,
+    ) -> bool:
         """
         Start a conversation session and register available client-side tools.
 
@@ -301,6 +433,9 @@ class JarvisCommandCenterClient:
             conversation_id: UUID for the conversation session
             commands: Dictionary of available commands to send to the command center
             date_context: Optional date context to use for tool schemas
+            speaker_user_id: Optional speaker identity from voice recognition
+            agents: Optional agent context to inject (e.g., Home Assistant data).
+                    If provided, overrides auto-discovered agent context.
 
         Returns:
             True if successful, False otherwise
@@ -317,15 +452,23 @@ class JarvisCommandCenterClient:
             "timezone": get_user_timezone()
         }
 
+        # Add speaker identity from voice recognition
+        if speaker_user_id is not None:
+            node_context["speaker_user_id"] = speaker_user_id
+
         # Add agent context (Home Assistant, etc.)
-        try:
-            from services.agent_scheduler_service import get_agent_scheduler_service
-            agent_context = get_agent_scheduler_service().get_aggregated_context()
-            if agent_context:
-                node_context["agents"] = agent_context
-                logger.debug("Injected agent context", agents=list(agent_context.keys()))
-        except Exception as e:
-            logger.warning("Failed to get agent context", error=str(e))
+        if agents:
+            node_context["agents"] = agents
+            logger.debug("Injected caller-provided agent context", agents=list(agents.keys()))
+        else:
+            try:
+                from services.agent_scheduler_service import get_agent_scheduler_service
+                agent_context = get_agent_scheduler_service().get_aggregated_context()
+                if agent_context:
+                    node_context["agents"] = agent_context
+                    logger.debug("Injected agent context", agents=list(agent_context.keys()))
+            except Exception as e:
+                logger.warning("Failed to get agent context", error=str(e))
 
         # Build available commands metadata for server-side tools
         available_commands = []
@@ -350,7 +493,7 @@ class JarvisCommandCenterClient:
         }
 
         try:
-            response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=10, data=payload)
+            response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=30, data=payload)
             if response and response.get("status") == "success":
                 logger.info("Successfully registered tools", count=len(client_tools))
                 return True

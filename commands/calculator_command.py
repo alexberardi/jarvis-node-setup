@@ -48,7 +48,7 @@ class CalculatorCommand(IJarvisCommand):
         return [
             JarvisParameter("num1", "float", required=True, description="First number."),
             JarvisParameter("num2", "float", required=True, description="Second number."),
-            JarvisParameter("operation", "string", required=True, description="Operation: must be exactly 'add', 'subtract', 'multiply', or 'divide' (no synonyms).")
+            JarvisParameter("operation", "string", required=True, description="Operation: must be exactly 'add', 'subtract', 'multiply', or 'divide' (no synonyms).", enum_values=["add", "subtract", "multiply", "divide"])
         ]
 
     @property
@@ -58,8 +58,7 @@ class CalculatorCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Map common operation terms to exact values: 'sum'/'plus'/'+' → 'add', 'minus'/'-' → 'subtract', 'times'/'*' → 'multiply', 'divided by'/'/' → 'divide'",
-            "The operation parameter must be exactly one of: 'add', 'subtract', 'multiply', 'divide'"
+            "Map terms: plus/sum→'add', minus→'subtract', times→'multiply', divided by→'divide'.",
         ]
     
     def generate_prompt_examples(self) -> List[CommandExample]:
@@ -136,8 +135,17 @@ class CalculatorCommand(IJarvisCommand):
             # Extract parameters from kwargs
             num1 = float(kwargs.get("num1"))
             num2 = float(kwargs.get("num2"))
-            operation_str = kwargs.get("operation", "").lower()
-            
+            operation_str = kwargs.get("operation", "").lower().strip()
+
+            # Normalize common LLM aliases to canonical operation names
+            _OP_ALIASES = {
+                "+": "add", "plus": "add", "addition": "add", "sum": "add",
+                "-": "subtract", "minus": "subtract", "subtraction": "subtract",
+                "*": "multiply", "times": "multiply", "multiplication": "multiply", "x": "multiply",
+                "/": "divide", "divided": "divide", "division": "divide",
+            }
+            operation_str = _OP_ALIASES.get(operation_str, operation_str)
+
             # Validate operation
             try:
                 operation = Operation(operation_str)

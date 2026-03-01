@@ -23,11 +23,7 @@ class TimerCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return (
-            "Set a timer for a specified duration. The timer runs in the background "
-            "and announces via voice when complete. Convert spoken time to total seconds "
-            "(e.g., '5 minutes' = 300, '1 hour 30 minutes' = 5400)."
-        )
+        return "Set a background timer. Convert spoken time to seconds (5min=300, 1hr30min=5400)."
 
     @property
     def keywords(self) -> List[str]:
@@ -43,20 +39,13 @@ class TimerCommand(IJarvisCommand):
                 "duration_seconds",
                 "int",
                 required=True,
-                description=(
-                    "Total duration in seconds. Convert spoken time: "
-                    "'30 seconds' → 30, '5 minutes' → 300, "
-                    "'1 hour' → 3600, '1 hour 30 minutes' → 5400."
-                )
+                description="Duration in seconds. 1min=60, 1hr=3600. Sum compound times."
             ),
             JarvisParameter(
                 "label",
                 "string",
                 required=False,
-                description=(
-                    "Optional label for the timer (e.g., 'pasta', 'laundry', 'nap'). "
-                    "Used in the completion announcement."
-                )
+                description="Short name for what the timer is for (e.g., 'pasta', 'nap', 'laundry', 'eggs')."
             ),
         ]
 
@@ -75,8 +64,7 @@ class TimerCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Time conversion: 1 minute = 60 seconds, 1 hour = 3600 seconds",
-            "The duration_seconds parameter must be a positive integer",
+            "duration_seconds must be a positive integer.",
         ]
 
     def generate_prompt_examples(self) -> List[CommandExample]:
@@ -100,8 +88,8 @@ class TimerCommand(IJarvisCommand):
                 expected_parameters={"duration_seconds": 3600}
             ),
             CommandExample(
-                voice_command="Set a timer for 2 minutes and 30 seconds",
-                expected_parameters={"duration_seconds": 150}
+                voice_command="Set a timer for 1 hour and 30 minutes",
+                expected_parameters={"duration_seconds": 5400}
             ),
         ]
 

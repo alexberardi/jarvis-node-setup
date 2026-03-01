@@ -4,10 +4,12 @@ from dataclasses import dataclass
 
 from exceptions.missing_secrets_error import MissingSecretsError
 from services.secret_service import get_secret_value
+from .ijarvis_authentication import AuthenticationConfig
 from .ijarvis_parameter import IJarvisParameter
 from .ijarvis_secret import IJarvisSecret
 from .request_information import RequestInformation
 from .command_response import CommandResponse
+from .validation_result import ValidationResult
 from clients.responses.jarvis_command_center import DateContext
 
 if TYPE_CHECKING:
@@ -32,17 +34,51 @@ class JarvisCommandBase(ABC):
     def execute(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """
         Execute the command with request information and parameters
-        
+
         Args:
             request_info: Information about the request from JCC
             **kwargs: Additional parameters for the command
-            
+
         Returns:
             CommandResponse object with execution results
         """
         self._validate_secrets()
         self._validate_params(kwargs)
+
+        # Value validation (enums, context-dependent checks)
+        results = self.validate_call(**kwargs)
+        errors = [r for r in results if not r.success]
+        if errors:
+            return CommandResponse.validation_error(errors)
+        # Apply auto-corrections
+        for r in results:
+            if r.suggested_value is not None:
+                kwargs[r.param_name] = r.suggested_value
+
         return self.run(request_info, **kwargs)
+
+    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
+        """Validate parameter values before execution.
+
+        Default: loops parameters, calls param.validate() on each.
+        Override for cross-param or context-dependent validation
+        (e.g., entity_id checked against HA data).
+        """
+        results: list[ValidationResult] = []
+        for param in self.parameters:
+            value = kwargs.get(param.name)
+            if value is None:
+                continue  # Missing params handled by _validate_params
+            is_valid, error_msg = param.validate(value)
+            if not is_valid:
+                results.append(ValidationResult(
+                    success=False,
+                    param_name=param.name,
+                    command_name=self.command_name,
+                    message=error_msg,
+                    valid_values=param.enum_values,
+                ))
+        return results
 
     def _validate_secrets(self):
         missing = []
@@ -138,6 +174,52 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             List of JarvisPackage declaring pip dependencies
         """
         return []
+
+    @property
+    def authentication(self) -> AuthenticationConfig | None:
+        """Declare OAuth config for commands that need external auth.
+
+        Override to return an AuthenticationConfig describing the OAuth flow.
+        Commands sharing a provider (e.g., all HA commands return provider="home_assistant")
+        share auth state — once one command stores the secrets, all see them.
+
+        Returns:
+            AuthenticationConfig or None if no external auth needed
+        """
+        return None
+
+    def needs_auth(self) -> bool:
+        """Check if auth setup is needed for this command.
+
+        Default logic: if authentication is declared, check that all required
+        secrets are present and that no re-auth flag is set in command_auth table.
+
+        Returns:
+            True if the mobile app should prompt the user for auth
+        """
+        if not self.authentication:
+            return False
+        # Check if required secrets are missing
+        for secret in self.required_secrets:
+            if secret.required and not get_secret_value(secret.key, secret.scope):
+                return True
+        # Check command_auth table for 401 / forced re-auth flag
+        from services.command_auth_service import get_auth_status
+        status = get_auth_status(self.authentication.provider)
+        return status.needs_auth if status else False
+
+    def store_auth_values(self, values: dict[str, str]) -> None:
+        """Called when auth tokens are delivered from mobile via config push.
+
+        Override to process and store the received auth values as secrets.
+        For example, an HA command might create a long-lived access token
+        from the short-lived OAuth token, then store HA URLs and the LLAT.
+
+        Args:
+            values: Dict of auth values. Keys match AuthenticationConfig.keys,
+                    plus "_base_url" if discovery was used.
+        """
+        pass
 
     def init_data(self) -> Dict[str, Any]:
         """

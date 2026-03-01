@@ -59,3 +59,38 @@ class JarvisTTS(IJarvisTextToSpeechProvider):
 
         # Use platform-agnostic audio playback
         platform_audio.play_audio_file(audio_path, volume=0.2)
+
+    def speak_stream(self, text: str) -> bool:
+        """Stream TTS audio with low-latency playback.
+
+        Uses the streaming TTS endpoint to play audio as it's generated,
+        avoiding the overhead of buffering the entire WAV file.
+
+        Args:
+            text: The text to speak
+
+        Returns:
+            True if playback succeeded
+        """
+        command_center_url = get_command_center_url()
+        if not command_center_url:
+            logger.error("command_center_url not configured for streaming TTS")
+            return False
+
+        url = f"{command_center_url}/api/v0/media/tts/speak/stream"
+        response = RestClient.post_stream(url, data={"text": text}, timeout=30)
+
+        if not response:
+            logger.warning("Streaming TTS failed, falling back to blocking TTS")
+            return False
+
+        sample_rate = int(response.headers.get("X-Audio-Sample-Rate", "22050"))
+        channels = int(response.headers.get("X-Audio-Channels", "1"))
+        sample_width = int(response.headers.get("X-Audio-Sample-Width", "2"))
+
+        return platform_audio.play_pcm_stream(
+            response.iter_content(chunk_size=4096),
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
+        )

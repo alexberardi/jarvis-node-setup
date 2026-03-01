@@ -40,7 +40,7 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Retrieve final scores and results for active or recently completed games. Use for past game results and outcomes."
+        return "Get scores/results for completed or in-progress games. PAST results only."
     
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the sports score command with varied verbiage"""
@@ -133,8 +133,8 @@ class SportsScoreCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[IJarvisParameter]:
         return [
-            JarvisParameter("team_name", "string", required=True, description="Team name as spoken; include city/school if said (e.g., 'Lakers', 'Alabama'). Must be valid Big 4 or College team."),
-            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys like 'today', 'yesterday', 'last_weekend'. Always required; use 'today' if user doesn't specify a date.")
+            JarvisParameter("team_name", "string", required=True, description="Team name as spoken (e.g., 'Lakers', 'New York Giants'). Big 4 or College."),
+            JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys: 'today','yesterday','last_weekend'. Default 'today'.")
         ]
     
     @property
@@ -144,12 +144,8 @@ class SportsScoreCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Always include resolved_datetimes; if no date is specified, use today's start of day (current.utc_start_of_day from date context)",
-            "Always call this tool for sports results; do NOT answer from memory or ask for a date first",
-            "Never infer historical season dates when no date is mentioned; use today only",
-            "Use this command for questions about PAST performance, results, scores, or 'how did [team] do'",
-            "If the user is asking about upcoming games, schedules, or future matchups, do not use this command",
-            "If the user is asking about championship winners or season outcomes (e.g., 'who won the Super Bowl', 'who won the World Series'), use search_web instead"
+            "PAST results only. No date mentioned → use 'today'.",
+            "Championship/season outcomes ('who won the Super Bowl') → use search_web.",
         ]
 
     @property

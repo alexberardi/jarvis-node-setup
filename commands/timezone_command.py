@@ -140,9 +140,7 @@ class TimezoneCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Use this command for questions about the current time in a location",
-            "This is for TIME queries, not weather queries - 'what time is it in California' vs 'what's the weather in California'",
-            "Extract just the location name (city, state, or country) without extra words"
+            "TIME queries only, not weather. Extract location name only.",
         ]
 
     @property
