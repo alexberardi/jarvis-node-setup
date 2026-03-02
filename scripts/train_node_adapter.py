@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, help="Training epochs.")
     parser.add_argument("--batch-size", type=int, help="Training batch size.")
     parser.add_argument("--max-seq-len", type=int, help="Training max sequence length.")
+    parser.add_argument("--learning-rate", type=float, help="Training learning rate (e.g. 5e-5).")
     parser.add_argument("--hf-base-model-id", help="Hugging Face base model id.")
     parser.add_argument("--priority", default="normal", help="Job priority.")
     parser.add_argument("--timeout", type=int, default=120, help="Request timeout.")
@@ -82,6 +83,8 @@ def main() -> None:
         params["batch_size"] = args.batch_size
     if args.max_seq_len is not None:
         params["max_seq_len"] = args.max_seq_len
+    if args.learning_rate is not None:
+        params["learning_rate"] = args.learning_rate
     if args.hf_base_model_id is not None:
         params["hf_base_model_id"] = args.hf_base_model_id
     if params:
