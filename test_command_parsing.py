@@ -315,9 +315,9 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
         ),
         # Pop culture
         CommandTest(
-            "Who won the Oscar for best picture?",
+            "Who won the Oscar for best picture this year?",
             "search_web",
-            {"query": "Who won the Oscar for best picture?"},
+            {"query": "Who won the Oscar for best picture this year?"},
             "Award show results (pop culture)"
         ),
         CommandTest(

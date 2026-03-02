@@ -18,7 +18,7 @@ class GeneralKnowledgeCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Answer stable knowledge: facts, definitions, history, science, geography, biographies."
+        return "Answer stable knowledge that does NOT change over time: facts, definitions, history, science, geography, biographies. Not for awards, championships, elections, or polls."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -111,7 +111,7 @@ class GeneralKnowledgeCommand(IJarvisCommand):
     @property
     def critical_rules(self) -> List[str]:
         return [
-            "Stable knowledge only. 'latest'/'current'/'recent' → use search_web.",
+            "Stable knowledge only. Not for questions whose answers change over time (award winners, championships, elections, polls, upcoming events).",
         ]
 
     @property
@@ -119,7 +119,7 @@ class GeneralKnowledgeCommand(IJarvisCommand):
         return [
             CommandAntipattern(
                 command_name="search_web",
-                description="Current events, live information, election results, 'who won' recent races or championships, real-time data, breaking news. Time zones, current time in locations ('what time is it in X')."
+                description="Current events, live information, election results, award winners (Oscars, Grammys, Emmys, Golden Globes), 'who won' championships or awards, real-time data, breaking news."
             ),
             CommandAntipattern(
                 command_name="convert_measurement",

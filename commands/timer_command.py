@@ -23,7 +23,7 @@ class TimerCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Set a background timer. Convert spoken time to seconds (5min=300, 1hr30min=5400)."
+        return "Set a background timer with optional label (extract from 'egg timer'→label=egg, 'timer for laundry'→label=laundry). Convert spoken time to seconds (5min=300, 1hr30min=5400)."
 
     @property
     def keywords(self) -> List[str]:
@@ -45,7 +45,7 @@ class TimerCommand(IJarvisCommand):
                 "label",
                 "string",
                 required=False,
-                description="Short name for what the timer is for (e.g., 'pasta', 'nap', 'laundry', 'eggs')."
+                description="Short name for what the timer is for. Extract from 'X timer' or 'timer for X' (e.g., 'nap timer' → label='nap', 'timer for pasta' → label='pasta')."
             ),
         ]
 
@@ -57,7 +57,7 @@ class TimerCommand(IJarvisCommand):
     def rules(self) -> List[str]:
         return [
             "Always convert spoken time to total seconds before calling",
-            "Extract labels from context: 'timer for pasta' → label='pasta'",
+            "Extract labels from context: 'timer for pasta' → label='pasta', 'nap timer' → label='nap'",
             "Compound times must be summed: '2 minutes 30 seconds' → 150 seconds",
         ]
 
@@ -110,6 +110,8 @@ class TimerCommand(IJarvisCommand):
             # Hours only
             ("Set a timer for 1 hour", {"duration_seconds": 3600}),
             ("Timer for 2 hours", {"duration_seconds": 7200}),
+            ("Set a 3 hour timer", {"duration_seconds": 10800}),
+            ("Timer for half an hour", {"duration_seconds": 1800}),
 
             # Compound times
             ("Set a timer for 1 hour and 30 minutes", {"duration_seconds": 5400}),
