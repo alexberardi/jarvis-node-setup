@@ -75,6 +75,8 @@ class OpenWeatherCommand(IJarvisCommand):
             ("How's the weather?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("Weather report", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
             ("What's the forecast?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Tell me the weather", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
+            ("Do I need an umbrella?", {"resolved_datetimes": [RelativeDateKeys.TODAY]}, False),
 
             # === IMPLICIT TODAY + CITY - no date word, but city present ===
             ("What's the weather in Miami?", {"city": "Miami", "resolved_datetimes": [RelativeDateKeys.TODAY]}, False),

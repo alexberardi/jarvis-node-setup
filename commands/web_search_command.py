@@ -164,7 +164,7 @@ class WebSearchCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Live web search for current/real-time info: news, stocks, elections, events."
+        return "Live web search for current/real-time info or questions whose answers change over time: news, stocks, elections, events, awards, championships."
 
     @property
     def antipatterns(self) -> List[CommandAntipattern]:
@@ -235,6 +235,12 @@ class WebSearchCommand(IJarvisCommand):
             CommandExample(voice_command="Who won the World Series?", expected_parameters={"query": "Who won the World Series?"}, is_primary=False),
             CommandExample(voice_command="Who won the NBA Finals?", expected_parameters={"query": "Who won the NBA Finals?"}, is_primary=False),
             CommandExample(voice_command="Who won the Stanley Cup?", expected_parameters={"query": "Who won the Stanley Cup?"}, is_primary=False),
+
+            # === AWARD WINNERS (change yearly — need live search) ===
+            CommandExample(voice_command="Who won the Oscar for best picture this year?", expected_parameters={"query": "Who won the Oscar for best picture this year?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Grammy for album of the year?", expected_parameters={"query": "Who won the Grammy for album of the year?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Emmy for best drama?", expected_parameters={"query": "Who won the Emmy for best drama?"}, is_primary=False),
+            CommandExample(voice_command="Who won the Golden Globe for best actress?", expected_parameters={"query": "Who won the Golden Globe for best actress?"}, is_primary=False),
 
             # === ELECTION RESULTS ===
             CommandExample(voice_command="Who won the senate race in Pennsylvania?", expected_parameters={"query": "Who won the senate race in Pennsylvania?"}, is_primary=False),
