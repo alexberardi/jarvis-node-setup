@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -168,15 +169,30 @@ def start_voice_listener(ma_service):
         oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
     except Exception as e:
         logger.warning("openWakeWord init failed, falling back to keyboard trigger", error=str(e))
-        _start_keyboard_listener()
+        if sys.stdin and sys.stdin.isatty():
+            _start_keyboard_listener()
+        else:
+            logger.error("No TTY available for keyboard fallback, exiting")
         return
 
-    try:
-        pa = pyaudio.PyAudio()
-        oww_stream = _create_oww_stream(pa)
-    except OSError as e:
-        logger.warning("No audio device available, falling back to keyboard trigger", error=str(e))
-        _start_keyboard_listener()
+    # Retry audio init — USB mic may not be ready immediately after boot
+    pa = None
+    oww_stream = None
+    for attempt in range(1, 31):
+        try:
+            pa = pyaudio.PyAudio()
+            oww_stream = _create_oww_stream(pa)
+            break
+        except OSError as e:
+            if pa is not None:
+                pa.terminate()
+                pa = None
+            logger.warning("No audio device available, retrying",
+                           error=str(e), attempt=attempt, max_attempts=30)
+            time.sleep(10)
+
+    if oww_stream is None:
+        logger.error("No audio device found after 30 attempts, giving up")
         return
 
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL, threshold=WAKE_WORD_THRESHOLD)
