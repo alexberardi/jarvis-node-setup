@@ -13,18 +13,22 @@ done
 
 echo "📦 Re-registering services from latest script..."
 
-# Re-create mqtt-tts.service
+PI_PROJECT_DIR="/home/pi/projects/jarvis-node-setup"
+
 cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service >/dev/null
 [Unit]
 Description=Jarvis Node Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-WorkingDirectory=/home/pi/projects/jarvis-node-setup
-ExecStart=/home/pi/projects/jarvis-node-setup/venv/bin/python3 -m scripts.main
+ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
 Restart=always
-User=pi
+Environment=HOME=/home/pi
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=$PI_PROJECT_DIR
+Environment=CONFIG_PATH=$PI_PROJECT_DIR/config.json
+WorkingDirectory=$PI_PROJECT_DIR
 
 [Install]
 WantedBy=multi-user.target
