@@ -2,13 +2,19 @@ import os
 import sys
 import threading
 
+# Set config service URL from config.json before any library imports,
+# so jarvis-config-client uses the right URL instead of localhost
+from utils.config_service import Config
+_config_url = Config.get_str("jarvis_config_service_url")
+if _config_url and not os.environ.get("JARVIS_CONFIG_URL"):
+    os.environ["JARVIS_CONFIG_URL"] = _config_url
+
 from jarvis_log_client import init as init_logging, JarvisLogger
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
 from services.agent_scheduler_service import initialize_agent_scheduler
 from services.timer_service import initialize_timer_service
-from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
 from utils.service_discovery import init as init_service_discovery
 
