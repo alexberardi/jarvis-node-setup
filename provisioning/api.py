@@ -9,6 +9,7 @@ import os
 import platform
 import threading
 import uuid
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Callable
 
@@ -299,23 +300,11 @@ def create_provisioning_app(
         K2 is used for end-to-end encryption of node settings during backup/sync.
         This endpoint is only available during pairing mode (AP_MODE).
         """
-        # Check if in pairing mode (AP_MODE)
-        if state_machine.state != ProvisioningState.AP_MODE:
-            # Also reject if already provisioned
-            if is_provisioned():
-                return K2ProvisionResponse(
-                    success=False,
-                    error="Node is already provisioned. Re-enter pairing mode to update K2."
-                )
-            # If in CONNECTING/REGISTERING/ERROR state, still allow K2
-            # as these are intermediate states during provisioning
-
-        # Validate node_id matches this node
-        actual_node_id = _get_node_id()
-        if request.node_id != actual_node_id:
+        # Reject if already fully provisioned (must re-enter pairing mode)
+        if is_provisioned():
             return K2ProvisionResponse(
                 success=False,
-                error=f"Node ID mismatch: expected {actual_node_id}, got {request.node_id}"
+                error="Node is already provisioned. Re-enter pairing mode to update K2."
             )
 
         # Save K2 encrypted with K1
@@ -478,3 +467,59 @@ def _run_provisioning(
 
     except Exception as e:
         state_machine.set_error(str(e))
+
+
+class _CaptivePortalHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP handler on port 80 for iOS/Android captive portal detection."""
+
+    # Apple captive portal success page
+    _SUCCESS_HTML = b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"
+
+    def do_GET(self) -> None:
+        path = self.path.split("?")[0]
+        if path == "/generate_204":
+            # Android
+            self.send_response(204)
+            self.end_headers()
+        elif path in ("/hotspot-detect.html", "/library/test/success.html"):
+            # Apple
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(self._SUCCESS_HTML)))
+            self.end_headers()
+            self.wfile.write(self._SUCCESS_HTML)
+        elif path == "/success.txt":
+            body = b"success"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            # Anything else: 204 (safe no-content for unknown captive checks)
+            self.send_response(204)
+            self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        # Silence default stderr logging
+        pass
+
+
+def start_captive_portal_server(port: int = 80) -> HTTPServer:
+    """
+    Start a lightweight HTTP server on port 80 for captive portal responses.
+
+    iOS/Android send captive portal probes to port 80. Without this,
+    iOS marks the AP as "no internet" and routes traffic through cellular,
+    making the provisioning API on port 8080 unreachable from the app.
+
+    Args:
+        port: Port to listen on (default 80, requires root)
+
+    Returns:
+        The running HTTPServer instance (call .shutdown() to stop)
+    """
+    server = HTTPServer(("0.0.0.0", port), _CaptivePortalHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
