@@ -141,13 +141,14 @@ def _save_node_credentials(node_id: str, node_key: str) -> bool:
         return False
 
 
-def _update_config(room: str, command_center_url: str) -> bool:
+def _update_config(room: str, command_center_url: str, config_service_url: str | None = None) -> bool:
     """
     Update the config.json with provisioning data.
 
     Args:
         room: Room name for the node
         command_center_url: URL of the command center
+        config_service_url: URL of the config service (optional)
 
     Returns:
         True if config was updated successfully
@@ -168,6 +169,8 @@ def _update_config(room: str, command_center_url: str) -> bool:
         # Update with provisioning data
         config["room"] = room
         config["jarvis_command_center_api_url"] = command_center_url
+        if config_service_url:
+            config["jarvis_config_service_url"] = config_service_url
 
         # Write back
         with open(config_path, "w") as f:
@@ -271,6 +274,7 @@ def create_provisioning_app(
                     password=request.wifi_password,
                     room=request.room,
                     command_center_url=request.command_center_url,
+                    config_service_url=request.config_service_url,
                     household_id=request.household_id,
                     node_id=request.node_id,
                     provisioning_token=request.provisioning_token,
@@ -337,6 +341,7 @@ def _run_provisioning(
     password: str,
     room: str,
     command_center_url: str,
+    config_service_url: str | None,
     household_id: str,
     node_id: str,
     provisioning_token: str,
@@ -354,6 +359,7 @@ def _run_provisioning(
         password: WiFi network password
         room: Room name for this node
         command_center_url: URL of the command center
+        config_service_url: URL of the config service (optional)
         household_id: UUID of the household this node belongs to
         node_id: CC-assigned UUID for this node
         provisioning_token: Short-lived provisioning token from command center
@@ -417,7 +423,7 @@ def _run_provisioning(
             progress=60
         )
 
-        if not _update_config(room, command_center_url):
+        if not _update_config(room, command_center_url, config_service_url):
             state_machine.set_error("Failed to update configuration")
             return
 
