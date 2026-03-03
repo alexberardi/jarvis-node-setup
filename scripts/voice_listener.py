@@ -171,8 +171,13 @@ def start_voice_listener(ma_service):
         _start_keyboard_listener()
         return
 
-    pa = pyaudio.PyAudio()
-    oww_stream = _create_oww_stream(pa)
+    try:
+        pa = pyaudio.PyAudio()
+        oww_stream = _create_oww_stream(pa)
+    except OSError as e:
+        logger.warning("No audio device available, falling back to keyboard trigger", error=str(e))
+        _start_keyboard_listener()
+        return
 
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL, threshold=WAKE_WORD_THRESHOLD)
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
