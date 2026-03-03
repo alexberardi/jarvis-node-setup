@@ -52,7 +52,25 @@ def _run_provisioning_and_restart() -> None:
         sys.exit(1)
 
 
+def _run_db_migrations() -> None:
+    """Run Alembic migrations to ensure DB schema is up to date."""
+    try:
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_command
+
+        alembic_cfg = AlembicConfig(
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini")
+        )
+        alembic_command.upgrade(alembic_cfg, "head")
+        logger.info("Database migrations complete")
+    except Exception as e:
+        logger.warning("Database migration failed (non-fatal)", error=str(e))
+
+
 def main():
+    # Run DB migrations before anything that needs the database
+    _run_db_migrations()
+
     # Check if node is provisioned (skip in development mode)
     if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
         from provisioning.startup import is_provisioned

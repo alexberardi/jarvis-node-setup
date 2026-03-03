@@ -73,9 +73,26 @@ setup_python_venv() {
     fi
 
     if [ -n "$req_file" ]; then
+        # On Raspberry Pi, prefer piwheels for prebuilt armv7l wheels
+        local pip_extra_args=""
+        if grep -q "Raspberry Pi" /sys/firmware/devicetree/base/model 2>/dev/null; then
+            pip_extra_args="--extra-index-url https://www.piwheels.org/simple"
+            log_info "Using piwheels for armv7l packages"
+        fi
+
         log_info "Installing requirements from $(basename $req_file)..."
-        $use_sudo "$venv_path/bin/python" -m pip install -r "$req_file" --quiet
+        $use_sudo "$venv_path/bin/python" -m pip install -r "$req_file" $pip_extra_args --quiet
         log_success "Requirements installed"
+
+        # openwakeword must be installed with --no-deps because it depends on
+        # ai-edge-litert which has no armv7l wheel.  We use onnx inference
+        # (not tflite), so the needed deps (onnxruntime, scikit-learn,
+        # speexdsp-ns) are listed directly in requirements-pi.txt.
+        if [ "$req_file" != "$PROJECT_ROOT/requirements-provisioning.txt" ]; then
+            log_info "Installing openwakeword (--no-deps, onnx inference only)..."
+            $use_sudo "$venv_path/bin/python" -m pip install openwakeword --no-deps $pip_extra_args --quiet
+            log_success "openwakeword installed"
+        fi
     else
         log_warn "No requirements file found"
     fi
@@ -131,7 +148,19 @@ setup_database() {
     if [ -f "$PROJECT_ROOT/alembic.ini" ]; then
         log_info "Running database migrations..."
         cd "$PROJECT_ROOT"
-        "$venv_path/bin/python" -m alembic upgrade head
+        if ! "$venv_path/bin/python" -m alembic upgrade head 2>&1; then
+            # If migration fails (e.g. encrypted DB with lost key), back up and start fresh
+            local db_file="${JARVIS_NODE_DB:-$PROJECT_ROOT/jarvis_node.db}"
+            if [ -f "$db_file" ]; then
+                local backup_file="${db_file}.bak.$(date +%Y%m%d%H%M%S)"
+                log_warn "Database migration failed (likely encrypted with a lost key)"
+                log_warn "Backing up old database to $(basename $backup_file)"
+                cp "$db_file" "$backup_file"
+                rm -f "$db_file"
+                log_info "Re-running migrations with fresh database..."
+                "$venv_path/bin/python" -m alembic upgrade head
+            fi
+        fi
         log_success "Database migrations complete"
     else
         log_warn "No alembic.ini found, skipping migrations"
