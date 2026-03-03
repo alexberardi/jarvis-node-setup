@@ -58,7 +58,7 @@ def _can_reach_command_center(url: str) -> bool:
         True if health endpoint responds, False otherwise
     """
     try:
-        health_url = f"{url.rstrip('/')}/api/v0/health"
+        health_url = f"{url.rstrip('/')}/health"
         with httpx.Client(timeout=5.0) as client:
             response = client.get(health_url)
             return response.status_code == 200
