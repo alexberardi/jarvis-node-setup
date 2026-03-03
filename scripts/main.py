@@ -21,6 +21,7 @@ from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
 from services.agent_scheduler_service import initialize_agent_scheduler
 from services.timer_service import initialize_timer_service
+from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
 from utils.service_discovery import init as init_service_discovery
 
