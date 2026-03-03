@@ -37,7 +37,17 @@ rsync -avz --delete \
     --exclude='*.swp' \
     --exclude='*.swo' \
     --exclude='*.db' \
+    --exclude='.env' \
+    --exclude='config.json' \
+    --exclude='config-mac.json' \
     ${LOCAL_DIR}/ ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/
 
 echo "✅ Fast sync complete!"
-echo "📁 Files copied to: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/" 
+echo "📁 Files copied to: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
+
+# One-time cleanup: remove stale root state and corrupt DB from HOME mismatch
+echo "🧹 Cleaning up stale root state (if any)..."
+ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo rm -rf /root/.jarvis/ && rm -f ${REMOTE_DIR}/jarvis_node.db" 2>/dev/null || true
+
+echo "🔄 Refreshing systemd service..."
+ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && bash refresh-services.sh"

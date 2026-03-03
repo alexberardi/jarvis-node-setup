@@ -219,6 +219,7 @@ Wants=network-online.target
 [Service]
 ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
 Restart=always
+Environment=HOME=$PI_HOME
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=$PI_PROJECT_DIR
 Environment=CONFIG_PATH=$PI_PROJECT_DIR/config.json
