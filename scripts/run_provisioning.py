@@ -27,7 +27,7 @@ load_dotenv()
 import uvicorn
 from jarvis_log_client import init as init_logging, JarvisLogger
 
-from provisioning.api import create_provisioning_app
+from provisioning.api import create_provisioning_app, start_captive_portal_server
 from provisioning.wifi_manager import get_wifi_manager
 from utils.encryption_utils import initialize_encryption_key, get_secret_dir
 
@@ -126,13 +126,26 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     # Create and run the app
     app = create_provisioning_app(wifi_manager, on_provisioned=on_provisioned)
 
+    # Start captive portal server on port 80 so iOS/Android detect "internet"
+    # and don't fall back to cellular (which makes 192.168.4.1 unreachable).
+    captive_server = None
+    try:
+        captive_server = start_captive_portal_server(port=80)
+        logger.info("Captive portal server started on port 80")
+    except OSError as e:
+        logger.warning("Could not start captive portal server on port 80 (need root?)", error=str(e))
+
     logger.info("API available", url=f"http://0.0.0.0:{port}/api/v1/")
     logger.info("Waiting for mobile app connection...")
 
     if auto_shutdown:
         logger.info("Auto-shutdown enabled")
 
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    finally:
+        if captive_server:
+            captive_server.shutdown()
 
     # Return True if shutdown was triggered by successful provisioning
     return _shutdown_event.is_set()
