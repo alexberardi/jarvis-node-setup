@@ -1,6 +1,10 @@
 paho-mqtt
 httpx
-openwakeword
+# openwakeword is installed separately with --no-deps in shared.sh
+# to avoid pulling ai-edge-litert (no aarch64 wheel).
+# These are the openwakeword deps we actually need (onnx inference):
+onnxruntime>=1.10.0,<2
+scikit-learn>=1,<2
 pyaudio
 vosk
 sounddevice

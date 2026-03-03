@@ -3,11 +3,20 @@
 
 paho-mqtt
 httpx
-openwakeword
+
+# openwakeword is installed separately with --no-deps in shared.sh
+# to avoid pulling ai-edge-litert (no armv7l wheel).
+# These are the openwakeword deps we actually need (onnx inference):
+# onnxruntime: no PyPI wheel for armv7l, use community-built wheel
+onnxruntime @ https://raw.githubusercontent.com/nknytk/built-onnxruntime-for-raspberrypi-linux/master/wheels/bullseye/onnxruntime-1.16.0-cp311-cp311-linux_armv7l.whl
+scikit-learn>=1,<2
+# speexdsp-ns: no armv7l wheel or source dist available, skipped
+# noise suppression is optional for openwakeword
+
 pyaudio
 vosk
 sounddevice
-numpy
+numpy<2
 scipy
 requests
 aiodiscover

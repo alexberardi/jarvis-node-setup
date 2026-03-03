@@ -1,9 +1,14 @@
 #!/bin/bash
 
 # Fast file sync to Pi Zero - just copy files, no installation
-# Usage: ./sync_files_to_zero.sh
+# Usage: ./sync_files_to_zero.sh [--files-only]
 
 set -e
+
+FILES_ONLY=false
+if [[ "$1" == "--files-only" || "$1" == "-f" ]]; then
+    FILES_ONLY=true
+fi
 
 # Configuration
 REMOTE_HOST="zero-office.local"
@@ -45,9 +50,11 @@ rsync -avz --delete \
 echo "✅ Fast sync complete!"
 echo "📁 Files copied to: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 
-# One-time cleanup: remove stale root state and corrupt DB from HOME mismatch
-echo "🧹 Cleaning up stale root state (if any)..."
-ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo rm -rf /root/.jarvis/ && rm -f ${REMOTE_DIR}/jarvis_node.db" 2>/dev/null || true
+if [[ "$FILES_ONLY" == false ]]; then
+    # One-time cleanup: remove stale root state and corrupt DB from HOME mismatch
+    echo "🧹 Cleaning up stale root state (if any)..."
+    ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo rm -rf /root/.jarvis/ && rm -f ${REMOTE_DIR}/jarvis_node.db" 2>/dev/null || true
 
-echo "🔄 Refreshing systemd service..."
-ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && bash refresh-services.sh"
+    echo "🔄 Refreshing systemd service..."
+    ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && bash refresh-services.sh"
+fi

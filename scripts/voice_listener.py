@@ -23,7 +23,7 @@ CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", 
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
 
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
-WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.5)
+WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
 
 # openWakeWord needs 16 kHz audio in 1280-sample (80 ms) chunks
 OWW_RATE = 16000
@@ -230,10 +230,14 @@ def start_voice_listener(ma_service):
 
             if needs_resample:
                 # Downsample 48 kHz → 16 kHz (factor of 3)
-                samples = resample_poly(samples, up=1, down=3).astype(np.int16)
+                resampled = resample_poly(samples, up=1, down=3)
+                samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
             predictions = oww.predict(samples)
-            if predictions.get(WAKE_WORD_MODEL, 0) > WAKE_WORD_THRESHOLD:
+            score = predictions.get(WAKE_WORD_MODEL, 0)
+            if score > 0.05:
+                logger.debug("Wake word score", score=round(score, 3), threshold=WAKE_WORD_THRESHOLD)
+            if score > WAKE_WORD_THRESHOLD:
                 oww.reset()
 
                 # Stop wake-word stream before recording
