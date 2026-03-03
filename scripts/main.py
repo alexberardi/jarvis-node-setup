@@ -4,10 +4,16 @@ import threading
 
 # Set config service URL from config.json before any library imports,
 # so jarvis-config-client uses the right URL instead of localhost
-from utils.config_service import Config
-_config_url = Config.get_str("jarvis_config_service_url")
-if _config_url and not os.environ.get("JARVIS_CONFIG_URL"):
-    os.environ["JARVIS_CONFIG_URL"] = _config_url
+if not os.environ.get("JARVIS_CONFIG_URL"):
+    try:
+        import json
+        _config_path = os.environ.get("CONFIG_PATH", "config.json")
+        with open(_config_path) as _f:
+            _url = json.load(_f).get("jarvis_config_service_url")
+        if _url:
+            os.environ["JARVIS_CONFIG_URL"] = _url
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        pass
 
 from jarvis_log_client import init as init_logging, JarvisLogger
 
