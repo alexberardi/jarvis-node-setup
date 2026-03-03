@@ -6,6 +6,7 @@ with fallback to JSON config file values.
 """
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,12 @@ def init() -> bool:
     Returns True if successful, False if falling back to JSON config.
     """
     global _initialized
+
+    # If JARVIS_CONFIG_URL isn't set, try to get it from config.json
+    if not os.environ.get("JARVIS_CONFIG_URL"):
+        config_url = _get_from_json_config("jarvis_config_service_url")
+        if config_url:
+            os.environ["JARVIS_CONFIG_URL"] = config_url
 
     try:
         from jarvis_config_client import init as init_config_client
