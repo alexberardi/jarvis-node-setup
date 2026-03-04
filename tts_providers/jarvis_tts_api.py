@@ -58,7 +58,7 @@ class JarvisTTS(IJarvisTextToSpeechProvider):
             self.play_chime()
 
         # Use platform-agnostic audio playback
-        platform_audio.play_audio_file(audio_path, volume=0.2)
+        platform_audio.play_audio_file(audio_path)
 
     def speak_stream(self, text: str) -> bool:
         """Stream TTS audio with low-latency playback.
