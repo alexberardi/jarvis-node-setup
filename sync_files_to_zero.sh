@@ -55,6 +55,9 @@ if [[ "$FILES_ONLY" == false ]]; then
     echo "🧹 Cleaning up stale root state (if any)..."
     ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo rm -rf /root/.jarvis/ && rm -f ${REMOTE_DIR}/jarvis_node.db" 2>/dev/null || true
 
+    echo "🔊 Applying ALSA config..."
+    ssh ${REMOTE_USER}@${REMOTE_HOST} "sudo bash ${REMOTE_DIR}/setup/fix-alsa.sh"
+
     echo "🔄 Refreshing systemd service..."
     ssh ${REMOTE_USER}@${REMOTE_HOST} "cd ${REMOTE_DIR} && bash refresh-services.sh"
 fi
