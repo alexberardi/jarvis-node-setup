@@ -256,12 +256,29 @@ class CommandExecutionService:
         max_iterations = 10
         iteration = 0
         last_tool_result: Optional[ToolExecutionResult] = None
+        prev_tool_signature: Optional[tuple] = None
 
         while not response.is_final() and iteration < max_iterations:
             iteration += 1
             logger.debug("Processing iteration", iteration=iteration, stop_reason=response.stop_reason)
 
             if response.requires_tool_execution():
+                # Detect retry loop: if the LLM is calling the exact same
+                # tool with the exact same arguments, it's stuck.
+                current_signature = self._get_tool_signature(response.tool_calls)
+                if prev_tool_signature is not None and current_signature == prev_tool_signature:
+                    logger.warning("Detected repeated tool call, breaking retry loop",
+                                   iteration=iteration)
+                    error_detail = self._extract_tool_error(last_tool_result)
+                    return {
+                        "success": False,
+                        "message": error_detail or "Sorry, I wasn't able to complete that request.",
+                        "conversation_id": conversation_id,
+                        "wait_for_input": False,
+                        "clear_history": False,
+                    }
+                prev_tool_signature = current_signature
+
                 logger.debug("Executing tools", count=len(response.tool_calls))
                 last_tool_result = self._execute_tools(response.tool_calls, conversation_id, voice_command)
 
@@ -278,6 +295,9 @@ class CommandExecutionService:
                     break
 
             elif response.requires_validation():
+                # Reset tool tracking after a validation step — the user
+                # provided new input, so the same tool call is legitimate.
+                prev_tool_signature = None
                 logger.debug("Validation required", question=response.validation_request.question)
 
                 if validation_handler:
@@ -386,6 +406,24 @@ class CommandExecutionService:
                 result.api_results.append(format_tool_error(tool_call.id, error_msg))
 
         return result
+
+    @staticmethod
+    def _get_tool_signature(tool_calls: List[ToolCall]) -> tuple:
+        """Build a hashable signature from a list of tool calls."""
+        return tuple(
+            (tc.function.name, tc.function.arguments) for tc in tool_calls
+        )
+
+    @staticmethod
+    def _extract_tool_error(last_result: Optional[ToolExecutionResult]) -> str:
+        """Pull a readable error message from the most recent tool result."""
+        if not last_result:
+            return ""
+        for item in last_result.api_results:
+            output = item.get("output", {})
+            if not output.get("success") and output.get("error"):
+                return f"Sorry, that didn't work: {output['error']}"
+        return ""
 
     def _default_validation_handler(self, validation: ValidationRequest) -> str:
         """
