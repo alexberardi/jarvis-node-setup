@@ -150,11 +150,27 @@ options snd_usb_audio index=1
 EOF
 
     # Set /etc/asound.conf with correct playback and capture config
+    # softvol gives us a software volume control since HifiBerry DAC has none
     sudo tee /etc/asound.conf > /dev/null <<EOF
-# Output (speaker)
+# Output (speaker) with software volume control
 defaults.pcm.card 0
 defaults.pcm.device 0
 defaults.ctl.card 0
+
+pcm.softvol {
+  type softvol
+  slave.pcm "plughw:0,0"
+  control {
+    name "SoftMaster"
+    card 0
+  }
+}
+
+# Alias used by PiAudioProvider (aplay -D output)
+pcm.output {
+  type plug
+  slave.pcm "softvol"
+}
 
 # Input (microphone) via dsnoop
 pcm.dsnoopmic {
@@ -168,7 +184,7 @@ pcm.dsnoopmic {
 
 pcm.!default {
   type asym
-  playback.pcm "hw:0,0"
+  playback.pcm "softvol"
   capture.pcm "dsnoopmic"
 }
 EOF

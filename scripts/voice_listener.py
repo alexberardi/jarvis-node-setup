@@ -11,16 +11,20 @@ import pyaudio
 from scipy.signal import resample_poly
 from jarvis_log_client import JarvisLogger
 
+from clients.rest_client import RestClient
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
+from core.platform_audio import platform_audio
 from scripts.speech_to_text import listen
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
+from utils.service_discovery import get_command_center_url
 from clients.responses.jarvis_command_center import ValidationRequest
 
 logger = JarvisLogger(service="jarvis-node")
 
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 WAKE_FILE = Path("/tmp/next_wake_response.txt")
+WAKE_AUDIO_FILE = Path("/tmp/next_wake_response.wav")
 
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
 WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
@@ -40,21 +44,35 @@ MIC_DEVICE_INDEX: int | None = int(_mic_index_str) if _mic_index_str is not None
 def handle_keyword_detected():
     logger.info("Wake word detected, listening for command")
     print("Wake word detected! Listening...")
-    tts_provider = get_tts_provider()
-    if WAKE_FILE.exists():
-        wake_text = WAKE_FILE.read_text().strip()
-        WAKE_FILE.unlink()  # clear it after use
-    else:
-        wake_text = "Yes?"
 
-    tts_provider.speak(False, wake_text)
+    # Try cached audio first (near-instant, no HTTP round trip)
+    played_cached = False
+    if WAKE_AUDIO_FILE.exists():
+        try:
+            played_cached = platform_audio.play_audio_file(str(WAKE_AUDIO_FILE))
+        except Exception as e:
+            logger.warning("Failed to play cached wake audio", error=str(e))
+        finally:
+            # Clean up audio cache regardless of success
+            WAKE_AUDIO_FILE.unlink(missing_ok=True)
+            WAKE_FILE.unlink(missing_ok=True)
+
+    # Fall back to text cache + TTS if no cached audio
+    if not played_cached:
+        tts_provider = get_tts_provider()
+        if WAKE_FILE.exists():
+            wake_text = WAKE_FILE.read_text().strip()
+            WAKE_FILE.unlink(missing_ok=True)
+        else:
+            wake_text = "Yes?"
+        tts_provider.speak(False, wake_text)
 
     # Fetch the next wake response in the background if provider is configured
     threading.Thread(target=fetch_next_wake_response, daemon=True).start()
 
 
 def fetch_next_wake_response():
-    """Fetch the next wake response using the configured provider"""
+    """Fetch the next wake response text and pre-generate audio cache."""
     try:
         provider = get_wake_response_provider()
         if not provider:
@@ -62,9 +80,25 @@ def fetch_next_wake_response():
             return
 
         response_text = provider.fetch_next_wake_response()
-        if response_text:
-            WAKE_FILE.write_text(response_text)
-            logger.debug("Stored next wake response", response=response_text)
+        if not response_text:
+            return
+
+        WAKE_FILE.write_text(response_text)
+        logger.debug("Stored next wake response", response=response_text)
+
+        # Pre-generate audio so next wake word plays instantly
+        command_center_url = get_command_center_url()
+        if not command_center_url:
+            return
+
+        audio_bytes: bytes | None = RestClient.post_binary(
+            f"{command_center_url}/api/v0/media/tts/speak",
+            data={"text": response_text},
+            timeout=30,
+        )
+        if audio_bytes:
+            WAKE_AUDIO_FILE.write_bytes(audio_bytes)
+            logger.debug("Cached wake response audio", size_bytes=len(audio_bytes))
 
     except Exception as e:
         logger.error("Failed to fetch next greeting", error=str(e))
@@ -236,7 +270,7 @@ def start_voice_listener(ma_service):
             predictions = oww.predict(samples)
             score = predictions.get(WAKE_WORD_MODEL, 0)
             if score > 0.05:
-                logger.debug("Wake word score", score=round(score, 3), threshold=WAKE_WORD_THRESHOLD)
+                logger.debug("Wake word score", score=round(float(score), 3), threshold=WAKE_WORD_THRESHOLD)
             if score > WAKE_WORD_THRESHOLD:
                 oww.reset()
 
