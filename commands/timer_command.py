@@ -4,14 +4,44 @@ Timer command for Jarvis.
 Sets timers that run in the background and announce via TTS when complete.
 """
 
+import re
 from typing import List
 
 from core.command_response import CommandResponse
-from core.ijarvis_command import CommandExample, IJarvisCommand
+from core.ijarvis_command import CommandExample, IJarvisCommand, PreRouteResult
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 from services.timer_service import get_timer_service
+
+# --- Pre-route constants ---
+
+_TIME_UNITS: dict[str, int] = {
+    'hour': 3600, 'hours': 3600, 'hr': 3600, 'hrs': 3600,
+    'minute': 60, 'minutes': 60, 'min': 60, 'mins': 60,
+    'second': 1, 'seconds': 1, 'sec': 1, 'secs': 1,
+}
+
+_TIME_CHUNK_RE = re.compile(
+    r'(\d+)\s*(?:and\s+)?(' + '|'.join(sorted(_TIME_UNITS, key=len, reverse=True)) + r')',
+    re.IGNORECASE,
+)
+
+_TIMER_TRIGGERS = ('timer', 'remind me', 'wake me', 'let me know', 'notify me')
+
+_LABEL_STRIP_WORDS = frozenset({
+    'set', 'a', 'an', 'the', 'timer', 'for', 'remind', 'me', 'in',
+    'wake', 'up', 'let', 'know', 'notify', 'and', 'please', 'half',
+    'quarter', 'about',
+})
+
+# Informal duration phrases → normalized forms
+_INFORMAL_DURATIONS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\bhalf\s+an?\s+hour\b', re.IGNORECASE), '30 minutes'),
+    (re.compile(r'\ba\s+half\s+hour\b', re.IGNORECASE), '30 minutes'),
+    (re.compile(r'\bquarter\s+(?:of\s+an?\s+)?hour\b', re.IGNORECASE), '15 minutes'),
+    (re.compile(r'\ban?\s+hour\b', re.IGNORECASE), '60 minutes'),
+]
 
 
 class TimerCommand(IJarvisCommand):
@@ -138,6 +168,55 @@ class TimerCommand(IJarvisCommand):
                 is_primary=(i == 0)
             ))
         return examples
+
+    # ------------------------------------------------------------------
+    # Pre-routing (deterministic, bypass LLM)
+    # ------------------------------------------------------------------
+
+    def pre_route(self, voice_command: str) -> PreRouteResult | None:
+        text = voice_command.lower().strip()
+
+        # Must contain a timer trigger keyword
+        if not any(trigger in text for trigger in _TIMER_TRIGGERS):
+            return None
+
+        # Pre-process informal durations ("half an hour" → "30 minutes")
+        for pattern, replacement in _INFORMAL_DURATIONS:
+            text = pattern.sub(replacement, text)
+
+        # Extract time chunks
+        matches = _TIME_CHUNK_RE.findall(text)
+        if not matches:
+            return None  # No duration found → fall through to LLM
+
+        # Sum compound durations
+        total_seconds: int = 0
+        for amount_str, unit in matches:
+            total_seconds += int(amount_str) * _TIME_UNITS[unit.lower()]
+
+        if total_seconds <= 0:
+            return None
+
+        # Extract label: strip time chunks, numbers, and trigger words
+        label = self._extract_label(text)
+
+        args: dict[str, object] = {'duration_seconds': total_seconds}
+        if label:
+            args['label'] = label
+
+        return PreRouteResult(arguments=args)
+
+    @staticmethod
+    def _extract_label(text: str) -> str | None:
+        """Extract optional label by removing time chunks and timer keywords."""
+        # Remove all matched time chunks (e.g., "30 minutes", "1 hour")
+        cleaned = _TIME_CHUNK_RE.sub('', text)
+        # Remove standalone numbers
+        cleaned = re.sub(r'\b\d+\b', '', cleaned)
+        # Split into words and remove timer/filler words
+        words = [w for w in cleaned.split() if w.lower() not in _LABEL_STRIP_WORDS]
+        label = ' '.join(words).strip()
+        return label if label else None
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the timer command"""

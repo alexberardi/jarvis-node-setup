@@ -39,13 +39,22 @@ def format_tool_result(
         Dictionary formatted for sending back to the API in format:
         {"tool_call_id": "...", "output": {...}}
     """
+    output: Dict[str, Any] = {
+        "success": result.success,
+    }
+
+    # Promote "message" to top level so it's the first thing the LLM
+    # reads — small models get confused parsing nested JSON.
+    context = _serialize_for_json(result.context_data) if result.context_data else None
+    if isinstance(context, dict) and "message" in context:
+        output["message"] = context.pop("message")
+
+    output["context"] = context
+    output["error"] = result.error_details
+
     return {
         "tool_call_id": tool_call_id,
-        "output": {
-            "success": result.success,
-            "context": _serialize_for_json(result.context_data),
-            "error": result.error_details
-        }
+        "output": output,
     }
 
 

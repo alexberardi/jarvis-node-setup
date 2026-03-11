@@ -570,9 +570,11 @@ class FullPipelineTestRunner:
                     print(f"    FAIL  {result.failure_reason}")
                     return
 
-        # Check verify_response_contains
+        # Check verify_response_contains (strip commas for number formatting)
         if test.verify_response_contains and result.final_response:
-            if test.verify_response_contains.lower() not in result.final_response.lower():
+            expected = test.verify_response_contains.lower().replace(",", "")
+            actual = result.final_response.lower().replace(",", "")
+            if expected not in actual:
                 result.failure_reason = (
                     f"Response missing '{test.verify_response_contains}'"
                 )

@@ -164,7 +164,7 @@ class WebSearchCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Live web search for current/real-time info or questions whose answers change over time: news, stocks, elections, events, awards, championships."
+        return "Live web search for current/real-time info: news, stocks, elections, events, awards, championships. For stable facts use answer_question, for weather use get_weather, for sports with a team name use get_sports_scores or get_sports_schedule."
 
     @property
     def antipatterns(self) -> List[CommandAntipattern]:
@@ -274,9 +274,9 @@ class WebSearchCommand(IJarvisCommand):
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
-            JarvisSecret("LIVE_SEARCH_PROVIDER", "Search provider: 'bing' or 'duckduckgo'", "integration", "string", required=True),
-            JarvisSecret("LIVE_SEARCH_API_KEY", "API Key for the selected search provider (not needed for DuckDuckGo)", "integration", "string", required=False),  
-            JarvisSecret("LIVE_SEARCH_REGION", "Search region/locale (e.g. 'en-US') - used by some providers", "integration", "string", required=False),
+            JarvisSecret("LIVE_SEARCH_PROVIDER", "Search provider: 'bing' or 'duckduckgo'", "integration", "string", required=True, is_sensitive=False),
+            JarvisSecret("LIVE_SEARCH_API_KEY", "API Key for the selected search provider (not needed for DuckDuckGo)", "integration", "string", required=False),
+            JarvisSecret("LIVE_SEARCH_REGION", "Search region/locale (e.g. 'en-US') - used by some providers", "integration", "string", required=False, is_sensitive=False),
         ]
 
     @property

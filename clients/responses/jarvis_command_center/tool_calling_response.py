@@ -39,6 +39,7 @@ class ToolCall(BaseModel):
     id: str = Field(..., description="Unique identifier for this tool call")
     type: str = Field(default="function", description="Type of tool call")
     function: ToolCallFunction = Field(..., description="Function to call with arguments")
+    failure_message: Optional[str] = Field(None, description="LLM-generated message to show if this tool call fails")
 
 
 class ValidationRequest(BaseModel):

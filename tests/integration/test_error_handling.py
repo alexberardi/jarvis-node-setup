@@ -115,8 +115,9 @@ class TestUnknownTool:
             register_tools=False
         )
 
-        # Should complete (command center handles the error)
-        assert result["success"] is True
+        # All tool calls failed, so the service marks it as failed
+        # (prevents LLM from hallucinating success)
+        assert result["success"] is False
 
         # Verify error was reported for the unknown tool
         tool_results = mock_client.call_history[1]["tool_results"]
@@ -283,14 +284,12 @@ class TestExceptionHandling:
         # Create service with a client that will raise an exception
         with patch.object(
             mock_client,
-            "send_command",
+            "send_command_unified",
             side_effect=RuntimeError("Unexpected network error")
         ):
-            from clients.jarvis_command_center_client import JarvisCommandCenterClient
-            with patch.object(
-                JarvisCommandCenterClient,
-                "__new__",
-                lambda cls, *args, **kwargs: mock_client
+            with patch(
+                "utils.command_execution_service.get_command_discovery_service",
+                return_value=mock_command_discovery,
             ):
                 service = CommandExecutionService()
                 service.client = mock_client

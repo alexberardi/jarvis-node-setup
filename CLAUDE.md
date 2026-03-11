@@ -12,6 +12,60 @@ python scripts/main.py
 pytest
 ```
 
+## Dev Setup
+
+### 1. Install commands (seed secrets DB)
+
+Discovers all command classes, runs DB migrations, and seeds the secrets table
+with empty-value rows for each command's `required_secrets`. Existing values are
+never overwritten.
+
+```bash
+cd jarvis-node-setup
+
+# List all commands and their secrets
+python scripts/install_command.py --list
+
+# Install all commands (run migrations + seed secrets)
+python scripts/install_command.py --all
+
+# Install a single command
+python scripts/install_command.py get_weather
+```
+
+### 2. Generate dev K2 (for mobile settings sync)
+
+K2 is a shared AES-256 key between the node and mobile app. In production it's
+exchanged during WiFi provisioning. For dev, generate it manually:
+
+```bash
+python utils/generate_dev_k2.py          # generates K2, saves to ~/.jarvis/k2.enc
+python utils/generate_dev_k2.py --force  # overwrite existing K2
+```
+
+Outputs a base64url string to paste into the mobile app.
+
+### 3. Import K2 into mobile app (iOS Simulator)
+
+The QR scanner doesn't work in the simulator, so there's a dev-only paste input:
+
+1. Open the iOS Simulator (`npm run ios` in jarvis-node-mobile)
+2. Go to **Nodes** tab
+3. Tap **Import Key** (top-right)
+4. Scroll down to the **DEV: Paste key data** input at the bottom
+5. Paste the base64url string from step 2
+6. Tap **Import**
+
+Both sides now share K2 and settings sync will work.
+
+### 4. Test the settings flow
+
+1. Start required services (command-center, MQTT broker)
+2. Tap a node in the Nodes tab to open its settings
+3. The mobile app requests a snapshot via CC, which notifies the node via MQTT
+4. The node builds a snapshot, encrypts with K2, uploads to CC
+5. The mobile polls, decrypts, and displays command settings
+
 ## Architecture
 
 ```
@@ -100,7 +154,68 @@ Uses Porcupine for local wake word detection. Configured in settings.
 - **Network discovery**: Find other jarvis services
 - **Encrypted storage**: PySQLCipher for local secrets
 
+## Node Authentication (Dev Setup)
+
+Nodes authenticate to the command center via `X-API-Key: {node_id}:{api_key}`. For local development and E2E tests, you must register a node.
+
+### Register a Dev Node
+
+The `authorize_node.py` script handles registration via the command center's admin API. It needs:
+1. The CC `ADMIN_API_KEY` (from `jarvis-command-center/.env`)
+2. A household ID (use `--list` first or `--create-household`)
+
+```bash
+# Step 1: Get the admin key from CC's .env
+grep ADMIN_API_KEY ../jarvis-command-center/.env
+# → ADMIN_API_KEY=a908...
+
+# Step 2: List existing households (to get household_id)
+python utils/authorize_node.py --cc-key <admin_key> --list
+
+# Step 3: Register node and auto-update config-mac.json
+python utils/authorize_node.py \
+  --cc-key <admin_key> \
+  --household-id <household-uuid> \
+  --room office \
+  --name dev-mac \
+  --update-config config-mac.json
+```
+
+This creates a provisioning token, registers the node with jarvis-auth, and writes the new `node_id` and `api_key` into config-mac.json.
+
+### Verify Auth Works
+
+```bash
+curl -s http://localhost:7703/api/v0/health \
+  -H "X-API-Key: $(python -c 'import json; c=json.load(open("config-mac.json")); print(f"{c[\"node_id\"]}:{c[\"api_key\"]}")')"
+```
+
+### Common Auth Issues
+
+- **401 Unauthorized on E2E tests**: Node credentials in `config-mac.json` are not registered. Re-run `authorize_node.py` with `--update-config`.
+- **"Invalid Admin API Key"**: The default `admin_key` does not work for write operations. Get the real key from `jarvis-command-center/.env`.
+- **Node already exists**: Use `--delete` first, then re-register.
+
 ## E2E Testing
+
+### Prerequisites
+
+1. **Register a dev node** (see [Node Authentication](#node-authentication-dev-setup) above)
+2. **Start required services:**
+
+```bash
+# Command center
+cd jarvis-command-center && ./run-docker-dev.sh
+
+# LLM proxy
+cd jarvis-llm-proxy-api && ./run.sh
+
+# TTS (for --full mode only)
+cd jarvis-tts && ./run-docker-dev.sh
+
+# Whisper (for --full mode only)
+cd jarvis-whisper-api && ./run-dev.sh
+```
 
 ### Command Parsing Tests
 
@@ -141,25 +256,10 @@ python test_multi_turn_conversation.py -c validation
 python test_multi_turn_conversation.py --full -t 0 1 2 --save-audio ./audio_artifacts/
 ```
 
-**Required services for tests:**
+**Required services:**
 - `jarvis-command-center` (port 7703)
 - `jarvis-llm-proxy-api` (port 7704)
 - For full mode: `jarvis-tts` (port 7707) + `jarvis-whisper-api` (port 7706)
-
-**Service startup:**
-```bash
-# Command center
-cd jarvis-command-center && ./run-docker-dev.sh
-
-# LLM proxy
-cd jarvis-llm-proxy-api && ./run.sh
-
-# TTS (for --full mode)
-cd jarvis-tts && ./run-docker-dev.sh
-
-# Whisper (for --full mode)
-cd jarvis-whisper-api && ./run-dev.sh
-```
 
 **Test categories:**
 - `tool_execution` - Single-turn tool execution (happy path)
