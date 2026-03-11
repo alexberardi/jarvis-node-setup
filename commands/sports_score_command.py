@@ -41,7 +41,7 @@ class SportsScoreCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Get scores/results for completed or in-progress games between athletic teams. Requires a specific team name. PAST results only."
+        return "Scores/results for completed or in-progress games. Requires a specific team name. PAST only — 'did the Lakers win', 'what was the score'. For upcoming games use get_sports_schedule. No team? Use search_web."
     
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the sports score command with varied verbiage"""

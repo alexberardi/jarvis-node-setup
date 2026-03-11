@@ -4,6 +4,7 @@ from jarvis_log_client import JarvisLogger
 from pydantic import BaseModel
 
 from constants.relative_date_keys import RelativeDateKeys
+from core.ijarvis_authentication import AuthenticationConfig
 from core.ijarvis_command import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
@@ -11,6 +12,7 @@ from core.command_response import CommandResponse
 from services.secret_service import get_secret_value
 from utils.config_service import Config
 from jarvis_services.icloud_calendar_service import ICloudCalendarService
+from jarvis_services.google_calendar_service import GoogleCalendarService
 from utils.date_util import parse_date_array, format_date_display, dates_to_strings
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 
@@ -107,14 +109,69 @@ class ReadCalendarCommand(IJarvisCommand):
             JarvisParameter("resolved_datetimes", "array<datetime>", description="Date keys like 'today', 'tomorrow', 'yesterday', 'this_weekend', 'next_week', etc. The server resolves these to actual dates.", required=True)
         ]
 
+    def _get_calendar_type(self) -> str:
+        """Read CALENDAR_TYPE from DB, defaulting to 'icloud'."""
+        try:
+            value = get_secret_value("CALENDAR_TYPE", "integration")
+            return (value or "icloud").lower()
+        except Exception:
+            return "icloud"
+
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
+        cal_type = self._get_calendar_type()
+        secrets: list[IJarvisSecret] = [
+            JarvisSecret("CALENDAR_TYPE", "Type of calendar service (icloud, google)", "integration", "string", is_sensitive=False),
+            JarvisSecret("CALENDAR_DEFAULT_NAME", "Default calendar name to use", "integration", "string", is_sensitive=False),
+        ]
+        if cal_type == "google":
+            secrets.append(
+                JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID", "integration", "string", is_sensitive=False),
+            )
+        else:
+            secrets.extend([
+                JarvisSecret("CALENDAR_USERNAME", "Username/Apple ID for calendar service", "integration", "string"),
+                JarvisSecret("CALENDAR_PASSWORD", "Password/app-specific password for calendar service", "integration", "string"),
+            ])
+        return secrets
+
+    @property
+    def all_possible_secrets(self) -> List[IJarvisSecret]:
         return [
-            JarvisSecret("CALENDAR_TYPE", "Type of calendar service (icloud, google)", "integration", "string"),
+            JarvisSecret("CALENDAR_TYPE", "Type of calendar service (icloud, google)", "integration", "string", is_sensitive=False),
+            JarvisSecret("CALENDAR_DEFAULT_NAME", "Default calendar name to use", "integration", "string", is_sensitive=False),
             JarvisSecret("CALENDAR_USERNAME", "Username/Apple ID for calendar service", "integration", "string"),
             JarvisSecret("CALENDAR_PASSWORD", "Password/app-specific password for calendar service", "integration", "string"),
-            JarvisSecret("CALENDAR_DEFAULT_NAME", "Default calendar name to use", "integration", "string"),
+            JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID", "integration", "string", is_sensitive=False),
         ]
+
+    @property
+    def authentication(self) -> AuthenticationConfig | None:
+        if self._get_calendar_type() != "google":
+            return None
+        client_id = get_secret_value("GOOGLE_CLIENT_ID", "integration") or ""
+        return AuthenticationConfig(
+            type="oauth",
+            provider="google_calendar",
+            client_id=client_id,
+            keys=["access_token", "refresh_token"],
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            exchange_url="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/calendar.readonly"],
+            supports_pkce=True,
+            extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+        )
+
+    def store_auth_values(self, values: dict[str, str]) -> None:
+        """Store Google OAuth tokens from the mobile OAuth callback."""
+        from services.secret_service import set_secret
+        from services.command_auth_service import clear_auth_flag
+
+        if "access_token" in values:
+            set_secret("GOOGLE_ACCESS_TOKEN", values["access_token"], "integration")
+        if "refresh_token" in values:
+            set_secret("GOOGLE_REFRESH_TOKEN", values["refresh_token"], "integration")
+        clear_auth_flag("google_calendar")
 
     @property
     def critical_rules(self) -> List[str]:
@@ -168,43 +225,39 @@ class ReadCalendarCommand(IJarvisCommand):
         logger.debug(f"Voice command received: '{voice_command}'")
         
         # Get calendar configuration
-        calendar_type = get_secret_value("CALENDAR_TYPE", "integration")
-        username = get_secret_value("CALENDAR_USERNAME", "integration")
-        password = get_secret_value("CALENDAR_PASSWORD", "integration")
+        calendar_type = self._get_calendar_type()
         default_calendar = get_secret_value("CALENDAR_DEFAULT_NAME", "integration")
-        
-        if not all([calendar_type, username, password]):
-            return CommandResponse.error_response(
-                                error_details="Missing calendar configuration",
-                context_data={
-                    "dates": dates_to_strings(target_dates),
-                    "events": [],
-                    "error": "Missing calendar configuration"
-                }
-            )
-        
+
         try:
             # Initialize appropriate calendar service
-            if calendar_type.lower() == "icloud":
-                calendar_service = ICloudCalendarService(username, password, default_calendar or "default")
-            elif calendar_type.lower() == "google":
-                # TODO: Implement Google Calendar service
-                return CommandResponse.error_response(
-                                        error_details="Google Calendar service not implemented",
-                    context_data={
-                        "dates": dates_to_strings(target_dates),
-                        "events": [],
-                        "error": "Google Calendar service not implemented"
-                    }
+            if calendar_type == "google":
+                access_token = get_secret_value("GOOGLE_ACCESS_TOKEN", "integration")
+                refresh_token = get_secret_value("GOOGLE_REFRESH_TOKEN", "integration")
+                client_id = get_secret_value("GOOGLE_CLIENT_ID", "integration")
+                if not access_token:
+                    return CommandResponse.error_response(
+                        error_details="Google Calendar not authenticated. Complete OAuth setup first.",
+                        context_data={"dates": dates_to_strings(target_dates), "events": [], "error": "Not authenticated"},
+                    )
+                calendar_service = GoogleCalendarService(
+                    access_token=access_token,
+                    refresh_token=refresh_token or "",
+                    client_id=client_id or "",
+                    calendar_id=default_calendar or "primary",
                 )
+            elif calendar_type == "icloud":
+                username = get_secret_value("CALENDAR_USERNAME", "integration")
+                password = get_secret_value("CALENDAR_PASSWORD", "integration")
+                if not all([username, password]):
+                    return CommandResponse.error_response(
+                        error_details="Missing iCloud calendar credentials",
+                        context_data={"dates": dates_to_strings(target_dates), "events": [], "error": "Missing credentials"},
+                    )
+                calendar_service = ICloudCalendarService(username, password, default_calendar or "default")
             else:
                 return CommandResponse.error_response(
-                                        error_details=f"Unsupported calendar type: {calendar_type}",
-                    context_data={
-                        "dates": dates_to_strings(target_dates),
-                        "events": [],
-                        "error": f"Unsupported calendar type: {calendar_type}"
-                    }
+                    error_details=f"Unsupported calendar type: {calendar_type}",
+                    context_data={"dates": dates_to_strings(target_dates), "events": [], "error": f"Unsupported calendar type: {calendar_type}"},
                 )
             
             # Collect events based on whether we have specific dates or are using the default
@@ -232,8 +285,8 @@ class ReadCalendarCommand(IJarvisCommand):
             for i, event in enumerate(all_events):
                 logger.debug(f"DEBUG: Event {i+1}: {event.summary} at {event.start_time} (ID: {event.id})")
             
-            # Check if we actually authenticated successfully
-            if not hasattr(calendar_service, '_authenticated') or not calendar_service._authenticated:
+            # Check if iCloud service actually authenticated successfully
+            if hasattr(calendar_service, '_authenticated') and not calendar_service._authenticated:
                 return CommandResponse.error_response(
                                         error_details="Calendar service authentication failed",
                     context_data={

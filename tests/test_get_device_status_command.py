@@ -37,13 +37,13 @@ class TestGetDeviceStatusCommandProperties:
 
     def test_description(self, command):
         """Command has description."""
-        assert "status" in command.description.lower()
+        assert "state" in command.description.lower()
 
     def test_keywords(self, command):
         """Command has relevant keywords."""
         keywords = command.keywords
         assert "status" in keywords
-        assert "is" in keywords
+        assert "is it" in keywords
         assert "check" in keywords
 
     def test_parameters(self, command):
@@ -146,26 +146,20 @@ class TestDynamicAdapterExamples:
         assert "light.my_office" in entity_ids  # Static hardcoded ID
 
 
+@patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
+@patch("commands.get_device_status_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestRunCommand:
     """Test command execution."""
 
-    def test_run_missing_entity_id(self, command, request_info):
+    def test_run_missing_entity_id(self, mock_resolve, mock_validate, command, request_info):
         """Returns error when entity_id is missing."""
         response = command.run(request_info)
 
         assert response.success is False
         assert "entity id" in response.error_details.lower()
 
-    def test_run_success(self, command, request_info):
+    def test_run_success(self, mock_resolve, mock_validate, command, request_info):
         """Successful query returns state data."""
-        mock_result = EntityStateResult(
-            success=True,
-            entity_id="cover.garage_door",
-            state="closed",
-            attributes={"friendly_name": "Garage Door", "current_position": 0},
-            friendly_name="Garage Door",
-        )
-
         with patch.object(command, "_execute_query") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(
                 context_data={
@@ -184,18 +178,15 @@ class TestRunCommand:
             assert response.context_data["state"] == "closed"
             assert response.context_data["domain"] == "cover"
 
-    def test_run_entity_not_found(self, command, request_info):
-        """Returns error when entity not found."""
-        with patch.object(command, "_execute_query") as mock_execute:
-            mock_execute.return_value = CommandResponse.error_response(
-                error_details="Could not get status: Entity 'cover.nonexistent' not found",
-                context_data={"error": "Entity 'cover.nonexistent' not found"},
-            )
+    def test_run_entity_not_found(self, mock_resolve, mock_validate, command, request_info):
+        """Returns error when validate_entity says entity doesn't exist."""
+        # Override the class-level mock for this specific test
+        mock_validate.return_value = (False, "Unassigned:\n  - cover.garage_door: Garage Door")
 
-            response = command.run(request_info, entity_id="cover.nonexistent")
+        response = command.run(request_info, entity_id="cover.nonexistent")
 
-            assert response.success is False
-            assert "not found" in response.error_details.lower()
+        assert response.success is False
+        assert "couldn't find" in response.error_details.lower()
 
 
 class TestExecuteQuery:
@@ -308,8 +299,9 @@ class TestFilterRelevantAttributes:
 class TestEntityResolution:
     """Test fuzzy entity resolution integration."""
 
+    @patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
     @patch("commands.get_device_status_command.resolve_entity_id")
-    def test_resolver_called_with_correct_args(self, mock_resolve, command, request_info):
+    def test_resolver_called_with_correct_args(self, mock_resolve, mock_validate, command, request_info):
         """Resolver is called with entity_id and voice_command."""
         mock_resolve.return_value = "cover.garage_door"
 
@@ -323,8 +315,9 @@ class TestEntityResolution:
 
         mock_resolve.assert_called_once_with("cover.garage", "is the garage door open")
 
+    @patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
     @patch("commands.get_device_status_command.resolve_entity_id")
-    def test_resolved_entity_used_downstream(self, mock_resolve, command, request_info):
+    def test_resolved_entity_used_downstream(self, mock_resolve, mock_validate, command, request_info):
         """Resolved entity_id is passed to _execute_query."""
         mock_resolve.return_value = "cover.garage_door"
 
@@ -346,10 +339,12 @@ class TestEntityResolution:
         mock_resolve.assert_not_called()
 
 
+@patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
+@patch("commands.get_device_status_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestWaitForInput:
     """Test wait_for_input behavior."""
 
-    def test_success_waits_for_input(self, command, request_info):
+    def test_success_waits_for_input(self, mock_resolve, mock_validate, command, request_info):
         """Status queries allow follow-up questions."""
         with patch.object(command, "_execute_query") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(

@@ -10,6 +10,8 @@ from jarvis_log_client import JarvisLogger
 
 from utils.config_service import Config
 from core.helpers import get_tts_provider
+from services.config_push_service import process_pending_configs
+from services.settings_snapshot_service import handle_snapshot_request
 from utils.music_assistant_service import MusicAssistantService
 
 logger = JarvisLogger(service="jarvis-node")
@@ -116,8 +118,140 @@ def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: in
     client.subscribe(topic)
     logger.info("MQTT subscribed", topic=topic)
 
+    # Subscribe to auth-ready notifications from JCC OAuth flow
+    client.subscribe("jarvis/auth/+/ready")
+    logger.info("MQTT subscribed", topic="jarvis/auth/+/ready")
+
+
+def _handle_auth_ready(raw_payload: bytes) -> None:
+    """Handle OAuth auth-ready notification from JCC.
+
+    JCC publishes this after a successful OAuth callback.
+    Node pulls credentials from JCC and stores them via the command's store_auth_values().
+    """
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in auth-ready notification")
+        return
+
+    provider: str = notification.get("provider", "")
+    node_id_from_msg: str = notification.get("node_id", "")
+    my_node_id: str = Config.get_str("node_id", "") or ""
+
+    # Only process if this notification is for us
+    if node_id_from_msg != my_node_id:
+        return
+
+    logger.info("Auth ready notification received", provider=provider)
+    thread = threading.Thread(target=_pull_auth_credentials, args=(provider,), daemon=True)
+    thread.start()
+
+
+def _pull_auth_credentials(provider: str) -> None:
+    """Pull OAuth credentials from JCC and store them locally."""
+    from clients.rest_client import RestClient
+    from utils.command_discovery_service import get_command_discovery_service
+    from utils.service_discovery import get_command_center_url
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.error("Cannot pull auth credentials: command center URL not resolved")
+        return
+
+    url = f"{base_url.rstrip('/')}/api/v0/oauth/provider/{provider}/credentials"
+    result: Optional[Dict[str, Any]] = RestClient.get(url, timeout=15)
+    if result is None:
+        logger.error("Failed to pull auth credentials", provider=provider)
+        return
+
+    # Map JCC response keys to what store_auth_values() expects
+    # JCC returns "base_url", commands expect "_base_url"
+    if "base_url" in result and "_base_url" not in result:
+        result["_base_url"] = result["base_url"]
+
+    # Find the command that owns this provider and store credentials
+    service = get_command_discovery_service()
+    commands = service.get_all_commands()
+
+    for cmd in commands.values():
+        if cmd.authentication and cmd.authentication.provider == provider:
+            logger.info("Storing auth credentials", provider=provider, command=cmd.command_name)
+            cmd.store_auth_values(result)
+            return
+
+    logger.warning("No command found for auth provider", provider=provider)
+
+
+def _handle_config_push_notification(raw_payload: bytes) -> None:
+    """Handle config push MQTT notification — triggers polling in background."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in config push notification")
+        return
+
+    config_type: str = notification.get("config_type", "unknown")
+    logger.info("Config push notification received", config_type=config_type)
+
+    thread = threading.Thread(target=_process_config_push, daemon=True)
+    thread.start()
+
+
+def _process_config_push() -> None:
+    """Process pending config pushes (runs in background thread)."""
+    try:
+        count: int = process_pending_configs()
+        logger.info("Config push processing complete", processed=count)
+    except Exception as e:
+        logger.error("Config push processing failed", error=str(e))
+
+
+def _handle_settings_request_notification(raw_payload: bytes) -> None:
+    """Handle settings snapshot request MQTT notification."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in settings request notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    if not request_id:
+        logger.warning("Settings request notification missing request_id")
+        return
+
+    logger.info("Settings snapshot requested", request_id=request_id[:8])
+    thread = threading.Thread(target=_process_settings_request, args=(request_id,), daemon=True)
+    thread.start()
+
+
+def _process_settings_request(request_id: str) -> None:
+    """Process a settings snapshot request (runs in background thread)."""
+    try:
+        success: bool = handle_snapshot_request(request_id)
+        if success:
+            logger.info("Settings snapshot complete", request_id=request_id[:8])
+        else:
+            logger.error("Settings snapshot failed", request_id=request_id[:8])
+    except Exception as e:
+        logger.error("Settings snapshot error", request_id=request_id[:8], error=str(e))
+
 
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
+    # Route by topic — auth-ready notifications from JCC OAuth flow
+    if msg.topic.startswith("jarvis/auth/") and msg.topic.endswith("/ready"):
+        _handle_auth_ready(msg.payload)
+        return
+
+    # Route by topic suffix — config push notifications are plain objects, not arrays
+    if msg.topic.endswith("/config/push"):
+        _handle_config_push_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/settings/request"):
+        _handle_settings_request_notification(msg.payload)
+        return
+
     try:
         payload: List[Dict[str, Any]] = json.loads(msg.payload.decode())
         logger.debug("MQTT message received", payload=payload)
@@ -149,7 +283,7 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
 def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     config = get_mqtt_config()
-    client: mqtt.Client = mqtt.Client()
+    client: mqtt.Client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
 
     if config["username"] and config["password"]:
         client.username_pw_set(config["username"], config["password"])

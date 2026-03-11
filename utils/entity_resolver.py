@@ -522,6 +522,82 @@ def _compute_area_score(
     return 0.0
 
 
+def validate_entity(entity_id: str) -> tuple[bool, str]:
+    """Check if an entity_id exists in the HA registry.
+
+    Returns (exists, room_grouped_text). If the registry is unavailable,
+    returns (True, "") so execution proceeds without blocking.
+
+    When the entity is not found, room_grouped_text contains a
+    room-grouped listing of valid entities (for future use when
+    the CC supports tool-call retries in text mode).
+
+    Args:
+        entity_id: Entity ID to validate
+
+    Returns:
+        (True, "") if entity exists or registry unavailable.
+        (False, room_grouped_text) if entity not found.
+    """
+    registry = _get_entity_registry()
+    if not registry:
+        return True, ""
+
+    if any(e.entity_id == entity_id for e in registry):
+        return True, ""
+
+    domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+
+    # Primary controllable device types — excludes scene/script/automation
+    # which bloat the list without helping the LLM pick the right device.
+    primary_domains = {"light", "switch", "cover", "lock", "climate", "fan", "vacuum"}
+
+    if domain:
+        # Known domain prefix — filter to that domain only
+        candidates = [e for e in registry if e.entity_id.startswith(f"{domain}.")]
+    else:
+        # No domain prefix — show all primary device types
+        candidates = [
+            e for e in registry
+            if e.entity_id.split(".", 1)[0] in primary_domains
+        ]
+
+    return False, _build_room_grouped_text(candidates)
+
+
+def _build_room_grouped_text(candidates: list[EntityInfo]) -> str:
+    """Build a room-grouped entity listing from candidates.
+
+    Groups entities by their area (from agent scheduler cache),
+    so the LLM sees entities organized by room instead of a flat list.
+
+    Args:
+        candidates: Entity list to organize
+
+    Returns:
+        Formatted string grouped by room
+    """
+    if not candidates:
+        return "(no matching entities)"
+
+    area_map = _get_entity_area_map()
+
+    room_entities: dict[str, list[str]] = {}
+    for entity in candidates:
+        area = area_map.get(entity.entity_id, "Unassigned")
+        line = f"  - {entity.entity_id}: {entity.friendly_name}"
+        room_entities.setdefault(area, []).append(line)
+
+    # Sort rooms alphabetically, Unassigned last
+    sorted_rooms = sorted(room_entities.keys(), key=lambda r: (r == "Unassigned", r))
+
+    lines: list[str] = []
+    for room in sorted_rooms:
+        lines.append(f"{room}:")
+        lines.extend(room_entities[room])
+    return "\n".join(lines)
+
+
 def clear_entity_registry_cache() -> None:
     """Reset the entity registry cache. Useful for tests."""
     global _entity_registry_cache
