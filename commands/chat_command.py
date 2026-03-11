@@ -21,7 +21,7 @@ class ChatCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Have a casual conversation with Jarvis. Use for greetings, small talk, opinions, and open-ended chat."
+        return "Casual conversation: greetings, small talk, opinions, open-ended chat. For facts use answer_question, for current events use search_web."
 
     @property
     def allow_direct_answer(self) -> bool:

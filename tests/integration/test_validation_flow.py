@@ -65,7 +65,7 @@ class TestValidationWithOptions:
 
         # Verify call sequence
         assert len(mock_client.call_history) == 2
-        assert mock_client.call_history[0]["method"] == "send_command"
+        assert mock_client.call_history[0]["method"] == "send_command_unified"
         assert mock_client.call_history[1]["method"] == "send_validation_response"
         assert mock_client.call_history[1]["user_response"] == "New York"
 
@@ -142,7 +142,7 @@ class TestValidationThenToolCall:
 
         # Verify call sequence: send_command → validation_response → tool_results
         assert len(mock_client.call_history) == 3
-        assert mock_client.call_history[0]["method"] == "send_command"
+        assert mock_client.call_history[0]["method"] == "send_command_unified"
         assert mock_client.call_history[1]["method"] == "send_validation_response"
         assert mock_client.call_history[2]["method"] == "send_tool_results"
 

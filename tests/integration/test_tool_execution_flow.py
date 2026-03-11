@@ -59,7 +59,7 @@ class TestSingleToolCallSuccess:
         assert len(mock_client.call_history) == 2
 
         # First call: send_command
-        assert mock_client.call_history[0]["method"] == "send_command"
+        assert mock_client.call_history[0]["method"] == "send_command_unified"
         assert mock_client.call_history[0]["voice_command"] == "What is 2 plus 2?"
 
         # Second call: send_tool_results
@@ -132,7 +132,7 @@ class TestMultipleToolCalls:
 
         # Verify 3 API calls were made
         assert len(mock_client.call_history) == 3
-        assert mock_client.call_history[0]["method"] == "send_command"
+        assert mock_client.call_history[0]["method"] == "send_command_unified"
         assert mock_client.call_history[1]["method"] == "send_tool_results"
         assert mock_client.call_history[2]["method"] == "send_tool_results"
 
@@ -194,9 +194,9 @@ class TestToolExecutionError:
             register_tools=False
         )
 
-        # The conversation should complete (command center handles the error)
-        assert result["success"] is True
-        assert "failed" in result["message"].lower() or "sorry" in result["message"].lower()
+        # All tools failed → success is False, error message surfaced
+        assert result["success"] is False
+        assert "sorry" in result["message"].lower() or "fail" in result["message"].lower()
 
         # Verify error was sent back
         tool_results = mock_client.call_history[1]["tool_results"]
@@ -297,4 +297,4 @@ class TestToolCallWithComplexArguments:
 
         # Only one call - no tool execution
         assert len(mock_client.call_history) == 1
-        assert mock_client.call_history[0]["method"] == "send_command"
+        assert mock_client.call_history[0]["method"] == "send_command_unified"

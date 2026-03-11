@@ -109,7 +109,7 @@ class TimezoneCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Get the current time in a specific city, state, or country. Use for time zone queries like 'what time is it in Tokyo?'"
+        return "Current time in a city, state, or country. Use for 'what time is it in Tokyo?', time zone queries. Not for weather — use get_weather."
 
     @property
     def allow_direct_answer(self) -> bool:

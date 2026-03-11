@@ -8,20 +8,17 @@ Returns state and relevant attributes for the LLM to describe.
 import asyncio
 from typing import Any, Dict, List, Optional
 
-from typing import Any
-
 from core.command_response import CommandResponse
 from core.ijarvis_authentication import AuthenticationConfig
 from core.ijarvis_command import CommandExample, IJarvisCommand
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
-from core.validation_result import ValidationResult
 from services.home_assistant_service import (
     HomeAssistantService,
     get_domain_from_entity_id,
 )
-from utils.entity_resolver import resolve_entity_id
+from utils.entity_resolver import resolve_entity_id, validate_entity
 
 
 class GetDeviceStatusCommand(IJarvisCommand):
@@ -63,9 +60,10 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "Home Assistant entity ID (e.g., 'cover.garage_door', "
-                    "'lock.front_door', 'climate.thermostat'). "
-                    "Find in device_controls context."
+                    "EXACT entity_id from device_controls or light_controls context. "
+                    "Format is ALWAYS 'domain.name' (e.g., 'light.my_office', 'cover.garage_door'). "
+                    "MUST include the domain prefix. "
+                    "Copy the entity_id exactly as shown — NEVER invent or guess entity IDs."
                 ),
             ),
         ]
@@ -78,6 +76,7 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 "Home Assistant REST API URL (e.g., http://192.168.1.100:8123)",
                 "integration",
                 "string",
+                is_sensitive=False,
             ),
             JarvisSecret(
                 "HOME_ASSISTANT_API_KEY",
@@ -219,56 +218,6 @@ class GetDeviceStatusCommand(IJarvisCommand):
             )
         return examples
 
-    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
-        """Validate entity_id against known HA entities.
-
-        Delegates to ControlDeviceCommand's shared helpers.
-        """
-        from commands.control_device_command import ControlDeviceCommand
-
-        results = super().validate_call(**kwargs)
-
-        entity_id = kwargs.get("entity_id", "")
-        if not entity_id:
-            results.append(ValidationResult(
-                success=False,
-                param_name="entity_id",
-                command_name=self.command_name,
-                message="entity_id is required. Call get_ha_entities first.",
-            ))
-            return results
-
-        # Reuse ControlDeviceCommand's HA entity helpers
-        known = ControlDeviceCommand._get_known_entities()
-        if not known or entity_id in known:
-            return results
-
-        best = ControlDeviceCommand._find_best_match(entity_id, known)
-        if best:
-            results.append(ValidationResult(
-                success=True,
-                param_name="entity_id",
-                command_name=self.command_name,
-                suggested_value=best,
-            ))
-        else:
-            domain = entity_id.split(".")[0] if "." in entity_id else ""
-            alts = [eid for eid in known if eid.startswith(f"{domain}.")]
-            alt_lines = [f"  - {eid}" for eid in alts[:20]]
-            results.append(ValidationResult(
-                success=False,
-                param_name="entity_id",
-                command_name=self.command_name,
-                message=(
-                    f"Entity '{entity_id}' not found. "
-                    f"Valid {domain or 'all'} entities:\n" + "\n".join(alt_lines)
-                    + "\nYou MUST re-call the same tool with a correct entity_id "
-                    "from the list above. Do NOT answer directly."
-                ),
-                valid_values=alts,
-            ))
-        return results
-
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
         """Execute the get device status command.
 
@@ -281,13 +230,32 @@ class GetDeviceStatusCommand(IJarvisCommand):
         """
         entity_id = kwargs.get("entity_id")
 
-        if entity_id:
-            entity_id = resolve_entity_id(entity_id, request_info.voice_command)
-
         if not entity_id:
             return CommandResponse.error_response(
                 error_details="Entity ID is required. Which device do you want to check?",
                 context_data={"error": "missing_entity_id"},
+            )
+
+        # Normalize: if LLM omitted domain prefix, add it
+        original_entity_id = entity_id
+        if "." not in entity_id:
+            slug = entity_id.strip().replace(" ", "_").lower()
+            entity_id = f"light.{slug}"  # Default to light domain for status queries
+
+        # Run fuzzy resolution then validate
+        entity_id = resolve_entity_id(entity_id, request_info.voice_command)
+
+        exists, _ = validate_entity(entity_id)
+        if not exists:
+            return CommandResponse.error_response(
+                error_details=(
+                    f"I couldn't find a device matching '{original_entity_id}' "
+                    "in Home Assistant."
+                ),
+                context_data={
+                    "error": "entity_not_found",
+                    "invalid_entity_id": entity_id,
+                },
             )
 
         # Execute the query
@@ -308,13 +276,20 @@ class GetDeviceStatusCommand(IJarvisCommand):
 
             if result.success:
                 domain = get_domain_from_entity_id(entity_id)
+                friendly = result.friendly_name or entity_id
 
-                # Build response data with relevant info
+                # Build a plain-English summary so the LLM can relay it
+                # without misinterpreting raw state values.
+                message = self._build_status_message(
+                    friendly, domain, result.state, result.attributes or {}
+                )
+
                 context_data: Dict[str, Any] = {
                     "entity_id": entity_id,
                     "state": result.state,
-                    "friendly_name": result.friendly_name or entity_id,
+                    "friendly_name": friendly,
                     "domain": domain,
+                    "message": message,
                 }
 
                 # Add domain-specific attributes
@@ -421,3 +396,78 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 filtered[key] = value
 
         return filtered
+
+    @staticmethod
+    def _build_status_message(
+        friendly_name: str,
+        domain: Optional[str],
+        state: Optional[str],
+        attributes: Dict[str, Any],
+    ) -> str:
+        """Build a plain-English status message for the LLM to relay.
+
+        Produces unambiguous phrasing so the LLM doesn't misinterpret
+        raw state values (e.g., "unlocked" → "locked").
+
+        Args:
+            friendly_name: Human-readable device name
+            domain: HA entity domain
+            state: Current state string from HA
+            attributes: Entity attributes dict
+
+        Returns:
+            Spoken status string
+        """
+        name = friendly_name
+        s = (state or "unknown").lower()
+
+        if domain == "lock":
+            if s == "locked":
+                return f"{name} is LOCKED."
+            elif s == "unlocked":
+                return f"{name} is UNLOCKED (not locked)."
+            elif s == "jammed":
+                return f"{name} is JAMMED."
+            return f"{name} state: {s}."
+
+        if domain == "light":
+            if s == "on":
+                brightness = attributes.get("brightness")
+                if brightness is not None:
+                    pct = round(int(brightness) / 255 * 100)
+                    return f"{name} is ON at {pct}% brightness."
+                return f"{name} is ON."
+            elif s == "off":
+                return f"{name} is OFF."
+            return f"{name} state: {s}."
+
+        if domain == "switch" or domain == "input_boolean":
+            return f"{name} is {'ON' if s == 'on' else 'OFF' if s == 'off' else s}."
+
+        if domain == "cover":
+            position = attributes.get("current_position")
+            if s == "open":
+                pos_str = f" ({position}% open)" if position is not None else ""
+                return f"{name} is OPEN{pos_str}."
+            elif s == "closed":
+                return f"{name} is CLOSED."
+            return f"{name} state: {s}."
+
+        if domain == "climate":
+            current = attributes.get("current_temperature")
+            target = attributes.get("temperature")
+            parts = [f"{name} is {s.upper()}"]
+            if current is not None:
+                parts.append(f"currently {current}°")
+            if target is not None:
+                parts.append(f"target {target}°")
+            return ", ".join(parts) + "."
+
+        if domain == "fan":
+            pct = attributes.get("percentage")
+            if s == "on" and pct is not None:
+                return f"{name} is ON at {pct}% speed."
+            return f"{name} is {'ON' if s == 'on' else 'OFF' if s == 'off' else s}."
+
+        # Generic fallback
+        return f"{name} is {s.upper()}."

@@ -16,14 +16,13 @@ from core.ijarvis_command import CommandExample, IJarvisCommand
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
-from core.validation_result import ValidationResult
 from services.home_assistant_service import (
     HomeAssistantService,
     get_action_display_name,
     get_actions_for_domain,
     get_domain_from_entity_id,
 )
-from utils.entity_resolver import resolve_entity_id
+from utils.entity_resolver import resolve_entity_id, validate_entity
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -37,8 +36,6 @@ VOICE_VERB_TO_ACTION: dict[str, dict[str, str]] = {
     "close": {"cover": "close_cover"},
     "start": {"vacuum": "start"},
     "stop": {"vacuum": "stop", "cover": "stop_cover"},
-    "play": {"media_player": "media_play"},
-    "pause": {"media_player": "media_pause"},
 }
 
 
@@ -99,8 +96,10 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "Entity ID from device_controls. Select by [area] tag, not name. "
-                    "Verify domain matches action verb. NEVER invent entity IDs."
+                    "EXACT entity_id from device_controls or light_controls context. "
+                    "Format is ALWAYS 'domain.name' (e.g., 'light.my_office', 'switch.baby_berardi_timer'). "
+                    "MUST include the domain prefix (light., switch., cover., lock., etc.). "
+                    "Copy the entity_id exactly as shown — NEVER invent or guess entity IDs."
                 ),
             ),
             JarvisParameter(
@@ -123,8 +122,6 @@ class ControlDeviceCommand(IJarvisCommand):
                     "set_temperature", "set_hvac_mode",
                     "start", "stop", "return_to_base",
                     "set_percentage",
-                    "media_play", "media_pause", "media_stop",
-                    "volume_up", "volume_down",
                     "trigger",
                 ],
             ),
@@ -147,6 +144,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "Home Assistant REST API URL (e.g., http://192.168.1.100:8123)",
                 "integration",
                 "string",
+                is_sensitive=False,
             ),
             JarvisSecret(
                 "HOME_ASSISTANT_API_KEY",
@@ -473,14 +471,44 @@ class ControlDeviceCommand(IJarvisCommand):
         action = kwargs.get("action")
         value = kwargs.get("value")
 
-        original_entity_id = entity_id
-        if entity_id:
-            entity_id = resolve_entity_id(entity_id, request_info.voice_command)
-
         if not entity_id:
             return CommandResponse.error_response(
                 error_details="Entity ID is required. Which device do you want to control?",
                 context_data={"error": "missing_entity_id"},
+            )
+
+        # Normalize: if LLM omitted domain prefix, add it based on the
+        # action verb (turn_on/turn_off → light/switch, lock → lock, etc.)
+        original_entity_id = entity_id
+        if "." not in entity_id:
+            # Replace spaces with underscores for HA entity format
+            slug = entity_id.strip().replace(" ", "_").lower()
+            # Infer domain from action or default to light
+            domain_guess = "light"
+            if action in ("lock", "unlock"):
+                domain_guess = "lock"
+            elif action in ("open_cover", "close_cover", "stop_cover"):
+                domain_guess = "cover"
+            elif action in ("set_temperature", "set_hvac_mode"):
+                domain_guess = "climate"
+            entity_id = f"{domain_guess}.{slug}"
+            logger.info("Added missing domain prefix", original=original_entity_id, normalized=entity_id)
+
+        # Run fuzzy resolution (handles near-misses like light.office → light.my_office)
+        entity_id = resolve_entity_id(entity_id, request_info.voice_command)
+
+        # Validate the resolved entity actually exists
+        exists, _room_grouped = validate_entity(entity_id)
+        if not exists:
+            return CommandResponse.error_response(
+                error_details=(
+                    f"I couldn't find a device matching '{original_entity_id}' "
+                    "in Home Assistant."
+                ),
+                context_data={
+                    "error": "entity_not_found",
+                    "invalid_entity_id": entity_id,
+                },
             )
 
         # Get domain from entity_id
@@ -615,130 +643,6 @@ class ControlDeviceCommand(IJarvisCommand):
                 "prompt": message,
             },
         )
-
-    def validate_call(self, **kwargs: Any) -> list[ValidationResult]:
-        """Validate entity_id against known HA entities.
-
-        Runs default enum/type checks first, then validates entity_id
-        against cached HA data. Auto-corrects when unambiguous; returns
-        error with alternatives when ambiguous.
-        """
-        results = super().validate_call(**kwargs)
-
-        entity_id = kwargs.get("entity_id", "")
-        if not entity_id:
-            results.append(ValidationResult(
-                success=False,
-                param_name="entity_id",
-                command_name=self.command_name,
-                message="entity_id is required. Call get_ha_entities first.",
-            ))
-            return results
-
-        known = ControlDeviceCommand._get_known_entities()
-        if not known or entity_id in known:
-            return results
-
-        # Try fuzzy auto-correct
-        best = self._find_best_match(entity_id, known)
-        if best:
-            results.append(ValidationResult(
-                success=True,
-                param_name="entity_id",
-                command_name=self.command_name,
-                suggested_value=best,
-            ))
-        else:
-            domain = entity_id.split(".")[0] if "." in entity_id else ""
-            alts = [eid for eid in known if eid.startswith(f"{domain}.")]
-            alt_lines = [f"  - {eid}" for eid in alts[:20]]
-            results.append(ValidationResult(
-                success=False,
-                param_name="entity_id",
-                command_name=self.command_name,
-                message=(
-                    f"Entity '{entity_id}' not found. "
-                    f"Valid {domain or 'all'} entities:\n" + "\n".join(alt_lines)
-                    + "\nYou MUST re-call the same tool with a correct entity_id "
-                    "from the list above. Do NOT answer directly."
-                ),
-                valid_values=alts,
-            ))
-        return results
-
-    @staticmethod
-    def _get_known_entities() -> dict[str, str]:
-        """Get entity_id -> friendly_name map from cached HA context.
-
-        Returns empty dict if HA data is unavailable.
-        """
-        try:
-            from services.agent_scheduler_service import get_agent_scheduler_service
-            context = get_agent_scheduler_service().get_aggregated_context()
-            ha_data = context.get("home_assistant", {})
-        except Exception:
-            return {}
-
-        entities: dict[str, str] = {}
-
-        # Light controls
-        for name, info in ha_data.get("light_controls", {}).items():
-            eid = info.get("entity_id", "")
-            if eid:
-                entities[eid] = name
-
-        # Device controls (all domains)
-        for domain_devices in ha_data.get("device_controls", {}).values():
-            for dev in domain_devices:
-                if dev.get("state") == "unavailable":
-                    continue
-                eid = dev.get("entity_id", "")
-                if eid and eid not in entities:
-                    entities[eid] = dev.get("name", "")
-
-        return entities
-
-    @staticmethod
-    def _find_best_match(entity_id: str, known: dict[str, str]) -> str | None:
-        """Find unambiguous auto-correction for a wrong entity_id.
-
-        Returns corrected entity_id if there's exactly one strong match
-        in the same domain, or None if ambiguous/no match.
-        """
-        if "." not in entity_id:
-            return None
-
-        domain_prefix = entity_id.split(".")[0]
-        guessed_slug = entity_id.split(".", 1)[1]
-        guessed_words = set(guessed_slug.split("_"))
-
-        candidates: list[tuple[str, int]] = []
-        for eid in known:
-            if not eid.startswith(f"{domain_prefix}."):
-                continue
-            known_slug = eid.split(".", 1)[1] if "." in eid else eid
-
-            # Containment check
-            if known_slug in guessed_slug or guessed_slug in known_slug:
-                candidates.append((eid, 2))
-                continue
-
-            # Word overlap
-            known_words = set(known_slug.split("_"))
-            overlap = len(guessed_words & known_words)
-            if overlap > 0:
-                candidates.append((eid, overlap))
-
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda c: c[1], reverse=True)
-        if len(candidates) == 1:
-            return candidates[0][0]
-        if candidates[0][1] > candidates[1][1]:
-            return candidates[0][0]
-
-        return None
 
     async def _execute_control(
         self,

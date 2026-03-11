@@ -16,6 +16,7 @@ Commands:
 import argparse
 import os
 import sys
+import threading
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +25,7 @@ from jarvis_log_client import JarvisLogger
 
 from clients.responses.jarvis_command_center import ValidationRequest
 from utils.command_execution_service import CommandExecutionService
+from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node-keyboard")
 
@@ -65,6 +67,30 @@ def main() -> None:
         print(f"Speaker: user_id={speaker_user_id}")
     print("Type your commands. Type 'quit', 'exit', or 'bye' to stop.")
     print("Type '/new' to start a fresh conversation.\n")
+
+    # Initialize agent scheduler so HA entity area data is available
+    try:
+        from services.agent_scheduler_service import initialize_agent_scheduler
+        initialize_agent_scheduler()
+    except Exception as e:
+        print(f"Agent scheduler not started: {e}")
+
+    # Start MQTT listener in background (handles TTS, settings requests, config pushes)
+    mqtt_enabled: bool = Config.get_bool("mqtt_enabled", True) is not False
+    if mqtt_enabled:
+        try:
+            from scripts.mqtt_tts_listener import start_mqtt_listener
+            from utils.music_assistant_service import DummyMusicAssistantService
+
+            mqtt_thread = threading.Thread(
+                target=start_mqtt_listener,
+                args=(DummyMusicAssistantService(),),
+                daemon=True,
+            )
+            mqtt_thread.start()
+            print("MQTT listener started (settings/config push enabled)")
+        except Exception as e:
+            print(f"MQTT listener not started: {e}")
 
     service = CommandExecutionService()
     active_conversation_id: str | None = None

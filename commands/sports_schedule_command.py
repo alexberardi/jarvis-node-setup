@@ -28,7 +28,7 @@ class SportsScheduleCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Get upcoming games/schedules for Big 4 or College teams. FUTURE only."
+        return "Upcoming games/schedules for Big 4 or College teams. FUTURE only — 'when do they play next'. For past results use get_sports_scores."
     
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise examples for the sports schedule command with varied verbiage"""

@@ -331,7 +331,8 @@ class TestLLMErrorHandling:
     def test_malformed_entity_id(self, control_device_cmd, request_info):
         """
         Scenario: LLM returns malformed entity_id (no domain prefix)
-        Expected: Error response
+        Expected: Domain prefix is auto-added, proceeds to execution
+                  (fails at HA service level since HA is not configured)
         """
         response = control_device_cmd.run(
             request_info,
@@ -339,8 +340,8 @@ class TestLLMErrorHandling:
             action="turn_on",
         )
 
+        # Normalizes to light.basement_lights and attempts execution
         assert response.success is False
-        assert "invalid" in response.error_details.lower()
 
 
 # ============================================================================

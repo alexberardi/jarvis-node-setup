@@ -17,6 +17,18 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class PreRouteResult:
+    """Result from a command's pre_route() method.
+
+    arguments: kwargs to pass directly to execute().
+    spoken_response: optional override for the spoken TTS message.
+        If None, the CommandResponse.context_data["message"] is used.
+    """
+    arguments: Dict[str, Any]
+    spoken_response: str | None = None
+
+
+@dataclass
 class CommandExample:
     """Represents a voice command example with expected parameters"""
     voice_command: str
@@ -137,6 +149,16 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         pass
 
     @property
+    def all_possible_secrets(self) -> List[IJarvisSecret]:
+        """All secrets this command could ever need, across all config variants.
+
+        Used by install_command.py to seed the DB upfront.
+        Default: delegates to required_secrets (backward compatible).
+        Override when required_secrets is config-dependent.
+        """
+        return self.required_secrets
+
+    @property
     @abstractmethod
     def keywords(self) -> List[str]:
         """List of keywords that can be used to identify this command (for fuzzy matching)"""
@@ -220,6 +242,29 @@ class IJarvisCommand(JarvisCommandBase, ABC):
                     plus "_base_url" if discovery was used.
         """
         pass
+
+    def pre_route(self, voice_command: str) -> PreRouteResult | None:
+        """Deterministic matching — bypass the command center entirely.
+
+        Override to claim short/unambiguous utterances that don't need LLM
+        inference (e.g. "pause", "skip", "volume 50").
+
+        Returns:
+            PreRouteResult with arguments for execute(), or None to fall
+            through to the normal LLM path.
+        """
+        return None
+
+    def post_process_tool_call(self, args: Dict[str, Any], voice_command: str) -> Dict[str, Any]:
+        """Fix up LLM tool-call arguments before execution.
+
+        Called after the LLM produces a tool call but before execute().
+        Override to patch common LLM mistakes (e.g. missing query field).
+
+        Returns:
+            The (possibly modified) arguments dict.
+        """
+        return args
 
     def init_data(self) -> Dict[str, Any]:
         """
@@ -376,7 +421,7 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             
             if param.enum_values:
                 param_schema["enum"] = param.enum_values
-            
+
             # Handle array types
             if param.param_type.startswith('array') or param.param_type.endswith('[]'):
                 param_schema["type"] = "array"
@@ -384,7 +429,10 @@ class IJarvisCommand(JarvisCommandBase, ABC):
                     param_schema["items"] = {"type": "string", "format": "date-time"}
                 elif 'date' in param.param_type:
                     param_schema["items"] = {"type": "string", "format": "date"}
-            
+
+            if getattr(param, 'refinable', False):
+                param_schema["_refinable"] = True
+
             properties[param.name] = param_schema
             
             if param.required:

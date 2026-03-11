@@ -33,7 +33,7 @@ DOMAIN_ACTIONS: Dict[str, List[str]] = {
     "lock": ["lock", "unlock"],
     "climate": ["set_temperature", "set_hvac_mode", "turn_on", "turn_off"],
     "fan": ["turn_on", "turn_off", "toggle", "set_percentage"],
-    "media_player": ["turn_on", "turn_off", "toggle", "volume_up", "volume_down", "media_play", "media_pause", "media_stop"],
+    "media_player": ["turn_on", "turn_off", "toggle"],
     "vacuum": ["start", "stop", "return_to_base", "locate"],
     "script": ["turn_on"],  # Scripts just run
     "scene": ["turn_on"],  # Scenes just activate
@@ -54,11 +54,6 @@ ACTION_DISPLAY_NAMES: Dict[str, str] = {
     "set_temperature": "set temperature",
     "set_hvac_mode": "set mode",
     "set_percentage": "set speed",
-    "volume_up": "turn up volume",
-    "volume_down": "turn down volume",
-    "media_play": "play",
-    "media_pause": "pause",
-    "media_stop": "stop",
     "start": "start",
     "stop": "stop",
     "return_to_base": "return to base",
@@ -67,9 +62,10 @@ ACTION_DISPLAY_NAMES: Dict[str, str] = {
 }
 
 # Domains that support control actions
+# media_player excluded — music command handles all media player interactions
 _CONTROLLABLE_DOMAINS = {
     "light", "switch", "cover", "lock", "climate", "fan",
-    "media_player", "vacuum", "script", "scene", "input_boolean",
+    "vacuum", "script", "scene", "input_boolean",
     "automation", "humidifier", "water_heater",
 }
 

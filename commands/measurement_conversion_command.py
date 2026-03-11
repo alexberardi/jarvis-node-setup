@@ -72,7 +72,7 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Convert units: distance, volume, weight, temperature. Explicit conversions ONLY."
+        return "Convert units: distance, volume, weight, temperature. Explicit conversions ONLY — weather unit preferences (Celsius/Fahrenheit) should use get_weather."
     
     @property
     def keywords(self) -> List[str]:

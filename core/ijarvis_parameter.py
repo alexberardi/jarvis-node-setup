@@ -115,18 +115,21 @@ class IJarvisParameter(ABC):
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert parameter to dictionary for JSON serialization"""
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "type": self.param_type,
             "description": self.description,
             "required": self.required,
             "default_value": self.default_value,
-            "enum_values": self.enum_values
+            "enum_values": self.enum_values,
         }
+        if getattr(self, "_refinable", False):
+            d["refinable"] = True
+        return d
 
 class JarvisParameter(IJarvisParameter):
 
-    def __init__(self, name: str, param_type: str, required: bool = False, description: Optional[str]=None, default: Optional[str]=None, enum_values: Optional[List[str]]=None):
+    def __init__(self, name: str, param_type: str, required: bool = False, description: Optional[str]=None, default: Optional[str]=None, enum_values: Optional[List[str]]=None, refinable: bool = False):
         # Validate that param_type is allowed
         allowed_types = {
             # Primitive types
@@ -154,6 +157,7 @@ class JarvisParameter(IJarvisParameter):
         self._description = description
         self._default = default
         self._enum_values = enum_values
+        self._refinable = refinable
 
     @property
     def name(self) -> str:
@@ -178,4 +182,8 @@ class JarvisParameter(IJarvisParameter):
     @property
     def enum_values(self) -> Optional[List[str]]:
         return self._enum_values
+
+    @property
+    def refinable(self) -> bool:
+        return self._refinable
 

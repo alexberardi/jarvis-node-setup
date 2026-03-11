@@ -201,25 +201,36 @@ class TestDynamicAdapterExamples:
         assert "light.my_office" in entity_ids  # Static hardcoded ID
 
 
+@patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+@patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestActionValidation:
     """Test domain-based action validation."""
 
-    def test_missing_entity_id(self, command, request_info):
+    def test_missing_entity_id(self, mock_resolve, mock_validate, command, request_info):
         """Returns error when entity_id is missing."""
         response = command.run(request_info)
 
         assert response.success is False
         assert "entity id" in response.error_details.lower()
 
-    def test_invalid_entity_id_format(self, command, request_info):
-        """Returns error for invalid entity_id format."""
+    def test_invalid_entity_id_format(self, mock_resolve, mock_validate, command, request_info):
+        """Entity without domain prefix gets normalized (domain added).
+
+        "invalid_format" becomes "light.invalid_format" via domain normalization.
+        validate_entity returns (True, "") so it passes validation.
+        No action provided → clarification for the light domain.
+        """
         response = command.run(request_info, entity_id="invalid_format")
 
-        assert response.success is False
-        assert "invalid entity" in response.error_details.lower()
+        # Should get clarification for missing action, not an entity error
+        assert response.success is True
+        assert response.wait_for_input is True
+        assert response.context_data["validation_type"] == "action_required"
 
-    def test_unknown_domain(self, command, request_info):
+    def test_unknown_domain(self, mock_resolve, mock_validate, command, request_info):
         """Returns error for unknown domain."""
+        # validate_entity passes, but get_actions_for_domain returns empty
+        # for unknown domains → "unknown device type" error.
         response = command.run(
             request_info,
             entity_id="unknown_domain.test",
@@ -230,12 +241,19 @@ class TestActionValidation:
         assert "unknown device type" in response.error_details.lower()
 
 
+@patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+@patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestActionClarification:
     """Test clarification flow when action is missing or invalid."""
 
-    def test_missing_action_returns_clarification(self, command, request_info):
+    def test_missing_action_returns_clarification(self, mock_resolve, mock_validate, command):
         """Returns validation response when action is missing."""
-        response = command.run(request_info, entity_id="cover.garage_door")
+        # Use a neutral voice command so _infer_action_from_voice doesn't auto-select
+        neutral_request = RequestInformation(
+            voice_command="do something with the garage door",
+            conversation_id="test-conversation-123",
+        )
+        response = command.run(neutral_request, entity_id="cover.garage_door")
 
         # Should be a follow-up response, not error
         assert response.success is True
@@ -245,10 +263,16 @@ class TestActionClarification:
         assert "allowed_actions" in response.context_data
         assert "open_cover" in response.context_data["allowed_actions"]
 
-    def test_invalid_action_returns_clarification(self, command, request_info):
+    def test_invalid_action_returns_clarification(self, mock_resolve, mock_validate, command):
         """Returns validation response when action is invalid for domain."""
+        # Use a voice command that doesn't contain action verbs so
+        # _infer_action_from_voice can't auto-correct the bad action.
+        neutral_request = RequestInformation(
+            voice_command="do something with the garage door",
+            conversation_id="test-conversation-123",
+        )
         response = command.run(
-            request_info,
+            neutral_request,
             entity_id="cover.garage_door",
             action="lock",  # Invalid for cover domain
         )
@@ -258,9 +282,14 @@ class TestActionClarification:
         assert response.context_data["validation_type"] == "action_required"
         assert "isn't valid" in response.context_data["prompt"]
 
-    def test_clarification_includes_allowed_actions(self, command, request_info):
+    def test_clarification_includes_allowed_actions(self, mock_resolve, mock_validate, command):
         """Clarification response includes domain-specific actions."""
-        response = command.run(request_info, entity_id="lock.front_door")
+        # Use neutral voice command to avoid action inference
+        neutral_request = RequestInformation(
+            voice_command="what about the front door",
+            conversation_id="test-conversation-123",
+        )
+        response = command.run(neutral_request, entity_id="lock.front_door")
 
         assert "allowed_actions" in response.context_data
         allowed = response.context_data["allowed_actions"]
@@ -269,9 +298,14 @@ class TestActionClarification:
         # Should NOT include cover actions
         assert "open_cover" not in allowed
 
-    def test_clarification_prompt_is_readable(self, command, request_info):
+    def test_clarification_prompt_is_readable(self, mock_resolve, mock_validate, command):
         """Clarification prompt uses human-friendly action names."""
-        response = command.run(request_info, entity_id="cover.garage_door")
+        # Use neutral voice command to avoid action inference
+        neutral_request = RequestInformation(
+            voice_command="do something with the garage door",
+            conversation_id="test-conversation-123",
+        )
+        response = command.run(neutral_request, entity_id="cover.garage_door")
 
         prompt = response.context_data["prompt"]
         # Should use display names like "open" not "open_cover"
@@ -282,7 +316,9 @@ class TestActionClarification:
 class TestRunCommand:
     """Test command execution."""
 
-    def test_run_cover_open_success(self, command, request_info):
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    def test_run_cover_open_success(self, mock_resolve, mock_validate, command, request_info):
         """Successfully opens a cover."""
         with patch.object(command, "_execute_control") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(
@@ -304,7 +340,9 @@ class TestRunCommand:
             assert response.success is True
             assert response.context_data["action"] == "open_cover"
 
-    def test_run_lock_success(self, command, request_info):
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    def test_run_lock_success(self, mock_resolve, mock_validate, command, request_info):
         """Successfully locks a door."""
         with patch.object(command, "_execute_control") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(
@@ -326,7 +364,9 @@ class TestRunCommand:
             assert response.success is True
             assert response.context_data["action"] == "lock"
 
-    def test_run_climate_with_value(self, command, request_info):
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    def test_run_climate_with_value(self, mock_resolve, mock_validate, command, request_info):
         """Successfully sets temperature."""
         with patch.object(command, "_execute_control") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(
@@ -448,8 +488,9 @@ class TestExecuteControl:
 class TestEntityResolution:
     """Test fuzzy entity resolution integration."""
 
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
     @patch("commands.control_device_command.resolve_entity_id")
-    def test_resolver_called_with_correct_args(self, mock_resolve, command, request_info):
+    def test_resolver_called_with_correct_args(self, mock_resolve, mock_validate, command, request_info):
         """Resolver is called with entity_id and voice_command."""
         mock_resolve.return_value = "cover.garage_door"
 
@@ -463,8 +504,9 @@ class TestEntityResolution:
 
         mock_resolve.assert_called_once_with("cover.garage", "open the garage door")
 
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
     @patch("commands.control_device_command.resolve_entity_id")
-    def test_resolved_entity_used_downstream(self, mock_resolve, command, request_info):
+    def test_resolved_entity_used_downstream(self, mock_resolve, mock_validate, command, request_info):
         """Resolved entity_id is passed to _execute_control."""
         mock_resolve.return_value = "cover.garage_door"
 
@@ -492,7 +534,9 @@ class TestEntityResolution:
 class TestWaitForInput:
     """Test wait_for_input behavior."""
 
-    def test_success_does_not_wait(self, command, request_info):
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    def test_success_does_not_wait(self, mock_resolve, mock_validate, command, request_info):
         """Successful control doesn't wait for input."""
         with patch.object(command, "_execute_control") as mock_execute:
             mock_execute.return_value = CommandResponse.success_response(
@@ -508,8 +552,15 @@ class TestWaitForInput:
 
             assert response.wait_for_input is False
 
-    def test_clarification_waits_for_input(self, command, request_info):
+    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    def test_clarification_waits_for_input(self, mock_resolve, mock_validate, command):
         """Clarification response waits for input."""
-        response = command.run(request_info, entity_id="cover.garage_door")
+        # Use a neutral voice command so _infer_action_from_voice doesn't auto-select
+        neutral_request = RequestInformation(
+            voice_command="do something with the garage door",
+            conversation_id="test-conversation-123",
+        )
+        response = command.run(neutral_request, entity_id="cover.garage_door")
 
         assert response.wait_for_input is True

@@ -61,6 +61,27 @@ class RestClient:
             return None
 
     @staticmethod
+    def put(
+        url: str,
+        data: Optional[Dict[str, Any]] = None,
+        timeout: int = 10
+    ) -> Optional[Dict[str, Any]]:
+        headers: Dict[str, str] = RestClient._build_auth_header()
+
+        request_args: Dict[str, Any] = {"headers": headers, "timeout": timeout}
+
+        if data is not None:
+            request_args["json"] = data
+
+        try:
+            response = requests.put(url, **request_args)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.error("REST PUT request failed", url=url, error=str(e))
+            return None
+
+    @staticmethod
     def post_stream(
         url: str,
         data: Optional[Dict[str, Any]] = None,
