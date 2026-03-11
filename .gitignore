@@ -57,6 +57,7 @@ jarvis_node.db
 
 # Project specific
 config.json
+config-*.json
 runtime_fingerprint_index.json
 out.wav
 *.wav
