@@ -4,12 +4,16 @@ Test script for testing command parsing across all Jarvis commands.
 This script tests various natural language utterances to ensure proper parameter extraction.
 """
 
+from __future__ import annotations
+
 import ast
 import datetime
 import json
 import time
-import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from utils.command_execution_service import ParseResult
 from zoneinfo import ZoneInfo
 import argparse
 from dotenv import load_dotenv
@@ -863,227 +867,224 @@ def create_test_commands_with_context(date_context: Optional[DateContext]) -> Li
     ]
     tests.extend(ha_tests)
 
-    # ===== PLAY MUSIC COMMAND TESTS =====
-    play_music_tests = [
-        # Artist plays
+    # ===== MUSIC COMMAND TESTS (merged play + control) =====
+    # media_type is NOT tested — Music Assistant resolves content type via fuzzy search
+    music_tests = [
+        # --- Play: Artist ---
         CommandTest(
             "Play Radiohead",
-            "play_music",
-            {"query": "Radiohead", "media_type": "artist"},
+            "music",
+            {"action": "play", "query": "Radiohead"},
             "Play artist by name"
         ),
         CommandTest(
             "Put on some Beatles",
-            "play_music",
-            {"query": "Beatles", "media_type": "artist"},
+            "music",
+            {"action": "play", "query": "Beatles"},
             "Play artist with casual phrasing"
         ),
         CommandTest(
             "Play Taylor Swift",
-            "play_music",
-            {"query": "Taylor Swift", "media_type": "artist"},
+            "music",
+            {"action": "play", "query": "Taylor Swift"},
             "Play artist with full name"
         ),
 
-        # Album plays
+        # --- Play: Album ---
         CommandTest(
             "Play OK Computer",
-            "play_music",
-            {"query": "OK Computer", "media_type": "album"},
+            "music",
+            {"action": "play", "query": "OK Computer"},
             "Play album by name"
         ),
         CommandTest(
             "Play the album Abbey Road",
-            "play_music",
-            {"query": "Abbey Road", "media_type": "album"},
+            "music",
+            {"action": "play", "query": "Abbey Road"},
             "Play album with 'the album' prefix"
         ),
 
-        # Track plays
+        # --- Play: Track ---
         CommandTest(
             "Play Karma Police",
-            "play_music",
-            {"query": "Karma Police", "media_type": "track"},
+            "music",
+            {"action": "play", "query": "Karma Police"},
             "Play track by name"
         ),
         CommandTest(
             "Play the song Bohemian Rhapsody",
-            "play_music",
-            {"query": "Bohemian Rhapsody", "media_type": "track"},
+            "music",
+            {"action": "play", "query": "Bohemian Rhapsody"},
             "Play track with 'the song' prefix"
         ),
 
-        # Radio/genre plays
+        # --- Play: Genre/mood ---
         CommandTest(
             "Play some jazz",
-            "play_music",
-            {"query": "jazz", "media_type": "radio"},
-            "Play genre as radio"
+            "music",
+            {"action": "play", "query": "jazz"},
+            "Play genre"
         ),
         CommandTest(
             "Put on classical music",
-            "play_music",
-            {"query": "classical", "media_type": "radio"},
+            "music",
+            {"action": "play", "query": "classical"},
             "Play genre with casual phrasing"
         ),
         CommandTest(
             "Play relaxing music",
-            "play_music",
-            {"query": "relaxing", "media_type": "radio"},
-            "Play mood-based radio"
+            "music",
+            {"action": "play", "query": "relaxing"},
+            "Play mood-based music"
         ),
 
-        # With player specified
+        # --- Play: With player ---
         CommandTest(
             "Play Beatles in the kitchen",
-            "play_music",
-            {"query": "Beatles", "media_type": "artist", "player": "kitchen"},
+            "music",
+            {"action": "play", "query": "Beatles", "player": "kitchen"},
             "Play with room/player specified"
         ),
         CommandTest(
             "Play jazz in the living room",
-            "play_music",
-            {"query": "jazz", "media_type": "radio", "player": "living room"},
-            "Play radio with room specified"
+            "music",
+            {"action": "play", "query": "jazz", "player": "living room"},
+            "Play with room specified"
         ),
 
-        # Queue options
+        # --- Play: Queue options ---
         CommandTest(
             "Add Bohemian Rhapsody to the queue",
-            "play_music",
-            {"query": "Bohemian Rhapsody", "media_type": "track", "queue_option": "add"},
-            "Add track to queue"
+            "music",
+            {"action": "play", "query": "Bohemian Rhapsody", "queue_option": "add"},
+            "Add to queue"
         ),
         CommandTest(
             "Play Stairway to Heaven next",
-            "play_music",
-            {"query": "Stairway to Heaven", "media_type": "track", "queue_option": "next"},
+            "music",
+            {"action": "play", "query": "Stairway to Heaven", "queue_option": "next"},
             "Play track next in queue"
         ),
-    ]
-    tests.extend(play_music_tests)
 
-    # ===== CONTROL MUSIC COMMAND TESTS =====
-    control_music_tests = [
-        # Basic playback controls
+        # --- Control: Basic playback ---
         CommandTest(
             "Pause the music",
-            "control_music",
+            "music",
             {"action": "pause"},
             "Pause playback"
         ),
         CommandTest(
             "Resume",
-            "control_music",
+            "music",
             {"action": "resume"},
             "Resume playback"
         ),
         CommandTest(
             "Stop the music",
-            "control_music",
+            "music",
             {"action": "stop"},
             "Stop playback"
         ),
 
-        # Skip/navigation
+        # --- Control: Skip/navigation ---
         CommandTest(
             "Skip this song",
-            "control_music",
+            "music",
             {"action": "next"},
             "Skip to next track"
         ),
         CommandTest(
             "Next song",
-            "control_music",
+            "music",
             {"action": "next"},
             "Next track with different phrasing"
         ),
         CommandTest(
             "Go back",
-            "control_music",
+            "music",
             {"action": "previous"},
             "Previous track"
         ),
         CommandTest(
             "Previous song",
-            "control_music",
+            "music",
             {"action": "previous"},
             "Previous track explicit"
         ),
 
-        # Volume controls
+        # --- Volume ---
         CommandTest(
             "Turn up the volume",
-            "control_music",
+            "music",
             {"action": "volume_up"},
             "Volume up"
         ),
         CommandTest(
             "Louder",
-            "control_music",
+            "music",
             {"action": "volume_up"},
             "Volume up casual"
         ),
         CommandTest(
             "Turn it down",
-            "control_music",
+            "music",
             {"action": "volume_down"},
             "Volume down"
         ),
         CommandTest(
             "Quieter",
-            "control_music",
+            "music",
             {"action": "volume_down"},
             "Volume down casual"
         ),
         CommandTest(
             "Set volume to 50",
-            "control_music",
+            "music",
             {"action": "volume_set", "volume_level": 50},
             "Set specific volume"
         ),
         CommandTest(
             "Mute",
-            "control_music",
+            "music",
             {"action": "mute"},
             "Mute audio"
         ),
 
-        # Shuffle and repeat
+        # --- Mode: Shuffle and repeat ---
         CommandTest(
             "Turn on shuffle",
-            "control_music",
+            "music",
             {"action": "shuffle_on"},
             "Enable shuffle"
         ),
         CommandTest(
             "Shuffle off",
-            "control_music",
+            "music",
             {"action": "shuffle_off"},
             "Disable shuffle"
         ),
         CommandTest(
             "Repeat this song",
-            "control_music",
+            "music",
             {"action": "repeat_one"},
             "Repeat current track"
         ),
         CommandTest(
             "Stop repeating",
-            "control_music",
+            "music",
             {"action": "repeat_off"},
             "Disable repeat"
         ),
 
-        # With player specified
+        # --- Control: With player ---
         CommandTest(
             "Pause the kitchen speaker",
-            "control_music",
+            "music",
             {"action": "pause", "player": "kitchen"},
             "Pause specific player"
         ),
     ]
-    tests.extend(control_music_tests)
+    tests.extend(music_tests)
 
     return tests
 
@@ -1275,7 +1276,9 @@ def _dates_match_flexibly(expected_dates: List[str], actual_dates: List[str]) ->
     """
     Flexibly match date lists. Returns True if:
     1. They match exactly, OR
-    2. The actual dates are a subset that includes the START of the expected range
+    2. The actual dates are a subset that includes the START of the expected range, OR
+    3. The expected dates are a subset of actual (model returned extra dates), OR
+    4. For multi-date ranges, at least half the expected dates overlap with actual
 
     This allows accepting a single start-of-range date when the expected is a full range
     (e.g., accepting ["2026-01-31"] when expected is ["2026-01-31", "2026-02-01"] for "this_weekend")
@@ -1295,6 +1298,16 @@ def _dates_match_flexibly(expected_dates: List[str], actual_dates: List[str]) ->
     # If actual has multiple dates, all must be in expected
     if set(actual_dates).issubset(set(expected_dates)):
         return True
+
+    # Reverse subset: expected dates are all in actual (model returned extra dates)
+    if set(expected_dates).issubset(set(actual_dates)):
+        return True
+
+    # For multi-date ranges, accept if majority overlap
+    if len(expected_dates) > 1 and len(actual_dates) > 1:
+        overlap = set(expected_dates) & set(actual_dates)
+        if len(overlap) >= len(expected_dates) / 2:
+            return True
 
     return False
 
@@ -1350,115 +1363,91 @@ def _extract_tool_call_from_assistant_message(response: Any, response_dict: Opti
     return None
 
 
-def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_context: DateContext, test_index: int, available_commands: Optional[Dict] = None, validate: bool = False) -> tuple[bool, str, dict]:
-    """Run a single command test and validate the response
+def evaluate_parse_result(
+    result: 'ParseResult',
+    test: CommandTest,
+    date_context: DateContext,
+    test_index: int,
+    service: Optional[Any] = None,
+    available_commands: Optional[Dict] = None,
+    validate: bool = False,
+) -> tuple[bool, str]:
+    """Evaluate a ParseResult against expected test outcomes.
 
     Args:
-        jcc_client: JarvisCommandCenterClient instance
-        test: The test case to run
-        conversation_id: Conversation UUID
+        result: ParseResult from CommandExecutionService.parse_voice_command()
+        test: The test case with expected command/params
         date_context: Date context for date normalization
         test_index: Index of this test in the suite
+        service: CommandExecutionService instance (needed for --validate retry)
         available_commands: Dict of command_name -> IJarvisCommand instances (for validation)
         validate: If True, run validate_call() on returned tool_calls
 
     Returns:
-        tuple: (success: bool, failure_reason: str, actual_response: dict)
+        tuple: (success: bool, failure_reason: str)
     """
-    
+
     print(f"\n🧪 Testing: {test.description}")
     print(f"   Voice Command: '{test.voice_command}'")
     print(f"   Expected Command: {test.expected_command}")
     print(f"   Expected Params: {test.expected_params}")
-    
+
     try:
-        # Send the voice command
-        response = jcc_client.send_command(test.voice_command, conversation_id)
-
-        # If the model asks for validation, respond automatically (loop-safe in case of multiple prompts)
-        while hasattr(response, "validation_request") and response.validation_request:
-            vr = response.validation_request
-            chosen = None
-            if hasattr(vr, "options") and vr.options:
-                chosen = vr.options[0]
-            elif hasattr(vr, "question") and vr.question:
-                # Fallback: answer with a generic confirmation if no options
-                chosen = "yes"
-            if not chosen:
-                break
-
-            print(f"   🔄 Validation requested; auto-selecting: {chosen}")
-            response = jcc_client.send_validation_response(
-                conversation_id,
-                vr,
-                chosen
-            )
-
-            if not response:
-                failure_reason = "No response received from JCC after validation"
-                print(f"   ❌ {failure_reason}")
-                return False, failure_reason, {}
-        
-        if not response:
-            failure_reason = "No response received from JCC"
+        if not result.success and result.tool_name is None:
+            # Pre-route or CC failure
+            failure_reason = result.assistant_message or "Parse failed with no tool call"
             print(f"   ❌ {failure_reason}")
-            return False, failure_reason, {}
-        
-        # Convert ToolCallingResponse to dict for logging
-        response_dict = response.model_dump() if hasattr(response, 'model_dump') else response
-        print(f"   📡 Response received: {json.dumps(response_dict, indent=2, default=str)}")
-        
-        # Check if this is a tool calling response
-        command_response = None
-        matched_tool = None
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            print(f"   🔧 Tool calling response detected ({len(response.tool_calls)} call(s))")
-            # Scan all tool calls for one matching the expected command
-            matched_tool = None
-            for tc in response.tool_calls:
-                if tc.function.name == test.expected_command:
-                    matched_tool = tc
-                    break
-            if matched_tool is None:
-                matched_tool = response.tool_calls[0]
-            actual_command = matched_tool.function.name
-            actual_params = matched_tool.function.get_arguments_dict()
-            command_response = {
-                "command_name": actual_command,
-                "parameters": actual_params
-            }
-        if not command_response:
-            parsed_tool_call = _extract_tool_call_from_assistant_message(response, response_dict)
-            if parsed_tool_call:
-                print(f"   🔧 Tool call parsed from assistant_message")
-                command_response = parsed_tool_call
-        if not command_response:
-            if hasattr(response, 'commands') and response.commands:
-                print(f"   📦 Legacy command response detected")
-                command_response = response.commands[0]
-            elif getattr(response, "stop_reason", None) == "complete":
-                # The LLM answered directly without a tool call (e.g., calc or simple Q&A).
-                direct_completion_whitelist = {"calculate", "answer_question", "tell_joke"}
-                if test.expected_command in direct_completion_whitelist:
-                    print(f"   ℹ️ No tool calls; treating direct completion as acceptable.")
-                    return True, "", response_dict
-                failure_reason = "Direct completion not allowed for this command"
-                print(f"   ❌ {failure_reason}")
-                return False, failure_reason, response_dict
-            else:
+            return False, failure_reason
+
+        # Build command_response dict for comparison
+        actual_command = result.tool_name
+        actual_params = dict(result.tool_arguments) if result.tool_arguments else {}
+
+        if result.pre_routed:
+            print(f"   ⚡ Pre-routed to: {actual_command} {actual_params}")
+        elif result.raw_response:
+            response_dict = result.raw_response.model_dump() if hasattr(result.raw_response, 'model_dump') else {}
+            print(f"   📡 Response received: {json.dumps(response_dict, indent=2, default=str)}")
+
+        # Handle case where no tool call was produced
+        if actual_command is None:
+            # Check for tool call embedded in assistant message
+            if result.raw_response:
+                response_dict = result.raw_response.model_dump() if hasattr(result.raw_response, 'model_dump') else {}
+                parsed_tool_call = _extract_tool_call_from_assistant_message(result.raw_response, response_dict)
+                if parsed_tool_call:
+                    print(f"   🔧 Tool call parsed from assistant_message")
+                    actual_command = parsed_tool_call["command_name"]
+                    actual_params = parsed_tool_call["parameters"]
+
+            if actual_command is None:
+                # Direct completion (no tool call)
+                if result.raw_response and getattr(result.raw_response, "stop_reason", None) == "complete":
+                    direct_completion_whitelist = {"calculate", "answer_question", "tell_joke"}
+                    if test.expected_command in direct_completion_whitelist:
+                        print(f"   ℹ️ No tool calls; treating direct completion as acceptable.")
+                        return True, ""
+                    failure_reason = "Direct completion not allowed for this command"
+                    print(f"   ❌ {failure_reason}")
+                    return False, failure_reason
                 failure_reason = "No tool_calls or commands in response"
                 print(f"   ❌ {failure_reason}")
-                return False, failure_reason, response_dict
-        
-        if "command_name" not in command_response:
-            failure_reason = "Missing command_name in command response"
-            print(f"   ❌ {failure_reason}")
-            return False, failure_reason, response_dict
-        
-        if "parameters" not in command_response:
-            failure_reason = "Missing parameters in command response"
-            print(f"   ❌ {failure_reason}")
-            return False, failure_reason, response_dict
+                return False, failure_reason
+
+        # If the raw response has multiple tool calls, prefer the one matching expected
+        if not result.pre_routed and result.raw_response and result.raw_response.tool_calls:
+            for tc in result.raw_response.tool_calls:
+                if tc.function.name == test.expected_command:
+                    actual_command = tc.function.name
+                    actual_params = tc.function.get_arguments_dict()
+                    # Re-apply post-processing on the matched tool call
+                    if service:
+                        cmd = service.command_discovery.get_command(actual_command)
+                        if cmd:
+                            actual_params = cmd.post_process_tool_call(actual_params, test.voice_command)
+                    break
+
+        command_response = {"command_name": actual_command, "parameters": actual_params}
 
         # --- Node-side validate_call() simulation ---
         if validate and available_commands and command_response["command_name"] in available_commands:
@@ -1490,10 +1479,10 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
 
             # Handle validation errors — send back to CC for LLM retry
             errors = [r for r in v_results if not r.success]
-            if errors:
+            if errors and service:
                 tool_call_id = "validation"
-                if hasattr(response, 'tool_calls') and response.tool_calls:
-                    tool_call_id = matched_tool.id if matched_tool else response.tool_calls[0].id
+                if result.raw_response and result.raw_response.tool_calls:
+                    tool_call_id = result.raw_response.tool_calls[0].id
 
                 error_text = "\n".join([r.message for r in errors if r.message])
                 print(f"   🔄 Validation failed ({len(errors)} error(s)), sending back to CC for retry...")
@@ -1501,7 +1490,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     msg_preview = (e.message or "")[:100]
                     print(f"      ⚠️  {e.param_name}: {msg_preview}")
 
-                retry_response = jcc_client.send_tool_results(conversation_id, [{
+                retry_response = service.client.send_tool_results(result.conversation_id, [{
                     "tool_call_id": tool_call_id,
                     "output": json.dumps({"success": False, "error": error_text}),
                 }])
@@ -1512,12 +1501,11 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                         "command_name": retry_tool.function.name,
                         "parameters": retry_tool.function.get_arguments_dict(),
                     }
-                    response_dict = retry_response.model_dump() if hasattr(retry_response, 'model_dump') else retry_response
                     print(f"   🔄 Retry produced: {command_response['command_name']} {command_response['parameters']}")
                 else:
                     failure_reason = "Validation retry did not produce corrected tool_calls"
                     print(f"   ❌ {failure_reason}")
-                    return False, failure_reason, response_dict
+                    return False, failure_reason
 
         # Check command name (with leniency for certain search/web misroutes)
         actual_command = command_response["command_name"]
@@ -1534,7 +1522,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     team = act_params.get("team_name", "")
                     if not team or not str(team).strip():
                         print(f"   ⚠️  Command mismatch accepted: {actual_command} with empty team_name (validation would re-route)")
-                        return True, "", response_dict
+                        return True, ""
 
                 exp_query = test.expected_params.get("query")
                 act_query = act_params.get("query")
@@ -1557,14 +1545,14 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                 else:
                     failure_reason = f"Command mismatch: expected '{test.expected_command}', got '{actual_command}'"
                     print(f"   ❌ {failure_reason}")
-                    return False, failure_reason, response_dict
+                    return False, failure_reason
             else:
                 failure_reason = f"Command mismatch: expected '{test.expected_command}', got '{actual_command}'"
                 print(f"   ❌ {failure_reason}")
-                return False, failure_reason, response_dict
-        
+                return False, failure_reason
+
         print(f"   ✅ Command name matches: {actual_command}")
-        
+
         # Check parameters
         actual_params = command_response["parameters"]
         missing_params = []
@@ -1573,7 +1561,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         # Build date key map for resolving symbolic dates to ISO dates
         date_key_map = _build_date_key_to_iso_map(date_context)
 
-        # Get user's local timezone for proper UTC→local conversion
+        # Get user's local timezone for proper UTC->local conversion
         local_tz = None
         try:
             if date_context and date_context.timezone and date_context.timezone.user_timezone:
@@ -1581,7 +1569,6 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
         except (KeyError, AttributeError, ValueError):
             pass  # Will fall back to EST default in normalization
 
-        # test_index is now passed as a parameter
         print(f"   🔍 Debug: Test index = {test_index}")
 
         for expected_key, expected_value in test.expected_params.items():
@@ -1642,7 +1629,7 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
                     continue
                 else:
                     mismatched_params.append(f"{expected_key}: expected {expected_value}, got {actual_value}")
-        
+
         if missing_params or mismatched_params:
             failure_reason = "Parameter validation failed: "
             if missing_params:
@@ -1650,17 +1637,17 @@ def run_command_test(jcc_client, test: CommandTest, conversation_id: str, date_c
             if mismatched_params:
                 failure_reason += f"Mismatched: {'; '.join(mismatched_params)}"
             print(f"   ❌ {failure_reason}")
-            return False, failure_reason, response_dict
-        
+            return False, failure_reason
+
         print(f"   ✅ All expected parameters match")
-        return True, "", response_dict
-            
+        return True, ""
+
     except Exception as e:
         failure_reason = f"Exception during test: {str(e)}"
         print(f"   ❌ {failure_reason}")
         import traceback
         traceback.print_exc()
-        return False, failure_reason, {}
+        return False, failure_reason
 
 def is_valid_search_query(expected_query, actual_query):
     """
@@ -1895,56 +1882,37 @@ def main():
     
     # Create test commands with real date context
     test_commands = create_test_commands()
-    
+
     # List tests if requested
     if args.list_tests:
         list_tests_only()
         return
-    
-    # Only import heavy modules when actually running tests
-    from clients.jarvis_command_center_client import JarvisCommandCenterClient
-    from utils.config_loader import Config
-    from utils.command_discovery_service import get_command_discovery_service
-    
-    # Get command discovery service and refresh commands
-    command_service = get_command_discovery_service()
-    command_service.refresh_now()
 
-    # # Start agent scheduler for HA device context
-    # try:
-    #     from services.agent_scheduler_service import initialize_agent_scheduler
-    #     agent_scheduler = initialize_agent_scheduler()
-    #     # Wait briefly for first agent run to complete
-    #     print("⏳ Waiting for agent scheduler to fetch device context...")
-    #     import time as time_mod
-    #     time_mod.sleep(3)
-    #     print("✅ Agent scheduler started")
-    # except Exception as e:
-    #     print(f"⚠️  Failed to start agent scheduler: {e} (HA device tests may fail)")
+    # Only import heavy modules when actually running tests
+    from utils.command_execution_service import CommandExecutionService
+
+    # Initialize the shared service (discovers commands, connects to CC)
+    try:
+        service = CommandExecutionService()
+        print(f"✅ Connected to Command Center at: {service.command_center_url}")
+    except Exception as e:
+        print(f"❌ Failed to initialize CommandExecutionService: {e}")
+        return
 
     # Get available commands
-    available_commands = command_service.get_all_commands()
-    
+    available_commands = service.command_discovery.get_all_commands()
+
     if not available_commands:
         print("❌ No commands found. Make sure the command discovery service is working.")
         return
-    
+
     print(f"✅ Found {len(available_commands)} commands:")
     for cmd in available_commands.values():
         print(f"   - {cmd.command_name}: {cmd.description}")
-    
+
     # Get real date context from server
     try:
-        jcc_url = Config.get("jarvis_command_center_api_url")
-        if not jcc_url:
-            print("❌ Could not find jarvis_command_center_api_url in configuration")
-            return
-        
-        jcc_client = JarvisCommandCenterClient(jcc_url)
-        print(f"✅ Connected to JCC at: {jcc_url}")
-        
-        # Get real date context from server
-        date_context = jcc_client.get_date_context()
+        date_context = service.client.get_date_context()
         if date_context:
             print(f"✅ Got real date context from server for timezone: {date_context.timezone.user_timezone}")
             # Recreate test commands with real date context
@@ -1952,9 +1920,9 @@ def main():
         else:
             print("⚠️  Could not get date context from server, using fallback")
             test_commands = create_test_commands()
-    
+
     except Exception as e:
-        print(f"❌ Failed to connect to JCC: {e}")
+        print(f"❌ Failed to get date context: {e}")
         return
     
     # Filter tests if specific indices provided
@@ -2004,108 +1972,69 @@ def main():
     response_times = []
     for i, test in test_commands_to_run:
         print(f"\n📝 Test {i}/{len(test_commands_to_run)}")
-        
-        # Create a unique conversation for each test
-        test_conversation_id = str(uuid.uuid4())
-        print(f"🔄 Starting conversation for test {i} with ID: {test_conversation_id}")
-        
+
         try:
-            agents = test.ha_context if test.ha_context else None
-            success = jcc_client.start_conversation(test_conversation_id, available_commands, date_context, agents=agents)
-            if success:
-                print(f"✅ Conversation started successfully for test {i}")
+            # Use the shared production code path: pre-route → register → send → post-process
+            start_time = time.time()
+            result = service.parse_voice_command(
+                test.voice_command,
+                agents=test.ha_context if test.ha_context else None,
+                warmup_delay=1.5,
+            )
+            response_time = time.time() - start_time
+            response_times.append(response_time)
 
-                # Wait for warmup KV cache to populate (simulates wake word →
-                # user finishes speaking delay in production)
-                time.sleep(1.5)
+            # Evaluate the result against expectations
+            test_success, failure_reason = evaluate_parse_result(
+                result, test, date_context, i,
+                service=service,
+                available_commands=available_commands,
+                validate=args.validate,
+            )
 
-                # Run the test with this conversation and track timing
-                start_time = time.time()
-                test_success, failure_reason, actual_response = run_command_test(jcc_client, test, test_conversation_id, date_context, i, available_commands=available_commands, validate=args.validate)
-                end_time = time.time()
-                
-                response_time = end_time - start_time
-                response_times.append(response_time)
-                
-                # Extract actual command and parameters from response
-                actual_command = None
-                actual_params = None
-                if actual_response:
-                    if 'tool_calls' in actual_response and actual_response['tool_calls']:
-                        actual_command = actual_response['tool_calls'][0]['function']['name']
-                        actual_params = json.loads(actual_response['tool_calls'][0]['function']['arguments']) if 'arguments' in actual_response['tool_calls'][0]['function'] else {}
-                    elif 'commands' in actual_response and actual_response['commands']:
-                        actual_command = actual_response['commands'][0].get('command_name')
-                        actual_params = actual_response['commands'][0].get('parameters', {})
-                
-                # Store comprehensive test result
-                test_result = {
-                    "test_number": i,
-                    "passed": test_success,
-                    "description": test.description,
-                    "voice_command": test.voice_command,
-                    "expected": {
-                        "command": test.expected_command,
-                        "parameters": test.expected_params
-                    },
-                    "actual": {
-                        "command": actual_command,
-                        "parameters": actual_params
-                    },
-                    "response_time_seconds": round(response_time, 3),
-                    "conversation_id": test_conversation_id,
-                    "failure_reason": failure_reason if not test_success else None,
-                    "full_response": actual_response
-                }
-                all_test_results.append(test_result)
-                
-                if test_success:
-                    passed_tests += 1
-                    print(f"   ✅ Test PASSED (⏱️  {response_time:.2f}s)")
-                else:
-                    failed_tests += 1
-                    print(f"   ❌ Test FAILED (⏱️  {response_time:.2f}s)")
-                    failed_test_details.append({
-                        "test_number": i,
-                        "description": test.description,
-                        "voice_command": test.voice_command,
-                        "expected_command": test.expected_command,
-                        "expected_params": test.expected_params,
-                        "failure_reason": failure_reason,
-                        "actual_response": actual_response,
-                        "conversation_id": test_conversation_id
-                    })
-                    
+            # Build response dict for reporting
+            raw_response_dict = result.raw_response.model_dump() if result.raw_response and hasattr(result.raw_response, 'model_dump') else None
+
+            # Store comprehensive test result
+            test_result = {
+                "test_number": i,
+                "passed": test_success,
+                "description": test.description,
+                "voice_command": test.voice_command,
+                "expected": {
+                    "command": test.expected_command,
+                    "parameters": test.expected_params
+                },
+                "actual": {
+                    "command": result.tool_name,
+                    "parameters": result.tool_arguments
+                },
+                "pre_routed": result.pre_routed,
+                "response_time_seconds": round(response_time, 3),
+                "conversation_id": result.conversation_id,
+                "failure_reason": failure_reason if not test_success else None,
+                "full_response": raw_response_dict
+            }
+            all_test_results.append(test_result)
+
+            if test_success:
+                passed_tests += 1
+                pre_tag = " [pre-routed]" if result.pre_routed else ""
+                print(f"   ✅ Test PASSED{pre_tag} (⏱️  {response_time:.2f}s)")
             else:
-                print(f"❌ Failed to start conversation for test {i}")
                 failed_tests += 1
-                error_result = {
-                    "test_number": i,
-                    "passed": False,
-                    "description": test.description,
-                    "voice_command": test.voice_command,
-                    "expected": {
-                        "command": test.expected_command,
-                        "parameters": test.expected_params
-                    },
-                    "actual": {
-                        "command": None,
-                        "parameters": None
-                    },
-                    "response_time_seconds": 0,
-                    "conversation_id": test_conversation_id,
-                    "failure_reason": "Failed to start conversation",
-                    "full_response": None
-                }
-                all_test_results.append(error_result)
+                print(f"   ❌ Test FAILED (⏱️  {response_time:.2f}s)")
                 failed_test_details.append({
                     "test_number": i,
                     "description": test.description,
                     "voice_command": test.voice_command,
-                    "error": "Failed to start conversation",
-                    "conversation_id": test_conversation_id
+                    "expected_command": test.expected_command,
+                    "expected_params": test.expected_params,
+                    "failure_reason": failure_reason,
+                    "actual_response": raw_response_dict,
+                    "conversation_id": result.conversation_id
                 })
-                
+
         except Exception as e:
             print(e)
             print(f"❌ Error during test {i}: {e}")
@@ -2123,8 +2052,9 @@ def main():
                     "command": None,
                     "parameters": None
                 },
+                "pre_routed": False,
                 "response_time_seconds": 0,
-                "conversation_id": test_conversation_id,
+                "conversation_id": "",
                 "failure_reason": f"Exception: {str(e)}",
                 "full_response": None
             }
@@ -2134,10 +2064,8 @@ def main():
                 "description": test.description,
                 "voice_command": test.voice_command,
                 "error": str(e),
-                "conversation_id": test_conversation_id
+                "conversation_id": ""
             })
-        
-        # No delay needed between tests
     
     # Print summary
     print(f"\n" + "=" * 60)

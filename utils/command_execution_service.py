@@ -1,5 +1,6 @@
 import queue
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Callable
@@ -26,6 +27,22 @@ class ToolExecutionResult:
     api_results: List[Dict[str, Any]] = field(default_factory=list)
     wait_for_input: bool = False
     clear_history: bool = False
+    all_failed: bool = False
+    first_error: str | None = None
+    tool_message: str | None = None
+
+
+@dataclass
+class ParseResult:
+    """Result of classifying a voice command without executing it."""
+    conversation_id: str
+    pre_routed: bool
+    tool_name: str | None
+    tool_arguments: Dict[str, Any]
+    raw_response: ToolCallingResponse | None  # None if pre-routed
+    success: bool
+    validation_request: ValidationRequest | None = None
+    assistant_message: str | None = None
 
 
 class CommandExecutionService:
@@ -39,7 +56,10 @@ class CommandExecutionService:
         self.command_discovery.refresh_now()
 
     def register_tools_for_conversation(
-        self, conversation_id: str, speaker_user_id: Optional[int] = None
+        self,
+        conversation_id: str,
+        speaker_user_id: Optional[int] = None,
+        agents: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Register available client-side tools with the Command Center for a conversation
@@ -47,6 +67,7 @@ class CommandExecutionService:
         Args:
             conversation_id: The conversation identifier
             speaker_user_id: Optional speaker identity from voice recognition
+            agents: Optional agent context to inject (e.g., Home Assistant data)
 
         Returns:
             True if successful, False otherwise
@@ -65,7 +86,8 @@ class CommandExecutionService:
 
             # Start conversation with available commands
             success = self.client.start_conversation(
-                conversation_id, commands, date_context, speaker_user_id=speaker_user_id
+                conversation_id, commands, date_context,
+                speaker_user_id=speaker_user_id, agents=agents,
             )
 
             if success:
@@ -78,6 +100,137 @@ class CommandExecutionService:
         except Exception as e:
             logger.error("Error registering tools", error=str(e))
             return False
+
+    def parse_voice_command(
+        self,
+        voice_command: str,
+        speaker_user_id: int | None = None,
+        agents: dict | None = None,
+        warmup_delay: float = 0,
+    ) -> ParseResult:
+        """Classify a voice command through the production code path without executing tools.
+
+        Runs pre-routing, tool registration, LLM inference, and post-processing,
+        but stops before tool execution or audio playback.
+
+        Args:
+            voice_command: The transcribed voice command
+            speaker_user_id: Optional speaker identity from voice recognition
+            agents: Optional agent context (e.g., Home Assistant device data)
+            warmup_delay: Seconds to wait between tool registration and sending
+                          the command (for KV cache warmup on GGUF models)
+
+        Returns:
+            ParseResult with classification details
+        """
+        conversation_id = self._generate_conversation_id()
+
+        # Step 1: Try pre-routing (classification only — no execution)
+        commands = self.command_discovery.get_all_commands()
+        for command in commands.values():
+            pre = command.pre_route(voice_command)
+            if pre is not None:
+                logger.info(
+                    "Pre-routed to command (parse only)",
+                    command=command.command_name,
+                    voice_command=voice_command,
+                )
+                return ParseResult(
+                    conversation_id=conversation_id,
+                    pre_routed=True,
+                    tool_name=command.command_name,
+                    tool_arguments=pre.arguments,
+                    raw_response=None,
+                    success=True,
+                    assistant_message=pre.spoken_response,
+                )
+
+        # Step 2: Register tools
+        if not self.register_tools_for_conversation(
+            conversation_id, speaker_user_id=speaker_user_id, agents=agents,
+        ):
+            return ParseResult(
+                conversation_id=conversation_id,
+                pre_routed=False,
+                tool_name=None,
+                tool_arguments={},
+                raw_response=None,
+                success=False,
+                assistant_message="Failed to register tools",
+            )
+
+        # Step 3: Warmup delay (KV cache population for GGUF models)
+        if warmup_delay > 0:
+            time.sleep(warmup_delay)
+
+        # Step 4: Send command to CC
+        response = self.client.send_command(voice_command, conversation_id)
+        if not response:
+            return ParseResult(
+                conversation_id=conversation_id,
+                pre_routed=False,
+                tool_name=None,
+                tool_arguments={},
+                raw_response=None,
+                success=False,
+                assistant_message="No response from command center",
+            )
+
+        # Step 5: Handle server-side validation (auto-select first option)
+        while response.requires_validation() and response.validation_request:
+            vr = response.validation_request
+            chosen = None
+            if vr.options:
+                chosen = vr.options[0]
+            elif vr.question:
+                chosen = "yes"
+            if not chosen:
+                break
+            logger.info("Auto-answering validation", question=vr.question, answer=chosen)
+            response = self.client.send_validation_response(conversation_id, vr, chosen)
+            if not response:
+                return ParseResult(
+                    conversation_id=conversation_id,
+                    pre_routed=False,
+                    tool_name=None,
+                    tool_arguments={},
+                    raw_response=None,
+                    success=False,
+                    assistant_message="No response after validation",
+                )
+
+        # Step 6: Extract tool call and apply post-processing
+        if response.tool_calls:
+            tool_call = response.tool_calls[0]
+            tool_name = tool_call.function.name
+            tool_arguments = tool_call.function.get_arguments_dict()
+
+            # Apply post-processing (e.g., MusicCommand fills missing query)
+            command = self.command_discovery.get_command(tool_name)
+            if command:
+                tool_arguments = command.post_process_tool_call(tool_arguments, voice_command)
+
+            return ParseResult(
+                conversation_id=conversation_id,
+                pre_routed=False,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                raw_response=response,
+                success=True,
+                assistant_message=response.assistant_message,
+            )
+
+        # Step 7: No tool call — direct completion or error
+        return ParseResult(
+            conversation_id=conversation_id,
+            pre_routed=False,
+            tool_name=None,
+            tool_arguments={},
+            raw_response=response,
+            success=response.stop_reason == "complete",
+            assistant_message=response.assistant_message,
+            validation_request=response.validation_request,
+        )
 
     def _play_streaming_audio(
         self,
@@ -151,6 +304,11 @@ class CommandExecutionService:
             wait_for_input, and clear_history
         """
         conversation_id = self._generate_conversation_id()
+
+        # Try node-side pre-routing (skip CC entirely)
+        pre_result = self._try_pre_route(voice_command, conversation_id)
+        if pre_result is not None:
+            return pre_result
 
         logger.info("Starting conversation", conversation_id=conversation_id, command=voice_command)
 
@@ -340,10 +498,25 @@ class CommandExecutionService:
         if not final_message:
             final_message = "Go ahead, I'm listening." if wait_for_input else "Task completed."
 
+        # If every tool call failed, don't trust the LLM's response — it may
+        # hallucinate success.  Surface the actual error instead.
+        all_failed = last_tool_result.all_failed if last_tool_result else False
+        if all_failed and last_tool_result and last_tool_result.first_error:
+            final_message = f"Sorry, that didn't work: {last_tool_result.first_error}"
+
+        # If the tool provided a pre-formatted message (e.g., device status),
+        # use it directly. Small LLMs misinterpret state data (e.g., "unlocked"
+        # → "locked"), so the command's own message is more reliable.
+        # Only applies to informational queries (wait_for_input=True), not
+        # action commands where the LLM's natural confirmation is better.
+        if (last_tool_result and last_tool_result.tool_message
+                and not all_failed and wait_for_input):
+            final_message = last_tool_result.tool_message
+
         logger.info("Conversation complete", response=final_message)
 
         return {
-            "success": True,
+            "success": not all_failed,
             "message": final_message,
             "conversation_id": conversation_id,
             "wait_for_input": wait_for_input,
@@ -381,6 +554,7 @@ class CommandExecutionService:
                     continue
 
                 arguments = tool_call.function.get_arguments_dict()
+                arguments = command.post_process_tool_call(arguments, voice_command)
 
                 request_info = RequestInformation(
                     voice_command=voice_command or f"Tool call: {tool_name}",
@@ -398,12 +572,32 @@ class CommandExecutionService:
 
                 result.api_results.append(format_tool_result(tool_call.id, command_response))
 
+                if not command_response.success and result.first_error is None:
+                    result.first_error = tool_call.failure_message or command_response.error_details
+
+                # Capture pre-formatted message from the command so the
+                # conversation loop can use it directly instead of relying
+                # on the LLM to interpret raw state data.
+                if command_response.success and result.tool_message is None:
+                    ctx = command_response.context_data or {}
+                    msg = ctx.get("message")
+                    if msg and isinstance(msg, str):
+                        result.tool_message = msg
+
                 logger.debug("Tool executed successfully", tool=tool_name)
 
             except Exception as e:
                 error_msg = str(e)
                 logger.error("Tool execution error", tool=tool_name, error=error_msg)
                 result.api_results.append(format_tool_error(tool_call.id, error_msg))
+                if result.first_error is None:
+                    result.first_error = error_msg
+
+        # Check if ALL tool results were failures
+        if result.api_results:
+            result.all_failed = all(
+                not r.get("output", {}).get("success", False) for r in result.api_results
+            )
 
         return result
 
@@ -424,6 +618,59 @@ class CommandExecutionService:
             if not output.get("success") and output.get("error"):
                 return f"Sorry, that didn't work: {output['error']}"
         return ""
+
+    def _try_pre_route(self, voice_command: str, conversation_id: str) -> Dict[str, Any] | None:
+        """Try node-side pre-routing across all discovered commands.
+
+        Iterates commands, calls pre_route() on each.  First match wins.
+        If matched, executes the command directly and returns the result
+        dict — no CC contact at all.
+
+        Returns:
+            Result dict (same shape as process_voice_command), or None to
+            fall through to the normal LLM path.
+        """
+        commands = self.command_discovery.get_all_commands()
+        for command in commands.values():
+            pre = command.pre_route(voice_command)
+            if pre is None:
+                continue
+
+            logger.info(
+                "Pre-routed to command",
+                command=command.command_name,
+                voice_command=voice_command,
+            )
+
+            try:
+                request_info = RequestInformation(
+                    voice_command=voice_command,
+                    conversation_id=conversation_id,
+                    is_validation_response=False,
+                )
+                command_response: CommandResponse = command.execute(request_info, **pre.arguments)
+
+                message = pre.spoken_response
+                if not message:
+                    ctx = command_response.context_data or {}
+                    message = ctx.get("message", "Done.")
+
+                return {
+                    "success": command_response.success,
+                    "message": message,
+                    "conversation_id": conversation_id,
+                    "wait_for_input": False,
+                    "clear_history": False,
+                }
+            except Exception as e:
+                logger.error(
+                    "Pre-route execution failed, falling through to LLM",
+                    command=command.command_name,
+                    error=str(e),
+                )
+                return None
+
+        return None
 
     def _default_validation_handler(self, validation: ValidationRequest) -> str:
         """

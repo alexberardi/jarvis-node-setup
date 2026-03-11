@@ -28,7 +28,7 @@ class OpenWeatherCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Get weather conditions or forecast (up to 5 days). Use for ALL weather queries including metric/imperial."
+        return "Weather conditions or forecast (up to 5 days). Use for ALL weather queries including unit preferences. For time queries use get_current_time."
 
     def generate_prompt_examples(self) -> List[CommandExample]:
         """Generate concise example utterances with expected parameters using date keys.
@@ -133,8 +133,8 @@ class OpenWeatherCommand(IJarvisCommand):
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
             JarvisSecret("OPENWEATHER_API_KEY", "Open Weather API Key", "integration", "string"),
-            JarvisSecret("OPENWEATHER_UNITS", "Imperial, Metric, or Kelvin", "integration", "string"),
-            JarvisSecret("OPENWEATHER_LOCATION", "city,state_code,country_code, ie Miami,FL,US. If omitted and no location is found in the command, location will be retrieved from ip-api.com", "node", "string")
+            JarvisSecret("OPENWEATHER_UNITS", "Imperial, Metric, or Kelvin", "integration", "string", is_sensitive=False),
+            JarvisSecret("OPENWEATHER_LOCATION", "city,state_code,country_code, ie Miami,FL,US. If omitted and no location is found in the command, location will be retrieved from ip-api.com", "node", "string", is_sensitive=False)
         ]
 
     @property
