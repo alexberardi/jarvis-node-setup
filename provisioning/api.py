@@ -311,6 +311,13 @@ def create_provisioning_app(
                 error="Node is already provisioned. Re-enter pairing mode to update K2."
             )
 
+        # Validate node_id matches this node
+        if request.node_id != _get_node_id():
+            return K2ProvisionResponse(
+                success=False,
+                error="Node ID mismatch: request node_id does not match this node."
+            )
+
         # Save K2 encrypted with K1
         try:
             save_k2(request.k2, request.kid, request.created_at)
