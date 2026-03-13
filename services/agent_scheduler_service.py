@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_agent import IJarvisAgent
+from services.alert_queue_service import AlertQueueService
 from utils.agent_discovery_service import get_agent_discovery_service
 
 logger = JarvisLogger(service="jarvis-node")
@@ -64,8 +65,13 @@ class AgentSchedulerService:
             self._thread: Optional[threading.Thread] = None
             self._running_event = threading.Event()  # Thread-safe running flag
             self._stop_event: Optional[asyncio.Event] = None
+            self._alert_queue: Optional[AlertQueueService] = None
 
             self._initialized = True
+
+    def set_alert_queue(self, queue: AlertQueueService) -> None:
+        """Wire the alert queue so agent alerts are collected after each run."""
+        self._alert_queue = queue
 
     @property
     def _running(self) -> bool:
@@ -208,6 +214,17 @@ class AgentSchedulerService:
                 context = agent.get_context_data()
                 with self._context_lock:
                     self._context_cache[agent.name] = context
+
+            # Collect alerts from the agent
+            if self._alert_queue is not None:
+                try:
+                    alerts = agent.get_alerts()
+                    for alert in alerts:
+                        self._alert_queue.add_alert(alert)
+                    if alerts:
+                        logger.debug("Collected alerts from agent", agent=agent.name, count=len(alerts))
+                except Exception as alert_err:
+                    logger.warning("Failed to collect alerts", agent=agent.name, error=str(alert_err))
 
             elapsed = time.time() - start_time
             logger.debug("Agent run complete", agent=agent.name, elapsed_ms=int(elapsed * 1000))

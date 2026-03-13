@@ -95,11 +95,22 @@ def main():
     except Exception as e:
         logger.warning("Timer service unavailable (pysqlcipher3 not installed?), continuing without timers", error=str(e))
 
+    # Initialize alert queue + LED service for proactive notifications
+    from services.alert_queue_service import get_alert_queue_service
+    from services.led_service import get_led_service
+
+    led_service = get_led_service()
+    alert_queue = get_alert_queue_service()
+    alert_queue.on_change = lambda count: led_service.set_pattern("alert" if count > 0 else "normal")
+
     # Initialize agent scheduler (Home Assistant, etc.)
     agent_scheduler = initialize_agent_scheduler()
+    agent_scheduler.set_alert_queue(alert_queue)
     logger.info("Agent scheduler initialized")
 
-    if Config.get_bool("music_assistant_enabled", False):
+    # Music Assistant: enabled when URL secret is configured
+    from services.secret_service import get_secret_value
+    if get_secret_value("MUSIC_ASSISTANT_URL", "integration"):
         ma_service = MusicAssistantService()
     else:
         ma_service = DummyMusicAssistantService()
