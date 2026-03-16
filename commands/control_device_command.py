@@ -1,8 +1,12 @@
 """
 Control Device command for Jarvis.
 
-Generic device control for any Home Assistant domain.
+Generic device control for any smart home device (Home Assistant or direct WiFi).
 Uses domain-based action validation with clarification flow.
+Supports floor/area targeting for multi-device commands.
+
+Direct WiFi devices (source="direct") are controlled via LAN protocol adapters
+(LIFX, TP-Link Kasa, etc.) without requiring Home Assistant.
 """
 
 import asyncio
@@ -23,6 +27,15 @@ from services.home_assistant_service import (
     get_domain_from_entity_id,
 )
 from utils.entity_resolver import resolve_entity_id, validate_entity
+
+# Voice keywords → HA domain for floor/area commands
+_VOICE_DOMAIN_HINTS: Dict[str, str] = {
+    "light": "light", "lights": "light", "lamp": "light", "lamps": "light",
+    "switch": "switch", "switches": "switch",
+    "lock": "lock", "locks": "lock",
+    "fan": "fan", "fans": "fan",
+    "cover": "cover", "blinds": "cover", "garage": "cover", "shade": "cover", "shades": "cover",
+}
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -56,7 +69,8 @@ class ControlDeviceCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Control a HA device: turn on/off, lock/unlock, open/close, set temperature. "
+            "Control a smart home device: turn on/off, lock/unlock, open/close, set temperature. "
+            "Supports HA devices and direct WiFi devices (LIFX, Kasa, etc.). "
             "Use for ACTION commands (imperative verbs). "
             "Domain: lock/unlock→lock.*, open/close→cover.*, on/off→light.*/switch.*."
         )
@@ -94,12 +108,13 @@ class ControlDeviceCommand(IJarvisCommand):
             JarvisParameter(
                 "entity_id",
                 "string",
-                required=True,
+                required=False,
                 description=(
                     "EXACT entity_id from device_controls or light_controls context. "
                     "Format is ALWAYS 'domain.name' (e.g., 'light.my_office', 'switch.baby_berardi_timer'). "
                     "MUST include the domain prefix (light., switch., cover., lock., etc.). "
-                    "Copy the entity_id exactly as shown — NEVER invent or guess entity IDs."
+                    "Copy the entity_id exactly as shown — NEVER invent or guess entity IDs. "
+                    "Required unless 'floor' or 'area' is provided."
                 ),
             ),
             JarvisParameter(
@@ -126,6 +141,24 @@ class ControlDeviceCommand(IJarvisCommand):
                 ],
             ),
             JarvisParameter(
+                "floor",
+                "string",
+                required=False,
+                description=(
+                    "Floor name (e.g., 'Downstairs', 'Upstairs') to target ALL devices on that floor. "
+                    "Use instead of entity_id for commands like 'turn off the lights downstairs'."
+                ),
+            ),
+            JarvisParameter(
+                "area",
+                "string",
+                required=False,
+                description=(
+                    "Area/room name (e.g., 'Living Room', 'Kitchen') to target ALL devices in that area. "
+                    "Use instead of entity_id for commands like 'turn off the kitchen lights'."
+                ),
+            ),
+            JarvisParameter(
                 "value",
                 "string",
                 required=False,
@@ -145,12 +178,14 @@ class ControlDeviceCommand(IJarvisCommand):
                 "integration",
                 "string",
                 is_sensitive=False,
+                friendly_name="REST URL",
             ),
             JarvisSecret(
                 "HOME_ASSISTANT_API_KEY",
                 "Home Assistant long-lived access token",
                 "integration",
                 "string",
+                friendly_name="API Key",
             ),
         ]
 
@@ -159,6 +194,7 @@ class ControlDeviceCommand(IJarvisCommand):
         return AuthenticationConfig(
             type="oauth",
             provider="home_assistant",
+            friendly_name="Home Assistant",
             client_id="http://jarvis-node-mobile",
             keys=["access_token"],
             authorize_path="/auth/authorize",
@@ -181,7 +217,12 @@ class ControlDeviceCommand(IJarvisCommand):
         ws_url = base_url.replace("http", "ws") + "/api/websocket"
 
         # Create long-lived token via HA WebSocket API
-        llat = self._create_long_lived_token(ws_url, access_token)
+        # HA returns unknown_error if a token with the same client_name exists,
+        # so we include the node_id to make names unique across nodes.
+        from utils.config_service import Config
+        node_suffix = (Config.get_str("node_id", "") or "")[:8]
+        client_name = f"Jarvis Node {node_suffix}" if node_suffix else "Jarvis Node"
+        llat = self._create_long_lived_token(ws_url, access_token, client_name=client_name)
 
         from services.secret_service import set_secret
         set_secret("HOME_ASSISTANT_REST_URL", base_url, "integration")
@@ -192,12 +233,15 @@ class ControlDeviceCommand(IJarvisCommand):
         from services.command_auth_service import clear_auth_flag
         clear_auth_flag("home_assistant")
 
-    def _create_long_lived_token(self, ws_url: str, access_token: str) -> str:
+    def _create_long_lived_token(
+        self, ws_url: str, access_token: str, client_name: str = "Jarvis Node"
+    ) -> str:
         """Create a long-lived access token via HA WebSocket API.
 
         Args:
             ws_url: WebSocket URL (e.g., ws://192.168.1.100:8123/api/websocket)
             access_token: Short-lived OAuth access token
+            client_name: Name for the token in HA (must be unique per user)
 
         Returns:
             Long-lived access token string
@@ -223,7 +267,7 @@ class ControlDeviceCommand(IJarvisCommand):
             ws.send(json.dumps({
                 "id": 1,
                 "type": "auth/long_lived_access_token",
-                "client_name": "Jarvis Node",
+                "client_name": client_name,
                 "lifespan": 365,
             }))
             result = json.loads(ws.recv())
@@ -247,7 +291,8 @@ class ControlDeviceCommand(IJarvisCommand):
         return [
             "Select entity by [area] tag, NOT name similarity. 'Hue Play' ≠ 'Play room'.",
             "lock/unlock → lock.* (NEVER switch.*), open/close → cover.*, on/off → light.*/switch.*.",
-            "Floor commands ('downstairs'): find ALL areas on that floor, call once per device.",
+            "Floor commands ('turn off lights downstairs'): use floor param, NOT entity_id. System resolves all devices.",
+            "Area commands ('turn off kitchen lights'): use area param, NOT entity_id. System resolves all devices.",
         ]
 
     def generate_prompt_examples(self) -> List[CommandExample]:
@@ -293,8 +338,15 @@ class ControlDeviceCommand(IJarvisCommand):
             CommandExample(
                 voice_command="Turn off the lights downstairs",
                 expected_parameters={
-                    "entity_id": "light.living_room",
+                    "floor": "Downstairs",
                     "action": "turn_off",
+                },
+            ),
+            CommandExample(
+                voice_command="Turn on the kitchen lights",
+                expected_parameters={
+                    "area": "Kitchen",
+                    "action": "turn_on",
                 },
             ),
         ]
@@ -441,6 +493,13 @@ class ControlDeviceCommand(IJarvisCommand):
             ("Start the vacuum", {"entity_id": "vacuum.roborock", "action": "start"}),
             ("Stop the vacuum", {"entity_id": "vacuum.roborock", "action": "stop"}),
             ("Send vacuum home", {"entity_id": "vacuum.roborock", "action": "return_to_base"}),
+            # Floor/area commands
+            ("Turn off the lights downstairs", {"floor": "Downstairs", "action": "turn_off"}),
+            ("Turn on the lights downstairs", {"floor": "Downstairs", "action": "turn_on"}),
+            ("Turn off the lights upstairs", {"floor": "Upstairs", "action": "turn_off"}),
+            ("Turn on all the lights upstairs", {"floor": "Upstairs", "action": "turn_on"}),
+            ("Turn off the kitchen lights", {"area": "Kitchen", "action": "turn_off"}),
+            ("Turn on the living room lights", {"area": "Living Room", "action": "turn_on"}),
             # Ambiguous (no action - should trigger clarification)
             ("Do something with the garage", {"entity_id": "cover.garage_door"}),
             ("Control the thermostat", {"entity_id": "climate.thermostat"}),
@@ -462,7 +521,8 @@ class ControlDeviceCommand(IJarvisCommand):
 
         Args:
             request_info: Information about the request from JCC
-            **kwargs: Parameters including 'entity_id', optional 'action', optional 'value'
+            **kwargs: Parameters including 'entity_id', optional 'action', optional 'value',
+                      optional 'floor', optional 'area'
 
         Returns:
             CommandResponse with success/failure or validation prompt
@@ -470,6 +530,18 @@ class ControlDeviceCommand(IJarvisCommand):
         entity_id = kwargs.get("entity_id")
         action = kwargs.get("action")
         value = kwargs.get("value")
+        floor = kwargs.get("floor")
+        area = kwargs.get("area")
+
+        # Floor/area targeting — resolve to multiple entities and control all
+        if (floor or area) and not entity_id:
+            return self._run_floor_area(
+                request_info=request_info,
+                floor=floor,
+                area=area,
+                action=action,
+                value=value,
+            )
 
         if not entity_id:
             return CommandResponse.error_response(
@@ -576,6 +648,222 @@ class ControlDeviceCommand(IJarvisCommand):
         # Execute the action
         return asyncio.run(self._execute_control(entity_id, domain, action, value))
 
+    def _run_floor_area(
+        self,
+        request_info: RequestInformation,
+        floor: Optional[str],
+        area: Optional[str],
+        action: Optional[str],
+        value: Optional[str],
+    ) -> CommandResponse:
+        """Control all matching devices on a floor or in an area.
+
+        Resolves floor → areas → entities, then controls each one.
+        Defaults to light domain if not inferable from the voice command.
+        """
+        # Get HA context from agent scheduler
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+            context = get_agent_scheduler_service().get_aggregated_context()
+            ha_data = context.get("home_assistant", {})
+        except Exception as e:
+            logger.error("Failed to get HA context for floor/area command", error=str(e))
+            return CommandResponse.error_response(
+                error_details="Home Assistant data not available",
+                context_data={"error": "no_ha_context"},
+            )
+
+        if not ha_data:
+            return CommandResponse.error_response(
+                error_details="No Home Assistant data cached yet",
+                context_data={"error": "no_ha_data"},
+            )
+
+        # Resolve floor → set of allowed area names
+        floors_map: Dict[str, List[str]] = ha_data.get("floors", {})
+        allowed_areas: set[str] | None = None
+
+        if floor:
+            floor_lower = floor.lower()
+            for floor_name, area_list in floors_map.items():
+                if floor_name.lower() == floor_lower:
+                    allowed_areas = {a.lower() for a in area_list}
+                    break
+            if allowed_areas is None:
+                return CommandResponse.error_response(
+                    error_details=f"Floor '{floor}' not found. Available: {', '.join(floors_map.keys())}",
+                    context_data={"error": "floor_not_found", "available_floors": list(floors_map.keys())},
+                )
+
+        if area:
+            area_lower = {area.lower()}
+            allowed_areas = area_lower if allowed_areas is None else allowed_areas & area_lower
+
+        # Infer domain from voice command
+        domain = self._infer_domain_from_voice(request_info.voice_command)
+
+        # Infer action from voice if not provided
+        if not action:
+            action = self._infer_action_from_voice(request_info.voice_command, domain)
+        if not action:
+            # Default based on domain
+            action = "turn_off" if "off" in request_info.voice_command.lower() else "turn_on"
+
+        # Collect matching entities
+        entity_ids: list[str] = []
+        light_controls: Dict[str, Any] = ha_data.get("light_controls", {})
+        device_controls: Dict[str, Any] = ha_data.get("device_controls", {})
+
+        if domain == "light":
+            # Prefer room groups (one entity controls all lights in a room)
+            room_group_ids: set[str] = set()
+            for _lc_name, lc_info in light_controls.items():
+                lc_area = lc_info.get("area", "")
+                if allowed_areas is None or lc_area.lower() in allowed_areas:
+                    eid = lc_info.get("entity_id", "")
+                    if eid:
+                        entity_ids.append(eid)
+                        room_group_ids.add(eid)
+
+            # Also include individual lights not in a room group
+            for dev in device_controls.get("light", []):
+                dev_area = dev.get("area", "")
+                eid = dev.get("entity_id", "")
+                if eid in room_group_ids:
+                    continue
+                if dev.get("state") == "unavailable":
+                    continue
+                if allowed_areas is None or dev_area.lower() in allowed_areas:
+                    if eid:
+                        entity_ids.append(eid)
+        else:
+            for dev in device_controls.get(domain, []):
+                dev_area = dev.get("area", "")
+                if dev.get("state") == "unavailable":
+                    continue
+                if allowed_areas is None or dev_area.lower() in allowed_areas:
+                    eid = dev.get("entity_id", "")
+                    if eid:
+                        entity_ids.append(eid)
+
+        if not entity_ids:
+            target = floor or area or "unknown"
+            return CommandResponse.error_response(
+                error_details=f"No {domain} devices found on {target}",
+                context_data={"error": "no_devices", "target": target, "domain": domain},
+            )
+
+        # Execute action on all matched entities
+        logger.info(
+            "Floor/area control",
+            floor=floor, area=area, domain=domain,
+            action=action, entity_count=len(entity_ids),
+            entities=entity_ids,
+        )
+
+        results = asyncio.run(self._execute_multi(entity_ids, domain, action, value))
+
+        succeeded = [r for r in results if r["success"]]
+        failed = [r for r in results if not r["success"]]
+
+        target_label = floor or area
+        friendly_action = get_action_display_name(action)
+
+        if succeeded and not failed:
+            return CommandResponse.success_response(
+                context_data={
+                    "floor": floor,
+                    "area": area,
+                    "domain": domain,
+                    "action": action,
+                    "device_count": len(succeeded),
+                    "entities": [r["entity_id"] for r in succeeded],
+                    "message": f"Successfully {friendly_action} {len(succeeded)} {domain}(s) {target_label}",
+                },
+                wait_for_input=False,
+            )
+        elif succeeded:
+            return CommandResponse.success_response(
+                context_data={
+                    "floor": floor,
+                    "area": area,
+                    "domain": domain,
+                    "action": action,
+                    "device_count": len(succeeded),
+                    "failed_count": len(failed),
+                    "entities": [r["entity_id"] for r in succeeded],
+                    "message": (
+                        f"{friendly_action.capitalize()} {len(succeeded)} {domain}(s) {target_label}, "
+                        f"but {len(failed)} failed"
+                    ),
+                },
+                wait_for_input=False,
+            )
+        else:
+            return CommandResponse.error_response(
+                error_details=f"Failed to {friendly_action} any devices {target_label}",
+                context_data={"error": "all_failed", "failed": [r["entity_id"] for r in failed]},
+            )
+
+    async def _execute_multi(
+        self,
+        entity_ids: list[str],
+        domain: str,
+        action: str,
+        value: Optional[str],
+    ) -> list[Dict[str, Any]]:
+        """Execute an action on multiple entities concurrently.
+
+        Routes each entity to either DirectDeviceService or HomeAssistantService
+        based on whether it's a directly-controlled WiFi device.
+
+        Returns:
+            List of dicts with entity_id and success status.
+        """
+        ha_service = HomeAssistantService()
+        direct_svc = _get_direct_device_service()
+
+        data: Optional[Dict[str, Any]] = None
+        if value is not None:
+            if action == "set_temperature":
+                try:
+                    data = {"temperature": float(value)}
+                except ValueError:
+                    pass
+            elif action == "set_hvac_mode":
+                data = {"hvac_mode": value}
+            elif action == "set_percentage":
+                try:
+                    data = {"percentage": int(value)}
+                except ValueError:
+                    pass
+
+        async def _control_one(eid: str) -> Dict[str, Any]:
+            try:
+                # Route to direct service if applicable
+                if direct_svc and direct_svc.is_direct_device(eid):
+                    result = await direct_svc.control_device(eid, action, data)
+                    return {"entity_id": eid, "success": result.success, "error": result.error}
+                # Fall back to Home Assistant
+                result = await ha_service.control_device(eid, action, data)
+                return {"entity_id": eid, "success": result.success, "error": result.error}
+            except Exception as e:
+                return {"entity_id": eid, "success": False, "error": str(e)}
+
+        return await asyncio.gather(*[_control_one(eid) for eid in entity_ids])
+
+    @staticmethod
+    def _infer_domain_from_voice(voice_command: str) -> str:
+        """Infer the HA domain from voice command keywords.
+
+        Defaults to 'light' which covers the vast majority of floor/area commands.
+        """
+        words = voice_command.lower().split()
+        for word in words:
+            if word in _VOICE_DOMAIN_HINTS:
+                return _VOICE_DOMAIN_HINTS[word]
+        return "light"
+
     def _infer_action_from_voice(self, voice_command: str, domain: str) -> Optional[str]:
         """Infer the correct action from voice command verbs and target domain.
 
@@ -651,10 +939,14 @@ class ControlDeviceCommand(IJarvisCommand):
         action: str,
         value: Optional[str],
     ) -> CommandResponse:
-        """Execute the device control via HomeAssistantService.
+        """Execute device control via direct protocol or Home Assistant.
+
+        Checks if the entity is a directly-controlled WiFi device first;
+        if so, routes to the DirectDeviceService. Otherwise falls back
+        to HomeAssistantService.
 
         Args:
-            entity_id: HA entity ID
+            entity_id: Device entity ID
             domain: Device domain
             action: Action to perform
             value: Optional value for set actions
@@ -662,31 +954,36 @@ class ControlDeviceCommand(IJarvisCommand):
         Returns:
             CommandResponse with result
         """
+        # Build service data if value provided
+        data: Optional[Dict[str, Any]] = None
+        if value is not None:
+            if action == "set_temperature":
+                try:
+                    data = {"temperature": float(value)}
+                except ValueError:
+                    return CommandResponse.error_response(
+                        error_details=f"Invalid temperature value: {value}",
+                        context_data={"error": "invalid_value"},
+                    )
+            elif action == "set_hvac_mode":
+                data = {"hvac_mode": value}
+            elif action == "set_percentage":
+                try:
+                    data = {"percentage": int(value)}
+                except ValueError:
+                    return CommandResponse.error_response(
+                        error_details=f"Invalid percentage value: {value}",
+                        context_data={"error": "invalid_value"},
+                    )
+
+        # Try direct device control first
+        direct_result = await self._try_direct_control(entity_id, action, data)
+        if direct_result is not None:
+            return direct_result
+
+        # Fall back to Home Assistant
         try:
             service = HomeAssistantService()
-
-            # Build service data if value provided
-            data: Optional[Dict[str, Any]] = None
-            if value is not None:
-                if action == "set_temperature":
-                    try:
-                        data = {"temperature": float(value)}
-                    except ValueError:
-                        return CommandResponse.error_response(
-                            error_details=f"Invalid temperature value: {value}",
-                            context_data={"error": "invalid_value"},
-                        )
-                elif action == "set_hvac_mode":
-                    data = {"hvac_mode": value}
-                elif action == "set_percentage":
-                    try:
-                        data = {"percentage": int(value)}
-                    except ValueError:
-                        return CommandResponse.error_response(
-                            error_details=f"Invalid percentage value: {value}",
-                            context_data={"error": "invalid_value"},
-                        )
-
             result = await service.control_device(entity_id, action, data)
 
             if result.success:
@@ -712,3 +1009,59 @@ class ControlDeviceCommand(IJarvisCommand):
                 error_details=str(e),
                 context_data={"error": "configuration_error"},
             )
+
+    async def _try_direct_control(
+        self,
+        entity_id: str,
+        action: str,
+        data: Optional[Dict[str, Any]],
+    ) -> Optional[CommandResponse]:
+        """Attempt direct WiFi device control if entity is a direct device.
+
+        Returns:
+            CommandResponse if this is a direct device, None to fall through to HA.
+        """
+        try:
+            from services.direct_device_service import DirectDeviceService
+            direct_svc = _get_direct_device_service()
+            if direct_svc is None or not direct_svc.is_direct_device(entity_id):
+                return None
+
+            result = await direct_svc.control_device(entity_id, action, data)
+
+            if result.success:
+                domain = get_domain_from_entity_id(entity_id) or "unknown"
+                friendly_action = get_action_display_name(action)
+                return CommandResponse.success_response(
+                    context_data={
+                        "entity_id": entity_id,
+                        "domain": domain,
+                        "action": action,
+                        "source": "direct",
+                        "message": f"Successfully executed {friendly_action} on {entity_id}",
+                    },
+                    wait_for_input=False,
+                )
+            else:
+                return CommandResponse.error_response(
+                    error_details=f"Failed to control device: {result.error}",
+                    context_data={"error": result.error, "source": "direct"},
+                )
+        except ImportError:
+            return None
+        except Exception as e:
+            logger.warning("Direct device control failed, will try HA", entity_id=entity_id, error=str(e))
+            return None
+
+
+def _get_direct_device_service() -> Optional[Any]:
+    """Get the DirectDeviceService singleton from agent scheduler context.
+
+    Returns None if direct device control is not configured.
+    """
+    try:
+        from services.agent_scheduler_service import get_agent_scheduler_service
+        scheduler = get_agent_scheduler_service()
+        return getattr(scheduler, "_direct_device_service", None)
+    except Exception:
+        return None
