@@ -15,7 +15,8 @@ from typing import Any
 import httpx
 from jarvis_log_client import JarvisLogger
 
-from services.device_protocols.base import DeviceControlResult, DeviceProtocol
+from device_families.base import DeviceControlResult, DeviceProtocol
+from utils.device_family_discovery_service import get_device_family_discovery_service
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -30,6 +31,8 @@ class DeviceRecord:
     mac_address: str
     domain: str
     name: str
+    cloud_id: str = ""
+    model: str = ""
 
 
 class DirectDeviceService:
@@ -56,20 +59,9 @@ class DirectDeviceService:
         self._load_protocols()
 
     def _load_protocols(self) -> None:
-        """Load available protocol adapters."""
-        try:
-            from services.device_protocols.lifx_adapter import LifxProtocol
-            p = LifxProtocol()
-            self._protocols[p.protocol_name] = p
-        except ImportError:
-            pass
-
-        try:
-            from services.device_protocols.kasa_adapter import KasaProtocol
-            p = KasaProtocol()
-            self._protocols[p.protocol_name] = p
-        except ImportError:
-            pass
+        """Load available protocol adapters via discovery service."""
+        discovery = get_device_family_discovery_service()
+        self._protocols = dict(discovery.get_all_families())
 
     def register_device(self, record: DeviceRecord) -> None:
         """Add or update a device in the local cache."""
@@ -84,7 +76,7 @@ class DirectDeviceService:
         if not self._cc_base_url or not self._household_id:
             return 0
 
-        url = f"{self._cc_base_url}/api/v1/households/{self._household_id}/devices"
+        url = f"{self._cc_base_url}/api/v0/households/{self._household_id}/devices"
         headers = {"X-API-Key": f"{self._node_id}:{self._api_key}"}
 
         try:
@@ -104,6 +96,8 @@ class DirectDeviceService:
                     mac_address=dev.get("mac_address", ""),
                     domain=dev["domain"],
                     name=dev["name"],
+                    cloud_id=dev.get("cloud_id", ""),
+                    model=dev.get("model", ""),
                 )
                 self._device_cache[record.entity_id] = record
                 count += 1
@@ -174,6 +168,8 @@ class DirectDeviceService:
             data=data,
             entity_id=entity_id,
             mac_address=device.mac_address,
+            cloud_id=device.cloud_id,
+            model=device.model,
         )
 
     async def get_state(self, entity_id: str) -> dict[str, Any] | None:
