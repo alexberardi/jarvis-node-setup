@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
+
+import httpx
 
 from exceptions.missing_secrets_error import MissingSecretsError
 from services.secret_service import get_secret_value
@@ -198,6 +201,24 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         return []
 
     @property
+    def associated_service(self) -> str | None:
+        """Logical service grouping for the mobile settings UI.
+
+        Commands sharing the same associated_service are grouped together
+        in the mobile app's settings screen (e.g., "Home Assistant", "OpenWeather").
+
+        When a command has authentication, the auth provider's friendly_name is
+        used as the default group. Override this for commands that share config
+        but don't have OAuth (e.g., weather, web search).
+
+        Returns:
+            Display name for the service group, or None to remain ungrouped
+        """
+        if self.authentication:
+            return self.authentication.friendly_name
+        return None
+
+    @property
     def authentication(self) -> AuthenticationConfig | None:
         """Declare OAuth config for commands that need external auth.
 
@@ -243,6 +264,92 @@ class IJarvisCommand(JarvisCommandBase, ABC):
         """
         pass
 
+    def refresh_token(self) -> bool:
+        """Refresh OAuth2 access token using the standard refresh_token grant.
+
+        Default implementation POSTs to ``auth.exchange_url`` with
+        ``grant_type=refresh_token``, stores the new tokens via
+        ``store_auth_values()``, and persists ``TOKEN_EXPIRES_AT_<PROVIDER>``
+        in the secret DB.
+
+        Commands with non-standard refresh flows should override this method.
+
+        Returns:
+            True if the refresh succeeded, False otherwise.
+        """
+        from jarvis_log_client import JarvisLogger
+        from services.secret_service import set_secret
+
+        logger = JarvisLogger(service="jarvis-node")
+        auth = self.authentication
+        if not auth or not auth.exchange_url or not auth.refresh_token_secret_key:
+            return False
+
+        current_refresh = get_secret_value(auth.refresh_token_secret_key, "integration")
+        if not current_refresh:
+            logger.warning(
+                "No refresh token stored — flagging re-auth",
+                provider=auth.provider,
+            )
+            from services.command_auth_service import set_needs_auth
+            set_needs_auth(auth.provider, "No refresh token available")
+            return False
+
+        payload: dict[str, str] = {
+            "grant_type": "refresh_token",
+            "refresh_token": current_refresh,
+            "client_id": auth.client_id,
+        }
+
+        # Some providers require client_secret
+        client_secret = get_secret_value(
+            f"{auth.provider.upper()}_CLIENT_SECRET", "integration"
+        )
+        if client_secret:
+            payload["client_secret"] = client_secret
+
+        try:
+            resp = httpx.post(auth.exchange_url, data=payload, timeout=15.0)
+
+            if resp.status_code in (400, 401):
+                logger.warning(
+                    "Token refresh failed — flagging re-auth",
+                    status_code=resp.status_code,
+                    provider=auth.provider,
+                )
+                from services.command_auth_service import set_needs_auth
+                set_needs_auth(auth.provider, f"Refresh failed: HTTP {resp.status_code}")
+                return False
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Build values dict matching AuthenticationConfig.keys
+            values: dict[str, str] = {}
+            for key in auth.keys:
+                if key in data:
+                    values[key] = data[key]
+
+            if values:
+                self.store_auth_values(values)
+
+            # Store expires_at
+            expires_in = data.get("expires_in")
+            if expires_in:
+                expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+                set_secret(
+                    f"TOKEN_EXPIRES_AT_{auth.provider.upper()}",
+                    expires_at.isoformat(),
+                    "integration",
+                )
+
+            logger.info("Token refreshed", provider=auth.provider)
+            return True
+
+        except Exception as e:
+            logger.error("Token refresh failed", provider=auth.provider, error=str(e))
+            return False
+
     def pre_route(self, voice_command: str) -> PreRouteResult | None:
         """Deterministic matching — bypass the command center entirely.
 
@@ -265,6 +372,30 @@ class IJarvisCommand(JarvisCommandBase, ABC):
             The (possibly modified) arguments dict.
         """
         return args
+
+    def handle_action(self, action_name: str, context: Dict[str, Any]) -> CommandResponse:
+        """Handle an interactive action triggered by a button tap in the mobile app.
+
+        Called when the user taps an action button (e.g. Send, Cancel) on a
+        response that included actions. Override to implement action handling.
+
+        The base implementation handles ``cancel_click`` automatically so that
+        individual commands don't need to re-implement cancellation.
+
+        Args:
+            action_name: The action identifier (e.g. "send_click", "cancel_click").
+            context: Context data from the original response (e.g. draft contents).
+
+        Returns:
+            CommandResponse with the result of the action.
+        """
+        if action_name == "cancel_click":
+            return CommandResponse.final_response(
+                context_data={"cancelled": True, "message": "Cancelled."}
+            )
+        return CommandResponse.error_response(
+            error_details=f"Action '{action_name}' is not supported by {self.command_name}."
+        )
 
     def init_data(self) -> Dict[str, Any]:
         """
