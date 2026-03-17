@@ -1053,6 +1053,102 @@ class ControlDeviceCommand(IJarvisCommand):
             logger.warning("Direct device control failed, will try HA", entity_id=entity_id, error=str(e))
             return None
 
+    def handle_action(self, action_name: str, context: Dict[str, Any]) -> CommandResponse:
+        """Handle a device control action from the mobile app.
+
+        Called when the user taps an action button (e.g. Turn On, Turn Off)
+        on the DeviceEditScreen. Routes to the appropriate device service.
+        """
+        entity_id: str = context.get("entity_id", "")
+        if not entity_id:
+            return CommandResponse.error_response(
+                error_details="Missing entity_id in action context.",
+            )
+
+        # Run async control in a new event loop (MQTT listener thread has none)
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_single_action(entity_id, action_name, context=context)
+            )
+        finally:
+            loop.close()
+
+        if result.get("success"):
+            return CommandResponse.final_response(
+                context_data={
+                    "message": f"Done — {action_name.replace('_', ' ')} on {entity_id}.",
+                },
+            )
+        return CommandResponse.error_response(
+            error_details=result.get("error") or f"Failed to {action_name} on {entity_id}.",
+        )
+
+    async def _execute_single_action(
+        self, entity_id: str, action: str, data: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Execute a single device action, routing to direct or HA service."""
+        # Try the agent scheduler's DirectDeviceService first
+        direct_svc = _get_direct_device_service()
+
+        if direct_svc and direct_svc.is_direct_device(entity_id):
+            result = await direct_svc.control_device(entity_id, action, data)
+            return {"entity_id": entity_id, "success": result.success, "error": result.error}
+
+        # If no agent scheduler (e.g. keyboard listener context), use the
+        # device info from the action context to call the adapter directly.
+        if direct_svc is None:
+            try:
+                result = await self._control_via_adapter(entity_id, action, data, context)
+                if result is not None:
+                    return result
+            except Exception as e:
+                logger.warning("Direct adapter control failed", error=str(e))
+
+        # Fall back to Home Assistant
+        try:
+            ha_service = HomeAssistantService()
+            result = await ha_service.control_device(entity_id, action, data)
+            return {"entity_id": entity_id, "success": result.success, "error": result.error}
+        except Exception as e:
+            return {"entity_id": entity_id, "success": False, "error": str(e)}
+
+
+    async def _control_via_adapter(
+        self, entity_id: str, action: str, data: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Control a device using protocol/device info from the action context.
+
+        The CC control endpoint embeds protocol, cloud_id, model etc. in
+        the MQTT context so the node can call the adapter directly without
+        a round-trip back to CC.
+        """
+        from utils.device_family_discovery_service import get_device_family_discovery_service
+
+        ctx = context or {}
+        protocol: str = ctx.get("protocol") or ""
+        if not protocol or ctx.get("source") != "direct":
+            return None
+
+        discovery = get_device_family_discovery_service()
+        protocols = dict(discovery.get_all_families())
+        adapter = protocols.get(protocol)
+        if not adapter:
+            return {"entity_id": entity_id, "success": False, "error": f"No adapter: {protocol}"}
+
+        result = await adapter.control(
+            ip=ctx.get("local_ip") or "",
+            action=action,
+            data=data,
+            entity_id=entity_id,
+            mac_address=ctx.get("mac_address") or "",
+            cloud_id=ctx.get("cloud_id") or "",
+            model=ctx.get("model") or "",
+        )
+        return {"entity_id": entity_id, "success": result.success, "error": result.error}
+
 
 def _get_direct_device_service() -> Optional[Any]:
     """Get the DirectDeviceService singleton from agent scheduler context.
