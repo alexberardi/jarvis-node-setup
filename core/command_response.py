@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .ijarvis_button import IJarvisButton
     from .validation_result import ValidationResult
 
 
@@ -37,15 +38,22 @@ class CommandResponse:
     # Command-specific metadata (optional)
     metadata: Optional[Dict[str, Any]] = None
     
+    # Interactive actions (e.g. Send/Cancel buttons for email preview)
+    actions: Optional[list[IJarvisButton]] = None
+
     # Chunked response support
     is_chunked_response: bool = False
     chunk_session_id: Optional[str] = None
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate the response structure"""
         # If there's an error, success should be False
         if self.error_details and self.success:
             self.success = False
+
+    def actions_as_dicts(self) -> list[dict[str, str]]:
+        """Serialize actions to plain dicts for the wire format."""
+        return [a.to_dict() for a in (self.actions or [])]
     
     @classmethod
     def success_response(

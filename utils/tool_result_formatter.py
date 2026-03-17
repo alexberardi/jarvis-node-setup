@@ -52,6 +52,12 @@ def format_tool_result(
     output["context"] = context
     output["error"] = result.error_details
 
+    # Serialize IJarvisButton actions onto the wire so CC can read them
+    if result.actions:
+        if output["context"] is None:
+            output["context"] = {}
+        output["context"]["actions"] = [a.to_dict() for a in result.actions]
+
     return {
         "tool_call_id": tool_call_id,
         "output": output,
