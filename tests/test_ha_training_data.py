@@ -518,7 +518,7 @@ class TestStatusExampleGeneration:
 class TestCaching:
     """Test module-level caching behavior."""
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_second_call_uses_cache(self, mock_agent_cls):
         """Second call to get_ha_training_data returns cached data."""
         mock_agent = MagicMock()
@@ -541,7 +541,7 @@ class TestCaching:
         # Agent was only instantiated once
         assert mock_agent_cls.call_count == 1
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_clear_cache_allows_refetch(self, mock_agent_cls):
         """Clearing cache allows fresh fetch."""
         mock_agent = MagicMock()
@@ -568,7 +568,7 @@ class TestCaching:
 class TestFallback:
     """Test fallback behavior when HA is unreachable."""
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_returns_none_on_agent_error(self, mock_agent_cls):
         """Returns None when agent run() raises."""
         mock_agent = MagicMock()
@@ -578,7 +578,7 @@ class TestFallback:
         result = get_ha_training_data()
         assert result is None
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_returns_none_on_last_error(self, mock_agent_cls):
         """Returns None when agent reports last_error."""
         mock_agent = MagicMock()
@@ -593,7 +593,7 @@ class TestFallback:
         result = get_ha_training_data()
         assert result is None
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_returns_none_on_import_error(self, mock_agent_cls):
         """Returns None when HomeAssistantAgent raises during run."""
         mock_agent = MagicMock()
@@ -603,7 +603,7 @@ class TestFallback:
         result = get_ha_training_data()
         assert result is None
 
-    @patch("agents.home_assistant_agent.HomeAssistantAgent")
+    @patch("agents.home_assistant.agent.HomeAssistantAgent")
     def test_caches_none_result(self, mock_agent_cls):
         """Caches None result (doesn't re-fetch on failure)."""
         mock_agent = MagicMock()

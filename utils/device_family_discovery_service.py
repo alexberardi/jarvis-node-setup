@@ -11,6 +11,7 @@ Mirrors the AgentDiscoveryService pattern:
 import importlib
 import pkgutil
 import threading
+from pathlib import Path
 
 from jarvis_log_client import JarvisLogger
 
@@ -61,60 +62,81 @@ class DeviceFamilyDiscoveryService:
 
         new_families: dict[str, IJarvisDeviceProtocol] = {}
 
+        # Scan built-in families
         for _, module_name, _ in pkgutil.iter_modules(device_families.__path__):
             if module_name == "base":
                 continue
+            self._try_load_family(f"device_families.{module_name}", module_name, new_families)
 
-            try:
-                module = importlib.import_module(f"device_families.{module_name}")
-
-                for attr in dir(module):
-                    cls = getattr(module, attr)
-
-                    if (
-                        isinstance(cls, type)
-                        and issubclass(cls, IJarvisDeviceProtocol)
-                        and cls is not IJarvisDeviceProtocol
-                    ):
-                        instance = cls()
-
-                        # Validate secrets before registering
-                        missing_secrets = instance.validate_secrets()
-                        if missing_secrets:
-                            logger.warning(
-                                "Device family skipped due to missing secrets",
-                                family=instance.protocol_name,
-                                connection_type=instance.connection_type,
-                                missing=missing_secrets,
-                            )
-                            continue
-
-                        new_families[instance.protocol_name] = instance
-                        logger.debug(
-                            "Discovered device family",
-                            family=instance.protocol_name,
-                            connection_type=instance.connection_type,
-                            domains=instance.supported_domains,
+        # Scan custom families (installed by Pantry)
+        custom_families_dir = Path(device_families.__path__[0]).parent / "device_families" / "custom_families"
+        if custom_families_dir.exists():
+            for family_dir in custom_families_dir.iterdir():
+                if family_dir.is_dir() and not family_dir.name.startswith("_"):
+                    protocol_py = family_dir / "protocol.py"
+                    if protocol_py.exists():
+                        import sys
+                        if str(family_dir) not in sys.path:
+                            sys.path.insert(0, str(family_dir))
+                        self._try_load_family(
+                            f"device_families.custom_families.{family_dir.name}.protocol",
+                            family_dir.name,
+                            new_families,
                         )
-
-            except ImportError as e:
-                logger.debug(
-                    "Device family module skipped (missing dependency)",
-                    module=module_name,
-                    error=str(e),
-                )
-            except Exception as e:
-                logger.error(
-                    "Error loading device family module",
-                    module=module_name,
-                    error=str(e),
-                )
 
         self._families_cache = new_families
         self._discovered = True
 
         logger.info("Device family discovery complete", count=len(new_families))
         return new_families
+
+    def _try_load_family(
+        self, module_path: str, module_name: str, families_dict: dict[str, IJarvisDeviceProtocol]
+    ) -> None:
+        """Try to load a device family from a module path."""
+        try:
+            module = importlib.import_module(module_path)
+
+            for attr in dir(module):
+                cls = getattr(module, attr)
+
+                if (
+                    isinstance(cls, type)
+                    and issubclass(cls, IJarvisDeviceProtocol)
+                    and cls is not IJarvisDeviceProtocol
+                ):
+                    instance = cls()
+
+                    missing_secrets = instance.validate_secrets()
+                    if missing_secrets:
+                        logger.warning(
+                            "Device family skipped due to missing secrets",
+                            family=instance.protocol_name,
+                            connection_type=instance.connection_type,
+                            missing=missing_secrets,
+                        )
+                        continue
+
+                    families_dict[instance.protocol_name] = instance
+                    logger.debug(
+                        "Discovered device family",
+                        family=instance.protocol_name,
+                        connection_type=instance.connection_type,
+                        domains=instance.supported_domains,
+                    )
+
+        except ImportError as e:
+            logger.debug(
+                "Device family module skipped (missing dependency)",
+                module=module_name,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.error(
+                "Error loading device family module",
+                module=module_name,
+                error=str(e),
+            )
 
     def get_family(self, name: str) -> IJarvisDeviceProtocol | None:
         """Get a specific device family by protocol name.

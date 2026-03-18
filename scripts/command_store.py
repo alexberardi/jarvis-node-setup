@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.command_store_service import (  # noqa: E402
     install_from_github,
+    install_from_local,
     remove,
     list_installed,
     get_installed_metadata,
@@ -49,8 +50,23 @@ def _get_store_client():
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    """Install a command from a GitHub URL or the store."""
-    if args.url:
+    """Install a command from a GitHub URL, local path, or the store."""
+    if args.local:
+        # Local directory install (dev/testing)
+        try:
+            manifest = install_from_local(args.local)
+            print(f"Installed: {manifest.name} v{manifest.version}")
+            print(f"  Type: {manifest.package_type}")
+            print(f"  Components: {len(manifest.components)}")
+            for comp in manifest.components:
+                print(f"    - {comp.type}: {comp.name} ({comp.path})")
+            if manifest.secrets:
+                print(f"  Secrets to configure: {', '.join(s.key for s in manifest.secrets)}")
+        except InstallError as e:
+            print(f"Install failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+    elif args.url:
         # Direct GitHub install
         try:
             manifest = install_from_github(
@@ -265,6 +281,7 @@ def main() -> None:
     install_parser = subparsers.add_parser("install", help="Install a command")
     install_parser.add_argument("command_name", nargs="?", help="Command name (from store)")
     install_parser.add_argument("--url", help="GitHub repo URL (direct install)")
+    install_parser.add_argument("--local", help="Local directory path (dev/testing)")
     install_parser.add_argument("--version", help="Git tag to install (e.g. v1.0.0)")
     install_parser.add_argument("--skip-tests", action="store_true", help="Skip container tests")
     install_parser.set_defaults(func=cmd_install)

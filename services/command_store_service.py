@@ -1,7 +1,8 @@
 """Local command store operations: install, remove, update, list.
 
-Manages custom commands installed from GitHub repos or the command store API.
-Commands are installed to commands/custom_commands/<command_name>/.
+Manages custom commands/bundles installed from GitHub repos or the command
+store API. Single commands install to commands/custom_commands/<name>/.
+Bundles scatter components to their type-specific directories.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,11 +23,41 @@ from core.command_manifest import CommandManifest
 
 logger = JarvisLogger(service="jarvis-node")
 
+# Base project dir (jarvis-node-setup/)
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+# Component type → install directory relative to project root
+COMPONENT_INSTALL_DIRS: dict[str, str] = {
+    "command": "commands/custom_commands",
+    "agent": "agents/custom_agents",
+    "device_protocol": "device_families/custom_families",
+    "device_manager": "device_managers/custom_managers",
+}
+
 # Path to custom commands directory
-CUSTOM_COMMANDS_DIR = Path(__file__).resolve().parent.parent / "commands" / "custom_commands"
+CUSTOM_COMMANDS_DIR = _PROJECT_DIR / "commands" / "custom_commands"
+
+# Package metadata stored in ~/.jarvis/packages/
+PACKAGES_DIR = Path.home() / ".jarvis" / "packages"
 
 # Metadata file written alongside installed commands
 STORE_METADATA_FILE = ".store_metadata.json"
+
+
+def register_package_lib_paths() -> None:
+    """Add all installed package lib dirs to sys.path.
+
+    Call this at node startup so scattered components can import shared
+    code from their bundle's lib directory.
+    """
+    if not PACKAGES_DIR.exists():
+        return
+
+    for meta_file in PACKAGES_DIR.glob("*.json"):
+        lib_dir = meta_file.parent / meta_file.stem / "lib"
+        if lib_dir.is_dir() and str(lib_dir) not in sys.path:
+            sys.path.append(str(lib_dir))
+            logger.debug("Added package lib to path", package=meta_file.stem, lib=str(lib_dir))
 
 
 class CommandStoreError(Exception):
@@ -67,15 +99,22 @@ def _clone_repo(repo_url: str, tag: str | None = None) -> Path:
 def _validate_repo_structure(repo_dir: Path) -> CommandManifest:
     """Validate the repo has required files and a valid manifest.
 
+    Supports both single-command repos (jarvis_command.yaml + command.py)
+    and bundle repos (jarvis_package.yaml with components list).
+
     Returns:
         Parsed CommandManifest.
     """
-    required_files = ["jarvis_command.yaml", "command.py"]
-    for fname in required_files:
-        if not (repo_dir / fname).exists():
-            raise InstallError(f"Missing required file: {fname}")
+    # Find manifest file
+    manifest_path: Path | None = None
+    for name in ("jarvis_package.yaml", "jarvis_command.yaml"):
+        if (repo_dir / name).exists():
+            manifest_path = repo_dir / name
+            break
 
-    manifest_path = repo_dir / "jarvis_command.yaml"
+    if manifest_path is None:
+        raise InstallError("Missing manifest: neither jarvis_package.yaml nor jarvis_command.yaml found")
+
     with open(manifest_path) as f:
         raw = yaml.safe_load(f)
 
@@ -86,6 +125,23 @@ def _validate_repo_structure(repo_dir: Path) -> CommandManifest:
 
     if not manifest.name:
         raise InstallError("Manifest 'name' is empty")
+
+    # Infer components from repo structure if not declared
+    if not manifest.components:
+        from core.command_manifest import infer_components
+        manifest.components = infer_components(repo_dir, manifest.name)
+        if not manifest.components:
+            raise InstallError(
+                "No components found. Declare 'components' in the manifest or use "
+                "the convention: command.py, commands/*/command.py, agents/*/agent.py, "
+                "device_families/*/protocol.py, device_managers/*/manager.py"
+            )
+
+    # Verify each component path exists
+    for comp in manifest.components:
+        comp_path = repo_dir / comp.path
+        if not comp_path.exists():
+            raise InstallError(f"Component '{comp.name}' path not found: {comp.path}")
 
     return manifest
 
@@ -103,7 +159,22 @@ def _check_platform_compatibility(manifest: CommandManifest) -> None:
             )
 
 
-def _check_name_conflict(command_name: str) -> None:
+def _check_name_conflicts(manifest: CommandManifest) -> None:
+    """Check if any component name conflicts with a built-in.
+
+    Checks commands, agents, protocols, and managers for name collisions.
+    """
+    for comp in manifest.components:
+        if comp.type == "command":
+            _check_command_name_conflict(comp.name)
+        elif comp.type == "agent":
+            _check_agent_name_conflict(comp.name)
+        elif comp.type == "device_protocol":
+            _check_protocol_name_conflict(comp.name)
+        # device_manager — no built-in conflict check needed yet
+
+
+def _check_command_name_conflict(command_name: str) -> None:
     """Check if the command name conflicts with a built-in command."""
     try:
         import commands
@@ -131,6 +202,30 @@ def _check_name_conflict(command_name: str) -> None:
                 continue
     except ImportError:
         pass  # Not in node context
+
+
+def _check_agent_name_conflict(agent_name: str) -> None:
+    """Check if the agent name conflicts with a built-in agent."""
+    try:
+        from utils.agent_discovery_service import get_agent_discovery_service
+        svc = get_agent_discovery_service()
+        existing = svc.get_agent(agent_name)
+        if existing:
+            raise InstallError(f"Agent name '{agent_name}' conflicts with built-in agent")
+    except ImportError:
+        pass
+
+
+def _check_protocol_name_conflict(protocol_name: str) -> None:
+    """Check if the protocol name conflicts with a built-in device protocol."""
+    try:
+        from utils.device_family_discovery_service import get_device_family_discovery_service
+        svc = get_device_family_discovery_service()
+        existing = svc.get_family(protocol_name)
+        if existing:
+            raise InstallError(f"Protocol name '{protocol_name}' conflicts with built-in protocol")
+    except ImportError:
+        pass
 
 
 def _install_pip_deps(manifest: CommandManifest) -> None:
@@ -183,88 +278,255 @@ def _write_store_metadata(
         json.dump(metadata, f, indent=2)
 
 
+def _collect_shared_dirs(repo_dir: Path, component_paths: list[str]) -> list[Path]:
+    """Find directories in the repo that aren't component dirs and contain .py files.
+
+    These are shared code directories (services/, utils/, helpers/, etc.) that
+    components may import from.
+
+    Args:
+        repo_dir: Cloned repo root.
+        component_paths: List of component entry point paths (relative to repo).
+
+    Returns:
+        List of shared directory paths (absolute).
+    """
+    # Collect all top-level parent dirs that contain component entry points
+    component_top_dirs: set[str] = set()
+    for cp in component_paths:
+        parts = Path(cp).parts
+        if len(parts) > 1:
+            component_top_dirs.add(parts[0])
+
+    shared: list[Path] = []
+    skip = {".git", ".venv", "__pycache__", ".pytest_cache", "node_modules"}
+
+    for entry in repo_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        if entry.name in skip or entry.name.startswith("."):
+            continue
+        # If this top-level dir is not a component parent dir and has .py files, it's shared
+        if entry.name not in component_top_dirs and any(entry.rglob("*.py")):
+            shared.append(entry)
+
+    return shared
+
+
+def _install_shared_code(
+    package_name: str,
+    shared_dirs: list[Path],
+    repo_dir: Path,
+) -> Path:
+    """Install shared code to a package-specific lib directory.
+
+    Shared code lives at ~/.jarvis/packages/<name>/lib/ and is added to
+    sys.path at node startup so all scattered components can import from it.
+
+    Args:
+        package_name: The package name.
+        shared_dirs: Shared directories from the repo to install.
+        repo_dir: Cloned repo root (for copying root-level .py files).
+
+    Returns:
+        The shared lib directory.
+    """
+    lib_dir = PACKAGES_DIR / package_name / "lib"
+    if lib_dir.exists():
+        shutil.rmtree(lib_dir)
+    lib_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy shared directories (services/, utils/, etc.)
+    for shared_dir in shared_dirs:
+        dest = lib_dir / shared_dir.name
+        shutil.copytree(shared_dir, dest, ignore=shutil.ignore_patterns(
+            "__pycache__", "*.pyc", ".pytest_cache",
+        ))
+        # Ensure each subdir is a package
+        init_file = dest / "__init__.py"
+        if not init_file.exists():
+            init_file.write_text("")
+
+    # Copy root-level .py helper files (not manifests)
+    for py_file in repo_dir.glob("*.py"):
+        shutil.copy2(py_file, lib_dir / py_file.name)
+
+    logger.info("Installed shared code", package=package_name, dir=str(lib_dir))
+    return lib_dir
+
+
+def _install_component(repo_dir: Path, comp_type: str, comp_name: str, comp_path: str) -> Path:
+    """Install a single component to its target directory.
+
+    Args:
+        repo_dir: Cloned repo root.
+        comp_type: Component type (command, agent, device_protocol, device_manager).
+        comp_name: Component name.
+        comp_path: Path to the component's main file relative to repo root.
+
+    Returns:
+        The install directory for this component.
+    """
+    base_dir = COMPONENT_INSTALL_DIRS.get(comp_type)
+    if not base_dir:
+        raise InstallError(f"Unknown component type: {comp_type}")
+
+    install_dir = _PROJECT_DIR / base_dir / comp_name
+    if install_dir.exists():
+        logger.warning("Replacing existing component", type=comp_type, name=comp_name)
+        shutil.rmtree(install_dir)
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy the component file
+    source_file = repo_dir / comp_path
+    shutil.copy2(source_file, install_dir / source_file.name)
+
+    # Copy sibling .py files from the same directory
+    source_dir = source_file.parent
+    for py_file in source_dir.glob("*.py"):
+        if py_file.name != source_file.name:
+            shutil.copy2(py_file, install_dir / py_file.name)
+
+    # Write __init__.py
+    (install_dir / "__init__.py").write_text(
+        f"# Custom {comp_type}: {comp_name}\n"
+    )
+
+    logger.info("Installed component", type=comp_type, name=comp_name, dir=str(install_dir))
+    return install_dir
+
+
+def _write_package_metadata(
+    manifest: CommandManifest,
+    repo_url: str,
+    component_dirs: dict[str, str],
+    danger_rating: int | None = None,
+    verified: bool = False,
+) -> None:
+    """Write package metadata to ~/.jarvis/packages/<name>.json.
+
+    This tracks all component install dirs for clean uninstall.
+    """
+    PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "package_name": manifest.name,
+        "package_type": manifest.package_type,
+        "version": manifest.version,
+        "repo_url": repo_url,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "danger_rating": danger_rating,
+        "verified": verified,
+        "display_name": manifest.display_name,
+        "author": manifest.author.github if manifest.author else None,
+        "components": [
+            {"type": c.type, "name": c.name, "path": c.path}
+            for c in manifest.components
+        ],
+        "component_dirs": component_dirs,
+    }
+    meta_path = PACKAGES_DIR / f"{manifest.name}.json"
+    with open(meta_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
+    """Core install logic — validates, scatters components, installs deps.
+
+    Args:
+        repo_dir: Path to repo directory (cloned or local).
+        source_label: Display label for logging (URL or path).
+
+    Returns:
+        The installed manifest.
+    """
+    # 1. Validate structure + manifest
+    manifest = _validate_repo_structure(repo_dir)
+
+    # 2. Check platform
+    _check_platform_compatibility(manifest)
+
+    # 3. Check name conflicts for all components
+    _check_name_conflicts(manifest)
+
+    # 4. Install shared code for bundles (ha_shared/, etc.)
+    component_paths = [c.path for c in manifest.components]
+    shared_dirs = _collect_shared_dirs(repo_dir, component_paths) if manifest.is_bundle else []
+    if shared_dirs:
+        _install_shared_code(manifest.name, shared_dirs, repo_dir)
+
+    # 5. Install components
+    component_dirs: dict[str, str] = {}
+    for comp in manifest.components:
+        install_dir = _install_component(repo_dir, comp.type, comp.name, comp.path)
+        # Use type:name as key to avoid collisions (e.g., agent and manager both named "home_assistant")
+        component_dirs[f"{comp.type}:{comp.name}"] = str(install_dir)
+
+    # 6. Write package metadata (for clean uninstall)
+    _write_package_metadata(manifest, source_label, component_dirs)
+
+    # 7. Also write .store_metadata.json in the first command dir
+    command_comps = [c for c in manifest.components if c.type == "command"]
+    if command_comps:
+        first_cmd_dir = _PROJECT_DIR / COMPONENT_INSTALL_DIRS["command"] / command_comps[0].name
+        if first_cmd_dir.exists():
+            _write_store_metadata(first_cmd_dir, manifest, source_label)
+
+    # 8. Install pip deps
+    _install_pip_deps(manifest)
+
+    # 9. Seed secrets
+    _seed_secrets(manifest)
+
+    logger.info(
+        "Package installed successfully",
+        package=manifest.name,
+        version=manifest.version,
+        components=len(manifest.components),
+    )
+    return manifest
+
+
 def install_from_github(
     repo_url: str,
     version_tag: str | None = None,
     skip_tests: bool = False,
 ) -> CommandManifest:
-    """Install a command from a GitHub repo URL.
+    """Install a command or bundle from a GitHub repo URL.
 
     Args:
-        repo_url: GitHub HTTPS URL (e.g. https://github.com/user/jarvis-command-foo).
-        version_tag: Optional git tag to checkout (e.g. "v1.0.0").
+        repo_url: GitHub HTTPS URL.
+        version_tag: Optional git tag to checkout.
         skip_tests: Skip container tests (user accepts risk).
 
     Returns:
         The installed command's manifest.
     """
-    logger.info("Installing command from GitHub", repo_url=repo_url, tag=version_tag)
-
-    # 1. Clone
+    logger.info("Installing from GitHub", repo_url=repo_url, tag=version_tag)
     repo_dir = _clone_repo(repo_url, version_tag)
     try:
-        # 2. Validate structure + manifest
-        manifest = _validate_repo_structure(repo_dir)
-
-        # 3. Check platform
-        _check_platform_compatibility(manifest)
-
-        # 4. Check name conflict
-        _check_name_conflict(manifest.name)
-
-        # 5. Container tests (Phase 5 — skipped for now)
-        if not skip_tests:
-            # TODO: Run container tests via container_test_service
-            pass
-
-        # 6. Install to custom_commands/
-        install_dir = CUSTOM_COMMANDS_DIR / manifest.name
-        if install_dir.exists():
-            logger.warning("Replacing existing custom command", command=manifest.name)
-            shutil.rmtree(install_dir)
-
-        install_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy command.py
-        shutil.copy2(repo_dir / "command.py", install_dir / "command.py")
-
-        # Copy requirements.txt if present
-        req_file = repo_dir / "requirements.txt"
-        if req_file.exists():
-            shutil.copy2(req_file, install_dir / "requirements.txt")
-
-        # Copy any extra Python files referenced by command.py
-        for py_file in repo_dir.glob("*.py"):
-            if py_file.name != "command.py":
-                shutil.copy2(py_file, install_dir / py_file.name)
-
-        # Copy manifest
-        shutil.copy2(repo_dir / "jarvis_command.yaml", install_dir / "jarvis_command.yaml")
-
-        # 7. Write __init__.py
-        (install_dir / "__init__.py").write_text(
-            f"# Custom command: {manifest.name}\n"
-        )
-
-        # 8. Write metadata
-        _write_store_metadata(install_dir, manifest, repo_url)
-
-        # 9. Install pip deps
-        _install_pip_deps(manifest)
-
-        # 10. Seed secrets
-        _seed_secrets(manifest)
-
-        logger.info(
-            "Command installed successfully",
-            command=manifest.name,
-            version=manifest.version,
-        )
-        return manifest
-
+        return _do_install(repo_dir, repo_url)
     finally:
-        # Clean up temp dir
         shutil.rmtree(repo_dir.parent, ignore_errors=True)
+
+
+def install_from_local(local_path: str | Path) -> CommandManifest:
+    """Install a command or bundle from a local directory.
+
+    Useful for development and testing. Does not clone — reads directly
+    from the given path.
+
+    Args:
+        local_path: Path to a directory containing a manifest + components.
+
+    Returns:
+        The installed command's manifest.
+    """
+    repo_dir = Path(local_path).resolve()
+    if not repo_dir.is_dir():
+        raise InstallError(f"Not a directory: {repo_dir}")
+    logger.info("Installing from local path", path=str(repo_dir))
+    return _do_install(repo_dir, f"local:{repo_dir}")
 
 
 def _seed_secrets(manifest: CommandManifest) -> None:
@@ -288,26 +550,73 @@ def _seed_secrets(manifest: CommandManifest) -> None:
             logger.warning("Could not seed secrets", error=str(e))
 
 
-def remove(command_name: str) -> None:
-    """Remove an installed custom command.
+def remove(package_name: str) -> None:
+    """Remove an installed package (command or bundle).
+
+    Checks ~/.jarvis/packages/<name>.json for component directories.
+    Falls back to legacy custom_commands/ lookup for single commands.
 
     Args:
-        command_name: The command_name to remove.
+        package_name: The package/command name to remove.
 
     Raises:
-        RemoveError: If the command is not found or is a built-in.
+        RemoveError: If the package is not found.
     """
-    install_dir = CUSTOM_COMMANDS_DIR / command_name
-    if not install_dir.exists():
-        raise RemoveError(f"Custom command '{command_name}' is not installed")
+    # Check for package metadata first
+    pkg_meta_path = PACKAGES_DIR / f"{package_name}.json"
+    if pkg_meta_path.exists():
+        with open(pkg_meta_path) as f:
+            pkg_meta = json.load(f)
 
-    # Safety check — ensure it's in custom_commands
+        component_dirs = pkg_meta.get("component_dirs", {})
+        logger.info("Removing package", package=package_name, components=len(component_dirs))
+
+        for comp_name, comp_dir_str in component_dirs.items():
+            comp_dir = Path(comp_dir_str)
+            if comp_dir.exists():
+                # Safety: must be under project dir
+                if not str(comp_dir.resolve()).startswith(str(_PROJECT_DIR.resolve())):
+                    logger.warning("Skipping unsafe path", path=comp_dir_str)
+                    continue
+                shutil.rmtree(comp_dir)
+                logger.info("Removed component dir", component=comp_name, dir=comp_dir_str)
+
+        # Remove shared lib dir
+        lib_dir = PACKAGES_DIR / package_name / "lib"
+        if lib_dir.exists():
+            shutil.rmtree(lib_dir)
+        # Remove package dir if empty
+        pkg_dir = PACKAGES_DIR / package_name
+        if pkg_dir.exists() and not any(pkg_dir.iterdir()):
+            pkg_dir.rmdir()
+
+        # Remove package metadata
+        pkg_meta_path.unlink()
+
+        # Disable commands in registry
+        for comp in pkg_meta.get("components", []):
+            if comp.get("type") == "command":
+                _disable_in_registry(comp["name"])
+
+        logger.info("Package removed", package=package_name)
+        return
+
+    # Legacy fallback: single command in custom_commands/
+    install_dir = CUSTOM_COMMANDS_DIR / package_name
+    if not install_dir.exists():
+        raise RemoveError(f"Package '{package_name}' is not installed")
+
     if not str(install_dir.resolve()).startswith(str(CUSTOM_COMMANDS_DIR.resolve())):
         raise RemoveError("Cannot remove: path escapes custom_commands directory")
 
-    logger.info("Removing custom command", command=command_name)
+    logger.info("Removing custom command (legacy)", command=package_name)
+    _disable_in_registry(package_name)
+    shutil.rmtree(install_dir)
+    logger.info("Custom command removed", command=package_name)
 
-    # Disable in command registry
+
+def _disable_in_registry(command_name: str) -> None:
+    """Disable a command in the node's command registry."""
     try:
         from db import SessionLocal
         from repositories.command_registry_repository import CommandRegistryRepository
@@ -321,50 +630,63 @@ def remove(command_name: str) -> None:
     except Exception as e:
         logger.warning("Could not update command registry", error=str(e))
 
-    shutil.rmtree(install_dir)
-    logger.info("Custom command removed", command=command_name)
-
 
 def list_installed() -> list[dict[str, Any]]:
-    """List all installed custom commands.
+    """List all installed packages and custom commands.
+
+    Reads from ~/.jarvis/packages/ first, then falls back
+    to scanning custom_commands/ for legacy installs.
 
     Returns:
-        List of dicts with command metadata.
+        List of dicts with package/command metadata.
     """
     results: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
 
-    if not CUSTOM_COMMANDS_DIR.exists():
-        return results
-
-    for entry in sorted(CUSTOM_COMMANDS_DIR.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("_"):
-            continue
-
-        meta_file = entry / STORE_METADATA_FILE
-        if meta_file.exists():
+    # 1. Package metadata files
+    if PACKAGES_DIR.exists():
+        for meta_file in sorted(PACKAGES_DIR.glob("*.json")):
             with open(meta_file) as f:
                 metadata = json.load(f)
             results.append(metadata)
-        else:
-            # No metadata file — manually installed or legacy
-            results.append({
-                "command_name": entry.name,
-                "version": "unknown",
-                "repo_url": None,
-                "installed_at": None,
-            })
+            seen_names.add(metadata.get("package_name", ""))
+
+    # 2. Legacy custom_commands/ scan
+    if CUSTOM_COMMANDS_DIR.exists():
+        for entry in sorted(CUSTOM_COMMANDS_DIR.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            if entry.name in seen_names:
+                continue
+
+            meta_file = entry / STORE_METADATA_FILE
+            if meta_file.exists():
+                with open(meta_file) as f:
+                    metadata = json.load(f)
+                results.append(metadata)
+            else:
+                results.append({
+                    "command_name": entry.name,
+                    "version": "unknown",
+                    "repo_url": None,
+                    "installed_at": None,
+                })
 
     return results
 
 
-def get_installed_metadata(command_name: str) -> dict[str, Any] | None:
-    """Get metadata for an installed custom command."""
-    meta_file = CUSTOM_COMMANDS_DIR / command_name / STORE_METADATA_FILE
+def get_installed_metadata(package_name: str) -> dict[str, Any] | None:
+    """Get metadata for an installed package or custom command."""
+    # Check package metadata first
+    pkg_meta = PACKAGES_DIR / f"{package_name}.json"
+    if pkg_meta.exists():
+        with open(pkg_meta) as f:
+            return json.load(f)
+
+    # Legacy fallback
+    meta_file = CUSTOM_COMMANDS_DIR / package_name / STORE_METADATA_FILE
     if meta_file.exists():
         with open(meta_file) as f:
             return json.load(f)
     return None
 
-
-# Need sys for pip subprocess
-import sys  # noqa: E402

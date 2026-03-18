@@ -1,17 +1,25 @@
-"""Pydantic model for jarvis_command.yaml manifest files.
+"""Pydantic model for jarvis_command.yaml / jarvis_package.yaml manifest files.
 
 Used by the manifest generator CLI and the command store installer to
-parse/validate command manifests.
+parse/validate command manifests. Supports single commands and
+multi-component bundles.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 SCHEMA_VERSION: int = 1
+
+VALID_COMPONENT_TYPES: list[str] = [
+    "command",
+    "agent",
+    "device_protocol",
+    "device_manager",
+]
 
 VALID_CATEGORIES: list[str] = [
     "automation",
@@ -36,6 +44,15 @@ VALID_CATEGORIES: list[str] = [
     "utilities",
     "weather",
 ]
+
+
+class ManifestComponent(BaseModel):
+    """A single component within a package bundle."""
+
+    type: Literal["command", "agent", "device_protocol", "device_manager"]
+    name: str
+    path: str
+    description: str = ""
 
 
 class ManifestAuthor(BaseModel):
@@ -106,3 +123,87 @@ class CommandManifest(BaseModel):
     license: str = "MIT"
     categories: list[str] = Field(default_factory=list)
     homepage: str = ""
+
+    # Multi-component bundles (explicit or inferred from repo structure)
+    components: list[ManifestComponent] = Field(default_factory=list)
+
+    @property
+    def is_bundle(self) -> bool:
+        """True if this package has multiple components or non-command types."""
+        return len(self.components) > 1 or (
+            len(self.components) == 1
+            and self.components[0].type != "command"
+        )
+
+    @property
+    def package_type(self) -> str:
+        """'bundle' if multi-component, 'command' otherwise."""
+        return "bundle" if self.is_bundle else "command"
+
+
+# Convention: directory name → component type
+COMPONENT_DIR_TYPES: dict[str, str] = {
+    "commands": "command",
+    "agents": "agent",
+    "device_families": "device_protocol",
+    "device_managers": "device_manager",
+}
+
+# Convention: component type → expected entry point filename
+COMPONENT_ENTRY_POINTS: dict[str, str] = {
+    "command": "command.py",
+    "agent": "agent.py",
+    "device_protocol": "protocol.py",
+    "device_manager": "manager.py",
+}
+
+
+def infer_components(repo_dir: Any, manifest_name: str) -> list[ManifestComponent]:
+    """Infer components from repo directory structure when not declared in manifest.
+
+    Scans for:
+    - command.py at root → single command
+    - commands/<name>/command.py → command(s)
+    - agents/<name>/agent.py → agent(s)
+    - device_families/<name>/protocol.py → device protocol(s)
+    - device_managers/<name>/manager.py → device manager(s)
+
+    Args:
+        repo_dir: Path to the cloned repo.
+        manifest_name: Package name from manifest (used for root-level command.py).
+
+    Returns:
+        List of inferred ManifestComponents. Empty if nothing found.
+    """
+    from pathlib import Path
+    repo_dir = Path(repo_dir)
+
+    components: list[ManifestComponent] = []
+
+    # Check for root-level command.py (simple single-command repo)
+    if (repo_dir / "command.py").exists():
+        components.append(ManifestComponent(
+            type="command",
+            name=manifest_name,
+            path="command.py",
+        ))
+
+    # Scan convention directories
+    for dir_name, comp_type in COMPONENT_DIR_TYPES.items():
+        type_dir = repo_dir / dir_name
+        if not type_dir.is_dir():
+            continue
+
+        entry_filename = COMPONENT_ENTRY_POINTS[comp_type]
+        for sub_dir in sorted(type_dir.iterdir()):
+            if not sub_dir.is_dir() or sub_dir.name.startswith(("_", ".")):
+                continue
+            entry_point = sub_dir / entry_filename
+            if entry_point.exists():
+                components.append(ManifestComponent(
+                    type=comp_type,  # type: ignore[arg-type]
+                    name=sub_dir.name,
+                    path=str(entry_point.relative_to(repo_dir)),
+                ))
+
+    return components
