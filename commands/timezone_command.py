@@ -109,7 +109,7 @@ class TimezoneCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Current time in a city, state, or country. Use for 'what time is it in Tokyo?', time zone queries. Not for weather — use get_weather."
+        return "Current time/date, locally or in a city/state/country. Use for 'what time is it?', 'what day is it?', 'what time is it in Tokyo?'. Not for weather — use get_weather."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -119,7 +119,7 @@ class TimezoneCommand(IJarvisCommand):
     def keywords(self) -> List[str]:
         return [
             "time", "current time", "what time", "time zone", "timezone",
-            "clock", "time in"
+            "clock", "time in", "what day", "date", "today"
         ]
 
     @property
@@ -128,8 +128,8 @@ class TimezoneCommand(IJarvisCommand):
             JarvisParameter(
                 "location",
                 "string",
-                required=True,
-                description="City, state, or country name (e.g., 'Tokyo', 'California', 'London')."
+                required=False,
+                description="City, state, or country name (e.g., 'Tokyo', 'California', 'London'). Omit for local time."
             )
         ]
 
@@ -218,44 +218,42 @@ class TimezoneCommand(IJarvisCommand):
         ]
         return examples
 
+    # Generic/placeholder values the LLM might pass instead of omitting
+    _LOCAL_PLACEHOLDERS = {"here", "local", "current", "now", "default", "none", "null", "my location", ""}
+
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the timezone command"""
         try:
-            location = kwargs.get("location", "").strip()
-
-            if not location:
-                return CommandResponse.error_response(
-                    error_details="Location parameter is required",
-                    context_data={
-                        "error": "Missing location"
-                    }
-                )
-
-            # Normalize location for lookup
+            location = (kwargs.get("location") or "").strip()
             location_lower = location.lower()
 
-            # Find timezone for location
-            timezone_str = LOCATION_TIMEZONE_MAP.get(location_lower)
+            # No location or generic placeholder → return local time
+            if not location or location_lower in self._LOCAL_PLACEHOLDERS:
+                current_time = datetime.now().astimezone()
+                timezone_str = str(current_time.tzinfo)
+                location = "local"
+            else:
+                # Find timezone for location
+                timezone_str = LOCATION_TIMEZONE_MAP.get(location_lower)
 
-            if not timezone_str:
-                # Try partial matching
-                for loc_key, tz in LOCATION_TIMEZONE_MAP.items():
-                    if loc_key in location_lower or location_lower in loc_key:
-                        timezone_str = tz
-                        break
+                if not timezone_str:
+                    # Try partial matching
+                    for loc_key, tz in LOCATION_TIMEZONE_MAP.items():
+                        if loc_key in location_lower or location_lower in loc_key:
+                            timezone_str = tz
+                            break
 
-            if not timezone_str:
-                return CommandResponse.error_response(
-                    error_details=f"Unknown location: {location}",
-                    context_data={
-                        "location": location,
-                        "error": "Location not found in timezone database"
-                    }
-                )
+                if not timezone_str:
+                    return CommandResponse.error_response(
+                        error_details=f"Unknown location: {location}",
+                        context_data={
+                            "location": location,
+                            "error": "Location not found in timezone database"
+                        }
+                    )
 
-            # Get current time in that timezone
-            tz = ZoneInfo(timezone_str)
-            current_time = datetime.now(tz)
+                tz = ZoneInfo(timezone_str)
+                current_time = datetime.now(tz)
 
             # Format time for display
             time_str = current_time.strftime("%I:%M %p")  # e.g., "3:45 PM"

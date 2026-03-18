@@ -123,6 +123,9 @@ def main():
     else:
         logger.info("MQTT disabled in config, skipping MQTT listener")
 
+    # Device scanning is now user-driven via MQTT (mobile → CC → node).
+    # See services/device_scan_handler.py and mqtt_tts_listener.py.
+
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This
     # primes llama.cpp's prefix cache so the first real voice command is fast.

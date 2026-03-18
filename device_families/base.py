@@ -41,7 +41,7 @@ class DeviceControlResult:
     error: str | None = None
 
 
-class DeviceProtocol(ABC):
+class IJarvisDeviceProtocol(ABC):
     """Interface for manufacturer-specific device protocols.
 
     Each implementation handles discovery and control for one protocol

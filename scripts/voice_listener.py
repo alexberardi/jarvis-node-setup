@@ -3,6 +3,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any, Callable, Dict
 
 import numpy as np
 import openwakeword
@@ -14,7 +15,7 @@ from jarvis_log_client import JarvisLogger
 from clients.rest_client import RestClient
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
-from scripts.speech_to_text import listen
+from scripts.speech_to_text import listen, listen_for_follow_up
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
 from utils.service_discovery import get_command_center_url
@@ -104,9 +105,41 @@ def fetch_next_wake_response():
         logger.error("Failed to fetch next greeting", error=str(e))
 
 
-def send_for_transcription(filename):
+def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]:
+    """Create a validation handler that prompts via TTS and re-listens."""
+    def validation_handler(validation: ValidationRequest) -> str:
+        tts_provider_instance = get_tts_provider()
+
+        question = validation.question
+        if validation.options:
+            options_text = ", ".join(validation.options)
+            question = f"{question} Your options are: {options_text}"
+
+        logger.info("Asking validation question", question=question)
+        tts_provider_instance.speak(False, question)
+
+        logger.debug("Listening for validation response")
+        validation_audio = listen()
+
+        validation_transcription = stt_provider.transcribe(validation_audio)
+
+        if validation_transcription:
+            logger.info("User validation response", response=validation_transcription)
+            return validation_transcription
+        else:
+            logger.warning("Failed to transcribe validation response")
+            return "I didn't catch that, sorry."
+
+    return validation_handler
+
+
+def send_for_transcription(
+    filename: str,
+    command_service: CommandExecutionService,
+    stt_provider,
+    validation_handler: Callable[[ValidationRequest], str],
+) -> Dict[str, Any] | None:
     logger.info("Sending audio to transcription server")
-    stt_provider = get_stt_provider()
     result = stt_provider.transcribe_with_speaker(filename)
 
     if result.text:
@@ -118,39 +151,6 @@ def send_for_transcription(filename):
         else:
             logger.info("Transcription received", text=transcription)
 
-        # Process the command through the command execution service
-        command_service = CommandExecutionService()
-
-        # Define validation handler that prompts user and re-listens
-        def validation_handler(validation: ValidationRequest) -> str:
-            """Handle validation by prompting user and capturing their response"""
-            tts_provider = get_tts_provider()
-
-            # Speak the validation question
-            question = validation.question
-            if validation.options:
-                # If there are options, include them in the question
-                options_text = ", ".join(validation.options)
-                question = f"{question} Your options are: {options_text}"
-
-            logger.info("Asking validation question", question=question)
-            tts_provider.speak(False, question)
-
-            # Listen for user's response
-            logger.debug("Listening for validation response")
-            validation_audio = listen()
-
-            # Transcribe the response
-            validation_transcription = stt_provider.transcribe(validation_audio)
-
-            if validation_transcription:
-                logger.info("User validation response", response=validation_transcription)
-                return validation_transcription
-            else:
-                logger.warning("Failed to transcribe validation response")
-                return "I didn't catch that, sorry."
-
-        # Process with validation handler
         result = command_service.process_voice_command(
             transcription, validation_handler, speaker_user_id=speaker_user_id
         )
@@ -163,10 +163,82 @@ def send_for_transcription(filename):
         return None
 
 
+def _follow_up_loop(
+    initial_result: dict | None,
+    command_service: CommandExecutionService,
+    stt_provider,
+    validation_handler: Callable[[ValidationRequest], str],
+) -> None:
+    """Listen for follow-up speech after TTS completes.
+
+    If the user speaks within the follow-up window, process it as a
+    continuation of the conversation. Each successful follow-up restarts
+    the timer. Silence or error breaks out to wake word mode.
+    """
+    follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 5.0)
+    if follow_up_seconds <= 0:
+        return
+
+    conversation_id: str | None = None
+    if initial_result and initial_result.get("success"):
+        conversation_id = initial_result.get("conversation_id")
+
+    while True:
+        audio_file = listen_for_follow_up(timeout_seconds=follow_up_seconds)
+        if audio_file is None:
+            logger.debug("Follow-up window expired, returning to wake word mode")
+            break
+
+        try:
+            transcription_result = stt_provider.transcribe_with_speaker(audio_file)
+        except Exception as e:
+            logger.warning("Follow-up transcription failed", error=str(e))
+            break
+
+        if not transcription_result.text:
+            logger.debug("Empty follow-up transcription (noise), ending follow-up")
+            break
+
+        text = transcription_result.text
+        speaker_user_id = transcription_result.speaker_user_id
+        logger.info("Follow-up speech received", text=text, conversation_id=conversation_id)
+
+        try:
+            # Try pre-routing first (e.g., "stop", "pause")
+            pre_result = command_service.try_pre_route(text, conversation_id or "")
+            if pre_result is not None:
+                command_service.speak_result(pre_result)
+                # Pre-routed commands break the CC conversation context
+                conversation_id = None
+            elif conversation_id:
+                # Continue existing conversation
+                result = command_service.continue_conversation(
+                    conversation_id, text, validation_handler
+                )
+                command_service.speak_result(result)
+                conversation_id = result.get("conversation_id", conversation_id)
+            else:
+                # No conversation context — start fresh
+                result = command_service.process_voice_command(
+                    text, validation_handler, speaker_user_id=speaker_user_id
+                )
+                command_service.speak_result(result)
+                conversation_id = result.get("conversation_id") if result.get("success") else None
+
+        except Exception as e:
+            logger.warning("Follow-up processing failed, returning to wake word mode", error=str(e))
+            break
+
+
 def _start_keyboard_listener() -> None:
     """Fallback listener: press Enter to trigger a command (no wake word)."""
     logger.info("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
     print("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
+
+    command_service = CommandExecutionService()
+    stt_provider = get_stt_provider()
+    validation_handler = _make_validation_handler(stt_provider)
+
     try:
         while True:
             input()  # block until Enter
@@ -178,10 +250,13 @@ def _start_keyboard_listener() -> None:
             audio_file = listen()
 
             start = time.perf_counter()
-            send_for_transcription(audio_file)
+            result = send_for_transcription(audio_file, command_service, stt_provider, validation_handler)
             end = time.perf_counter()
 
             logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+
+            _follow_up_loop(result, command_service, stt_provider, validation_handler)
+
             logger.info("Press Enter to speak another command")
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
@@ -253,6 +328,11 @@ def start_voice_listener(ma_service):
 
     chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
 
+    # Create shared services once for the lifetime of the listener
+    command_service = CommandExecutionService()
+    stt_provider = get_stt_provider()
+    validation_handler = _make_validation_handler(stt_provider)
+
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
                 threshold=WAKE_WORD_THRESHOLD, resample=needs_resample)
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
@@ -284,17 +364,26 @@ def start_voice_listener(ma_service):
                 except Exception as e:
                     logger.warning("Wake response TTS failed, continuing", error=str(e))
 
+                result = None
                 try:
                     audio_file = listen()
 
                     start = time.perf_counter()
-                    send_for_transcription(audio_file)
+                    result = send_for_transcription(
+                        audio_file, command_service, stt_provider, validation_handler
+                    )
                     end = time.perf_counter()
 
                     logger.info("Transcription complete", duration_seconds=round(end - start, 2))
                 except Exception as e:
                     logger.warning("Command processing failed, resuming listener", error=str(e))
                     print(f"Command failed: {e}")
+
+                # Follow-up listening window (before reopening wake word stream)
+                try:
+                    _follow_up_loop(result, command_service, stt_provider, validation_handler)
+                except Exception as e:
+                    logger.warning("Follow-up loop error, resuming wake word", error=str(e))
 
                 # Reopen wake-word stream
                 pa = pyaudio.PyAudio()
