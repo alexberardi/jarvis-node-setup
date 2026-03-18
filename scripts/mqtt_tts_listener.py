@@ -304,7 +304,12 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
             output["error"] = response.error_details or "Command failed"
         output["success"] = response.success
 
-        logger.info("Tool call completed", command=command_name, success=response.success)
+        # Include actions (e.g., Send/Cancel buttons) if present
+        if response.actions:
+            output["actions"] = [a.to_dict() for a in response.actions]
+
+        logger.info("Tool call completed", command=command_name, success=response.success,
+                     has_actions=bool(response.actions))
         _post_tool_call_result(reply_request_id, {"output": output})
 
     except Exception as e:
