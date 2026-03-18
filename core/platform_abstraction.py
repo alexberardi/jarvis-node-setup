@@ -125,13 +125,13 @@ class MacOSAudioProvider(AudioProvider):
                 ["afplay", file_path],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=300
             )
             return result.returncode == 0
         except Exception as e:
             logger.error(f"Error playing audio file: {e}")
             return False
-    
+
     def play_chime(self, chime_path: str) -> bool:
         return self.play_audio_file(chime_path)
     

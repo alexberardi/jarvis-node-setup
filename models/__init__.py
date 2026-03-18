@@ -4,6 +4,7 @@ Base = declarative_base()
 
 from .command_auth import CommandAuth  # noqa: E402
 from .command_data import CommandData  # noqa: E402
+from .command_registry import CommandRegistry  # noqa: E402
 from .secret import Secret  # noqa: E402
 
-__all__ = ["Base", "CommandAuth", "CommandData", "Secret"]
+__all__ = ["Base", "CommandAuth", "CommandData", "CommandRegistry", "Secret"]

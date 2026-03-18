@@ -191,10 +191,154 @@ def _post_action_result(request_id: str, success: bool, error: Optional[str] = N
         logger.warning("Failed to post action result", error=str(e))
 
 
+def handle_report_tools(details: Dict[str, Any]) -> None:
+    """Report this node's tool definitions back to CC.
+
+    CC sends this when the mobile app needs the node's tools for chat.
+    Builds client_tools + available_commands from the command discovery
+    service and POSTs them to the CC callback endpoint.
+    """
+    request_id: Optional[str] = details.get("reply_request_id")
+    if not request_id:
+        logger.warning("report_tools: missing reply_request_id, ignoring")
+        return
+
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+    from utils.command_discovery_service import get_command_discovery_service
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("Cannot report tools: CC URL not resolved")
+        return
+
+    try:
+        service = get_command_discovery_service()
+        commands = service.get_all_commands()
+
+        # Build date context for schema generation
+        from clients.jarvis_command_center_client import JarvisCommandCenterClient
+        cc_client = JarvisCommandCenterClient(base_url)
+        date_context = cc_client.get_date_context()
+
+        client_tools: List[Dict[str, Any]] = []
+        available_commands: List[Dict[str, Any]] = []
+        for cmd in commands.values():
+            client_tools.append(cmd.to_openai_tool_schema(date_context))
+            available_commands.append(cmd.get_command_schema(date_context))
+
+        url = f"{base_url.rstrip('/')}/api/v0/mobile/node-tool-reports/{request_id}"
+        RestClient.post(
+            url,
+            data={
+                "client_tools": client_tools,
+                "available_commands": available_commands,
+            },
+            timeout=10,
+        )
+        logger.info("Reported tools to CC", count=len(client_tools), request_id=request_id[:8])
+    except Exception as e:
+        logger.error("Failed to report tools", error=str(e))
+
+
+def handle_tool_call(details: Dict[str, Any]) -> None:
+    """Execute a tool call from CC's mobile chat and POST the result back.
+
+    CC routes LLM-generated tool calls to the node for execution when the
+    mobile app is chatting. The node runs the command locally and returns
+    the result so CC can continue the conversation.
+    """
+    reply_request_id: Optional[str] = details.get("reply_request_id")
+    tool_call_id: str = details.get("tool_call_id", "")
+    command_name: str = details.get("command_name", "")
+    arguments: Dict[str, Any] = details.get("arguments", {})
+
+    if not reply_request_id:
+        logger.warning("tool_call: missing reply_request_id, ignoring")
+        return
+
+    if not command_name:
+        logger.warning("tool_call: missing command_name, ignoring")
+        _post_tool_call_result(reply_request_id, {
+            "output": {"error": "Missing command_name"},
+        })
+        return
+
+    from utils.command_discovery_service import get_command_discovery_service
+
+    service = get_command_discovery_service()
+    commands = service.get_all_commands()
+    cmd = commands.get(command_name)
+
+    if not cmd:
+        logger.warning("tool_call: unknown command", command_name=command_name)
+        _post_tool_call_result(reply_request_id, {
+            "output": {"error": f"Unknown command: {command_name}"},
+        })
+        return
+
+    try:
+        from jarvis_command_sdk import RequestInformation
+
+        # Parse arguments if they're a JSON string
+        if isinstance(arguments, str):
+            import json as _json
+            try:
+                arguments = _json.loads(arguments)
+            except (ValueError, TypeError):
+                arguments = {}
+
+        ri = RequestInformation(
+            voice_command="[mobile chat]",
+            conversation_id=tool_call_id or "mobile",
+        )
+
+        logger.info("Executing tool call", command=command_name, args=list(arguments.keys()))
+        response = cmd.run(ri, **arguments)
+
+        # Build output from CommandResponse
+        output: Dict[str, Any] = {}
+        if response.context_data:
+            output = response.context_data
+        if not response.success:
+            output["error"] = response.error_details or "Command failed"
+        output["success"] = response.success
+
+        logger.info("Tool call completed", command=command_name, success=response.success)
+        _post_tool_call_result(reply_request_id, {"output": output})
+
+    except Exception as e:
+        logger.error("Tool call execution failed", command=command_name, error=str(e))
+        _post_tool_call_result(reply_request_id, {
+            "output": {"error": str(e), "success": False},
+        })
+
+
+def _post_tool_call_result(request_id: str, result: Dict[str, Any]) -> None:
+    """POST tool call result back to CC for the mobile chat polling loop."""
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("Cannot post tool call result: CC URL not resolved")
+        return
+
+    # Reuse the same result endpoint as device control
+    url = f"{base_url.rstrip('/')}/api/v0/device-control-results/{request_id}"
+    try:
+        RestClient.post(url, data=result, timeout=5)
+        logger.debug("Posted tool call result to CC", request_id=request_id[:8])
+    except Exception as e:
+        logger.warning("Failed to post tool call result", error=str(e))
+
+
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
     "action": handle_action,
+    "report_tools": handle_report_tools,
+    "tool_call": handle_tool_call,
 }
 
 
@@ -266,7 +410,21 @@ def _pull_auth_credentials(provider: str) -> None:
             cmd.store_auth_values(result)
             return
 
-    logger.warning("No command found for auth provider", provider=provider)
+    # No command matched — check device families
+    from utils.device_family_discovery_service import get_device_family_discovery_service
+
+    family_service = get_device_family_discovery_service()
+    families = family_service.get_all_families_for_snapshot()
+
+    for family in families.values():
+        if family.authentication and family.authentication.provider == provider:
+            logger.info("Storing auth credentials", provider=provider, family=family.protocol_name)
+            family.store_auth_values(result)
+            # Refresh discovery cache so next scan includes this family
+            family_service.refresh()
+            return
+
+    logger.warning("No command or device family found for auth provider", provider=provider)
 
 
 def _handle_config_push_notification(raw_payload: bytes) -> None:
@@ -323,6 +481,53 @@ def _process_settings_request(request_id: str) -> None:
         logger.error("Settings snapshot error", request_id=request_id[:8], error=str(e))
 
 
+def _handle_device_list_notification(raw_payload: bytes) -> None:
+    """Handle device list request from CC — runs collection in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in device list notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    manager_name: str = notification.get("manager_name", "jarvis_direct")
+    if not request_id:
+        logger.warning("Device list notification missing request_id")
+        return
+
+    logger.info("Device list requested", request_id=request_id[:8], manager=manager_name)
+
+    from services.device_list_handler import run_collect_and_upload
+
+    thread = threading.Thread(
+        target=run_collect_and_upload, args=(request_id, manager_name), daemon=True
+    )
+    thread.start()
+
+
+def _handle_device_state_notification(raw_payload: bytes) -> None:
+    """Handle device state request from CC — runs query in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in device state notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    if not request_id:
+        logger.warning("Device state notification missing request_id")
+        return
+
+    logger.info("Device state requested", request_id=request_id[:8])
+
+    from services.device_state_handler import run_state_query_and_upload
+
+    thread = threading.Thread(
+        target=run_state_query_and_upload, args=(request_id, notification), daemon=True
+    )
+    thread.start()
+
+
 def _handle_device_scan_notification(raw_payload: bytes) -> None:
     """Handle device scan request from CC — runs scan in background thread."""
     try:
@@ -359,8 +564,16 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
         _handle_settings_request_notification(msg.payload)
         return
 
+    if msg.topic.endswith("/device-list"):
+        _handle_device_list_notification(msg.payload)
+        return
+
     if msg.topic.endswith("/device-scan"):
         _handle_device_scan_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/device-state"):
+        _handle_device_state_notification(msg.payload)
         return
 
     try:

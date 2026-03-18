@@ -69,57 +69,27 @@ class BingSearchService(SearchService):
 
 
 class DuckDuckGoSearchService(SearchService):
-    """DuckDuckGo Instant Answer API service"""
-    
-    def __init__(self):
-        self.base_url = "https://api.duckduckgo.com/"
-    
+    """DuckDuckGo web search via the ddgs package."""
+
     def search(self, query: str) -> List[SearchResult]:
-        """Perform DuckDuckGo instant answer search"""
-        params = {
-            "q": query,
-            "format": "json",
-            "no_html": "1",
-            "skip_disambig": "1"
-        }
-        
+        """Perform DuckDuckGo web search."""
         try:
-            response = requests.get(self.base_url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = []
-            
-            # Try instant answer first
-            if data.get("Answer"):
-                results.append(SearchResult(
-                    title="Instant Answer",
-                    snippet=data["Answer"],
-                    url=data.get("AnswerURL", "")
-                ))
-            
-            # Try abstract
-            elif data.get("Abstract"):
-                results.append(SearchResult(
-                    title=data.get("Heading", ""),
-                    snippet=data["Abstract"],
-                    url=data.get("AbstractURL", "")
-                ))
-            
-            # Try related topics
-            elif data.get("RelatedTopics"):
-                for topic in data["RelatedTopics"][:3]:  # Top 3
-                    if isinstance(topic, dict) and topic.get("Text"):
-                        results.append(SearchResult(
-                            title=topic.get("FirstURL", {}).get("text", "Related"),
-                            snippet=topic["Text"],
-                            url=topic.get("FirstURL", {}).get("url", "")
-                        ))
-            
-            return results
-            
-        except requests.RequestException as e:
-            raise Exception(f"DuckDuckGo search API error: {str(e)}")
+            from ddgs import DDGS
+        except ImportError:
+            raise ImportError("ddgs package not installed. Install with: pip install ddgs")
+
+        try:
+            raw_results = DDGS().text(query, max_results=5)
+            return [
+                SearchResult(
+                    title=r.get("title", ""),
+                    snippet=r.get("body", ""),
+                    url=r.get("href", ""),
+                )
+                for r in raw_results
+            ]
+        except Exception as e:
+            raise Exception(f"DuckDuckGo search error: {str(e)}")
 
 
 class SearchServiceFactory:
@@ -164,7 +134,7 @@ class WebSearchCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Live web search for current/real-time info: news, stocks, elections, events, awards, championships. For stable facts use answer_question, for weather use get_weather, for sports with a team name use get_sports_scores or get_sports_schedule."
+        return "Live web search for current/real-time info: news, stocks, elections, events, awards, championships. For stable facts use answer_question, for weather use get_weather, for sports with a team name use get_sports."
 
     @property
     def antipatterns(self) -> List[CommandAntipattern]:
@@ -174,16 +144,12 @@ class WebSearchCommand(IJarvisCommand):
                 description="Stable facts, definitions, biographies, geography, historical dates, or established knowledge."
             ),
             CommandAntipattern(
-                command_name="get_sports_schedule",
-                description="Upcoming games, schedules, future matchups, 'when do they play next'."
+                command_name="get_sports",
+                description="Sports scores, schedules, results, 'how did [team] do', 'when do they play next', 'did [team] win'."
             ),
             CommandAntipattern(
                 command_name="get_weather",
                 description="Weather conditions, temperature, forecasts, rain, wind, or 'what's the weather'. Always use get_weather for weather queries."
-            ),
-            CommandAntipattern(
-                command_name="get_sports_scores",
-                description="Game scores, results, 'how did [team] do', 'what was the score', 'did [team] win', final scores."
             ),
             CommandAntipattern(
                 command_name="get_current_time",
@@ -272,11 +238,15 @@ class WebSearchCommand(IJarvisCommand):
         ]
 
     @property
+    def associated_service(self) -> str:
+        return "Web Search"
+
+    @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
-            JarvisSecret("LIVE_SEARCH_PROVIDER", "Search provider: 'bing' or 'duckduckgo'", "integration", "string", required=True, is_sensitive=False),
-            JarvisSecret("LIVE_SEARCH_API_KEY", "API Key for the selected search provider (not needed for DuckDuckGo)", "integration", "string", required=False),
-            JarvisSecret("LIVE_SEARCH_REGION", "Search region/locale (e.g. 'en-US') - used by some providers", "integration", "string", required=False, is_sensitive=False),
+            JarvisSecret("LIVE_SEARCH_PROVIDER", "Search provider: 'bing' or 'duckduckgo'", "integration", "string", required=True, is_sensitive=False, friendly_name="Search Provider"),
+            JarvisSecret("LIVE_SEARCH_API_KEY", "API Key for the selected search provider (not needed for DuckDuckGo)", "integration", "string", required=False, friendly_name="API Key"),
+            JarvisSecret("LIVE_SEARCH_REGION", "Search region/locale (e.g. 'en-US') - used by some providers", "integration", "string", required=False, is_sensitive=False, friendly_name="Region"),
         ]
 
     @property
@@ -329,43 +299,22 @@ class WebSearchCommand(IJarvisCommand):
                 }
             )
             
-        except Exception as e:
-            # Return error
-            return CommandResponse.error_response(
-                error_details=str(e),
-                context_data={
-                        "query": query,
-                        "results_found": len(search_results),
-                        "provider": get_secret_value("LIVE_SEARCH_PROVIDER", "integration"),
-                        "llm_error": str(e),
-                        "search_results": [
-                            {
-                                "title": result.title,
-                                "snippet": result.snippet,
-                                "url": result.url
-                            } for result in search_results
-                        ]
-                    }
-                )
-        
         except ValueError as e:
             # Provider configuration error
             return CommandResponse.error_response(
-                                error_details=str(e),
+                error_details=str(e),
                 context_data={
                     "query": query,
                     "error_type": "configuration_error",
-                    "error": str(e)
+                    "error": str(e),
                 }
             )
-        
         except Exception as e:
-            # General search error
             return CommandResponse.error_response(
-                                error_details=str(e),
+                error_details=str(e),
                 context_data={
                     "query": query,
                     "error_type": "search_error",
-                    "error": str(e)
+                    "error": str(e),
                 }
             )

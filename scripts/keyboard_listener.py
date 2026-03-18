@@ -58,9 +58,14 @@ def main() -> None:
         "--speaker-user-id", type=int, default=None,
         help="Simulate a recognized speaker (pass a user ID from jarvis-auth)",
     )
+    parser.add_argument(
+        "--no-speak", action="store_true",
+        help="Disable TTS — print responses only",
+    )
     args = parser.parse_args()
 
     speaker_user_id: int | None = args.speaker_user_id
+    speak_enabled: bool = not args.no_speak
 
     print("Jarvis Keyboard Mode")
     if speaker_user_id is not None:
@@ -91,6 +96,9 @@ def main() -> None:
             print("MQTT listener started (settings/config push enabled)")
         except Exception as e:
             print(f"MQTT listener not started: {e}")
+
+    # Device scanning is now user-driven via MQTT (mobile → CC → node).
+    # See services/device_scan_handler.py and mqtt_tts_listener.py.
 
     service = CommandExecutionService()
     active_conversation_id: str | None = None
@@ -140,9 +148,15 @@ def main() -> None:
                 speaker_user_id=speaker_user_id,
             )
 
-        # Display response
+        # Display and speak response
         message = result.get("message", "An error occurred")
         print(f"Jarvis: {message}\n")
+
+        if speak_enabled:
+            try:
+                service.speak_result(result)
+            except Exception as e:
+                logger.debug("TTS unavailable", error=str(e))
 
         # Manage conversation state based on command signals
         if result.get("wait_for_input"):

@@ -144,6 +144,16 @@ class EmailCommand(IJarvisCommand):
         if provider == "imap":
             base.extend([
                 JarvisSecret(
+                    "IMAP_HOST", "IMAP server hostname (e.g., 127.0.0.1, imap.mail.yahoo.com)",
+                    "integration", "string", required=False, is_sensitive=False,
+                    friendly_name="IMAP Host",
+                ),
+                JarvisSecret(
+                    "IMAP_PORT", "IMAP server port (1143 for STARTTLS, 993 for SSL)",
+                    "integration", "int", required=False, is_sensitive=False,
+                    friendly_name="IMAP Port",
+                ),
+                JarvisSecret(
                     "IMAP_USERNAME", "IMAP/SMTP login username (full email address)",
                     "integration", "string", is_sensitive=False,
                     friendly_name="IMAP Username",
@@ -152,6 +162,21 @@ class EmailCommand(IJarvisCommand):
                     "IMAP_PASSWORD", "IMAP/SMTP login password",
                     "integration", "string", is_sensitive=True,
                     friendly_name="IMAP Password",
+                ),
+                JarvisSecret(
+                    "SMTP_HOST", "SMTP server hostname",
+                    "integration", "string", required=False, is_sensitive=False,
+                    friendly_name="SMTP Host",
+                ),
+                JarvisSecret(
+                    "SMTP_PORT", "SMTP server port",
+                    "integration", "int", required=False, is_sensitive=False,
+                    friendly_name="SMTP Port",
+                ),
+                JarvisSecret(
+                    "IMAP_USE_SSL", "Use SSL instead of STARTTLS (true for Yahoo/Outlook, false for Proton Bridge)",
+                    "integration", "bool", required=False, is_sensitive=False,
+                    friendly_name="Use SSL",
                 ),
             ])
         else:

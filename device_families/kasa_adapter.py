@@ -14,7 +14,7 @@ from jarvis_log_client import JarvisLogger
 from core.ijarvis_button import IJarvisButton
 from device_families.base import (
     DeviceControlResult,
-    DeviceProtocol,
+    IJarvisDeviceProtocol,
     DiscoveredDevice,
 )
 
@@ -37,7 +37,7 @@ def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-class KasaProtocol(DeviceProtocol):
+class KasaProtocol(IJarvisDeviceProtocol):
     """TP-Link Kasa/Tapo LAN protocol: discovery + control."""
 
     @property
