@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from core.ijarvis_device_manager import DeviceManagerDevice
-from device_managers.home_assistant_manager import HomeAssistantDeviceManager
+from device_managers.home_assistant.manager import HomeAssistantDeviceManager
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ class TestCollectDevices:
         mock_service.get_context_data.return_value = {"devices": []}
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -156,7 +156,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -196,7 +196,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -223,7 +223,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -246,7 +246,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -270,7 +270,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -285,7 +285,7 @@ class TestCollectDevices:
         )
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             with pytest.raises(ConnectionError, match="Cannot connect to HA"):
@@ -308,7 +308,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
@@ -330,7 +330,7 @@ class TestCollectDevices:
         }
 
         with patch(
-            "services.home_assistant_service.HomeAssistantService",
+            "ha_shared.home_assistant_service.HomeAssistantService",
             return_value=mock_service,
         ):
             result = await manager.collect_devices()
