@@ -613,8 +613,8 @@ class EmailCommand(IJarvisCommand):
             }
         )
         resp.actions = [
-            IJarvisButton("Send", "send_click", "primary", "send"),
-            IJarvisButton("Cancel", "cancel_click", "destructive"),
+            IJarvisButton("Cancel", "cancel_click", "destructive", None, "Cancelled."),
+            IJarvisButton("Send", "send_click", "primary", "send", "Email sent!"),
         ]
         return resp
 
@@ -670,8 +670,8 @@ class EmailCommand(IJarvisCommand):
             }
         )
         resp.actions = [
-            IJarvisButton("Send", "send_click", "primary", "send"),
-            IJarvisButton("Cancel", "cancel_click", "destructive"),
+            IJarvisButton("Send", "send_click", "primary", "send", "Reply sent!"),
+            IJarvisButton("Cancel", "cancel_click", "destructive", None, "Cancelled."),
         ]
         return resp
 
