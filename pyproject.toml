@@ -1,2 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-node-setup"
+version = "0.1.0"
+description = "Client software for Jarvis voice nodes"
+requires-python = ">=3.10"
+dependencies = [
+    "jarvis-command-sdk",
+]
+
+[tool.setuptools.packages.find]
+include = ["commands*", "core*", "clients*", "services*", "utils*", "scripts*"]
+
 [tool.black]
 line-length = 79
