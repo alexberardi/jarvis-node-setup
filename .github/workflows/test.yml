@@ -32,8 +32,9 @@ jobs:
         pip install pytest pytest-asyncio
         pip install httpx pydantic fastapi uvicorn cryptography python-dotenv
         pip install sqlalchemy  # For command repositories
-        # Install jarvis-log-client from sibling repo (or mock it)
+        # Install jarvis client libraries from sibling repos
         pip install git+https://github.com/alexberardi/jarvis-log-client.git || echo "jarvis-log-client not available, will use mocks"
+        pip install git+https://github.com/alexberardi/jarvis-command-sdk.git || echo "jarvis-command-sdk not available"
 
     - name: Run provisioning tests
       # Provisioning tests - other tests require pysqlcipher3 (encrypted SQLite)
