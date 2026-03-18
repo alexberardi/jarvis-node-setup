@@ -486,6 +486,7 @@ Examples:
 
             config["node_id"] = node_id
             config["api_key"] = node_key
+            config["household_id"] = household_id
 
             with open(args.update_config, "w") as f:
                 json.dump(config, f, indent=2)

@@ -15,28 +15,10 @@ from typing import Any
 import httpx
 from jarvis_log_client import JarvisLogger
 
-from services.device_protocols.base import DeviceProtocol, DiscoveredDevice
+from device_families.base import IJarvisDeviceProtocol, DiscoveredDevice
+from utils.device_family_discovery_service import get_device_family_discovery_service
 
 logger = JarvisLogger(service="jarvis-node")
-
-
-def _load_protocols() -> list[DeviceProtocol]:
-    """Load all available protocol adapters (gracefully skip missing deps)."""
-    protocols: list[DeviceProtocol] = []
-
-    try:
-        from services.device_protocols.lifx_adapter import LifxProtocol
-        protocols.append(LifxProtocol())
-    except ImportError:
-        logger.debug("LIFX protocol not available (lifxlan not installed)")
-
-    try:
-        from services.device_protocols.kasa_adapter import KasaProtocol
-        protocols.append(KasaProtocol())
-    except ImportError:
-        logger.debug("Kasa protocol not available (python-kasa not installed)")
-
-    return protocols
 
 
 class DeviceScannerService:
@@ -48,14 +30,17 @@ class DeviceScannerService:
         node_id: str,
         api_key: str,
         household_id: str,
+        admin_key: str = "",
         scan_timeout: float = 5.0,
     ) -> None:
         self._cc_base_url = cc_base_url.rstrip("/")
         self._node_id = node_id
         self._api_key = api_key
+        self._admin_key = admin_key
         self._household_id = household_id
         self._scan_timeout = scan_timeout
-        self._protocols = _load_protocols()
+        discovery = get_device_family_discovery_service()
+        self._protocols = list(discovery.get_all_families().values())
         self._known_macs: dict[str, DiscoveredDevice] = {}
         self._running = False
 
@@ -88,12 +73,17 @@ class DeviceScannerService:
         # Deduplicate by MAC address (prefer latest scan data)
         by_mac: dict[str, DiscoveredDevice] = {}
         for dev in all_devices:
-            mac = dev.mac_address.lower()
-            if mac:
-                by_mac[mac] = dev
-            else:
+            if dev.mac_address:
+                by_mac[dev.mac_address.lower()] = dev
+            elif dev.local_ip:
                 # No MAC — use IP as fallback key
                 by_mac[dev.local_ip] = dev
+            elif dev.cloud_id:
+                # Cloud-only device — use cloud_id as key
+                by_mac[dev.cloud_id] = dev
+            else:
+                # Last resort — use entity_id
+                by_mac[dev.entity_id] = dev
 
         # Resolve entity_id collisions (e.g., two "light.living_room")
         unique = list(by_mac.values())
@@ -125,8 +115,9 @@ class DeviceScannerService:
         if not devices:
             return {"created": 0, "updated": 0}
 
-        import_items = [
-            {
+        import_items = []
+        for dev in devices:
+            item: dict[str, Any] = {
                 "entity_id": dev.entity_id,
                 "name": dev.name,
                 "domain": dev.domain,
@@ -135,14 +126,19 @@ class DeviceScannerService:
                 "model": dev.model,
                 "source": "direct",
                 "protocol": dev.protocol,
-                "local_ip": dev.local_ip,
-                "mac_address": dev.mac_address,
             }
-            for dev in devices
-        ]
+            if dev.local_ip:
+                item["local_ip"] = dev.local_ip
+            if dev.mac_address:
+                item["mac_address"] = dev.mac_address
+            if dev.cloud_id:
+                item["cloud_id"] = dev.cloud_id
+            import_items.append(item)
 
-        url = f"{self._cc_base_url}/api/v1/households/{self._household_id}/devices/import"
-        headers = {"X-API-Key": f"{self._node_id}:{self._api_key}"}
+        url = f"{self._cc_base_url}/api/v0/households/{self._household_id}/devices/import"
+        # CC smart home endpoints accept admin key or JWT
+        auth_key = self._admin_key or self._api_key
+        headers = {"X-API-Key": auth_key}
 
         try:
             async with httpx.AsyncClient(timeout=15) as client:

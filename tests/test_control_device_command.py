@@ -57,11 +57,15 @@ class TestControlDeviceCommandProperties:
         assert "action" in param_names
         assert "value" in param_names
 
-        # entity_id required, action optional
+        # entity_id optional (floor/area can substitute), action optional
         entity_param = next(p for p in params if p.name == "entity_id")
         action_param = next(p for p in params if p.name == "action")
-        assert entity_param.required is True
+        assert entity_param.required is False
         assert action_param.required is False
+
+        # floor and area params exist
+        assert "floor" in param_names
+        assert "area" in param_names
 
     def test_required_secrets(self, command):
         """Command requires HA secrets."""
@@ -195,10 +199,17 @@ class TestDynamicAdapterExamples:
         """Falls back to static examples when HA is unreachable."""
         examples = command.generate_adapter_examples()
 
-        # Should return static examples with hardcoded entity IDs
+        # Should return static examples with hardcoded entity IDs (some use floor/area instead)
         assert len(examples) >= 20
-        entity_ids = {ex.expected_parameters["entity_id"] for ex in examples}
+        entity_ids = {
+            ex.expected_parameters["entity_id"]
+            for ex in examples
+            if "entity_id" in ex.expected_parameters
+        }
         assert "light.my_office" in entity_ids  # Static hardcoded ID
+        # Floor/area examples also present
+        floor_examples = [ex for ex in examples if "floor" in ex.expected_parameters]
+        assert len(floor_examples) >= 2
 
 
 @patch("commands.control_device_command.validate_entity", return_value=(True, ""))

@@ -1,12 +1,14 @@
 """
 Get Device Status command for Jarvis.
 
-Queries the current state of any Home Assistant device.
+Queries the current state of any smart home device (Home Assistant or direct WiFi).
 Returns state and relevant attributes for the LLM to describe.
 """
 
 import asyncio
 from typing import Any, Dict, List, Optional
+
+from jarvis_log_client import JarvisLogger
 
 from core.command_response import CommandResponse
 from core.ijarvis_authentication import AuthenticationConfig
@@ -19,6 +21,8 @@ from services.home_assistant_service import (
     get_domain_from_entity_id,
 )
 from utils.entity_resolver import resolve_entity_id, validate_entity
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 class GetDeviceStatusCommand(IJarvisCommand):
@@ -77,12 +81,14 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 "integration",
                 "string",
                 is_sensitive=False,
+                friendly_name="REST URL",
             ),
             JarvisSecret(
                 "HOME_ASSISTANT_API_KEY",
                 "Home Assistant long-lived access token",
                 "integration",
                 "string",
+                friendly_name="API Key",
             ),
         ]
 
@@ -91,6 +97,7 @@ class GetDeviceStatusCommand(IJarvisCommand):
         return AuthenticationConfig(
             type="oauth",
             provider="home_assistant",
+            friendly_name="Home Assistant",
             client_id="http://jarvis-node-mobile",
             keys=["access_token"],
             authorize_path="/auth/authorize",
@@ -258,8 +265,75 @@ class GetDeviceStatusCommand(IJarvisCommand):
                 },
             )
 
-        # Execute the query
+        # Try direct device status first, then fall back to HA
+        direct_result = asyncio.run(self._try_direct_status(entity_id))
+        if direct_result is not None:
+            return direct_result
+
+        # Fall back to Home Assistant
         return asyncio.run(self._execute_query(entity_id))
+
+    async def _try_direct_status(self, entity_id: str) -> Optional[CommandResponse]:
+        """Attempt direct WiFi device status if entity is a direct device.
+
+        Returns:
+            CommandResponse if this is a direct device, None to fall through to HA.
+        """
+        try:
+            direct_svc = self._get_direct_device_service()
+            if direct_svc is None or not direct_svc.is_direct_device(entity_id):
+                return None
+
+            raw_state = await direct_svc.get_state(entity_id)
+            if raw_state is None:
+                return None
+
+            domain = get_domain_from_entity_id(entity_id) or ""
+
+            # Normalize via domain handler
+            from device_families.domains import get_domain_handler
+
+            handler = get_domain_handler(domain)
+            if handler:
+                normalized = handler.normalize_state(raw_state)
+            else:
+                normalized = raw_state
+
+            friendly = entity_id
+            message = self._build_status_message(
+                friendly, domain, normalized.get("state", "unknown"), normalized
+            )
+
+            context_data: Dict[str, Any] = {
+                "entity_id": entity_id,
+                "state": normalized.get("state", "unknown"),
+                "friendly_name": friendly,
+                "domain": domain,
+                "source": "direct",
+                "message": message,
+                "attributes": normalized,
+            }
+
+            return CommandResponse.success_response(
+                context_data=context_data,
+                wait_for_input=True,
+            )
+        except ImportError:
+            return None
+        except Exception as e:
+            logger.warning("Direct device status failed, will try HA", entity_id=entity_id, error=str(e))
+            return None
+
+    @staticmethod
+    def _get_direct_device_service() -> Any:
+        """Get the DirectDeviceService singleton from agent scheduler context."""
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+
+            scheduler = get_agent_scheduler_service()
+            return getattr(scheduler, "_direct_device_service", None)
+        except Exception:
+            return None
 
     async def _execute_query(self, entity_id: str) -> CommandResponse:
         """Execute the state query via HomeAssistantService.
