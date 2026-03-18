@@ -14,6 +14,15 @@ pytest
 
 ## Dev Setup
 
+### 0. Install dependencies
+
+```bash
+cd jarvis-node-setup
+python3 -m venv .venv
+.venv/bin/pip install -e ../jarvis-command-sdk   # Core SDK (monorepo sibling)
+.venv/bin/pip install -e .                       # Node dependencies
+```
+
 ### 1. Install commands (seed secrets DB)
 
 Discovers all command classes, runs DB migrations, and seeds the secrets table

@@ -7,6 +7,8 @@ Commands use this to specify their third-party package requirements.
 from dataclasses import dataclass
 from typing import Optional
 
+from packaging.requirements import Requirement
+
 
 @dataclass(frozen=True)
 class JarvisPackage:
@@ -41,3 +43,7 @@ class JarvisPackage:
 
         # Otherwise it's a constraint (>=, <, ~=, etc.) - use as-is
         return f"{self.name}{self.version}"
+
+    def to_requirement(self) -> Requirement:
+        """Convert to a :class:`packaging.requirements.Requirement`."""
+        return Requirement(self.to_pip_spec())
