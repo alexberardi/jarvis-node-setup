@@ -10,6 +10,7 @@ Mirrors the CommandDiscoveryService pattern but adapted for agents:
 import importlib
 import pkgutil
 import threading
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from jarvis_log_client import JarvisLogger
@@ -62,43 +63,67 @@ class AgentDiscoveryService:
 
         new_agents: Dict[str, IJarvisAgent] = {}
 
+        # Scan built-in agents
         for _, module_name, _ in pkgutil.iter_modules(agents.__path__):
-            try:
-                module = importlib.import_module(f"agents.{module_name}")
+            self._try_load_agent(f"agents.{module_name}", module_name, new_agents)
 
-                for attr in dir(module):
-                    cls = getattr(module, attr)
-
-                    if (
-                        isinstance(cls, type)
-                        and issubclass(cls, IJarvisAgent)
-                        and cls is not IJarvisAgent
-                    ):
-                        instance = cls()
-
-                        # Validate secrets before registering
-                        missing_secrets = instance.validate_secrets()
-                        if missing_secrets:
-                            logger.warning(
-                                "Agent skipped due to missing secrets",
-                                agent=instance.name,
-                                missing=missing_secrets,
-                            )
-                            continue
-
-                        new_agents[instance.name] = instance
-                        logger.debug("Discovered agent", agent=instance.name)
-
-            except Exception as e:
-                logger.error(
-                    "Error loading agent module", module=module_name, error=str(e)
-                )
+        # Scan custom agents (installed by Pantry)
+        custom_agents_dir = Path(agents.__path__[0]).parent / "agents" / "custom_agents"
+        if custom_agents_dir.exists():
+            for agent_dir in custom_agents_dir.iterdir():
+                if agent_dir.is_dir() and not agent_dir.name.startswith("_"):
+                    agent_py = agent_dir / "agent.py"
+                    if agent_py.exists():
+                        # Add to path so import works
+                        import sys
+                        if str(agent_dir) not in sys.path:
+                            sys.path.insert(0, str(agent_dir))
+                        self._try_load_agent(
+                            f"agents.custom_agents.{agent_dir.name}.agent",
+                            agent_dir.name,
+                            new_agents,
+                        )
 
         self._agents_cache = new_agents
         self._discovered = True
 
         logger.info("Agent discovery complete", count=len(new_agents))
         return new_agents
+
+    def _try_load_agent(
+        self, module_path: str, module_name: str, agents_dict: Dict[str, IJarvisAgent]
+    ) -> None:
+        """Try to load an agent from a module path."""
+        try:
+            module = importlib.import_module(module_path)
+
+            for attr in dir(module):
+                cls = getattr(module, attr)
+
+                if (
+                    isinstance(cls, type)
+                    and issubclass(cls, IJarvisAgent)
+                    and cls is not IJarvisAgent
+                ):
+                    instance = cls()
+
+                    # Validate secrets before registering
+                    missing_secrets = instance.validate_secrets()
+                    if missing_secrets:
+                        logger.warning(
+                            "Agent skipped due to missing secrets",
+                            agent=instance.name,
+                            missing=missing_secrets,
+                        )
+                        continue
+
+                    agents_dict[instance.name] = instance
+                    logger.debug("Discovered agent", agent=instance.name)
+
+        except Exception as e:
+            logger.error(
+                "Error loading agent module", module=module_name, error=str(e)
+            )
 
     def get_agent(self, name: str) -> Optional[IJarvisAgent]:
         """Get a specific agent by name.

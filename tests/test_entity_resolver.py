@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 
 import httpx
 
-from utils.entity_resolver import (
+from ha_shared.entity_resolver import (
     EntityInfo,
     _compute_id_score,
     _compute_name_score,
@@ -116,8 +116,8 @@ class TestComputeNameScore:
 class TestGetEntityRegistry:
     """Test entity registry fetching and caching."""
 
-    @patch("utils.entity_resolver.get_secret_value")
-    @patch("utils.entity_resolver.httpx.get")
+    @patch("ha_shared.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.httpx.get")
     def test_fetches_and_caches(self, mock_get, mock_secret):
         mock_secret.side_effect = lambda key, _: {
             "HOME_ASSISTANT_REST_URL": "http://ha:8123",
@@ -143,8 +143,8 @@ class TestGetEntityRegistry:
         assert len(result2) == 2
         mock_get.assert_called_once()
 
-    @patch("utils.entity_resolver.get_secret_value")
-    @patch("utils.entity_resolver.httpx.get")
+    @patch("ha_shared.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.httpx.get")
     def test_http_error_returns_empty(self, mock_get, mock_secret):
         mock_secret.side_effect = lambda key, _: {
             "HOME_ASSISTANT_REST_URL": "http://ha:8123",
@@ -160,8 +160,8 @@ class TestGetEntityRegistry:
         result = _get_entity_registry()
         assert result == []
 
-    @patch("utils.entity_resolver.get_secret_value")
-    @patch("utils.entity_resolver.httpx.get")
+    @patch("ha_shared.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.httpx.get")
     def test_connection_error_returns_empty(self, mock_get, mock_secret):
         mock_secret.side_effect = lambda key, _: {
             "HOME_ASSISTANT_REST_URL": "http://ha:8123",
@@ -173,15 +173,15 @@ class TestGetEntityRegistry:
         result = _get_entity_registry()
         assert result == []
 
-    @patch("utils.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.get_secret_value")
     def test_missing_credentials_returns_empty(self, mock_secret):
         mock_secret.side_effect = ValueError("Secret not found")
 
         result = _get_entity_registry()
         assert result == []
 
-    @patch("utils.entity_resolver.get_secret_value")
-    @patch("utils.entity_resolver.httpx.get")
+    @patch("ha_shared.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.httpx.get")
     def test_clear_cache_resets(self, mock_get, mock_secret):
         mock_secret.side_effect = lambda key, _: {
             "HOME_ASSISTANT_REST_URL": "http://ha:8123",
@@ -203,8 +203,8 @@ class TestGetEntityRegistry:
         _get_entity_registry()
         assert mock_get.call_count == 2
 
-    @patch("utils.entity_resolver.get_secret_value")
-    @patch("utils.entity_resolver.httpx.get")
+    @patch("ha_shared.entity_resolver.get_secret_value")
+    @patch("ha_shared.entity_resolver.httpx.get")
     def test_handles_missing_friendly_name(self, mock_get, mock_secret):
         """Entities without friendly_name get empty string."""
         mock_secret.side_effect = lambda key, _: {
@@ -245,19 +245,19 @@ SAMPLE_REGISTRY = [
 class TestResolveEntityId:
     """Test end-to-end entity resolution."""
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_exact_match_passthrough(self, mock_reg):
         result = resolve_entity_id("light.my_office", "turn on my office lights")
         assert result == "light.my_office"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_id_similarity_resolves(self, mock_reg):
         """light.office should resolve to light.my_office via ID similarity."""
         result = resolve_entity_id("light.office", "")
         # "office" vs "my_office" has good SequenceMatcher ratio
         assert result in ("light.my_office", "light.office_desk", "light.office_fan")
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_name_overlap_resolves(self, mock_reg):
         """Voice command word overlap helps resolve ambiguous entity."""
         result = resolve_entity_id("light.office", "Is the office light on?")
@@ -265,30 +265,30 @@ class TestResolveEntityId:
         # "My Office" has full name overlap with voice command word "office"
         assert result in ("light.my_office", "light.office_desk", "light.office_fan")
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_domain_filtering(self, mock_reg):
         """light.garage should not match cover.garage_door."""
         result = resolve_entity_id("light.garage", "open the garage")
         # No light entities have "garage" — should stay as-is or match poorly
         assert result.startswith("light.")
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_below_threshold_returns_original(self, mock_reg):
         """Very dissimilar entity stays as-is."""
         result = resolve_entity_id("light.zzz_nonexistent", "")
         assert result == "light.zzz_nonexistent"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=[])
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=[])
     def test_empty_registry_returns_original(self, mock_reg):
         result = resolve_entity_id("light.office", "turn on office")
         assert result == "light.office"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_no_dot_in_entity_returns_original(self, mock_reg):
         result = resolve_entity_id("invalid_format", "something")
         assert result == "invalid_format"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_unknown_domain_returns_original(self, mock_reg):
         """Entity with domain that has no candidates returns original."""
         result = resolve_entity_id("water_heater.test", "check the water heater")
@@ -301,14 +301,14 @@ class TestResolveEntityId:
 class TestRealWorldScenarios:
     """Test realistic LLM mistake scenarios."""
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_office_light_status(self, mock_reg):
         """'Is the office light on?' with light.office_desk → light.my_office or desk."""
         # The LLM returned "light.office_desk" but it exists, so exact match
         result = resolve_entity_id("light.office_desk", "Is the office light on?")
         assert result == "light.office_desk"  # Exact match
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_office_light_invented_id(self, mock_reg):
         """LLM invents light.office (doesn't exist) → should fuzzy match."""
         result = resolve_entity_id("light.office", "Is the office light on?")
@@ -316,25 +316,25 @@ class TestRealWorldScenarios:
         assert result.startswith("light.")
         assert result != "light.office"  # Should be resolved to something real
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_garage_door_cover(self, mock_reg):
         """cover.garage → cover.garage_door via ID similarity."""
         result = resolve_entity_id("cover.garage", "open the garage")
         assert result == "cover.garage_door"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_bathroom_light(self, mock_reg):
         """light.bathroom → light.middle_bathroom via name overlap."""
         result = resolve_entity_id("light.bathroom", "Is the bathroom light on?")
         assert result == "light.middle_bathroom"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_thermostat_exact(self, mock_reg):
         """climate.thermostat exists exactly."""
         result = resolve_entity_id("climate.thermostat", "What's the thermostat set to?")
         assert result == "climate.thermostat"
 
-    @patch("utils.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
+    @patch("ha_shared.entity_resolver._get_entity_registry", return_value=SAMPLE_REGISTRY)
     def test_front_door_lock(self, mock_reg):
         """lock.front → lock.front_door via ID similarity."""
         result = resolve_entity_id("lock.front", "Is the front door locked?")

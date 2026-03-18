@@ -1459,7 +1459,7 @@ def evaluate_parse_result(
             original_get_entities = None
             if test.ha_context and cmd_name in ("control_device", "get_device_status"):
                 mock_entities = _entities_from_ha_context(test.ha_context)
-                from commands.control_device_command import ControlDeviceCommand
+                from commands.control_device.command import ControlDeviceCommand
                 original_get_entities = ControlDeviceCommand._get_known_entities
                 ControlDeviceCommand._get_known_entities = staticmethod(lambda: mock_entities)
 
@@ -1467,7 +1467,7 @@ def evaluate_parse_result(
                 v_results = cmd_instance.validate_call(**command_response["parameters"])
             finally:
                 if original_get_entities is not None:
-                    from commands.control_device_command import ControlDeviceCommand
+                    from commands.control_device.command import ControlDeviceCommand
                     ControlDeviceCommand._get_known_entities = original_get_entities
 
             # Apply auto-corrections

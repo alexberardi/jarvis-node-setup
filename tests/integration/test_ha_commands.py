@@ -13,11 +13,11 @@ These tests verify:
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from commands.control_device_command import ControlDeviceCommand
-from commands.get_device_status_command import GetDeviceStatusCommand
+from commands.control_device.command import ControlDeviceCommand
+from commands.get_device_status.command import GetDeviceStatusCommand
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
-from services.home_assistant_service import ServiceCallResult
+from ha_shared.home_assistant_service import ServiceCallResult
 
 
 # ============================================================================
@@ -276,7 +276,7 @@ class TestLLMErrorHandling:
         Expected: HA service call fails gracefully
         """
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_svc_cls:
             mock_svc = AsyncMock()
             mock_svc.control_device = AsyncMock(
@@ -358,7 +358,7 @@ class TestFullExecutionPath:
     async def test_successful_light_control(self, control_device_cmd):
         """Test successful light control end-to-end."""
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_svc_cls:
             mock_svc = AsyncMock()
             mock_svc.control_device = AsyncMock(
@@ -387,7 +387,7 @@ class TestFullExecutionPath:
     async def test_climate_with_temperature(self, control_device_cmd):
         """Test climate control with temperature value."""
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_svc_cls:
             mock_svc = AsyncMock()
             mock_svc.control_device = AsyncMock(
@@ -415,7 +415,7 @@ class TestFullExecutionPath:
     async def test_ha_service_failure(self, control_device_cmd):
         """Test handling of HA service failure."""
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_svc_cls:
             mock_svc = AsyncMock()
             mock_svc.control_device = AsyncMock(

@@ -19,7 +19,7 @@ logger = JarvisLogger(service="jarvis-node")
 REFRESH_INTERVAL_SECONDS = 300
 
 # Re-export for test compatibility
-COMMON_ROOM_NAMES = None  # Moved to services.home_assistant_service
+COMMON_ROOM_NAMES = None  # Moved to ha_shared.home_assistant_service
 
 
 class HomeAssistantAgent(IJarvisAgent):
@@ -67,7 +67,7 @@ class HomeAssistantAgent(IJarvisAgent):
     def _get_service(self) -> Any:
         """Lazily create the HomeAssistantService instance."""
         if self._service is None:
-            from services.home_assistant_service import HomeAssistantService
+            from ha_shared.home_assistant_service import HomeAssistantService
             try:
                 self._service = HomeAssistantService()
             except ValueError as e:

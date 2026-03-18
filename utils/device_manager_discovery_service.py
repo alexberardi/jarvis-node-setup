@@ -10,6 +10,7 @@ Mirrors DeviceFamilyDiscoveryService:
 import importlib
 import pkgutil
 import threading
+from pathlib import Path
 
 from jarvis_log_client import JarvisLogger
 
@@ -56,54 +57,79 @@ class DeviceManagerDiscoveryService:
 
         new_managers: dict[str, IJarvisDeviceManager] = {}
 
+        # Scan built-in managers
         for _, module_name, _ in pkgutil.iter_modules(device_managers.__path__):
-            try:
-                module = importlib.import_module(f"device_managers.{module_name}")
+            self._try_load_manager(f"device_managers.{module_name}", module_name, new_managers)
 
-                for attr in dir(module):
-                    cls = getattr(module, attr)
-
-                    if (
-                        isinstance(cls, type)
-                        and issubclass(cls, IJarvisDeviceManager)
-                        and cls is not IJarvisDeviceManager
-                    ):
-                        instance = cls()
-
-                        missing_secrets = instance.validate_secrets()
-                        if missing_secrets:
-                            logger.warning(
-                                "Device manager skipped due to missing secrets",
-                                manager=instance.name,
-                                missing=missing_secrets,
-                            )
+        # Scan custom managers (installed by Pantry)
+        custom_managers_dir = Path(device_managers.__path__[0]).parent / "device_managers" / "custom_managers"
+        if custom_managers_dir.exists():
+            for mgr_dir in custom_managers_dir.iterdir():
+                if mgr_dir.is_dir() and not mgr_dir.name.startswith("_"):
+                    # Look for any .py file that might contain the manager
+                    for py_file in mgr_dir.glob("*.py"):
+                        if py_file.name.startswith("_"):
                             continue
-
-                        new_managers[instance.name] = instance
-                        logger.debug(
-                            "Discovered device manager",
-                            manager=instance.name,
-                            can_edit=instance.can_edit_devices,
+                        import sys
+                        if str(mgr_dir) not in sys.path:
+                            sys.path.insert(0, str(mgr_dir))
+                        self._try_load_manager(
+                            f"device_managers.custom_managers.{mgr_dir.name}.{py_file.stem}",
+                            mgr_dir.name,
+                            new_managers,
                         )
-
-            except ImportError as e:
-                logger.debug(
-                    "Device manager module skipped (missing dependency)",
-                    module=module_name,
-                    error=str(e),
-                )
-            except Exception as e:
-                logger.error(
-                    "Error loading device manager module",
-                    module=module_name,
-                    error=str(e),
-                )
 
         self._managers_cache = new_managers
         self._discovered = True
 
         logger.info("Device manager discovery complete", count=len(new_managers))
         return new_managers
+
+    def _try_load_manager(
+        self, module_path: str, module_name: str, managers_dict: dict[str, IJarvisDeviceManager]
+    ) -> None:
+        """Try to load a device manager from a module path."""
+        try:
+            module = importlib.import_module(module_path)
+
+            for attr in dir(module):
+                cls = getattr(module, attr)
+
+                if (
+                    isinstance(cls, type)
+                    and issubclass(cls, IJarvisDeviceManager)
+                    and cls is not IJarvisDeviceManager
+                ):
+                    instance = cls()
+
+                    missing_secrets = instance.validate_secrets()
+                    if missing_secrets:
+                        logger.warning(
+                            "Device manager skipped due to missing secrets",
+                            manager=instance.name,
+                            missing=missing_secrets,
+                        )
+                        continue
+
+                    managers_dict[instance.name] = instance
+                    logger.debug(
+                        "Discovered device manager",
+                        manager=instance.name,
+                        can_edit=instance.can_edit_devices,
+                    )
+
+        except ImportError as e:
+            logger.debug(
+                "Device manager module skipped (missing dependency)",
+                module=module_name,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.error(
+                "Error loading device manager module",
+                module=module_name,
+                error=str(e),
+            )
 
     def get_manager(self, name: str) -> IJarvisDeviceManager | None:
         """Get a specific device manager by name.

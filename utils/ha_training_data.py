@@ -171,7 +171,7 @@ def get_ha_training_data() -> Optional[Dict[str, Any]]:
     _ha_data_fetched = True
 
     try:
-        from agents.home_assistant_agent import HomeAssistantAgent
+        from agents.home_assistant.agent import HomeAssistantAgent
 
         agent = HomeAssistantAgent()
 

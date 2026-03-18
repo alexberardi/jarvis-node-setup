@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import httpx
 
-from services.home_assistant_service import (
+from ha_shared.home_assistant_service import (
     DOMAIN_ACTIONS,
     HomeAssistantService,
     LightAction,
@@ -23,7 +23,7 @@ from services.home_assistant_service import (
 @pytest.fixture
 def mock_secrets():
     """Mock secret values for HA connection."""
-    with patch("services.home_assistant_service.get_secret_value") as mock:
+    with patch("ha_shared.home_assistant_service.get_secret_value") as mock:
         mock.side_effect = lambda key, scope: {
             "HOME_ASSISTANT_REST_URL": "http://localhost:8123",
             "HOME_ASSISTANT_API_KEY": "test_token_123",
@@ -49,7 +49,7 @@ class TestHomeAssistantServiceInit:
 
     def test_init_with_explicit_values(self):
         """Service accepts explicit URL and API key."""
-        with patch("services.home_assistant_service.get_secret_value") as mock:
+        with patch("ha_shared.home_assistant_service.get_secret_value") as mock:
             mock.return_value = None
 
             service = HomeAssistantService(
@@ -62,7 +62,7 @@ class TestHomeAssistantServiceInit:
 
     def test_init_strips_trailing_slash(self):
         """Service strips trailing slash from base URL."""
-        with patch("services.home_assistant_service.get_secret_value") as mock:
+        with patch("ha_shared.home_assistant_service.get_secret_value") as mock:
             mock.return_value = None
 
             service = HomeAssistantService(
@@ -74,7 +74,7 @@ class TestHomeAssistantServiceInit:
 
     def test_init_raises_without_url(self):
         """Service raises if URL is not available."""
-        with patch("services.home_assistant_service.get_secret_value") as mock:
+        with patch("ha_shared.home_assistant_service.get_secret_value") as mock:
             mock.return_value = None
 
             with pytest.raises(ValueError) as exc:
@@ -84,7 +84,7 @@ class TestHomeAssistantServiceInit:
 
     def test_init_raises_without_api_key(self):
         """Service raises if API key is not available."""
-        with patch("services.home_assistant_service.get_secret_value") as mock:
+        with patch("ha_shared.home_assistant_service.get_secret_value") as mock:
             mock.side_effect = lambda key, scope: (
                 "http://localhost:8123" if key == "HOME_ASSISTANT_REST_URL" else None
             )

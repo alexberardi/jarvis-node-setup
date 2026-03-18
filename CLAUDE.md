@@ -87,17 +87,112 @@ jarvis-node-setup/
 │   ├── command_response.py     # Response structure
 │   └── platform_abstraction.py # Hardware abstraction
 ├── services/
-│   ├── network_discovery_service.py  # Network scanning (large file)
 │   ├── secret_service.py       # Secret management
-│   └── mqtt_tts_listener.py    # MQTT TTS listener
+│   ├── mqtt_tts_listener.py    # MQTT TTS listener
+│   └── command_store_service.py # Pantry install/remove/list
+├── ha_shared/                  # Home Assistant shared code
+│   ├── home_assistant_service.py  # HA WebSocket client + actions
+│   └── entity_resolver.py     # Fuzzy entity ID matching
 ├── commands/                   # Built-in commands (20+)
 │   ├── weather_command.py
 │   ├── calculator_command.py
-│   ├── jokes_command.py
+│   ├── control_device/command.py   # HA device control (convention layout)
+│   ├── get_device_status/command.py
 │   └── ...
+├── agents/                     # Background agents
+│   └── home_assistant/agent.py     # HA state caching (convention layout)
+├── device_managers/            # Device listing backends
+│   └── home_assistant/manager.py   # HA device listing (convention layout)
 └── utils/
     └── config_service.py       # Configuration
 ```
+
+## Shared Code Pattern (`*_shared/` directories)
+
+When multiple components (commands, agents, device managers) share code, put it
+in a `<feature>_shared/` package at the project root — **not** in `services/` or
+`utils/`, which are reserved for node framework code.
+
+**Example: Home Assistant**
+
+```
+ha_shared/
+├── __init__.py
+├── home_assistant_service.py   # HA WebSocket client, actions, state queries
+└── entity_resolver.py          # Fuzzy entity ID matching
+```
+
+Components import from the shared package:
+```python
+from ha_shared.home_assistant_service import HomeAssistantService
+from ha_shared.entity_resolver import resolve_entity_id
+```
+
+**Why not `services/` or `utils/`?**
+
+Community packages installed from the Pantry scatter components to type-specific
+directories and install shared code to `~/.jarvis/packages/<name>/lib/`. If a
+package ships a `services/` directory, it shadows the node's built-in `services/`
+package. The Pantry static analysis pipeline flags this with a warning.
+
+**Convention:**
+- `ha_shared/` — Home Assistant shared code
+- `<package>_shared/` — any integration's shared code
+- Node framework code stays in `services/`, `utils/`, `core/`
+
+## Pantry CLI (Command Store)
+
+Install, remove, and manage packages from the Pantry:
+
+```bash
+# Install from GitHub
+python scripts/command_store.py install --url https://github.com/user/jarvis-my-command
+
+# Install from local directory (dev/testing)
+python scripts/command_store.py install --local /path/to/package
+
+# Install from store catalog
+python scripts/command_store.py install my_command
+
+# Remove
+python scripts/command_store.py remove package_name
+
+# List installed
+python scripts/command_store.py list
+```
+
+### Bundle Install Layout
+
+Bundles scatter components to type-specific directories:
+
+| Component type | Install dir |
+|----------------|-------------|
+| `command` | `commands/custom_commands/{name}/` |
+| `agent` | `agents/custom_agents/{name}/` |
+| `device_protocol` | `device_families/custom_families/{name}/` |
+| `device_manager` | `device_managers/custom_managers/{name}/` |
+
+Shared code → `~/.jarvis/packages/{name}/lib/`
+Package metadata → `~/.jarvis/packages/{name}.json`
+
+### Convention Directory Structure (for repos)
+
+The Pantry infers component types from directory layout when `components` is not
+declared in the manifest:
+
+```
+commands/<name>/command.py          → command
+agents/<name>/agent.py              → agent
+device_families/<name>/protocol.py  → device_protocol
+device_managers/<name>/manager.py   → device_manager
+command.py (at root)                → single command
+```
+
+### Reference Bundle
+
+[jarvis-home-assistant-integration](https://github.com/alexberardi/jarvis-home-assistant-integration) —
+4 components (2 commands + 1 agent + 1 device manager) with `ha_shared/` for
+shared code. Use this as a template for new bundles.
 
 ## Extending Commands
 

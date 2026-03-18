@@ -7,10 +7,10 @@ Tests parameter validation, state queries, and attribute filtering.
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from commands.get_device_status_command import GetDeviceStatusCommand
+from commands.get_device_status.command import GetDeviceStatusCommand
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
-from services.home_assistant_service import EntityStateResult
+from ha_shared.home_assistant_service import EntityStateResult
 
 
 @pytest.fixture
@@ -146,8 +146,8 @@ class TestDynamicAdapterExamples:
         assert "light.my_office" in entity_ids  # Static hardcoded ID
 
 
-@patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
-@patch("commands.get_device_status_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+@patch("commands.get_device_status.command.validate_entity", return_value=(True, ""))
+@patch("commands.get_device_status.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestRunCommand:
     """Test command execution."""
 
@@ -210,7 +210,7 @@ class TestExecuteQuery:
         )
 
         with patch(
-            "commands.get_device_status_command.HomeAssistantService"
+            "commands.get_device_status.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service.get_state = AsyncMock(return_value=mock_result)
@@ -236,7 +236,7 @@ class TestExecuteQuery:
         )
 
         with patch(
-            "commands.get_device_status_command.HomeAssistantService"
+            "commands.get_device_status.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service.get_state = AsyncMock(return_value=mock_result)
@@ -299,8 +299,8 @@ class TestFilterRelevantAttributes:
 class TestEntityResolution:
     """Test fuzzy entity resolution integration."""
 
-    @patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
-    @patch("commands.get_device_status_command.resolve_entity_id")
+    @patch("commands.get_device_status.command.validate_entity", return_value=(True, ""))
+    @patch("commands.get_device_status.command.resolve_entity_id")
     def test_resolver_called_with_correct_args(self, mock_resolve, mock_validate, command, request_info):
         """Resolver is called with entity_id and voice_command."""
         mock_resolve.return_value = "cover.garage_door"
@@ -315,8 +315,8 @@ class TestEntityResolution:
 
         mock_resolve.assert_called_once_with("cover.garage", "is the garage door open")
 
-    @patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
-    @patch("commands.get_device_status_command.resolve_entity_id")
+    @patch("commands.get_device_status.command.validate_entity", return_value=(True, ""))
+    @patch("commands.get_device_status.command.resolve_entity_id")
     def test_resolved_entity_used_downstream(self, mock_resolve, mock_validate, command, request_info):
         """Resolved entity_id is passed to _execute_query."""
         mock_resolve.return_value = "cover.garage_door"
@@ -332,15 +332,15 @@ class TestEntityResolution:
         # asyncio.run wraps _execute_query, but we patched it as sync mock
         mock_execute.assert_called_once_with("cover.garage_door")
 
-    @patch("commands.get_device_status_command.resolve_entity_id")
+    @patch("commands.get_device_status.command.resolve_entity_id")
     def test_resolver_not_called_when_entity_id_missing(self, mock_resolve, command, request_info):
         """Resolver is not called when entity_id is None."""
         command.run(request_info)
         mock_resolve.assert_not_called()
 
 
-@patch("commands.get_device_status_command.validate_entity", return_value=(True, ""))
-@patch("commands.get_device_status_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+@patch("commands.get_device_status.command.validate_entity", return_value=(True, ""))
+@patch("commands.get_device_status.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestWaitForInput:
     """Test wait_for_input behavior."""
 
