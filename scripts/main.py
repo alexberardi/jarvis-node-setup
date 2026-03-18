@@ -126,6 +126,24 @@ def main():
     # Device scanning is now user-driven via MQTT (mobile → CC → node).
     # See services/device_scan_handler.py and mqtt_tts_listener.py.
 
+    # Auto-reconnect known Bluetooth devices in background
+    def _bt_reconnect():
+        import time
+        time.sleep(30)  # Let BlueZ initialize
+        try:
+            from core.platform_abstraction import get_bluetooth_provider
+            from services.bluetooth_service import BluetoothService
+            bt_service = BluetoothService(get_bluetooth_provider())
+            if bt_service.is_available():
+                count = bt_service.reconnect_known_devices()
+                if count > 0:
+                    logger.info("Bluetooth auto-reconnect complete", count=count)
+        except Exception as e:
+            logger.warning("Bluetooth auto-reconnect failed (non-fatal)", error=str(e))
+
+    bt_thread = threading.Thread(target=_bt_reconnect, daemon=True)
+    bt_thread.start()
+
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This
     # primes llama.cpp's prefix cache so the first real voice command is fast.
