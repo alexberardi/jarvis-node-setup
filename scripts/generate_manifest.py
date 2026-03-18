@@ -21,6 +21,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.ijarvis_command import IJarvisCommand  # noqa: E402
+from jarvis_command_sdk.command import IJarvisCommand as SDKIJarvisCommand  # noqa: E402
 from core.command_manifest import (  # noqa: E402
     CommandManifest,
     ManifestAuthor,
@@ -66,7 +67,7 @@ def load_command_class(class_name: str, path: str | None = None) -> type[IJarvis
     cls = getattr(module, class_name, None)
     if cls is None:
         raise ValueError(f"Class '{class_name}' not found in module")
-    if not (isinstance(cls, type) and issubclass(cls, IJarvisCommand)):
+    if not (isinstance(cls, type) and (issubclass(cls, IJarvisCommand) or issubclass(cls, SDKIJarvisCommand))):
         raise TypeError(f"'{class_name}' is not an IJarvisCommand subclass")
     return cls
 
