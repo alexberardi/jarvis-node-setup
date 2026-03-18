@@ -7,15 +7,15 @@ import websockets
 
 from jarvis_log_client import JarvisLogger
 
-from utils.config_service import Config
+from services.secret_service import get_secret_value
 
 logger = JarvisLogger(service="jarvis-node")
 
 
 class MusicAssistantService:
     def __init__(self) -> None:
-        self.uri: Optional[str] = Config.get_str('music_assistant_url')
-        self.player_id: Optional[str] = Config.get_str('music_assistant_player_id')
+        self.uri: Optional[str] = get_secret_value("MUSIC_ASSISTANT_URL", "integration")
+        self.player_id: Optional[str] = get_secret_value("MUSIC_ASSISTANT_PLAYER_ID", "integration")
         self.ws: Optional[Any] = None  # websockets.WebSocketServerProtocol
         self.lock: threading.Lock = threading.Lock()
         self.connected: bool = False

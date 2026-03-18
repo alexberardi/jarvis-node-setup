@@ -15,7 +15,7 @@ from jarvis_log_client import JarvisLogger
 from core.ijarvis_button import IJarvisButton
 from device_families.base import (
     DeviceControlResult,
-    DeviceProtocol,
+    IJarvisDeviceProtocol,
     DiscoveredDevice,
 )
 
@@ -36,7 +36,27 @@ def _slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
-class LifxProtocol(DeviceProtocol):
+def _rgb_to_hsbk_components(r: int, g: int, b: int) -> tuple[int, int, int]:
+    """Convert RGB (0-255) to LIFX hue, saturation, brightness (0-65535 each)."""
+    import colorsys
+
+    rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
+    h, s, v = colorsys.rgb_to_hsv(rf, gf, bf)
+    return (int(h * 65535), int(s * 65535), int(v * 65535))
+
+
+def _hsbk_to_rgb(hue: int, saturation: int, brightness: int) -> list[int]:
+    """Convert LIFX HSBK (0-65535) to RGB (0-255) list."""
+    import colorsys
+
+    h = hue / 65535.0
+    s = saturation / 65535.0
+    v = brightness / 65535.0
+    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+    return [round(r * 255), round(g * 255), round(b * 255)]
+
+
+class LifxProtocol(IJarvisDeviceProtocol):
     """LIFX LAN protocol: discovery + control over UDP."""
 
     @property
@@ -127,18 +147,66 @@ class LifxProtocol(DeviceProtocol):
                 device = Light(mac, ip)
 
                 if action == "turn_on":
-                    brightness = 65535  # full
-                    if data and "brightness" in data:
-                        # Normalize 0-100 → 0-65535
-                        brightness = int(float(data["brightness"]) / 100 * 65535)
                     device.set_power("on")
                     if data and "brightness" in data:
+                        brightness = int(float(data["brightness"]) / 100 * 65535)
                         device.set_brightness(brightness)
                 elif action == "turn_off":
                     device.set_power("off")
                 elif action == "toggle":
                     power = device.get_power()
                     device.set_power("off" if power > 0 else "on")
+                elif action == "set_brightness":
+                    if not data or "brightness" not in data:
+                        return DeviceControlResult(
+                            success=False, entity_id=entity_id, action=action,
+                            error="brightness value is required",
+                        )
+                    brightness = int(float(data["brightness"]) / 100 * 65535)
+                    device.set_brightness(brightness)
+                elif action == "set_color":
+                    if not data:
+                        return DeviceControlResult(
+                            success=False, entity_id=entity_id, action=action,
+                            error="color data is required",
+                        )
+                    # Accept RGB (0-255 each) or hue/saturation (0-360, 0-100)
+                    if "rgb" in data:
+                        r, g, b = data["rgb"]
+                        h, s, br = _rgb_to_hsbk_components(r, g, b)
+                        # Keep current kelvin
+                        try:
+                            current = device.get_color()
+                            kelvin = current[3] if current else 3500
+                        except Exception:
+                            kelvin = 3500
+                        device.set_color([h, s, br, kelvin])
+                    elif "color_temp" in data:
+                        kelvin = int(data["color_temp"])
+                        kelvin = max(2500, min(9000, kelvin))
+                        try:
+                            current = device.get_color()
+                            br = current[2] if current else 65535
+                        except Exception:
+                            br = 65535
+                        # Full saturation=0 for white/color temp mode
+                        device.set_color([0, 0, br, kelvin])
+                    elif "hue" in data and "saturation" in data:
+                        hue = int(float(data["hue"]) / 360 * 65535)
+                        sat = int(float(data["saturation"]) / 100 * 65535)
+                        try:
+                            current = device.get_color()
+                            br = current[2] if current else 65535
+                            kelvin = current[3] if current else 3500
+                        except Exception:
+                            br = 65535
+                            kelvin = 3500
+                        device.set_color([hue, sat, br, kelvin])
+                    else:
+                        return DeviceControlResult(
+                            success=False, entity_id=entity_id, action=action,
+                            error="Provide rgb, color_temp, or hue+saturation",
+                        )
                 else:
                     return DeviceControlResult(
                         success=False, entity_id=entity_id, action=action,
@@ -167,11 +235,16 @@ class LifxProtocol(DeviceProtocol):
                 device = Light(mac, ip)
                 power = device.get_power()
                 color = device.get_color()  # (hue, saturation, brightness, kelvin)
-                return {
+                state: dict[str, Any] = {
                     "state": "on" if power > 0 else "off",
-                    "brightness": round(color[2] / 65535 * 100) if color else None,
-                    "color_temp": color[3] if color else None,
                 }
+                if color:
+                    state["brightness"] = round(color[2] / 65535 * 100)
+                    state["hue"] = round(color[0] / 65535 * 360)
+                    state["saturation"] = round(color[1] / 65535 * 100)
+                    state["color_temp"] = color[3]
+                    state["rgb"] = _hsbk_to_rgb(color[0], color[1], color[2])
+                return state
             except Exception:
                 return None
 

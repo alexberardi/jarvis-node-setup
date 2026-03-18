@@ -159,6 +159,16 @@ class ControlDeviceCommand(IJarvisCommand):
                 ),
             ),
             JarvisParameter(
+                "room",
+                "string",
+                required=False,
+                description=(
+                    "Jarvis room name (e.g., 'Upstairs', 'Bedroom 1') from the room hierarchy. "
+                    "When a room has sub-rooms, targets ALL devices in the room AND its descendants. "
+                    "Use instead of entity_id for commands like 'turn off the lights upstairs'."
+                ),
+            ),
+            JarvisParameter(
                 "value",
                 "string",
                 required=False,
@@ -293,6 +303,7 @@ class ControlDeviceCommand(IJarvisCommand):
             "lock/unlock → lock.* (NEVER switch.*), open/close → cover.*, on/off → light.*/switch.*.",
             "Floor commands ('turn off lights downstairs'): use floor param, NOT entity_id. System resolves all devices.",
             "Area commands ('turn off kitchen lights'): use area param, NOT entity_id. System resolves all devices.",
+            "Room hierarchy commands ('turn off lights upstairs'): if Room Hierarchy is in context, use room param. System resolves room + all sub-rooms.",
         ]
 
     def generate_prompt_examples(self) -> List[CommandExample]:
@@ -347,6 +358,13 @@ class ControlDeviceCommand(IJarvisCommand):
                 expected_parameters={
                     "area": "Kitchen",
                     "action": "turn_on",
+                },
+            ),
+            CommandExample(
+                voice_command="Turn off the lights upstairs",
+                expected_parameters={
+                    "room": "Upstairs",
+                    "action": "turn_off",
                 },
             ),
         ]
@@ -532,6 +550,17 @@ class ControlDeviceCommand(IJarvisCommand):
         value = kwargs.get("value")
         floor = kwargs.get("floor")
         area = kwargs.get("area")
+        room = kwargs.get("room")
+
+        # Room hierarchy targeting — resolve room + descendants to room IDs,
+        # then map to HA areas for device lookup
+        if room and not entity_id:
+            return self._run_room_hierarchy(
+                request_info=request_info,
+                room_name=room,
+                action=action,
+                value=value,
+            )
 
         # Floor/area targeting — resolve to multiple entities and control all
         if (floor or area) and not entity_id:
@@ -699,6 +728,129 @@ class ControlDeviceCommand(IJarvisCommand):
             area_lower = {area.lower()}
             allowed_areas = area_lower if allowed_areas is None else allowed_areas & area_lower
 
+        target_label = floor or area or "unknown"
+
+        # If allowed_areas is still None (shouldn't happen), use empty set
+        if allowed_areas is None:
+            return CommandResponse.error_response(
+                error_details="No floor or area specified",
+                context_data={"error": "no_target"},
+            )
+
+        return self._run_floor_area_with_areas(
+            request_info=request_info,
+            ha_data=ha_data,
+            allowed_areas=allowed_areas,
+            target_label=target_label,
+            action=action,
+            value=value,
+        )
+
+    def _run_room_hierarchy(
+        self,
+        request_info: RequestInformation,
+        room_name: str,
+        action: Optional[str],
+        value: Optional[str],
+    ) -> CommandResponse:
+        """Control all devices in a Jarvis room and its descendant rooms.
+
+        Fetches room hierarchy from CC, resolves room + descendants to area
+        names, then collects matching HA entities.
+        """
+        # Get HA context from agent scheduler
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+            context = get_agent_scheduler_service().get_aggregated_context()
+            ha_data = context.get("home_assistant", {})
+        except Exception as e:
+            logger.error("Failed to get context for room hierarchy command", error=str(e))
+            return CommandResponse.error_response(
+                error_details="Smart home data not available",
+                context_data={"error": "no_context"},
+            )
+
+        # Fetch room hierarchy from CC
+        room_hierarchy = self._fetch_room_hierarchy()
+
+        if not room_hierarchy:
+            # Fallback: treat room param as an area param
+            logger.info("No room hierarchy, falling back to area", room=room_name)
+            return self._run_floor_area(
+                request_info=request_info,
+                floor=None,
+                area=room_name,
+                action=action,
+                value=value,
+            )
+
+        # Find the target room by name (case-insensitive)
+        target_room = None
+        for r in room_hierarchy:
+            if r["name"].lower() == room_name.lower():
+                target_room = r
+                break
+
+        if not target_room:
+            available = [r["name"] for r in room_hierarchy]
+            return CommandResponse.error_response(
+                error_details=f"Room '{room_name}' not found. Available: {', '.join(available)}",
+                context_data={"error": "room_not_found", "available_rooms": available},
+            )
+
+        # BFS to collect target room + all descendant room names
+        target_id = target_room["id"]
+        collected_ids: set[str] = {target_id}
+        queue = [target_id]
+        while queue:
+            parent_id = queue.pop(0)
+            for r in room_hierarchy:
+                if r.get("parent_room_id") == parent_id and r["id"] not in collected_ids:
+                    collected_ids.add(r["id"])
+                    queue.append(r["id"])
+
+        # Map room IDs → room names (these become the allowed areas)
+        room_id_to_name = {r["id"]: r["name"] for r in room_hierarchy}
+        allowed_area_names: set[str] = {
+            room_id_to_name[rid].lower() for rid in collected_ids if rid in room_id_to_name
+        }
+
+        logger.info(
+            "Room hierarchy resolved",
+            room=room_name, descendant_count=len(collected_ids),
+            areas=list(allowed_area_names),
+        )
+
+        # Delegate to floor/area logic using the resolved set of area names
+        # We pass area=None and inject the allowed_areas directly
+        return self._run_floor_area_with_areas(
+            request_info=request_info,
+            ha_data=ha_data,
+            allowed_areas=allowed_area_names,
+            target_label=room_name,
+            action=action,
+            value=value,
+        )
+
+    def _run_floor_area_with_areas(
+        self,
+        request_info: RequestInformation,
+        ha_data: Dict[str, Any],
+        allowed_areas: set[str],
+        target_label: str,
+        action: Optional[str],
+        value: Optional[str],
+    ) -> CommandResponse:
+        """Shared logic for controlling devices across a set of areas.
+
+        Extracted from _run_floor_area to share with _run_room_hierarchy.
+        """
+        if not ha_data:
+            return CommandResponse.error_response(
+                error_details="No Home Assistant data cached yet",
+                context_data={"error": "no_ha_data"},
+            )
+
         # Infer domain from voice command
         domain = self._infer_domain_from_voice(request_info.voice_command)
 
@@ -706,7 +858,6 @@ class ControlDeviceCommand(IJarvisCommand):
         if not action:
             action = self._infer_action_from_voice(request_info.voice_command, domain)
         if not action:
-            # Default based on domain
             action = "turn_off" if "off" in request_info.voice_command.lower() else "turn_on"
 
         # Collect matching entities
@@ -715,48 +866,41 @@ class ControlDeviceCommand(IJarvisCommand):
         device_controls: Dict[str, Any] = ha_data.get("device_controls", {})
 
         if domain == "light":
-            # Prefer room groups (one entity controls all lights in a room)
             room_group_ids: set[str] = set()
             for _lc_name, lc_info in light_controls.items():
                 lc_area = lc_info.get("area", "")
-                if allowed_areas is None or lc_area.lower() in allowed_areas:
+                if lc_area.lower() in allowed_areas:
                     eid = lc_info.get("entity_id", "")
                     if eid:
                         entity_ids.append(eid)
                         room_group_ids.add(eid)
 
-            # Also include individual lights not in a room group
             for dev in device_controls.get("light", []):
                 dev_area = dev.get("area", "")
                 eid = dev.get("entity_id", "")
-                if eid in room_group_ids:
+                if eid in room_group_ids or dev.get("state") == "unavailable":
                     continue
-                if dev.get("state") == "unavailable":
-                    continue
-                if allowed_areas is None or dev_area.lower() in allowed_areas:
-                    if eid:
-                        entity_ids.append(eid)
+                if dev_area.lower() in allowed_areas and eid:
+                    entity_ids.append(eid)
         else:
             for dev in device_controls.get(domain, []):
                 dev_area = dev.get("area", "")
                 if dev.get("state") == "unavailable":
                     continue
-                if allowed_areas is None or dev_area.lower() in allowed_areas:
+                if dev_area.lower() in allowed_areas:
                     eid = dev.get("entity_id", "")
                     if eid:
                         entity_ids.append(eid)
 
         if not entity_ids:
-            target = floor or area or "unknown"
             return CommandResponse.error_response(
-                error_details=f"No {domain} devices found on {target}",
-                context_data={"error": "no_devices", "target": target, "domain": domain},
+                error_details=f"No {domain} devices found in {target_label}",
+                context_data={"error": "no_devices", "target": target_label, "domain": domain},
             )
 
-        # Execute action on all matched entities
         logger.info(
-            "Floor/area control",
-            floor=floor, area=area, domain=domain,
+            "Room/area control",
+            target=target_label, domain=domain,
             action=action, entity_count=len(entity_ids),
             entities=entity_ids,
         )
@@ -765,35 +909,31 @@ class ControlDeviceCommand(IJarvisCommand):
 
         succeeded = [r for r in results if r["success"]]
         failed = [r for r in results if not r["success"]]
-
-        target_label = floor or area
         friendly_action = get_action_display_name(action)
 
         if succeeded and not failed:
             return CommandResponse.success_response(
                 context_data={
-                    "floor": floor,
-                    "area": area,
+                    "room": target_label,
                     "domain": domain,
                     "action": action,
                     "device_count": len(succeeded),
                     "entities": [r["entity_id"] for r in succeeded],
-                    "message": f"Successfully {friendly_action} {len(succeeded)} {domain}(s) {target_label}",
+                    "message": f"Successfully {friendly_action} {len(succeeded)} {domain}(s) in {target_label}",
                 },
                 wait_for_input=False,
             )
         elif succeeded:
             return CommandResponse.success_response(
                 context_data={
-                    "floor": floor,
-                    "area": area,
+                    "room": target_label,
                     "domain": domain,
                     "action": action,
                     "device_count": len(succeeded),
                     "failed_count": len(failed),
                     "entities": [r["entity_id"] for r in succeeded],
                     "message": (
-                        f"{friendly_action.capitalize()} {len(succeeded)} {domain}(s) {target_label}, "
+                        f"{friendly_action.capitalize()} {len(succeeded)} {domain}(s) in {target_label}, "
                         f"but {len(failed)} failed"
                     ),
                 },
@@ -801,7 +941,7 @@ class ControlDeviceCommand(IJarvisCommand):
             )
         else:
             return CommandResponse.error_response(
-                error_details=f"Failed to {friendly_action} any devices {target_label}",
+                error_details=f"Failed to {friendly_action} any devices in {target_label}",
                 context_data={"error": "all_failed", "failed": [r["entity_id"] for r in failed]},
             )
 
@@ -851,6 +991,37 @@ class ControlDeviceCommand(IJarvisCommand):
                 return {"entity_id": eid, "success": False, "error": str(e)}
 
         return await asyncio.gather(*[_control_one(eid) for eid in entity_ids])
+
+    @staticmethod
+    def _fetch_room_hierarchy() -> List[Dict[str, Any]]:
+        """Fetch room list from CC to get parent_room_id hierarchy.
+
+        Returns list of room dicts with id, name, parent_room_id, or
+        empty list if unavailable.
+        """
+        try:
+            import httpx
+            from utils.config_service import Config
+
+            cc_url = Config.get_str("command_center_url", "")
+            node_id = Config.get_str("node_id", "")
+            api_key = Config.get_str("api_key", "")
+            household_id = Config.get_str("household_id", "")
+
+            if not cc_url or not household_id:
+                return []
+
+            headers = {"X-API-Key": f"{node_id}:{api_key}"} if node_id and api_key else {}
+            resp = httpx.get(
+                f"{cc_url}/api/v0/households/{household_id}/rooms",
+                headers=headers,
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            logger.warning("Failed to fetch room hierarchy from CC", error=str(e))
+        return []
 
     @staticmethod
     def _infer_domain_from_voice(voice_command: str) -> str:
@@ -954,6 +1125,15 @@ class ControlDeviceCommand(IJarvisCommand):
         Returns:
             CommandResponse with result
         """
+        # Resolve action through domain handler (maps aliases to canonical names)
+        from device_families.domains import get_domain_handler
+
+        handler = get_domain_handler(domain)
+        if handler:
+            resolved = handler.resolve_action(action)
+            if resolved:
+                action = resolved.name
+
         # Build service data if value provided
         data: Optional[Dict[str, Any]] = None
         if value is not None:
@@ -1058,6 +1238,10 @@ class ControlDeviceCommand(IJarvisCommand):
 
         Called when the user taps an action button (e.g. Turn On, Turn Off)
         on the DeviceEditScreen. Routes to the appropriate device service.
+
+        The CC control endpoint merges body.data into context, so action-
+        specific values like temperature and mode live in context alongside
+        entity_id, protocol, etc. We extract them as `data` for the adapter.
         """
         entity_id: str = context.get("entity_id", "")
         if not entity_id:
@@ -1065,11 +1249,14 @@ class ControlDeviceCommand(IJarvisCommand):
                 error_details="Missing entity_id in action context.",
             )
 
+        # Extract action-specific data from context (CC merges body.data into context)
+        data: Optional[Dict[str, Any]] = _extract_action_data(action_name, context)
+
         # Run async control in a new event loop (MQTT listener thread has none)
         loop = asyncio.new_event_loop()
         try:
             result = loop.run_until_complete(
-                self._execute_single_action(entity_id, action_name, context=context)
+                self._execute_single_action(entity_id, action_name, data=data, context=context)
             )
         finally:
             loop.close()
@@ -1096,15 +1283,14 @@ class ControlDeviceCommand(IJarvisCommand):
             result = await direct_svc.control_device(entity_id, action, data)
             return {"entity_id": entity_id, "success": result.success, "error": result.error}
 
-        # If no agent scheduler (e.g. keyboard listener context), use the
-        # device info from the action context to call the adapter directly.
-        if direct_svc is None:
-            try:
-                result = await self._control_via_adapter(entity_id, action, data, context)
-                if result is not None:
-                    return result
-            except Exception as e:
-                logger.warning("Direct adapter control failed", error=str(e))
+        # Use protocol/device info from context to call the adapter directly.
+        # This handles both cases: no agent scheduler, and device not in cache.
+        try:
+            result = await self._control_via_adapter(entity_id, action, data, context)
+            if result is not None:
+                return result
+        except Exception as e:
+            logger.warning("Direct adapter control failed", error=str(e))
 
         # Fall back to Home Assistant
         try:
@@ -1123,7 +1309,9 @@ class ControlDeviceCommand(IJarvisCommand):
 
         The CC control endpoint embeds protocol, cloud_id, model etc. in
         the MQTT context so the node can call the adapter directly without
-        a round-trip back to CC.
+        a round-trip back to CC. Action-specific values (temperature, mode,
+        brightness) are also merged into context by the CC, so we extract
+        them as data if not already provided.
         """
         from utils.device_family_discovery_service import get_device_family_discovery_service
 
@@ -1138,16 +1326,49 @@ class ControlDeviceCommand(IJarvisCommand):
         if not adapter:
             return {"entity_id": entity_id, "success": False, "error": f"No adapter: {protocol}"}
 
+        # CC merges body.data into context, so extract action-specific values
+        # as adapter data if not already provided via the data parameter.
+        effective_data = data
+        if effective_data is None:
+            effective_data = _extract_action_data(action, ctx)
+
         result = await adapter.control(
             ip=ctx.get("local_ip") or "",
             action=action,
-            data=data,
+            data=effective_data,
             entity_id=entity_id,
             mac_address=ctx.get("mac_address") or "",
             cloud_id=ctx.get("cloud_id") or "",
             model=ctx.get("model") or "",
         )
         return {"entity_id": entity_id, "success": result.success, "error": result.error}
+
+
+def _extract_action_data(action: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract action-specific data from a merged context dict.
+
+    The CC control endpoint merges body.data into the MQTT context, so values
+    like temperature and mode live alongside entity_id, protocol, etc.
+    This extracts them into the dict shape that protocol adapters expect.
+    """
+    if action == "set_temperature" and "temperature" in context:
+        return {"temperature": context["temperature"]}
+    if action in ("set_mode", "set_hvac_mode") and "mode" in context:
+        return {"mode": context["mode"]}
+    if action == "set_brightness" and "brightness" in context:
+        return {"brightness": context["brightness"]}
+    if action == "set_percentage" and "percentage" in context:
+        return {"percentage": context["percentage"]}
+    if action == "set_hvac_mode" and "hvac_mode" in context:
+        return {"mode": context["hvac_mode"]}
+    if action == "set_color":
+        if "rgb" in context:
+            return {"rgb": context["rgb"]}
+        if "color_temp" in context:
+            return {"color_temp": context["color_temp"]}
+        if "hue" in context and "saturation" in context:
+            return {"hue": context["hue"], "saturation": context["saturation"]}
+    return None
 
 
 def _get_direct_device_service() -> Optional[Any]:

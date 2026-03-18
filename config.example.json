@@ -9,10 +9,8 @@
   "voice": "en",
   "mqtt_broker": "your-mqtt-broker.local",
   "mqtt_port": 1884,
-  "mqtt_topic": "jarvis/nodes/your-node-id/#",
   "mqtt_username": "",
   "mqtt_password": "",
-  "porcupine_key": "your_porcupine_key_here",
   "mic_sample_rate": 48000,
   "mic_device_index": 1,
   "max_record_seconds": 7,
@@ -22,8 +20,5 @@
   "stt_provider": "jarvis-whisper-api",
   "tts_provider": "jarvis-tts-api",
   "wake_response_provider": "jarvis-tts-api",
-  "music_assistant_enabled": true,
-  "music_assistant_url": "ws://your-music-assistant:8095/ws",
-  "music_assistant_player_id": "your_music_assistant_player_id",
   "skip_warmup_inference": true
 }

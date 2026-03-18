@@ -94,7 +94,7 @@ def _make_mock_family(
     missing_secrets: list[str] | None = None,
     supported_actions: list[MagicMock] | None = None,
 ) -> MagicMock:
-    """Create a mock DeviceProtocol for snapshot tests."""
+    """Create a mock IJarvisDeviceProtocol for snapshot tests."""
     family = MagicMock()
     family.protocol_name = protocol_name
     family.friendly_name = friendly_name

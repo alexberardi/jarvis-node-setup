@@ -4,11 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from services.device_protocols.base import (
+from device_families.base import (
     DeviceControlResult,
-    DeviceProtocol,
+    IJarvisDeviceProtocol,
     DiscoveredDevice,
 )
+
+
 from services.device_scanner_service import DeviceScannerService
 from services.direct_device_service import DeviceRecord, DirectDeviceService
 
@@ -77,12 +79,18 @@ class TestDeviceControlResult:
 
 class TestDeviceScannerService:
     def _make_scanner(self) -> DeviceScannerService:
-        return DeviceScannerService(
-            cc_base_url="http://localhost:7703",
-            node_id="test-node",
-            api_key="test-key",
-            household_id="test-household",
-        )
+        mock_discovery = MagicMock()
+        mock_discovery.get_all_families.return_value = {}
+        with patch(
+            "services.device_scanner_service.get_device_family_discovery_service",
+            return_value=mock_discovery,
+        ):
+            return DeviceScannerService(
+                cc_base_url="http://localhost:7703",
+                node_id="test-node",
+                api_key="test-key",
+                household_id="test-household",
+            )
 
     @pytest.mark.asyncio
     async def test_scan_no_protocols(self) -> None:
@@ -95,7 +103,7 @@ class TestDeviceScannerService:
     async def test_scan_deduplicates_by_mac(self) -> None:
         scanner = self._make_scanner()
 
-        mock_protocol = MagicMock(spec=DeviceProtocol)
+        mock_protocol = MagicMock(spec=IJarvisDeviceProtocol)
         mock_protocol.protocol_name = "test"
         mock_protocol.discover = AsyncMock(return_value=[
             DiscoveredDevice(
@@ -119,7 +127,7 @@ class TestDeviceScannerService:
     async def test_scan_handles_protocol_error(self) -> None:
         scanner = self._make_scanner()
 
-        mock_protocol = MagicMock(spec=DeviceProtocol)
+        mock_protocol = MagicMock(spec=IJarvisDeviceProtocol)
         mock_protocol.protocol_name = "broken"
         mock_protocol.discover = AsyncMock(side_effect=RuntimeError("Network error"))
         scanner._protocols = [mock_protocol]
@@ -193,13 +201,18 @@ class TestDeviceScannerService:
 
 class TestDirectDeviceService:
     def _make_service(self) -> DirectDeviceService:
-        svc = DirectDeviceService(
-            cc_base_url="http://localhost:7703",
-            node_id="test-node",
-            api_key="test-key",
-            household_id="test-household",
-        )
-        svc._protocols = {}  # Clear to avoid import issues
+        mock_discovery = MagicMock()
+        mock_discovery.get_all_families.return_value = {}
+        with patch(
+            "services.direct_device_service.get_device_family_discovery_service",
+            return_value=mock_discovery,
+        ):
+            svc = DirectDeviceService(
+                cc_base_url="http://localhost:7703",
+                node_id="test-node",
+                api_key="test-key",
+                household_id="test-household",
+            )
         return svc
 
     def test_register_and_lookup(self) -> None:
@@ -250,7 +263,7 @@ class TestDirectDeviceService:
             domain="light", name="Kitchen Light",
         ))
 
-        mock_adapter = MagicMock(spec=DeviceProtocol)
+        mock_adapter = MagicMock(spec=IJarvisDeviceProtocol)
         mock_adapter.control = AsyncMock(return_value=DeviceControlResult(
             success=True, entity_id="light.kitchen", action="turn_on",
         ))

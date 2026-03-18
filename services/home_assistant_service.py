@@ -480,6 +480,7 @@ class HomeAssistantService:
         Identifies room light groups (Hue rooms with hue_type=room or is_hue_group)
         which provide single-entity control for all lights in a room.
         """
+        entity_area_map = self._build_entity_area_map()
         light_controls: Dict[str, Dict[str, Any]] = {}
 
         for entity_id, state_data in self._states.items():
@@ -495,11 +496,15 @@ class HomeAssistantService:
             )
 
             if is_room_group:
-                light_controls[friendly_name] = {
+                entry: Dict[str, Any] = {
                     "entity_id": entity_id,
                     "state": state_data.get("state"),
                     "type": "room_group",
                 }
+                area = entity_area_map.get(entity_id)
+                if area:
+                    entry["area"] = area
+                light_controls[friendly_name] = entry
 
         return light_controls
 

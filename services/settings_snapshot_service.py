@@ -23,6 +23,7 @@ from services.secret_service import get_secret_value
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
 from utils.device_family_discovery_service import get_device_family_discovery_service
+from utils.device_manager_discovery_service import get_device_manager_discovery_service
 from utils.encryption_utils import get_k2
 from utils.service_discovery import get_command_center_url
 
@@ -131,11 +132,51 @@ def build_snapshot() -> dict[str, Any]:
     except Exception as e:
         logger.warning("Failed to build device family entries", error=str(e))
 
+    # Build device manager entries
+    manager_entries: list[dict[str, Any]] = []
+    try:
+        manager_service = get_device_manager_discovery_service()
+        managers = manager_service.get_all_managers_for_snapshot()
+
+        for mgr in managers.values():
+            secrets_list_m: list[dict[str, Any]] = []
+            for secret in mgr.required_secrets:
+                value_m: str | None = get_secret_value(secret.key, secret.scope)
+                entry_m: dict[str, Any] = {
+                    "key": secret.key,
+                    "scope": secret.scope,
+                    "description": secret.description,
+                    "value_type": secret.value_type,
+                    "required": secret.required,
+                    "is_sensitive": secret.is_sensitive,
+                    "is_set": bool(value_m),
+                }
+                if secret.friendly_name:
+                    entry_m["friendly_name"] = secret.friendly_name
+                if not secret.is_sensitive and value_m:
+                    entry_m["value"] = value_m
+                secrets_list_m.append(entry_m)
+
+            mgr_entry: dict[str, Any] = {
+                "manager_name": mgr.name,
+                "friendly_name": mgr.friendly_name,
+                "description": mgr.description,
+                "can_edit_devices": mgr.can_edit_devices,
+                "is_available": mgr.is_available(),
+                "secrets": secrets_list_m,
+            }
+            if mgr.authentication:
+                mgr_entry["authentication"] = mgr.authentication.to_dict()
+            manager_entries.append(mgr_entry)
+    except Exception as e:
+        logger.warning("Failed to build device manager entries", error=str(e))
+
     return {
         "schema_version": SCHEMA_VERSION,
         "commands_schema_version": COMMANDS_SCHEMA_VERSION,
         "commands": command_entries,
         "device_families": family_entries,
+        "device_managers": manager_entries,
     }
 
 

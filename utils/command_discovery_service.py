@@ -7,6 +7,8 @@ from typing import Dict, List, Optional
 from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_command import IJarvisCommand
+from db import SessionLocal
+from repositories.command_registry_repository import CommandRegistryRepository
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -33,46 +35,100 @@ class CommandDiscoveryService:
                 logger.error("Error refreshing commands", error=str(e))
 
     def _discover_commands(self):
-        """Discover all IJarvisCommand implementations"""
+        """Discover all IJarvisCommand implementations from built-in and custom commands."""
         import commands
-        
-        new_commands = {}
-        
-        for _, module_name, _ in pkgutil.iter_modules(commands.__path__):
-            try:
-                module = importlib.import_module(f"commands.{module_name}")
-                
-                for attr in dir(module):
-                    cls = getattr(module, attr)
-                    
-                    if (isinstance(cls, type) and 
-                        issubclass(cls, IJarvisCommand) and 
-                        cls is not IJarvisCommand):
-                        
-                        instance = cls()
-                        new_commands[instance.command_name] = instance
-                        
-            except Exception as e:
-                logger.error("Error loading command module", module=module_name, error=str(e))
-        
+
+        new_commands: Dict[str, IJarvisCommand] = {}
+
+        # 1. Scan built-in commands (commands/*.py)
+        self._scan_package(commands, "commands", new_commands)
+
+        # 2. Scan custom commands (commands/custom_commands/*/)
+        try:
+            import commands.custom_commands as custom_pkg
+            for _, subpkg_name, is_pkg in pkgutil.iter_modules(custom_pkg.__path__):
+                if not is_pkg:
+                    continue  # Custom commands must be packages (directories)
+                try:
+                    module = importlib.import_module(f"commands.custom_commands.{subpkg_name}.command")
+                    for attr in dir(module):
+                        cls = getattr(module, attr)
+                        if (isinstance(cls, type)
+                                and issubclass(cls, IJarvisCommand)
+                                and cls is not IJarvisCommand):
+                            instance = cls()
+                            name = instance.command_name
+                            if name in new_commands:
+                                logger.warning(
+                                    "Custom command name conflicts with built-in, skipping",
+                                    custom_command=name,
+                                    custom_module=subpkg_name,
+                                )
+                                continue
+                            new_commands[name] = instance
+                except Exception as e:
+                    logger.error("Error loading custom command", module=subpkg_name, error=str(e))
+        except ImportError:
+            pass  # custom_commands package doesn't exist yet
+
         with self._lock:
             self._commands_cache = new_commands
             self._last_refresh = time.time()
+
+    def _scan_package(self, package, package_path: str, commands_dict: Dict[str, IJarvisCommand]) -> None:
+        """Scan a package for IJarvisCommand implementations."""
+        for _, module_name, _ in pkgutil.iter_modules(package.__path__):
+            try:
+                module = importlib.import_module(f"{package_path}.{module_name}")
+                for attr in dir(module):
+                    cls = getattr(module, attr)
+                    if (isinstance(cls, type)
+                            and issubclass(cls, IJarvisCommand)
+                            and cls is not IJarvisCommand):
+                        instance = cls()
+                        commands_dict[instance.command_name] = instance
+            except Exception as e:
+                logger.error("Error loading command module", module=module_name, error=str(e))
 
     def get_command(self, command_name: str) -> Optional[IJarvisCommand]:
         """Get a specific command by name"""
         with self._lock:
             return self._commands_cache.get(command_name)
 
-    def get_all_commands(self) -> Dict[str, IJarvisCommand]:
-        """Get all discovered commands"""
+    def get_all_commands(self, include_disabled: bool = False) -> Dict[str, IJarvisCommand]:
+        """Get all discovered commands.
+
+        Args:
+            include_disabled: If True, return all commands including disabled ones.
+                            If False (default), filter out disabled commands.
+        """
         with self._lock:
-            return self._commands_cache.copy()
+            if include_disabled:
+                return self._commands_cache.copy()
+            return self._filter_enabled(self._commands_cache)
+
+    def _filter_enabled(self, commands: Dict[str, IJarvisCommand]) -> Dict[str, IJarvisCommand]:
+        """Filter out disabled commands using the command_registry table."""
+        try:
+            db = SessionLocal()
+            try:
+                repo = CommandRegistryRepository(db)
+                registry = repo.get_all()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to read command registry, returning all commands", error=str(e))
+            return commands.copy()
+
+        # Commands not in registry default to enabled
+        return {
+            name: cmd for name, cmd in commands.items()
+            if registry.get(name, True)
+        }
 
     def get_available_commands_schema(self) -> List[IJarvisCommand]:
-        """Get all available commands as objects (for LLM)"""
-        with self._lock:
-            return list(self._commands_cache.values())
+        """Get all available (enabled) commands as objects (for LLM)"""
+        return list(self.get_all_commands(include_disabled=False).values())
 
     def refresh_now(self):
         """Force an immediate refresh of commands"""

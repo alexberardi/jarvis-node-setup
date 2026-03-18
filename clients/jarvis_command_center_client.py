@@ -339,6 +339,26 @@ class JarvisCommandCenterClient:
             logger.error("Failed to fetch adapter job status", error=str(e), job_id=job_id)
             return None
 
+    def chat_text(self, message: str) -> Optional[str]:
+        """Send a chat message and return raw text content (no Pydantic parsing).
+
+        Useful for open-ended questions where the response is plain text.
+        """
+        response = RestClient.post(f"{self.base_url}/api/v0/chat", {
+            "messages": [
+                {"role": "system", "content": message}
+            ]
+        })
+
+        if not response:
+            return None
+
+        try:
+            return response["choices"][0]["message"]["content"]
+        except (KeyError, TypeError, IndexError) as e:
+            logger.warning("Failed to extract chat text", error=str(e))
+            return None
+
     def chat(self, message: str, model: Type[T]) -> Optional[T]:
         response = RestClient.post(f"{self.base_url}/api/v0/chat", {
             "messages": [

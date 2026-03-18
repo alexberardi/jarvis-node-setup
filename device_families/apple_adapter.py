@@ -16,7 +16,7 @@ from jarvis_log_client import JarvisLogger
 from core.ijarvis_button import IJarvisButton
 from device_families.base import (
     DeviceControlResult,
-    DeviceProtocol,
+    IJarvisDeviceProtocol,
     DiscoveredDevice,
 )
 
@@ -97,7 +97,7 @@ def _model_friendly(model_str: str | None, raw_model: str | None) -> str:
     return "Apple Device"
 
 
-class AppleProtocol(DeviceProtocol):
+class AppleProtocol(IJarvisDeviceProtocol):
     """Apple AirPlay/Companion protocol: discovery + control over LAN."""
 
     @property

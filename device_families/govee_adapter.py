@@ -20,7 +20,7 @@ from core.ijarvis_button import IJarvisButton
 from core.ijarvis_secret import JarvisSecret
 from device_families.base import (
     DeviceControlResult,
-    DeviceProtocol,
+    IJarvisDeviceProtocol,
     DiscoveredDevice,
 )
 
@@ -43,7 +43,7 @@ _GOVEE_TYPE_TO_DOMAIN: dict[str, str] = {
     "devices.types.sensor": "sensor",
     "devices.types.aroma_diffuser": "switch",
     "devices.types.ice_maker": "switch",
-    "devices.types.kettle": "switch",
+    "devices.types.kettle": "kettle",
 }
 
 
@@ -59,7 +59,7 @@ def _get_api_key() -> str | None:
     return get_secret_value("GOVEE_API_KEY", "integration")
 
 
-class GoveeProtocol(DeviceProtocol):
+class GoveeProtocol(IJarvisDeviceProtocol):
     """Govee hybrid protocol: LAN UDP discovery + cloud REST control."""
 
     @property
@@ -76,7 +76,7 @@ class GoveeProtocol(DeviceProtocol):
 
     @property
     def supported_domains(self) -> list[str]:
-        return ["switch", "light"]
+        return ["switch", "light", "kettle"]
 
     @property
     def supported_actions(self) -> list[IJarvisButton]:
@@ -310,6 +310,45 @@ class GoveeProtocol(DeviceProtocol):
                 "instance": "powerSwitch",
                 "value": value,
             }
+        elif action == "set_temperature" and data and "temperature" in data:
+            # Kettle temperature control (40-100°C)
+            temp = int(float(data["temperature"]))
+            unit = data.get("unit", "Celsius")
+            capability = {
+                "type": "devices.capabilities.temperature_setting",
+                "instance": "sliderTemperature",
+                "value": {
+                    "targetTemperature": temp,
+                    "unit": unit,
+                },
+            }
+        elif action == "set_mode" and data and "mode" in data:
+            # Kettle work mode (boil, keep_warm, etc.)
+            mode_value = data["mode"]
+            capability = {
+                "type": "devices.capabilities.work_mode",
+                "instance": "workMode",
+                "value": mode_value,
+            }
+        elif action == "set_color" and data:
+            if "rgb" in data:
+                r, g, b = data["rgb"]
+                capability = {
+                    "type": "devices.capabilities.color_setting",
+                    "instance": "colorRgb",
+                    "value": (int(r) << 16) | (int(g) << 8) | int(b),
+                }
+            elif "color_temp" in data:
+                capability = {
+                    "type": "devices.capabilities.color_setting",
+                    "instance": "colorTemperatureK",
+                    "value": int(data["color_temp"]),
+                }
+            else:
+                return DeviceControlResult(
+                    success=False, entity_id=entity_id, action=action,
+                    error="Provide rgb or color_temp for set_color",
+                )
         else:
             return DeviceControlResult(
                 success=False, entity_id=entity_id, action=action,
@@ -402,11 +441,32 @@ class GoveeProtocol(DeviceProtocol):
                 elif instance == "brightness":
                     state["brightness"] = value
                 elif instance == "colorRgb":
-                    state["color"] = value
+                    # Govee packs RGB as integer: (r << 16) | (g << 8) | b
+                    if isinstance(value, int):
+                        state["rgb"] = [
+                            (value >> 16) & 0xFF,
+                            (value >> 8) & 0xFF,
+                            value & 0xFF,
+                        ]
+                    else:
+                        state["color"] = value
                 elif instance == "colorTemperatureK":
                     state["color_temp"] = value
                 elif "online" in cap_type:
                     state["online"] = bool(value)
+                elif "temperature_setting" in cap_type and instance == "sliderTemperature":
+                    # Kettle target temperature: value is dict or int
+                    if isinstance(value, dict):
+                        state["target_temperature"] = value.get("targetTemperature")
+                        state["unit"] = value.get("unit", "Celsius")
+                    elif isinstance(value, (int, float)):
+                        state["target_temperature"] = int(value)
+                elif "sensor" in cap_type and "temperature" in instance:
+                    # Kettle current water temperature
+                    if isinstance(value, (int, float)):
+                        state["current_temperature"] = int(value)
+                elif "work_mode" in cap_type:
+                    state["mode"] = value
 
             return state if state else None
 

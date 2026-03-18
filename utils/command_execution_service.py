@@ -306,7 +306,7 @@ class CommandExecutionService:
         conversation_id = self._generate_conversation_id()
 
         # Try node-side pre-routing (skip CC entirely)
-        pre_result = self._try_pre_route(voice_command, conversation_id)
+        pre_result = self.try_pre_route(voice_command, conversation_id)
         if pre_result is not None:
             return pre_result
 
@@ -333,6 +333,7 @@ class CommandExecutionService:
                         "conversation_id": conversation_id,
                         "wait_for_input": False,
                         "clear_history": False,
+                        "audio_played": True,
                     }
                 # No audio bytes — fall back to the text we got from the header
                 if text:
@@ -619,7 +620,7 @@ class CommandExecutionService:
                 return f"Sorry, that didn't work: {output['error']}"
         return ""
 
-    def _try_pre_route(self, voice_command: str, conversation_id: str) -> Dict[str, Any] | None:
+    def try_pre_route(self, voice_command: str, conversation_id: str) -> Dict[str, Any] | None:
         """Try node-side pre-routing across all discovered commands.
 
         Iterates commands, calls pre_route() on each.  First match wins.
@@ -705,8 +706,24 @@ class CommandExecutionService:
             "clear_history": False,
         }
 
-    def speak_result(self, result: Dict[str, Any]):
-        """Speak the result of command execution"""
+    def speak_result(self, result: Dict[str, Any]) -> None:
+        """Speak the result of command execution.
+
+        Skips TTS when streaming audio was already played by
+        ``process_voice_command`` to avoid double-speaking.
+
+        Uses streaming for long responses (> 200 chars) to avoid
+        buffering the entire WAV and hitting playback timeouts.
+        """
+        if result.get("audio_played"):
+            return
         tts_provider = get_tts_provider()
         message = result.get("message", "An error occurred")
+
+        # Use streaming for long responses (briefings, stories, etc.)
+        if len(message) > 200 and hasattr(tts_provider, "speak_stream"):
+            if tts_provider.speak_stream(message):
+                return
+            # Fall through to blocking speak if streaming fails
+
         tts_provider.speak(False, message)

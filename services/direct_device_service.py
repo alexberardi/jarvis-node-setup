@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 from jarvis_log_client import JarvisLogger
 
-from device_families.base import DeviceControlResult, DeviceProtocol
+from device_families.base import DeviceControlResult, IJarvisDeviceProtocol
 from utils.device_family_discovery_service import get_device_family_discovery_service
 
 logger = JarvisLogger(service="jarvis-node")
@@ -55,7 +55,7 @@ class DirectDeviceService:
         self._api_key = api_key
         self._household_id = household_id
         self._device_cache: dict[str, DeviceRecord] = {}
-        self._protocols: dict[str, DeviceProtocol] = {}
+        self._protocols: dict[str, IJarvisDeviceProtocol] = {}
         self._load_protocols()
 
     def _load_protocols(self) -> None:

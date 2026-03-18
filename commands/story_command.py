@@ -36,9 +36,13 @@ class StoryCommand(IJarvisCommand):
         ]
 
     @property
+    def associated_service(self) -> str:
+        return "Stories"
+
+    @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
-            JarvisSecret("JARVIS_STORY_TARGET_AUDIENCE_AGE_DEFAULT", "Target audience age for the story", "integration", "int")
+            JarvisSecret("JARVIS_STORY_TARGET_AUDIENCE_AGE_DEFAULT", "Target audience age for the story", "integration", "int", friendly_name="Target Age")
         ]
 
     @property

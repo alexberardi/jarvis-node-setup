@@ -126,15 +126,19 @@ class OpenWeatherCommand(IJarvisCommand):
         return [
             JarvisParameter("city", "string", required=False, default=None, description="City name. Omit for default location."),
             JarvisParameter("resolved_datetimes", "array<datetime>", required=True, description="Date keys: 'today','tomorrow','this_weekend', etc. (max 5 days). Default 'today'."),
-            JarvisParameter("unit_system", "string", required=False, default=None, description="'metric' or 'imperial'. Omit for default."),
+            # unit_system intentionally omitted — always uses OPENWEATHER_UNITS secret
         ]
+
+    @property
+    def associated_service(self) -> str:
+        return "OpenWeather"
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
-            JarvisSecret("OPENWEATHER_API_KEY", "Open Weather API Key", "integration", "string"),
-            JarvisSecret("OPENWEATHER_UNITS", "Imperial, Metric, or Kelvin", "integration", "string", is_sensitive=False),
-            JarvisSecret("OPENWEATHER_LOCATION", "city,state_code,country_code, ie Miami,FL,US. If omitted and no location is found in the command, location will be retrieved from ip-api.com", "node", "string", is_sensitive=False)
+            JarvisSecret("OPENWEATHER_API_KEY", "Open Weather API Key", "integration", "string", friendly_name="API Key"),
+            JarvisSecret("OPENWEATHER_UNITS", "Imperial, Metric, or Kelvin", "integration", "string", is_sensitive=False, friendly_name="Units"),
+            JarvisSecret("OPENWEATHER_LOCATION", "city,state_code,country_code, ie Miami,FL,US. If omitted and no location is found in the command, location will be retrieved from ip-api.com", "node", "string", is_sensitive=False, friendly_name="Default Location")
         ]
 
     @property
@@ -163,24 +167,34 @@ class OpenWeatherCommand(IJarvisCommand):
             raise Exception("Missing OpenWeather API key. Please set it in your node configuration first.")
 
         city = kwargs.get("city")
+        # Guard against LLM passing literal "default" or "none" instead of omitting
+        if city and city.lower() in ("default", "none", "null", "n/a", ""):
+            city = None
+        logger.debug("Weather command city resolution", city_from_kwargs=city)
         if not city:
             city = get_secret_value("OPENWEATHER_LOCATION", "node")
+            logger.debug("City from OPENWEATHER_LOCATION secret", city=city)
         if not city:
             city = get_current_location()
-        unit_system = kwargs.get("unit_system") or get_secret_value("OPENWEATHER_UNITS", "integration")
-        unit_system = unit_system.lower()
+            logger.debug("City from ip-api.com fallback", city=city)
+        if not city:
+            raise Exception("Could not determine location. Set OPENWEATHER_LOCATION in node settings or pass a city parameter.")
+
+        unit_system = (get_secret_value("OPENWEATHER_UNITS", "integration") or "imperial").lower()
         resolved_datetimes = kwargs.get("resolved_datetimes")
 
         # Always get coordinates first (needed for OneCall API)
         geocode_url = f"http://api.openweathermap.org/geo/1.0/direct?q={city}&limit=1&appid={api_key}"
+        logger.debug("Geocoding city", city=city, url=geocode_url)
         geocode_resp = requests.get(geocode_url)
         geocode_resp.raise_for_status()
         geocode_data = geocode_resp.json()
+        logger.debug("Geocode response", data=str(geocode_data))
         if isinstance(geocode_data, list) and geocode_data and "lat" in geocode_data[0] and "lon" in geocode_data[0]:
             lat = geocode_data[0]["lat"]
             lon = geocode_data[0]["lon"]
         else:
-            raise Exception("Could not determine location coordinates.")
+            raise Exception(f"Could not determine location coordinates for '{city}'. Geocode returned: {geocode_data}")
 
         # Get OneCall API data (includes current, hourly, and daily)
         onecall_url = f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&units={unit_system}&appid={api_key}"
@@ -214,7 +228,6 @@ class OpenWeatherCommand(IJarvisCommand):
                         humidity = current.get("humidity", "N/A")
                         wind_speed = current.get("wind_speed", "N/A")
                         
-                        # Return raw data - server will format the message
                         return CommandResponse.success_response(
                             context_data={
                                 "city": city,
@@ -299,7 +312,6 @@ class OpenWeatherCommand(IJarvisCommand):
                 # Join all summaries
                 full_forecast_summary = '; '.join(forecast_summaries)
 
-                # Return raw data - server will format the message
                 return CommandResponse.success_response(
                     context_data={
                         "city": city,
@@ -318,7 +330,7 @@ class OpenWeatherCommand(IJarvisCommand):
                 date_strings = [d.strftime('%B %d') for d in target_dates]
                 message = f"I couldn't find weather data for {', '.join(date_strings)}. The forecast only covers the next 8 days."
 
-            logger.warning("Dates not found in forecast", message=message)
+            logger.warning("Dates not found in forecast", detail=message)
             speak(message)
             return CommandResponse.error_response(
                 error_details="Dates not found in forecast",

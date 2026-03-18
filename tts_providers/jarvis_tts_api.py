@@ -78,7 +78,7 @@ class JarvisTTS(IJarvisTextToSpeechProvider):
             return False
 
         url = f"{command_center_url}/api/v0/media/tts/speak/stream"
-        response = RestClient.post_stream(url, data={"text": text}, timeout=30)
+        response = RestClient.post_stream(url, data={"text": text}, timeout=60)
 
         if not response:
             logger.warning("Streaming TTS failed, falling back to blocking TTS")
