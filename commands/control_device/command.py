@@ -20,13 +20,13 @@ from core.ijarvis_command import CommandExample, IJarvisCommand
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret, JarvisSecret
 from core.request_information import RequestInformation
-from services.home_assistant_service import (
+from ha_shared.home_assistant_service import (
     HomeAssistantService,
     get_action_display_name,
     get_actions_for_domain,
     get_domain_from_entity_id,
 )
-from utils.entity_resolver import resolve_entity_id, validate_entity
+from ha_shared.entity_resolver import resolve_entity_id, validate_entity
 
 # Voice keywords → HA domain for floor/area commands
 _VOICE_DOMAIN_HINTS: Dict[str, str] = {

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agents.home_assistant_agent import (
+from agents.home_assistant.agent import (
     COMMON_ROOM_NAMES,
     HomeAssistantAgent,
     REFRESH_INTERVAL_SECONDS,
@@ -61,7 +61,7 @@ class TestRunWithMissingSecrets:
     @pytest.mark.asyncio
     async def test_run_skips_without_url(self, agent):
         """run() skips if WS URL is missing"""
-        with patch("agents.home_assistant_agent.get_secret_value") as mock_get:
+        with patch("agents.home_assistant.agent.get_secret_value") as mock_get:
             mock_get.side_effect = lambda key, scope: None
 
             await agent.run()
@@ -72,7 +72,7 @@ class TestRunWithMissingSecrets:
     @pytest.mark.asyncio
     async def test_run_skips_without_api_key(self, agent):
         """run() skips if API key is missing"""
-        with patch("agents.home_assistant_agent.get_secret_value") as mock_get:
+        with patch("agents.home_assistant.agent.get_secret_value") as mock_get:
             # Only URL is set
             mock_get.side_effect = lambda key, scope: (
                 "ws://localhost:8123/api/websocket"

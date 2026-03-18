@@ -115,7 +115,7 @@ async def _query_direct_device(details: dict[str, Any]) -> dict[str, Any] | None
 async def _query_ha_device(entity_id: str) -> dict[str, Any] | None:
     """Query state from Home Assistant."""
     try:
-        from services.home_assistant_service import HomeAssistantService
+        from ha_shared.home_assistant_service import HomeAssistantService
 
         service = HomeAssistantService()
         result = await service.get_state(entity_id)

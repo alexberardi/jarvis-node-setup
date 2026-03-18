@@ -69,7 +69,7 @@ class HomeAssistantDeviceManager(IJarvisDeviceManager):
 
     async def collect_devices(self) -> list[DeviceManagerDevice]:
         """Fetch devices from HA via WebSocket and map to DeviceManagerDevice."""
-        from services.home_assistant_service import HomeAssistantService
+        from ha_shared.home_assistant_service import HomeAssistantService
 
         service = HomeAssistantService()
         try:

@@ -8,10 +8,10 @@ clarification flow, and command execution.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from commands.control_device_command import ControlDeviceCommand
+from commands.control_device.command import ControlDeviceCommand
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
-from services.home_assistant_service import ServiceCallResult
+from ha_shared.home_assistant_service import ServiceCallResult
 
 
 @pytest.fixture
@@ -212,8 +212,8 @@ class TestDynamicAdapterExamples:
         assert len(floor_examples) >= 2
 
 
-@patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-@patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+@patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+@patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestActionValidation:
     """Test domain-based action validation."""
 
@@ -252,8 +252,8 @@ class TestActionValidation:
         assert "unknown device type" in response.error_details.lower()
 
 
-@patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-@patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+@patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+@patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
 class TestActionClarification:
     """Test clarification flow when action is missing or invalid."""
 
@@ -327,8 +327,8 @@ class TestActionClarification:
 class TestRunCommand:
     """Test command execution."""
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
     def test_run_cover_open_success(self, mock_resolve, mock_validate, command, request_info):
         """Successfully opens a cover."""
         with patch.object(command, "_execute_control") as mock_execute:
@@ -351,8 +351,8 @@ class TestRunCommand:
             assert response.success is True
             assert response.context_data["action"] == "open_cover"
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
     def test_run_lock_success(self, mock_resolve, mock_validate, command, request_info):
         """Successfully locks a door."""
         with patch.object(command, "_execute_control") as mock_execute:
@@ -375,8 +375,8 @@ class TestRunCommand:
             assert response.success is True
             assert response.context_data["action"] == "lock"
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
     def test_run_climate_with_value(self, mock_resolve, mock_validate, command, request_info):
         """Successfully sets temperature."""
         with patch.object(command, "_execute_control") as mock_execute:
@@ -415,7 +415,7 @@ class TestExecuteControl:
         )
 
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service.control_device = AsyncMock(return_value=mock_result)
@@ -439,7 +439,7 @@ class TestExecuteControl:
         )
 
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service.control_device = AsyncMock(return_value=mock_result)
@@ -459,7 +459,7 @@ class TestExecuteControl:
     async def test_execute_control_invalid_temperature(self, command):
         """Returns error for invalid temperature value."""
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service_cls.return_value = mock_service
@@ -482,7 +482,7 @@ class TestExecuteControl:
         )
 
         with patch(
-            "commands.control_device_command.HomeAssistantService"
+            "commands.control_device.command.HomeAssistantService"
         ) as mock_service_cls:
             mock_service = AsyncMock()
             mock_service.control_device = AsyncMock(return_value=mock_result)
@@ -499,8 +499,8 @@ class TestExecuteControl:
 class TestEntityResolution:
     """Test fuzzy entity resolution integration."""
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id")
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id")
     def test_resolver_called_with_correct_args(self, mock_resolve, mock_validate, command, request_info):
         """Resolver is called with entity_id and voice_command."""
         mock_resolve.return_value = "cover.garage_door"
@@ -515,8 +515,8 @@ class TestEntityResolution:
 
         mock_resolve.assert_called_once_with("cover.garage", "open the garage door")
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id")
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id")
     def test_resolved_entity_used_downstream(self, mock_resolve, mock_validate, command, request_info):
         """Resolved entity_id is passed to _execute_control."""
         mock_resolve.return_value = "cover.garage_door"
@@ -535,7 +535,7 @@ class TestEntityResolution:
         call_args = mock_execute.call_args
         assert call_args[0][0] == "cover.garage_door"  # entity_id arg
 
-    @patch("commands.control_device_command.resolve_entity_id")
+    @patch("commands.control_device.command.resolve_entity_id")
     def test_resolver_not_called_when_entity_id_missing(self, mock_resolve, command, request_info):
         """Resolver is not called when entity_id is None."""
         command.run(request_info)
@@ -545,8 +545,8 @@ class TestEntityResolution:
 class TestWaitForInput:
     """Test wait_for_input behavior."""
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
     def test_success_does_not_wait(self, mock_resolve, mock_validate, command, request_info):
         """Successful control doesn't wait for input."""
         with patch.object(command, "_execute_control") as mock_execute:
@@ -563,8 +563,8 @@ class TestWaitForInput:
 
             assert response.wait_for_input is False
 
-    @patch("commands.control_device_command.validate_entity", return_value=(True, ""))
-    @patch("commands.control_device_command.resolve_entity_id", side_effect=lambda eid, vc: eid)
+    @patch("commands.control_device.command.validate_entity", return_value=(True, ""))
+    @patch("commands.control_device.command.resolve_entity_id", side_effect=lambda eid, vc: eid)
     def test_clarification_waits_for_input(self, mock_resolve, mock_validate, command):
         """Clarification response waits for input."""
         # Use a neutral voice command so _infer_action_from_voice doesn't auto-select
