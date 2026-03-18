@@ -7,7 +7,9 @@ using dependency injection and composition patterns.
 
 import os
 import platform
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, List, Any
 import subprocess
 
@@ -488,6 +490,287 @@ class PiSystemProvider(SystemProvider):
         return "/etc/jarvis-node/audio_config.json"
 
 
+# Bluetooth Abstraction
+@dataclass
+class BluetoothDevice:
+    """Represents a discovered or paired Bluetooth device."""
+    name: str
+    mac_address: str
+    device_type: str = "unknown"  # "audio_sink" | "audio_source" | "phone" | "unknown"
+    rssi: int | None = None
+    paired: bool = False
+    connected: bool = False
+
+
+class BluetoothProvider(ABC):
+    """Abstract interface for Bluetooth operations."""
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Check if Bluetooth hardware is available and the adapter is powered on."""
+        pass
+
+    @abstractmethod
+    def scan(self, timeout: float = 10.0) -> list[BluetoothDevice]:
+        """Scan for nearby Bluetooth devices."""
+        pass
+
+    @abstractmethod
+    def pair(self, mac_address: str) -> bool:
+        """Pair with a device by MAC address."""
+        pass
+
+    @abstractmethod
+    def connect(self, mac_address: str) -> bool:
+        """Connect to a paired device."""
+        pass
+
+    @abstractmethod
+    def disconnect(self, mac_address: str) -> bool:
+        """Disconnect from a connected device."""
+        pass
+
+    @abstractmethod
+    def remove(self, mac_address: str) -> bool:
+        """Remove (forget) a paired device."""
+        pass
+
+    @abstractmethod
+    def set_discoverable(self, enabled: bool, timeout: int = 120) -> bool:
+        """Make the adapter discoverable (or not)."""
+        pass
+
+    @abstractmethod
+    def get_paired_devices(self) -> list[BluetoothDevice]:
+        """List all paired devices."""
+        pass
+
+    @abstractmethod
+    def get_connected_devices(self) -> list[BluetoothDevice]:
+        """List currently connected devices."""
+        pass
+
+    @abstractmethod
+    def trust(self, mac_address: str) -> bool:
+        """Trust a device for auto-accept pairing."""
+        pass
+
+
+class PiBluetoothProvider(BluetoothProvider):
+    """Raspberry Pi Bluetooth provider using bluetoothctl subprocess."""
+
+    def _run_bluetoothctl(self, *args: str, timeout: float = 15.0) -> subprocess.CompletedProcess:
+        """Run a bluetoothctl command and return the result."""
+        cmd = ["bluetoothctl"] + list(args)
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    def is_available(self) -> bool:
+        try:
+            result = self._run_bluetoothctl("show", timeout=5.0)
+            return result.returncode == 0 and "Powered: yes" in result.stdout
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.warning("Bluetooth not available", error=str(e))
+            return False
+
+    def scan(self, timeout: float = 10.0) -> list[BluetoothDevice]:
+        try:
+            # Start scan, wait, then collect devices
+            subprocess.run(
+                ["bluetoothctl", "scan", "on"],
+                capture_output=True, text=True, timeout=3.0
+            )
+            import time
+            time.sleep(min(timeout, 15.0))
+            subprocess.run(
+                ["bluetoothctl", "scan", "off"],
+                capture_output=True, text=True, timeout=3.0
+            )
+
+            result = self._run_bluetoothctl("devices")
+            if result.returncode != 0:
+                return []
+
+            devices: list[BluetoothDevice] = []
+            for line in result.stdout.strip().split("\n"):
+                match = re.match(r"Device\s+([0-9A-Fa-f:]{17})\s+(.*)", line)
+                if match:
+                    mac = match.group(1)
+                    name = match.group(2).strip()
+                    device_type = self._classify_device(mac)
+                    devices.append(BluetoothDevice(
+                        name=name,
+                        mac_address=mac,
+                        device_type=device_type,
+                    ))
+            return devices
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth scan failed", error=str(e))
+            return []
+
+    def _classify_device(self, mac_address: str) -> str:
+        """Classify a device by querying its BlueZ icon/class."""
+        try:
+            result = self._run_bluetoothctl("info", mac_address, timeout=5.0)
+            if result.returncode != 0:
+                return "unknown"
+            output = result.stdout.lower()
+            if "icon: audio" in output or "audio sink" in output:
+                return "audio_sink"
+            if "icon: phone" in output:
+                return "phone"
+            if "audio source" in output:
+                return "audio_source"
+            return "unknown"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return "unknown"
+
+    def pair(self, mac_address: str) -> bool:
+        try:
+            # Set agent for headless pairing
+            self._run_bluetoothctl("agent", "NoInputNoOutput", timeout=5.0)
+            self._run_bluetoothctl("default-agent", timeout=5.0)
+
+            result = self._run_bluetoothctl("pair", mac_address, timeout=30.0)
+            success = result.returncode == 0 or "already" in result.stdout.lower()
+            if success:
+                logger.info("Bluetooth device paired", mac=mac_address)
+            else:
+                logger.warning("Bluetooth pair failed", mac=mac_address, output=result.stdout)
+            return success
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth pair error", mac=mac_address, error=str(e))
+            return False
+
+    def connect(self, mac_address: str) -> bool:
+        try:
+            result = self._run_bluetoothctl("connect", mac_address, timeout=15.0)
+            success = result.returncode == 0 or "successful" in result.stdout.lower()
+            if success:
+                logger.info("Bluetooth device connected", mac=mac_address)
+            else:
+                logger.warning("Bluetooth connect failed", mac=mac_address, output=result.stdout)
+            return success
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth connect error", mac=mac_address, error=str(e))
+            return False
+
+    def disconnect(self, mac_address: str) -> bool:
+        try:
+            result = self._run_bluetoothctl("disconnect", mac_address, timeout=10.0)
+            success = result.returncode == 0 or "successful" in result.stdout.lower()
+            if success:
+                logger.info("Bluetooth device disconnected", mac=mac_address)
+            return success
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth disconnect error", mac=mac_address, error=str(e))
+            return False
+
+    def remove(self, mac_address: str) -> bool:
+        try:
+            result = self._run_bluetoothctl("remove", mac_address, timeout=10.0)
+            success = result.returncode == 0
+            if success:
+                logger.info("Bluetooth device removed", mac=mac_address)
+            return success
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth remove error", mac=mac_address, error=str(e))
+            return False
+
+    def set_discoverable(self, enabled: bool, timeout: int = 120) -> bool:
+        try:
+            value = "on" if enabled else "off"
+            result = self._run_bluetoothctl("discoverable", value, timeout=5.0)
+            if enabled and result.returncode == 0:
+                self._run_bluetoothctl("discoverable-timeout", str(timeout), timeout=5.0)
+            logger.info("Bluetooth discoverable", enabled=enabled, timeout=timeout)
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth discoverable error", error=str(e))
+            return False
+
+    def get_paired_devices(self) -> list[BluetoothDevice]:
+        try:
+            result = self._run_bluetoothctl("paired-devices")
+            if result.returncode != 0:
+                return []
+
+            devices: list[BluetoothDevice] = []
+            for line in result.stdout.strip().split("\n"):
+                match = re.match(r"Device\s+([0-9A-Fa-f:]{17})\s+(.*)", line)
+                if match:
+                    mac = match.group(1)
+                    name = match.group(2).strip()
+                    connected = self._is_connected(mac)
+                    devices.append(BluetoothDevice(
+                        name=name,
+                        mac_address=mac,
+                        device_type=self._classify_device(mac),
+                        paired=True,
+                        connected=connected,
+                    ))
+            return devices
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Failed to get paired devices", error=str(e))
+            return []
+
+    def get_connected_devices(self) -> list[BluetoothDevice]:
+        paired = self.get_paired_devices()
+        return [d for d in paired if d.connected]
+
+    def trust(self, mac_address: str) -> bool:
+        try:
+            result = self._run_bluetoothctl("trust", mac_address, timeout=5.0)
+            success = result.returncode == 0
+            if success:
+                logger.info("Bluetooth device trusted", mac=mac_address)
+            return success
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("Bluetooth trust error", mac=mac_address, error=str(e))
+            return False
+
+    def _is_connected(self, mac_address: str) -> bool:
+        """Check if a device is currently connected."""
+        try:
+            result = self._run_bluetoothctl("info", mac_address, timeout=5.0)
+            return "Connected: yes" in result.stdout
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+
+class MacOSBluetoothProvider(BluetoothProvider):
+    """macOS stub — Bluetooth pairing is not supported on dev machines."""
+
+    def is_available(self) -> bool:
+        return False
+
+    def scan(self, timeout: float = 10.0) -> list[BluetoothDevice]:
+        return []
+
+    def pair(self, mac_address: str) -> bool:
+        return False
+
+    def connect(self, mac_address: str) -> bool:
+        return False
+
+    def disconnect(self, mac_address: str) -> bool:
+        return False
+
+    def remove(self, mac_address: str) -> bool:
+        return False
+
+    def set_discoverable(self, enabled: bool, timeout: int = 120) -> bool:
+        return False
+
+    def get_paired_devices(self) -> list[BluetoothDevice]:
+        return []
+
+    def get_connected_devices(self) -> list[BluetoothDevice]:
+        return []
+
+    def trust(self, mac_address: str) -> bool:
+        return False
+
+
 # Platform Factory
 class PlatformFactory:
     """Factory for creating platform-specific providers"""
@@ -532,11 +815,21 @@ class PlatformFactory:
     def create_system_provider() -> SystemProvider:
         """Create the appropriate system provider for the current platform"""
         platform = PlatformFactory.get_platform()
-        
+
         if platform == "MACOS":
             return MacOSSystemProvider()
         else:
             return PiSystemProvider()
+
+    @staticmethod
+    def create_bluetooth_provider() -> BluetoothProvider:
+        """Create the appropriate Bluetooth provider for the current platform"""
+        platform = PlatformFactory.get_platform()
+
+        if platform == "MACOS":
+            return MacOSBluetoothProvider()
+        else:
+            return PiBluetoothProvider()
 
 
 # Convenience functions for easy access
@@ -552,4 +845,9 @@ def get_network_discovery_provider() -> NetworkDiscoveryProvider:
 
 def get_system_provider() -> SystemProvider:
     """Get the system provider for the current platform"""
-    return PlatformFactory.create_system_provider() 
+    return PlatformFactory.create_system_provider()
+
+
+def get_bluetooth_provider() -> BluetoothProvider:
+    """Get the Bluetooth provider for the current platform"""
+    return PlatformFactory.create_bluetooth_provider()
