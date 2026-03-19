@@ -533,6 +533,35 @@ def _handle_device_state_notification(raw_payload: bytes) -> None:
     thread.start()
 
 
+def _handle_package_install_notification(raw_payload: bytes) -> None:
+    """Handle package install request from CC — runs install in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in package install notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    command_name: str = notification.get("command_name", "")
+    github_repo_url: str = notification.get("github_repo_url", "")
+    git_tag: str | None = notification.get("git_tag")
+
+    if not request_id or not github_repo_url:
+        logger.warning("Package install notification missing request_id or github_repo_url")
+        return
+
+    logger.info("Package install requested", request_id=request_id[:8], command=command_name)
+
+    from services.package_install_handler import run_install_and_upload
+
+    thread = threading.Thread(
+        target=run_install_and_upload,
+        args=(request_id, command_name, github_repo_url, git_tag),
+        daemon=True,
+    )
+    thread.start()
+
+
 def _handle_device_scan_notification(raw_payload: bytes) -> None:
     """Handle device scan request from CC — runs scan in background thread."""
     try:
@@ -579,6 +608,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/device-state"):
         _handle_device_state_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/package-install"):
+        _handle_package_install_notification(msg.payload)
         return
 
     try:
