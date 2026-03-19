@@ -7,10 +7,13 @@ Bundles scatter components to their type-specific directories.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,26 +75,71 @@ class RemoveError(CommandStoreError):
     """Error during command removal."""
 
 
+def _download_archive(repo_url: str, tag: str | None = None) -> Path | None:
+    """Download a GitHub repo as a tarball (no git/auth required).
+
+    Returns path to extracted repo dir, or None if download fails.
+    """
+    import urllib.request
+    import urllib.error
+
+    # Convert https://github.com/owner/repo to archive URL
+    clean = repo_url.rstrip("/").removesuffix(".git")
+    ref = tag or "main"
+    archive_url = f"{clean}/archive/{ref}.tar.gz"
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-cmd-"))
+    try:
+        with urllib.request.urlopen(archive_url, timeout=60) as resp:
+            data = resp.read()
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            tar.extractall(path=str(tmpdir), filter="data")
+
+        # GitHub archives extract to {repo}-{ref}/ — find the single directory
+        subdirs = [d for d in tmpdir.iterdir() if d.is_dir()]
+        if len(subdirs) == 1:
+            return subdirs[0]
+        return None
+    except (urllib.error.URLError, tarfile.TarError, OSError) as e:
+        logger.warning("Archive download failed, will try git clone", error=str(e))
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return None
+
+
 def _clone_repo(repo_url: str, tag: str | None = None) -> Path:
-    """Clone a GitHub repo to a temp directory.
+    """Download a repo — tries archive download first, falls back to git clone.
 
     Args:
         repo_url: GitHub HTTPS URL.
         tag: Optional git tag to checkout.
 
     Returns:
-        Path to the cloned directory.
+        Path to the repo directory.
     """
+    # Try archive download first (no git/auth needed)
+    result_path = _download_archive(repo_url, tag)
+    if result_path:
+        return result_path
+
+    # Fallback to git clone
     tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-cmd-"))
     cmd = ["git", "clone", "--depth", "1"]
     if tag:
         cmd.extend(["--branch", tag])
     cmd.extend([repo_url, str(tmpdir / "repo")])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    # Prevent git from prompting for credentials (hangs headless nodes)
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    if result.returncode != 0 and tag:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-cmd-"))
+        fallback_cmd = ["git", "clone", "--depth", "1", repo_url, str(tmpdir / "repo")]
+        result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60, env=env)
     if result.returncode != 0:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        raise InstallError(f"git clone failed: {result.stderr.strip()}")
+        raise InstallError(f"Failed to download package: {result.stderr.strip()}")
 
     return tmpdir / "repo"
 
