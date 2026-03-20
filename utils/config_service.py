@@ -26,8 +26,17 @@ class Config:
             Config._config_json = None
 
     @staticmethod
+    def _env_override(key: str) -> Optional[str]:
+        """Check for env var override: JARVIS_<KEY> (uppercased)."""
+        env_key = f"JARVIS_{key.upper()}"
+        return os.environ.get(env_key)
+
+    @staticmethod
     def get_str(key: str, default: Optional[str] = None) -> Optional[str]:
-        """Get a string value from config"""
+        """Get a string value from config. Env var JARVIS_<KEY> overrides."""
+        env_val = Config._env_override(key)
+        if env_val is not None:
+            return env_val
         Config._load_config()
         if Config._config_json is None:
             return default
@@ -36,7 +45,13 @@ class Config:
 
     @staticmethod
     def get_int(key: str, default: int) -> int:
-        """Get an integer value from config"""
+        """Get an integer value from config. Env var JARVIS_<KEY> overrides."""
+        env_val = Config._env_override(key)
+        if env_val is not None:
+            try:
+                return int(env_val)
+            except ValueError:
+                pass
         Config._load_config()
         if Config._config_json is None:
             return default

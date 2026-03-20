@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  jarvis-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        jarvis-command-sdk: ../jarvis-command-sdk
+    container_name: jarvis-node
+    ports:
+      - "7771:7771"
+    environment:
+      - JARVIS_SKIP_PROVISIONING_CHECK=true
+      - CONFIG_PATH=/config/config.json
+      - JARVIS_NODE_PORT=7771
+      - JARVIS_MQTT_BROKER=host.docker.internal
+      - JARVIS_MQTT_PORT=1884
+      - JARVIS_SKIP_ENCRYPTED_DB=true
+      - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
+    volumes:
+      # Config file (created via authorize_node.py or manually)
+      - ./config-docker.json:/config/config.json:ro
+      # Persistent data (secrets DB, installed packages)
+      - jarvis-node-data:/root/.jarvis
+      # Live-reload app code in dev
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - ./agents:/app/agents
+      - ./device_families:/app/device_families
+      - ./device_managers:/app/device_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+    networks:
+      - jarvis-net
+    restart: unless-stopped
+
+volumes:
+  jarvis-node-data:
+
+networks:
+  jarvis-net:
+    external: true

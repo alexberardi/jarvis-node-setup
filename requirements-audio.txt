@@ -1,0 +1,10 @@
+# Audio and wake-word dependencies (Pi Zero / native only)
+# Install on top of requirements-base.txt
+pyaudio
+sounddevice
+vosk
+# openwakeword installed separately with --no-deps
+onnxruntime>=1.10.0,<2
+scikit-learn>=1,<2
+scipy
+numpy
