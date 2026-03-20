@@ -213,8 +213,11 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
         return
 
     try:
+        print(f"[MQTT] report_tools starting, request={request_id[:8]}", flush=True)
         service = get_command_discovery_service()
+        service.refresh_now()
         commands = service.get_all_commands()
+        print(f"[MQTT] report_tools discovered {len(commands)} commands", flush=True)
 
         # Build date context for schema generation
         from clients.jarvis_command_center_client import JarvisCommandCenterClient
@@ -224,10 +227,14 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
         client_tools: List[Dict[str, Any]] = []
         available_commands: List[Dict[str, Any]] = []
         for cmd in commands.values():
-            client_tools.append(cmd.to_openai_tool_schema(date_context))
-            available_commands.append(cmd.get_command_schema(date_context))
+            try:
+                client_tools.append(cmd.to_openai_tool_schema(date_context))
+                available_commands.append(cmd.get_command_schema(date_context))
+            except Exception as e:
+                print(f"[MQTT] Skipping {cmd.command_name}: {e}", flush=True)
 
         url = f"{base_url.rstrip('/')}/api/v0/mobile/node-tool-reports/{request_id}"
+        print(f"[MQTT] report_tools posting {len(client_tools)} tools to {url[:60]}", flush=True)
         RestClient.post(
             url,
             data={
@@ -236,8 +243,10 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
             },
             timeout=10,
         )
+        print(f"[MQTT] report_tools done", flush=True)
         logger.info("Reported tools to CC", count=len(client_tools), request_id=request_id[:8])
     except Exception as e:
+        print(f"[MQTT] report_tools FAILED: {e}", flush=True)
         logger.error("Failed to report tools", error=str(e))
 
 
@@ -469,20 +478,24 @@ def _handle_settings_request_notification(raw_payload: bytes) -> None:
         logger.warning("Settings request notification missing request_id")
         return
 
-    logger.info("Settings snapshot requested", request_id=request_id[:8])
-    thread = threading.Thread(target=_process_settings_request, args=(request_id,), daemon=True)
+    include_values: bool = notification.get("include_values", False)
+    logger.info("Settings snapshot requested", request_id=request_id[:8], include_values=include_values)
+    thread = threading.Thread(target=_process_settings_request, args=(request_id, include_values), daemon=True)
     thread.start()
 
 
-def _process_settings_request(request_id: str) -> None:
+def _process_settings_request(request_id: str, include_values: bool = False) -> None:
     """Process a settings snapshot request (runs in background thread)."""
     try:
-        success: bool = handle_snapshot_request(request_id)
+        print(f"[MQTT] processing settings request {request_id[:8]}", flush=True)
+        success: bool = handle_snapshot_request(request_id, include_values=include_values)
+        print(f"[MQTT] settings snapshot result: {success}", flush=True)
         if success:
             logger.info("Settings snapshot complete", request_id=request_id[:8])
         else:
             logger.error("Settings snapshot failed", request_id=request_id[:8])
     except Exception as e:
+        print(f"[MQTT] settings snapshot error: {e}", flush=True)
         logger.error("Settings snapshot error", request_id=request_id[:8], error=str(e))
 
 
@@ -584,6 +597,7 @@ def _handle_device_scan_notification(raw_payload: bytes) -> None:
 
 
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
+    print(f"[MQTT] message on {msg.topic}", flush=True)
     # Route by topic — auth-ready notifications from JCC OAuth flow
     if msg.topic.startswith("jarvis/auth/") and msg.topic.endswith("/ready"):
         _handle_auth_ready(msg.payload)
@@ -644,8 +658,37 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
             logger.warning("Unknown MQTT command", command=command)
 
 
+_HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+def _heartbeat_loop() -> None:
+    """Periodically POST heartbeat to command center to update last_seen."""
+    import time
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    # Initial delay: let service discovery initialize
+    time.sleep(10)
+
+    while True:
+        try:
+            base_url: str = get_command_center_url() or ""
+            if base_url:
+                url = f"{base_url.rstrip('/')}/api/v0/admin/nodes/heartbeat"
+                RestClient.post(url, data={}, timeout=10)
+        except Exception:
+            pass  # Heartbeat is best-effort, retries next interval
+        time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+
+
 def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     global _mqtt_client
+
+    # Start heartbeat thread before MQTT (runs even if broker is unreachable)
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
+    logger.info("Heartbeat thread started", interval_seconds=_HEARTBEAT_INTERVAL_SECONDS)
+
     config = get_mqtt_config()
     client: mqtt.Client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
 

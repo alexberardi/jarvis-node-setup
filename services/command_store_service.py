@@ -526,6 +526,11 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
     # 9. Seed secrets
     _seed_secrets(manifest)
 
+    # 10. Enable commands in registry
+    for comp in manifest.components:
+        if comp.type == "command":
+            _enable_in_registry(comp.name)
+
     logger.info(
         "Package installed successfully",
         package=manifest.name,
@@ -661,6 +666,22 @@ def remove(package_name: str) -> None:
     _disable_in_registry(package_name)
     shutil.rmtree(install_dir)
     logger.info("Custom command removed", command=package_name)
+
+
+def _enable_in_registry(command_name: str) -> None:
+    """Enable a command in the node's command registry."""
+    try:
+        from db import SessionLocal
+        from repositories.command_registry_repository import CommandRegistryRepository
+        db = SessionLocal()
+        try:
+            repo = CommandRegistryRepository(db)
+            repo.set_enabled(command_name, True)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Could not update command registry", error=str(e))
 
 
 def _disable_in_registry(command_name: str) -> None:

@@ -1,0 +1,214 @@
+version: "3.8"
+
+# Multi-node dev setup: 6 nodes across 2 households for testing
+# multi-user, multi-household, multi-node scenarios.
+#
+# Usage:
+#   1. Run bootstrap first:  python scripts/bootstrap_multi_node.py
+#   2. Start nodes:          docker compose -f docker-compose.multi-node.yaml up -d
+#
+# Household A (Home):   node-kitchen (7771), node-bedroom (7772), node-office (7773)
+# Household B (Cabin):  node-living (7774), node-garage (7775), node-deck (7776)
+
+x-node-base: &node-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    additional_contexts:
+      jarvis-command-sdk: ../jarvis-command-sdk
+  environment:
+    - JARVIS_SKIP_PROVISIONING_CHECK=true
+    - CONFIG_PATH=/config/config.json
+    - JARVIS_NODE_PORT=7771
+    - JARVIS_MQTT_BROKER=host.docker.internal
+    - JARVIS_MQTT_PORT=1884
+    - JARVIS_SKIP_ENCRYPTED_DB=true
+    - JARVIS_CONFIG_URL=http://host.docker.internal:7700
+    - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
+  networks:
+    - jarvis-net
+  restart: "no"
+
+x-node-volumes: &node-volumes
+  # Live-reload app code in dev
+  - ./core:/app/core
+  - ./commands:/app/commands
+  - ./agents:/app/agents
+  - ./device_families:/app/device_families
+  - ./device_managers:/app/device_managers
+  - ./ha_shared:/app/ha_shared
+  - ./services:/app/services
+  - ./clients:/app/clients
+  - ./utils:/app/utils
+  - ./scripts:/app/scripts
+
+services:
+  # ── Household A: "Home" ──────────────────────────────────────────────
+  node-kitchen:
+    <<: *node-base
+    container_name: jarvis-node-kitchen
+    ports: ["7771:7771"]
+    volumes:
+      - ./configs/node-kitchen.json:/config/config.json:ro
+      - node-kitchen-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-kitchen-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-kitchen-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-kitchen-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-kitchen-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+  node-bedroom:
+    <<: *node-base
+    container_name: jarvis-node-bedroom
+    ports: ["7772:7771"]
+    volumes:
+      - ./configs/node-bedroom.json:/config/config.json:ro
+      - node-bedroom-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-bedroom-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-bedroom-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-bedroom-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-bedroom-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+  node-office:
+    <<: *node-base
+    container_name: jarvis-node-office
+    ports: ["7773:7771"]
+    volumes:
+      - ./configs/node-office.json:/config/config.json:ro
+      - node-office-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-office-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-office-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-office-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-office-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+  # ── Household B: "Cabin" ─────────────────────────────────────────────
+  node-living:
+    <<: *node-base
+    container_name: jarvis-node-living
+    ports: ["7774:7771"]
+    volumes:
+      - ./configs/node-living.json:/config/config.json:ro
+      - node-living-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-living-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-living-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-living-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-living-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+  node-garage:
+    <<: *node-base
+    container_name: jarvis-node-garage
+    ports: ["7775:7771"]
+    volumes:
+      - ./configs/node-garage.json:/config/config.json:ro
+      - node-garage-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-garage-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-garage-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-garage-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-garage-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+  node-deck:
+    <<: *node-base
+    container_name: jarvis-node-deck
+    ports: ["7776:7771"]
+    volumes:
+      - ./configs/node-deck.json:/config/config.json:ro
+      - node-deck-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-deck-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-deck-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-deck-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-deck-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
+volumes:
+  node-kitchen-data:
+  node-kitchen-custom-commands:
+  node-kitchen-custom-agents:
+  node-kitchen-custom-families:
+  node-kitchen-custom-managers:
+  node-bedroom-data:
+  node-bedroom-custom-commands:
+  node-bedroom-custom-agents:
+  node-bedroom-custom-families:
+  node-bedroom-custom-managers:
+  node-office-data:
+  node-office-custom-commands:
+  node-office-custom-agents:
+  node-office-custom-families:
+  node-office-custom-managers:
+  node-living-data:
+  node-living-custom-commands:
+  node-living-custom-agents:
+  node-living-custom-families:
+  node-living-custom-managers:
+  node-garage-data:
+  node-garage-custom-commands:
+  node-garage-custom-agents:
+  node-garage-custom-families:
+  node-garage-custom-managers:
+  node-deck-data:
+  node-deck-custom-commands:
+  node-deck-custom-agents:
+  node-deck-custom-families:
+  node-deck-custom-managers:
+
+networks:
+  jarvis-net:
+    external: true

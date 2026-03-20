@@ -12,6 +12,15 @@ from repositories.command_registry_repository import CommandRegistryRepository
 
 logger = JarvisLogger(service="jarvis-node")
 
+# Community packages (Pantry) import from jarvis_command_sdk, not core.ijarvis_command.
+# Both define IJarvisCommand but they're different classes, so issubclass() fails.
+# We check against both so custom commands are discovered properly.
+try:
+    from jarvis_command_sdk import IJarvisCommand as SDKIJarvisCommand
+    _COMMAND_BASES: tuple[type, ...] = (IJarvisCommand, SDKIJarvisCommand)
+except ImportError:
+    _COMMAND_BASES = (IJarvisCommand,)
+
 
 class CommandDiscoveryService:
     def __init__(self, refresh_interval: int = 600):
@@ -54,8 +63,8 @@ class CommandDiscoveryService:
                     for attr in dir(module):
                         cls = getattr(module, attr)
                         if (isinstance(cls, type)
-                                and issubclass(cls, IJarvisCommand)
-                                and cls is not IJarvisCommand):
+                                and issubclass(cls, _COMMAND_BASES)
+                                and cls not in _COMMAND_BASES):
                             instance = cls()
                             name = instance.command_name
                             if name in new_commands:

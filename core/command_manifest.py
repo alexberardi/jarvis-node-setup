@@ -19,6 +19,7 @@ VALID_COMPONENT_TYPES: list[str] = [
     "agent",
     "device_protocol",
     "device_manager",
+    "prompt_provider",
 ]
 
 VALID_CATEGORIES: list[str] = [
@@ -49,7 +50,7 @@ VALID_CATEGORIES: list[str] = [
 class ManifestComponent(BaseModel):
     """A single component within a package bundle."""
 
-    type: Literal["command", "agent", "device_protocol", "device_manager"]
+    type: Literal["command", "agent", "device_protocol", "device_manager", "prompt_provider"]
     name: str
     path: str
     description: str = ""
@@ -147,6 +148,7 @@ COMPONENT_DIR_TYPES: dict[str, str] = {
     "agents": "agent",
     "device_families": "device_protocol",
     "device_managers": "device_manager",
+    "prompt_providers": "prompt_provider",
 }
 
 # Convention: component type → expected entry point filename
@@ -155,6 +157,7 @@ COMPONENT_ENTRY_POINTS: dict[str, str] = {
     "agent": "agent.py",
     "device_protocol": "protocol.py",
     "device_manager": "manager.py",
+    "prompt_provider": "provider.py",
 }
 
 
