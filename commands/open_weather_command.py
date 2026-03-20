@@ -134,6 +134,21 @@ class OpenWeatherCommand(IJarvisCommand):
         return "OpenWeather"
 
     @property
+    def setup_guide(self) -> str | None:
+        return (
+            "## Getting Your API Key\n\n"
+            "1. Go to [openweathermap.org](https://openweathermap.org) and create a free account\n"
+            "2. After signing in, click your profile icon (top right) → **My API Keys**\n"
+            "3. Your default key is shown, or click **Generate** to create a new one\n"
+            "4. Copy the key and paste it into the **API Key** field above\n\n"
+            "The free tier includes **1,000 calls/day** — more than enough for personal use.\n\n"
+            "## Optional Settings\n\n"
+            "- **Units**: Set to `imperial` (°F), `metric` (°C), or `kelvin`\n"
+            "- **Default Location**: Format: `City,State,Country` (e.g., `Miami,FL,US`). "
+            "If left blank, your location is detected automatically.\n"
+        )
+
+    @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return [
             JarvisSecret("OPENWEATHER_API_KEY", "Open Weather API Key", "integration", "string", friendly_name="API Key"),
