@@ -14,6 +14,10 @@ from utils.date_util import parse_date_array, format_date_display, dates_to_stri
 
 logger = JarvisLogger(service="jarvis-node")
 
+# Default OAuth client ID — same Google Cloud project as Gmail.
+# Users can override via GOOGLE_CLIENT_ID secret if they prefer their own.
+_DEFAULT_CLIENT_ID = "683175564329-24fi9h6hck48hfrbjhb24vf12680e5ec.apps.googleusercontent.com"
+
 
 class ReadCalendarCommand(IJarvisCommand):
 
@@ -113,9 +117,44 @@ class ReadCalendarCommand(IJarvisCommand):
         except Exception:
             return "icloud"
 
+    def _get_client_id(self) -> str:
+        return get_secret_value("GOOGLE_CLIENT_ID", "integration") or _DEFAULT_CLIENT_ID
+
     @property
     def associated_service(self) -> str:
         return "Calendar"
+
+    @property
+    def setup_guide(self) -> str | None:
+        cal_type = self._get_calendar_type()
+        if cal_type == "google":
+            return (
+                "## Google Calendar\n\n"
+                "1. Set **Calendar Type** to `google`\n"
+                "2. Tap **Authenticate with Google Calendar** below\n"
+                "3. Sign in with your Google account and grant calendar access\n\n"
+                "That's it — tokens are managed automatically.\n\n"
+                "> **Advanced**: A default OAuth client ID is provided. "
+                "To use your own, set the **Client ID** field before authenticating.\n"
+            )
+        return (
+            "## Apple iCloud Calendar\n\n"
+            "Jarvis connects to your iCloud calendar using an **app-specific password** "
+            "(not your main Apple ID password).\n\n"
+            "### Generate an App-Specific Password\n\n"
+            "1. Go to [appleid.apple.com](https://appleid.apple.com) and sign in\n"
+            "2. In the **Sign-In and Security** section, click **App-Specific Passwords**\n"
+            "3. Click **+** to generate a new password\n"
+            "4. Name it something like `Jarvis Calendar`\n"
+            "5. Copy the generated password (format: `xxxx-xxxx-xxxx-xxxx`)\n\n"
+            "### Configure Jarvis\n\n"
+            "- **Username**: Your Apple ID email (e.g., `you@icloud.com`)\n"
+            "- **Password**: The app-specific password from step 5\n"
+            "- **Default Calendar**: The exact name of your calendar (e.g., `Home`, `Work`). "
+            "Leave blank to use all calendars.\n\n"
+            "> **Note**: If you have two-factor authentication enabled (most accounts do), "
+            "you **must** use an app-specific password. Your regular password will not work.\n"
+        )
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
@@ -126,7 +165,7 @@ class ReadCalendarCommand(IJarvisCommand):
         ]
         if cal_type == "google":
             secrets.append(
-                JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID", "integration", "string", is_sensitive=False, friendly_name="Client ID"),
+                JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID (optional — a default is provided)", "integration", "string", required=False, is_sensitive=False, friendly_name="Client ID (optional)"),
             )
         else:
             secrets.extend([
@@ -142,14 +181,14 @@ class ReadCalendarCommand(IJarvisCommand):
             JarvisSecret("CALENDAR_DEFAULT_NAME", "Default calendar name to use", "integration", "string", is_sensitive=False, friendly_name="Default Calendar"),
             JarvisSecret("CALENDAR_USERNAME", "Username/Apple ID for calendar service", "integration", "string", friendly_name="Username"),
             JarvisSecret("CALENDAR_PASSWORD", "Password/app-specific password for calendar service", "integration", "string", friendly_name="Password"),
-            JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID", "integration", "string", is_sensitive=False, friendly_name="Client ID"),
+            JarvisSecret("GOOGLE_CLIENT_ID", "Google OAuth client ID (optional — a default is provided)", "integration", "string", required=False, is_sensitive=False, friendly_name="Client ID (optional)"),
         ]
 
     @property
     def authentication(self) -> AuthenticationConfig | None:
         if self._get_calendar_type() != "google":
             return None
-        client_id = get_secret_value("GOOGLE_CLIENT_ID", "integration") or ""
+        client_id = self._get_client_id()
         return AuthenticationConfig(
             type="oauth",
             provider="google_calendar",
@@ -236,7 +275,7 @@ class ReadCalendarCommand(IJarvisCommand):
             if calendar_type == "google":
                 access_token = get_secret_value("GOOGLE_ACCESS_TOKEN", "integration")
                 refresh_token = get_secret_value("GOOGLE_REFRESH_TOKEN", "integration")
-                client_id = get_secret_value("GOOGLE_CLIENT_ID", "integration")
+                client_id = self._get_client_id()
                 if not access_token:
                     return CommandResponse.error_response(
                         error_details="Google Calendar not authenticated. Complete OAuth setup first.",

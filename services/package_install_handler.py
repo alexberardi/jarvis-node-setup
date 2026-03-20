@@ -33,6 +33,16 @@ def run_install_and_upload(
             package=manifest.name,
             version=manifest.version,
         )
+
+        # Re-discover commands so the new package is available immediately
+        # without requiring a node restart.
+        try:
+            from utils.command_discovery_service import get_command_discovery_service
+            get_command_discovery_service().refresh_now()
+            logger.info("Command discovery refreshed after install")
+        except Exception as e:
+            logger.warning("Command discovery refresh failed (non-fatal)", error=str(e))
+
         _upload_result(request_id, success=True, details={
             "package_name": manifest.name,
             "version": manifest.version,

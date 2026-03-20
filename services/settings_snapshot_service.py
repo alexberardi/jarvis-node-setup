@@ -38,9 +38,16 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def build_snapshot() -> dict[str, Any]:
-    """Build a plain (unencrypted) settings snapshot from all discovered commands."""
+def build_snapshot(include_values: bool = False) -> dict[str, Any]:
+    """Build a plain (unencrypted) settings snapshot from all discovered commands.
+
+    Args:
+        include_values: If True, include actual values for ALL secrets (including
+            sensitive ones like API keys). Used for secret sync between nodes.
+            The snapshot is still encrypted with K2 in transit.
+    """
     service = get_command_discovery_service()
+    service.refresh_now()
     commands = service.get_all_commands(include_disabled=True)
 
     # Get enabled states from registry
@@ -71,8 +78,8 @@ def build_snapshot() -> dict[str, Any]:
             }
             if secret.friendly_name:
                 entry["friendly_name"] = secret.friendly_name
-            # Include actual value for non-sensitive config (URLs, units, etc.)
-            if not secret.is_sensitive and value:
+            # Include value: always for non-sensitive, only with include_values for sensitive
+            if value and (not secret.is_sensitive or include_values):
                 entry["value"] = value
             secrets_list.append(entry)
 
@@ -84,6 +91,8 @@ def build_snapshot() -> dict[str, Any]:
         }
         if cmd.associated_service:
             cmd_entry["associated_service"] = cmd.associated_service
+        if hasattr(cmd, "setup_guide") and cmd.setup_guide:
+            cmd_entry["setup_guide"] = cmd.setup_guide
         if cmd.authentication:
             cmd_entry["authentication"] = cmd.authentication.to_dict()
         params = cmd.parameters
@@ -238,8 +247,13 @@ def upload_snapshot(
     return True
 
 
-def handle_snapshot_request(request_id: str) -> bool:
+def handle_snapshot_request(request_id: str, include_values: bool = False) -> bool:
     """Full flow: confirm request, build snapshot, encrypt, upload.
+
+    Args:
+        request_id: The settings request ID from CC.
+        include_values: If True, include sensitive secret values in the snapshot
+            (for secret sync between nodes).
 
     Returns True if successful.
     """
@@ -263,7 +277,7 @@ def handle_snapshot_request(request_id: str) -> bool:
     logger.info("Snapshot request confirmed", request_id=request_id[:8])
 
     # Build snapshot
-    snapshot: dict[str, Any] = build_snapshot()
+    snapshot: dict[str, Any] = build_snapshot(include_values=include_values)
     logger.info(
         "Snapshot built",
         request_id=request_id[:8],
