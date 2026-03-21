@@ -45,6 +45,9 @@ class CommandDiscoveryService:
 
     def _discover_commands(self):
         """Discover all IJarvisCommand implementations from built-in and custom commands."""
+        from services.command_store_service import register_package_lib_paths
+        register_package_lib_paths()
+
         import commands
 
         new_commands: Dict[str, IJarvisCommand] = {}

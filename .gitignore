@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+!build/build-tarball.sh
 develop-eggs/
 dist/
 downloads/
@@ -83,6 +84,14 @@ tmp/
 # Test result artifacts
 test_results*.json
 multi_turn_test_results*.json
+*_results*.json
+*_run[0-9]*.json
+*_timing*.json
+pipeline_test_results.json
+ha_agent_dump.json
+FAILED_TESTS_ANALYSIS.md
+compressed_prompt.txt
+adapter_system_prompt.txt
 
 # User-specific HA device mappings (generated/customized per installation)
 additional_home_assistant_device_mappings.json
