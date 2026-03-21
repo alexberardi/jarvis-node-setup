@@ -46,9 +46,7 @@ jobs:
 
     - name: Run integration tests
       # Integration tests use mocks - no external dependencies required
-      # Note: test_error_handling, test_tool_execution_flow, test_validation_flow
-      # have missing fixtures and need to be fixed
+      # HA command tests moved to jarvis-home-assistant-integration repo
       run: |
-        pytest tests/integration/test_ha_commands.py \
-               tests/integration/test_timer_commands.py \
+        pytest tests/integration/test_timer_commands.py \
                -v --tb=short
