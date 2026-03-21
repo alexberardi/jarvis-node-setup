@@ -14,7 +14,7 @@ requests
 aiodiscover
 pytest
 pytest-asyncio
-websockets 
+websockets
 aiohttp
 tqdm
 zeroconf
