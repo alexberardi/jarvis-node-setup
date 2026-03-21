@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: armv7l
+            platform: linux/arm/v7
+            docker_image: arm32v7/python:3.11-slim-bookworm
+          - arch: arm64
+            platform: linux/arm64
+            docker_image: arm64v8/python:3.11-slim-bookworm
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout jarvis-command-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: alexberardi/jarvis-command-sdk
+          path: jarvis-command-sdk
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build tarball in emulated container
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "${{ github.workspace }}:/src:ro" \
+            -v "${{ github.workspace }}/output:/output" \
+            ${{ matrix.docker_image }} \
+            bash /src/build/build-tarball.sh \
+              "${{ steps.version.outputs.version }}" \
+              "${{ matrix.arch }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-node-${{ steps.version.outputs.version }}-${{ matrix.arch }}
+          path: output/jarvis-node-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            cp "$dir"/*.tar.gz release/
+          done
+          cp install.sh release/
+
+          cd release
+          sha256sum * > checksums.txt
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/*
+          body: |
+            ## Install
+
+            **One-liner (recommended):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sudo bash
+            ```
+
+            **Manual download:**
+            | Platform | Tarball |
+            |----------|---------|
+            | Pi Zero / Pi 3 (armv7l) | `jarvis-node-${{ steps.version.outputs.version }}-armv7l.tar.gz` |
+            | Pi 4 / Pi 5 (arm64) | `jarvis-node-${{ steps.version.outputs.version }}-arm64.tar.gz` |
+
+            After downloading:
+            ```bash
+            sudo tar xzf jarvis-node-*.tar.gz -C /
+            sudo /opt/jarvis-node/install.sh --local
+            ```

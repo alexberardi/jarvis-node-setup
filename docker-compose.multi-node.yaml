@@ -9,6 +9,7 @@ version: "3.8"
 #
 # Household A (Home):   node-kitchen (7771), node-bedroom (7772), node-office (7773)
 # Household B (Cabin):  node-living (7774), node-garage (7775), node-deck (7776)
+# Household C (HA Test): node-ha-test (7778)
 
 x-node-base: &node-base
   build:
@@ -177,7 +178,35 @@ services:
       - ./utils:/app/utils
       - ./scripts:/app/scripts
 
+  # ── Household C: "HA Test" ──────────────────────────────────────────
+  node-ha-test:
+    <<: *node-base
+    container_name: jarvis-node-ha-test
+    ports: ["7778:7771"]
+    volumes:
+      - ./configs/node-ha-test.json:/config/config.json:ro
+      - node-ha-test-data:/root/.jarvis
+      - ./core:/app/core
+      - ./commands:/app/commands
+      - node-ha-test-custom-commands:/app/commands/custom_commands
+      - ./agents:/app/agents
+      - node-ha-test-custom-agents:/app/agents/custom_agents
+      - ./device_families:/app/device_families
+      - node-ha-test-custom-families:/app/device_families/custom_families
+      - ./device_managers:/app/device_managers
+      - node-ha-test-custom-managers:/app/device_managers/custom_managers
+      - ./ha_shared:/app/ha_shared
+      - ./services:/app/services
+      - ./clients:/app/clients
+      - ./utils:/app/utils
+      - ./scripts:/app/scripts
+
 volumes:
+  node-ha-test-data:
+  node-ha-test-custom-commands:
+  node-ha-test-custom-agents:
+  node-ha-test-custom-families:
+  node-ha-test-custom-managers:
   node-kitchen-data:
   node-kitchen-custom-commands:
   node-kitchen-custom-agents:
