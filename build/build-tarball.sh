@@ -43,13 +43,21 @@ echo "==> Upgrading pip"
 
 # --- Install Python dependencies ---
 PIP_EXTRA_ARGS=""
+REQ_FILE="/src/requirements-pi.txt"
+
 if [ "${ARCH}" = "armv7l" ]; then
   PIP_EXTRA_ARGS="--extra-index-url https://www.piwheels.org/simple"
+  # requirements-pi.txt has the armv7l-specific onnxruntime wheel URL — use as-is
+else
+  # arm64: filter out the armv7l onnxruntime wheel and use PyPI's native arm64 build
+  grep -v "onnxruntime.*armv7l" /src/requirements-pi.txt > /tmp/requirements-arm64.txt
+  echo "onnxruntime>=1.16.0" >> /tmp/requirements-arm64.txt
+  REQ_FILE="/tmp/requirements-arm64.txt"
 fi
 
 echo "==> Installing requirements"
 "${INSTALL_DIR}/.venv/bin/python" -m pip install \
-  -r /src/requirements-pi.txt \
+  -r "${REQ_FILE}" \
   ${PIP_EXTRA_ARGS} \
   --quiet
 
