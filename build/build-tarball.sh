@@ -68,8 +68,9 @@ echo "==> Installing openwakeword (--no-deps)"
   --quiet
 
 echo "==> Installing jarvis-command-sdk"
+cp -r /src/jarvis-command-sdk /tmp/jarvis-command-sdk
 "${INSTALL_DIR}/.venv/bin/python" -m pip install \
-  /src/jarvis-command-sdk \
+  /tmp/jarvis-command-sdk \
   --quiet
 
 # --- Copy application source ---
