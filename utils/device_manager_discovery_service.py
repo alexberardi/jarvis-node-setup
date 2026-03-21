@@ -16,6 +16,14 @@ from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_device_manager import IJarvisDeviceManager
 
+# Community packages (Pantry) import from jarvis_command_sdk, not core.
+# Both define IJarvisDeviceManager but they're different classes.
+try:
+    from jarvis_command_sdk import IJarvisDeviceManager as SDKIJarvisDeviceManager
+    _MANAGER_BASES: tuple[type, ...] = (IJarvisDeviceManager, SDKIJarvisDeviceManager)
+except ImportError:
+    _MANAGER_BASES = (IJarvisDeviceManager,)
+
 logger = JarvisLogger(service="jarvis-node")
 
 
@@ -49,6 +57,9 @@ class DeviceManagerDiscoveryService:
 
     def _do_discover_managers(self) -> dict[str, IJarvisDeviceManager]:
         """Internal discovery implementation.  Caller must hold _lock."""
+        from services.command_store_service import register_package_lib_paths
+        register_package_lib_paths()
+
         try:
             import device_managers
         except ImportError:
@@ -97,19 +108,20 @@ class DeviceManagerDiscoveryService:
 
                 if (
                     isinstance(cls, type)
-                    and issubclass(cls, IJarvisDeviceManager)
-                    and cls is not IJarvisDeviceManager
+                    and issubclass(cls, _MANAGER_BASES)
+                    and cls not in _MANAGER_BASES
                 ):
                     instance = cls()
 
-                    missing_secrets = instance.validate_secrets()
-                    if missing_secrets:
-                        logger.warning(
-                            "Device manager skipped due to missing secrets",
-                            manager=instance.name,
-                            missing=missing_secrets,
-                        )
-                        continue
+                    if hasattr(instance, "validate_secrets"):
+                        missing_secrets = instance.validate_secrets()
+                        if missing_secrets:
+                            logger.warning(
+                                "Device manager skipped due to missing secrets",
+                                manager=instance.name,
+                                missing=missing_secrets,
+                            )
+                            continue
 
                     managers_dict[instance.name] = instance
                     logger.debug(

@@ -17,6 +17,13 @@ from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_agent import IJarvisAgent
 
+# Community packages (Pantry) import from jarvis_command_sdk, not core.
+try:
+    from jarvis_command_sdk import IJarvisAgent as SDKIJarvisAgent
+    _AGENT_BASES: tuple[type, ...] = (IJarvisAgent, SDKIJarvisAgent)
+except ImportError:
+    _AGENT_BASES = (IJarvisAgent,)
+
 logger = JarvisLogger(service="jarvis-node")
 
 
@@ -55,6 +62,9 @@ class AgentDiscoveryService:
         Returns:
             Dict mapping agent name to agent instance
         """
+        from services.command_store_service import register_package_lib_paths
+        register_package_lib_paths()
+
         try:
             import agents
         except ImportError:
@@ -102,20 +112,21 @@ class AgentDiscoveryService:
 
                 if (
                     isinstance(cls, type)
-                    and issubclass(cls, IJarvisAgent)
-                    and cls is not IJarvisAgent
+                    and issubclass(cls, _AGENT_BASES)
+                    and cls not in _AGENT_BASES
                 ):
                     instance = cls()
 
                     # Validate secrets before registering
-                    missing_secrets = instance.validate_secrets()
-                    if missing_secrets:
-                        logger.warning(
-                            "Agent skipped due to missing secrets",
-                            agent=instance.name,
-                            missing=missing_secrets,
-                        )
-                        continue
+                    if hasattr(instance, "validate_secrets"):
+                        missing_secrets = instance.validate_secrets()
+                        if missing_secrets:
+                            logger.warning(
+                                "Agent skipped due to missing secrets",
+                                agent=instance.name,
+                                missing=missing_secrets,
+                            )
+                            continue
 
                     agents_dict[instance.name] = instance
                     logger.debug("Discovered agent", agent=instance.name)
