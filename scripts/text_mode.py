@@ -159,9 +159,9 @@ async def startup() -> None:
             alert_queue = get_alert_queue_service()
             agent_scheduler = initialize_agent_scheduler()
             agent_scheduler.set_alert_queue(alert_queue)
-            logger.info("Agent scheduler initialized")
+            print("[startup] agent scheduler initialized", flush=True)
         except Exception as e:
-            logger.warning("Agent scheduler init failed (non-fatal)", error=str(e))
+            print(f"[startup] agent scheduler init failed: {e}", flush=True)
 
     print("[startup] encrypted db section done", flush=True)
 
