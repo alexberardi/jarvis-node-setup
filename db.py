@@ -2,21 +2,12 @@ import os
 import secrets
 from pathlib import Path
 
+import sqlcipher3
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.sqlite import pysqlite
 
 load_dotenv()
-
-# Patch to remove unsupported deterministic argument for pysqlcipher3
-def patched_on_connect(conn):
-    def regexp(a, b):
-        import re
-        return re.search(a, b) is not None
-    conn.create_function("regexp", 2, regexp)  # Removed deterministic=True
-
-pysqlite.SQLiteDialect_pysqlite.on_connect = lambda self: patched_on_connect
 
 
 def _get_or_create_db_key() -> str:
@@ -40,12 +31,20 @@ def _get_or_create_db_key() -> str:
 MASTER_KEY = os.getenv("JARVIS_MASTER_KEY") or _get_or_create_db_key()
 DB_PATH = os.getenv("JARVIS_NODE_DB", "./jarvis_node.db")
 
-# Using pysqlcipher3 dialect for SQLAlchemy
-DATABASE_URL = f"sqlite+pysqlcipher://:{MASTER_KEY}@/{DB_PATH}?cipher=aes-256-cbc&kdf_iter=256000"
-
+# Using sqlcipher3 as the DBAPI module with SQLAlchemy's sqlite dialect
 engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False, "detect_types": 0}
+    f"sqlite:///{DB_PATH}",
+    module=sqlcipher3,
+    connect_args={"check_same_thread": False, "detect_types": 0},
 )
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlcipher_key(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute(f"PRAGMA key = '{MASTER_KEY}'")
+    cursor.execute("PRAGMA cipher_compatibility = 4")
+    cursor.close()
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
