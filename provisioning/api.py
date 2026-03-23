@@ -137,9 +137,10 @@ def _save_node_credentials(node_id: str, node_key: str) -> bool:
             pass
 
         # Guard: don't overwrite existing valid credentials
+        _placeholders = {"your-node-id", "your_api_key_here", ""}
         existing_id = config.get("node_id", "")
         existing_key = config.get("api_key", "")
-        if existing_id and existing_key and existing_id != node_id:
+        if existing_id not in _placeholders and existing_key not in _placeholders and existing_id != node_id:
             # Config already has real credentials for a different node — refuse
             _logger = logging.getLogger("provisioning")
             _logger.warning(
