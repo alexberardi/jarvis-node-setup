@@ -35,6 +35,7 @@ COMPONENT_INSTALL_DIRS: dict[str, str] = {
     "agent": "agents/custom_agents",
     "device_protocol": "device_families/custom_families",
     "device_manager": "device_managers/custom_managers",
+    "routine": "routines/custom_routines",
 }
 
 # Path to custom commands directory
@@ -614,6 +615,38 @@ def validate_package(local_path: str | Path) -> dict[str, Any]:
     # Try importing each component
     imports: dict[str, dict[str, Any]] = {}
     for comp in manifest.components:
+        # Routine components: validate JSON structure (no Python import)
+        if comp.type == "routine":
+            comp_file = repo_dir / comp.path
+            if not comp_file.exists():
+                imports[comp.name] = {"ok": False, "error": f"File not found: {comp.path}"}
+                continue
+            try:
+                with open(comp_file) as f:
+                    routine_data = json.load(f)
+                errors: list[str] = []
+                if not routine_data.get("trigger_phrases"):
+                    errors.append("missing trigger_phrases")
+                if not routine_data.get("steps"):
+                    errors.append("missing steps")
+                if not routine_data.get("response_instruction"):
+                    errors.append("missing response_instruction")
+                for i, step in enumerate(routine_data.get("steps", [])):
+                    if not step.get("command"):
+                        errors.append(f"step {i+1} missing command")
+                if errors:
+                    imports[comp.name] = {"ok": False, "error": f"Invalid routine: {', '.join(errors)}"}
+                else:
+                    step_count = len(routine_data.get("steps", []))
+                    phrase_count = len(routine_data.get("trigger_phrases", []))
+                    imports[comp.name] = {
+                        "ok": True,
+                        "class_name": f"routine ({step_count} steps, {phrase_count} triggers)",
+                    }
+            except json.JSONDecodeError as e:
+                imports[comp.name] = {"ok": False, "error": f"Invalid JSON: {e}"}
+            continue
+
         base_info = _TYPE_TO_BASE.get(comp.type)
         if base_info is None:
             imports[comp.name] = {"ok": True, "class_name": f"({comp.type}, no import test)"}

@@ -47,40 +47,72 @@ _TYPE_DEFAULTS: Dict[str, str] = {
 # DB helpers
 # ---------------------------------------------------------------------------
 
+def _load_custom_routine_files() -> Dict[str, Dict[str, Any]]:
+    """Load routines from routines/custom_routines/*/routine.json (Pantry-installed)."""
+    import json as _json
+    from pathlib import Path
+
+    custom_dir = Path(__file__).resolve().parent.parent / "routines" / "custom_routines"
+    routines: Dict[str, Dict[str, Any]] = {}
+
+    if not custom_dir.is_dir():
+        return routines
+
+    for sub_dir in sorted(custom_dir.iterdir()):
+        if not sub_dir.is_dir() or sub_dir.name.startswith(("_", ".")):
+            continue
+        routine_file = sub_dir / "routine.json"
+        if not routine_file.exists():
+            continue
+        try:
+            with open(routine_file) as f:
+                data = _json.load(f)
+            if data.get("trigger_phrases") and data.get("steps"):
+                routines[sub_dir.name] = data
+                logger.debug("Loaded custom routine", name=sub_dir.name)
+        except Exception as e:
+            logger.warning("Failed to load custom routine", path=str(routine_file), error=str(e))
+
+    return routines
+
+
 def _load_routines() -> Dict[str, Dict[str, Any]]:
-    """Load routines from the local database.
+    """Load routines from all sources.
 
-    Each routine is stored as a row in command_data with
-    command_name='routine' and data_key=routine_name.
-
-    On first run (empty DB), seeds with built-in defaults.
+    Precedence: DB (user edits) > custom_routines files (Pantry) > hardcoded defaults.
     """
+    # Start with defaults
+    routines = RoutineCommand._default_routines()
+
+    # Layer Pantry-installed routines on top
+    custom = _load_custom_routine_files()
+    routines.update(custom)
+
+    # Layer DB-stored routines on top (user edits via mobile take priority)
     try:
         db = SessionLocal()
         try:
             repo = CommandDataRepository(db)
             rows = repo.get_all(_COMMAND_NAME)
 
-            routines: Dict[str, Dict[str, Any]] = {}
             for row in rows:
                 key = row.pop("_data_key", None)
                 row.pop("_expires_at", None)
                 if key:
                     routines[key] = row
 
-            # Merge missing defaults into existing DB rows
-            defaults = RoutineCommand._default_routines()
-            for name, definition in defaults.items():
-                if name not in routines:
+            # Seed defaults + custom routines into DB if not present
+            for name, definition in routines.items():
+                existing = repo.get(_COMMAND_NAME, name)
+                if existing is None:
                     repo.save(_COMMAND_NAME, name, definition)
-                    routines[name] = definition
 
-            return routines
         finally:
             db.close()
     except Exception as e:
-        logger.warning("Failed to load routines from DB, using defaults", error=str(e))
-        return RoutineCommand._default_routines()
+        logger.warning("Failed to load routines from DB, using file-based", error=str(e))
+
+    return routines
 
 
 def save_routine(name: str, definition: Dict[str, Any]) -> None:
@@ -258,10 +290,23 @@ class RoutineCommand(IJarvisCommand):
         results: Dict[str, Any] = {}
         errors: Dict[str, str] = {}
 
+        # Load placeholder bindings if this routine has placeholders
+        bindings = self._load_bindings(routine_name) if routine_def.get("placeholders") else {}
+
         for step in steps:
             cmd_name = step.get("command", "")
             args = dict(step.get("args", {}))  # copy so we don't mutate the definition
             label = step.get("label", cmd_name)
+
+            # Resolve @placeholder references in args
+            if bindings:
+                args = self._resolve_placeholders(args, bindings, routine_def.get("placeholders", {}))
+
+            # Skip step if a required placeholder is unresolved
+            if args.get("_skip"):
+                logger.warning("Routine step skipped — unresolved placeholder", label=label, reason=args.get("_reason"))
+                errors[label] = args.get("_reason", "Placeholder not configured")
+                continue
 
             # Resolve relative date keywords to actual YYYY-MM-DD dates
             if "resolved_datetimes" in args:
@@ -371,6 +416,50 @@ class RoutineCommand(IJarvisCommand):
                 # Already an absolute date or unknown — pass through
                 resolved.append(val)
         return resolved
+
+    # ------------------------------------------------------------------
+    # Placeholder resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_placeholders(
+        args: Dict[str, Any],
+        bindings: Dict[str, str],
+        placeholders: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Replace @placeholder_name references in step args with bound values.
+
+        Args with unresolved required placeholders are set to None (step will be skipped).
+        """
+        resolved = {}
+        for key, value in args.items():
+            if isinstance(value, str) and value.startswith("@"):
+                placeholder_name = value[1:]  # Strip the @
+                bound_value = bindings.get(placeholder_name)
+                if bound_value:
+                    resolved[key] = bound_value
+                else:
+                    placeholder_def = placeholders.get(placeholder_name, {})
+                    if placeholder_def.get("required", False):
+                        logger.warning(
+                            "Required placeholder not bound, step will be skipped",
+                            placeholder=placeholder_name,
+                        )
+                        return {"_skip": True, "_reason": f"Placeholder '{placeholder_name}' not configured"}
+                    resolved[key] = value  # Pass through unresolved optional placeholders
+            else:
+                resolved[key] = value
+        return resolved
+
+    def _load_bindings(self, routine_name: str) -> Dict[str, str]:
+        """Load placeholder bindings for a routine from JarvisStorage."""
+        from jarvis_command_sdk import JarvisStorage
+
+        storage = JarvisStorage("routine")
+        data = storage.get(f"bindings:{routine_name}")
+        if data and isinstance(data, dict):
+            return {k: v for k, v in data.items() if isinstance(v, str) and not k.startswith("_")}
+        return {}
 
     # ------------------------------------------------------------------
     # Default routines

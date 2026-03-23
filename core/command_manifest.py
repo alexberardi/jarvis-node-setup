@@ -20,6 +20,7 @@ VALID_COMPONENT_TYPES: list[str] = [
     "device_protocol",
     "device_manager",
     "prompt_provider",
+    "routine",
 ]
 
 VALID_CATEGORIES: list[str] = [
@@ -50,7 +51,7 @@ VALID_CATEGORIES: list[str] = [
 class ManifestComponent(BaseModel):
     """A single component within a package bundle."""
 
-    type: Literal["command", "agent", "device_protocol", "device_manager", "prompt_provider"]
+    type: Literal["command", "agent", "device_protocol", "device_manager", "prompt_provider", "routine"]
     name: str
     path: str
     description: str = ""
@@ -149,6 +150,7 @@ COMPONENT_DIR_TYPES: dict[str, str] = {
     "device_families": "device_protocol",
     "device_managers": "device_manager",
     "prompt_providers": "prompt_provider",
+    "routines": "routine",
 }
 
 # Convention: component type → expected entry point filename
@@ -158,6 +160,7 @@ COMPONENT_ENTRY_POINTS: dict[str, str] = {
     "device_protocol": "protocol.py",
     "device_manager": "manager.py",
     "prompt_provider": "provider.py",
+    "routine": "routine.json",
 }
 
 
@@ -208,5 +211,13 @@ def infer_components(repo_dir: Any, manifest_name: str) -> list[ManifestComponen
                     name=sub_dir.name,
                     path=str(entry_point.relative_to(repo_dir)),
                 ))
+
+    # Also check for root-level routine.json (simple single-routine repo)
+    if (repo_dir / "routine.json").exists() and not any(c.type == "routine" for c in components):
+        components.append(ManifestComponent(
+            type="routine",
+            name=manifest_name,
+            path="routine.json",
+        ))
 
     return components
