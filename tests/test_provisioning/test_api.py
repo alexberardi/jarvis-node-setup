@@ -248,11 +248,11 @@ class TestK2ProvisionEndpoint:
             assert k2_data.k2 == k2_raw
             assert k2_data.kid == "k2-2026-01"
 
-    def test_rejects_wrong_node_id(self, client, temp_secret_dir_with_k1):
-        """K2 should be rejected if node_id doesn't match."""
+    def test_accepts_any_node_id_in_ap_mode(self, client, temp_secret_dir_with_k1):
+        """K2 accepts any node_id — in AP mode only the pairing device can reach this endpoint."""
         with patch("utils.encryption_utils.get_secret_dir", return_value=temp_secret_dir_with_k1):
             response = client.post("/api/v1/provision/k2", json={
-                "node_id": "wrong-node-id",
+                "node_id": "any-node-id",
                 "kid": "k2-2026-01",
                 "k2": make_valid_k2_base64url(),
                 "created_at": "2026-02-01T13:00:00Z"
@@ -260,8 +260,7 @@ class TestK2ProvisionEndpoint:
 
             assert response.status_code == 200
             data = response.json()
-            assert data["success"] is False
-            assert "node_id" in data["error"].lower() or "mismatch" in data["error"].lower()
+            assert data["success"] is True
 
     def test_rejects_invalid_k2_size(self, client, temp_secret_dir_with_k1):
         """K2 should be rejected if not exactly 32 bytes."""
