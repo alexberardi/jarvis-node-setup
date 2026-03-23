@@ -6,7 +6,7 @@ websockets
 aiohttp
 sqlalchemy
 alembic
-pysqlcipher3
+sqlcipher3
 cryptography>=41.0
 pydantic
 python-dotenv
