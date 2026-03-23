@@ -83,6 +83,34 @@ class CommandDiscoveryService:
         except ImportError:
             pass  # custom_commands package doesn't exist yet
 
+        # 3. Scan test commands (commands/test_commands/*/)
+        try:
+            import commands.test_commands as test_pkg
+            for _, subpkg_name, is_pkg in pkgutil.iter_modules(test_pkg.__path__):
+                if not is_pkg:
+                    continue
+                try:
+                    module = importlib.import_module(f"commands.test_commands.{subpkg_name}.command")
+                    for attr in dir(module):
+                        cls = getattr(module, attr)
+                        if (isinstance(cls, type)
+                                and issubclass(cls, _COMMAND_BASES)
+                                and cls not in _COMMAND_BASES):
+                            instance = cls()
+                            name = instance.command_name
+                            if name in new_commands:
+                                logger.warning(
+                                    "Test command name conflicts, skipping",
+                                    test_command=name,
+                                    test_module=subpkg_name,
+                                )
+                                continue
+                            new_commands[name] = instance
+                except Exception as e:
+                    logger.error("Error loading test command", module=subpkg_name, error=str(e))
+        except ImportError:
+            pass  # test_commands package doesn't exist yet
+
         with self._lock:
             self._commands_cache = new_commands
             self._last_refresh = time.time()
