@@ -331,14 +331,10 @@ def create_provisioning_app(
                 error="Node is already provisioned. Re-enter pairing mode to update K2."
             )
 
-        # Validate node_id matches this node
-        if request.node_id != _get_node_id():
-            return K2ProvisionResponse(
-                success=False,
-                error="Node ID mismatch: request node_id does not match this node."
-            )
-
         # Save K2 encrypted with K1
+        # Note: request.node_id is the CC-assigned UUID, which differs from the
+        # local MAC-based ID. No validation needed — the node is in AP mode so
+        # only the pairing device can reach this endpoint.
         try:
             save_k2(request.k2, request.kid, request.created_at)
         except ValueError as e:
