@@ -456,6 +456,17 @@ setup_database() {
   success "Database ready"
 }
 
+# --- Register built-in commands ---
+register_commands() {
+  info "Registering built-in commands..."
+  cd "$INSTALL_DIR"
+  if "${INSTALL_DIR}/.venv/bin/python" -m scripts.install_command --all --skip-deps 2>/dev/null; then
+    success "Commands registered"
+  else
+    warn "Command registration failed (non-fatal, will retry on first boot)"
+  fi
+}
+
 # --- Create systemd service ---
 create_service() {
   info "Creating systemd service..."
@@ -553,6 +564,7 @@ main() {
   setup_config
   rebuild_venv
   setup_database
+  register_commands
   create_service
   start_service
   verify
