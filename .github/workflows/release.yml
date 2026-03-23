@@ -15,10 +15,10 @@ jobs:
         include:
           - arch: armv7l
             platform: linux/arm/v7
-            docker_image: arm32v7/python:3.11-slim-bookworm
+            docker_image: python:3.13-slim
           - arch: arm64
             platform: linux/arm64
-            docker_image: arm64v8/python:3.11-slim-bookworm
+            docker_image: python:3.13-slim
 
     runs-on: ubuntu-latest
     timeout-minutes: 90

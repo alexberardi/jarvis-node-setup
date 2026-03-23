@@ -344,12 +344,10 @@ rebuild_venv() {
     return
   fi
 
-  # The bundled requirements-pi.txt may pin a Python-version-specific
-  # onnxruntime wheel (e.g. cp311).  Strip that line and try a generic
-  # install so pip can find a compatible wheel for the system Python.
+  # Strip onnxruntime from requirements — on armv7l there is no cp313 wheel
+  # so it must be attempted separately to avoid blocking the whole install.
   local tmp_req="/tmp/jarvis-requirements.txt"
-  grep -v "onnxruntime.*\.whl" "$req_file" > "$tmp_req" || true
-  echo "onnxruntime>=1.16.0" >> "$tmp_req"
+  grep -v "^onnxruntime" "$req_file" > "$tmp_req" || true
 
   local pip_args=""
   if [ "$ARCH" = "armv7l" ]; then
@@ -363,6 +361,14 @@ rebuild_venv() {
     --quiet 2>&1; then
     warn "Some packages failed to install — node may have reduced functionality"
   fi
+
+  # onnxruntime: arm64 has PyPI wheels, armv7l may not
+  info "Installing onnxruntime (best-effort)..."
+  "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+    "onnxruntime>=1.16.0" \
+    $pip_args \
+    --quiet 2>/dev/null \
+    || warn "onnxruntime unavailable — wake word detection will be disabled"
 
   # openwakeword (installed without deps to avoid pulling ai-edge-litert)
   "${INSTALL_DIR}/.venv/bin/python" -m pip install \
