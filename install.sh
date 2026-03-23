@@ -329,9 +329,10 @@ setup_config() {
   fi
 }
 
-# --- Rebuild venv if bundled Python doesn't match system ---
+# --- Fix or rebuild venv if bundled Python doesn't match system ---
 rebuild_venv() {
   local venv_python="${INSTALL_DIR}/.venv/bin/python"
+  local pyvenv_cfg="${INSTALL_DIR}/.venv/pyvenv.cfg"
 
   # If the bundled venv works, nothing to do
   if [ -x "$venv_python" ] && "$venv_python" --version >/dev/null 2>&1; then
@@ -339,7 +340,42 @@ rebuild_venv() {
     return
   fi
 
+  # Fast path: if the Python major.minor matches, just fix the symlinks.
+  # The CI builds the venv with /usr/local/bin/python3 (Docker) but the
+  # Pi has /usr/bin/python3 — the compiled packages are still compatible.
+  if [ -f "$pyvenv_cfg" ]; then
+    local bundled_ver
+    bundled_ver="$(grep '^version' "$pyvenv_cfg" | sed 's/.*= *//' | cut -d. -f1-2)"
+    local system_ver
+    system_ver="$("${PY_BIN}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")"
+
+    if [ "$bundled_ver" = "$system_ver" ]; then
+      info "Python ${system_ver} matches — fixing venv symlinks..."
+      local system_python_home
+      system_python_home="$(dirname "$(readlink -f "$(which "${PY_BIN}")")")"
+
+      # Update pyvenv.cfg home path
+      sed -i "s|^home = .*|home = ${system_python_home}|" "$pyvenv_cfg"
+
+      # Repoint the python symlinks
+      rm -f "${INSTALL_DIR}/.venv/bin/python" "${INSTALL_DIR}/.venv/bin/python3"
+      ln -s "${system_python_home}/python3" "${INSTALL_DIR}/.venv/bin/python"
+      ln -s "${system_python_home}/python3" "${INSTALL_DIR}/.venv/bin/python3"
+
+      if "${INSTALL_DIR}/.venv/bin/python" --version >/dev/null 2>&1; then
+        success "Venv fixed ($(${INSTALL_DIR}/.venv/bin/python --version 2>&1))"
+        return
+      fi
+      warn "Symlink fix failed — falling back to full rebuild"
+    fi
+  fi
+
+  # Slow path: full rebuild from requirements
   info "Bundled venv incompatible with system Python — rebuilding..."
+
+  # Use disk-backed tmpdir so pip doesn't fill the tmpfs
+  export TMPDIR="${INSTALL_DIR}/tmp"
+  mkdir -p "$TMPDIR"
 
   rm -rf "${INSTALL_DIR}/.venv"
   "${PY_BIN}" -m venv "${INSTALL_DIR}/.venv"
@@ -357,7 +393,7 @@ rebuild_venv() {
 
   # Strip onnxruntime from requirements — on armv7l there is no cp313 wheel
   # so it must be attempted separately to avoid blocking the whole install.
-  local tmp_req="/tmp/jarvis-requirements.txt"
+  local tmp_req="${TMPDIR}/jarvis-requirements.txt"
   grep -v "^onnxruntime" "$req_file" > "$tmp_req" || true
 
   local pip_args=""
@@ -394,7 +430,8 @@ rebuild_venv() {
       --quiet 2>/dev/null || warn "jarvis-command-sdk install failed (non-fatal)"
   fi
 
-  rm -f "$tmp_req"
+  rm -rf "$TMPDIR"
+  unset TMPDIR
   success "Venv rebuilt with system Python ($(${INSTALL_DIR}/.venv/bin/python --version 2>&1))"
 }
 
