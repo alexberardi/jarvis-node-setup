@@ -448,12 +448,18 @@ def _run_provisioning(
             room=room,
         )
 
-        if result:
-            # Save the returned node_key to config
-            returned_node_id = result.get("node_id", node_id)
-            node_key = result.get("node_key")
-            if node_key:
-                _save_node_credentials(returned_node_id, node_key)
+        if not result:
+            state_machine.set_error("Failed to register with command center")
+            return
+
+        # Save the returned node_key to config
+        returned_node_id = result.get("node_id", node_id)
+        node_key = result.get("node_key")
+        if not node_key:
+            state_machine.set_error("Command center did not return node credentials")
+            return
+
+        _save_node_credentials(returned_node_id, node_key)
 
         state_machine.transition_to(
             ProvisioningState.REGISTERING,
@@ -461,7 +467,7 @@ def _run_provisioning(
             progress=90
         )
 
-        # Step 5: Mark as provisioned
+        # Step 5: Mark as provisioned (only after successful registration)
         mark_provisioned()
 
         state_machine.transition_to(

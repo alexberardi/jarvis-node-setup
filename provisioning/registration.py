@@ -7,6 +7,9 @@ mobile app passes both the UUID and token to the node during provisioning.
 """
 
 import httpx
+from jarvis_log_client import JarvisLogger
+
+logger = JarvisLogger(service="jarvis-node")
 
 
 def register_with_command_center(
@@ -27,27 +30,35 @@ def register_with_command_center(
     Returns:
         Dict with node_id and node_key on success, None on failure
     """
+    url = f"{command_center_url.rstrip('/')}/api/v0/nodes/register"
+    payload: dict = {
+        "node_id": node_id,
+        "provisioning_token": provisioning_token,
+    }
+    if room is not None:
+        payload["room"] = room
+
+    logger.info("Registering with command center", url=url, node_id=node_id)
+
     try:
-        url = f"{command_center_url.rstrip('/')}/api/v0/nodes/register"
-
-        payload: dict = {
-            "node_id": node_id,
-            "provisioning_token": provisioning_token,
-        }
-        if room is not None:
-            payload["room"] = room
-
         with httpx.Client(timeout=30.0) as client:
             response = client.post(url, json=payload)
 
             if response.status_code in (200, 201):
                 data = response.json()
+                logger.info("Registration successful", node_id=data.get("node_id"))
                 return {
                     "node_id": data.get("node_id"),
                     "node_key": data.get("node_key"),
                 }
 
+            logger.error(
+                "Registration failed",
+                status=response.status_code,
+                body=response.text[:500],
+            )
             return None
 
-    except httpx.RequestError:
+    except httpx.RequestError as e:
+        logger.error("Registration request failed", error=str(e))
         return None
