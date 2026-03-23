@@ -318,6 +318,69 @@ setup_config() {
   fi
 }
 
+# --- Rebuild venv if bundled Python doesn't match system ---
+rebuild_venv() {
+  local venv_python="${INSTALL_DIR}/.venv/bin/python"
+
+  # If the bundled venv works, nothing to do
+  if [ -x "$venv_python" ] && "$venv_python" --version >/dev/null 2>&1; then
+    info "Bundled venv OK ($(${venv_python} --version 2>&1))"
+    return
+  fi
+
+  info "Bundled venv incompatible with system Python — rebuilding..."
+
+  rm -rf "${INSTALL_DIR}/.venv"
+  "${PY_BIN}" -m venv "${INSTALL_DIR}/.venv"
+  "${INSTALL_DIR}/.venv/bin/python" -m pip install --upgrade pip --quiet
+
+  # Pick the right requirements file
+  local req_file="${INSTALL_DIR}/requirements-pi.txt"
+  if [ ! -f "$req_file" ]; then
+    req_file="${INSTALL_DIR}/requirements-base.txt"
+  fi
+  if [ ! -f "$req_file" ]; then
+    warn "No requirements file found — venv will have no packages"
+    return
+  fi
+
+  # The bundled requirements-pi.txt may pin a Python-version-specific
+  # onnxruntime wheel (e.g. cp311).  Strip that line and try a generic
+  # install so pip can find a compatible wheel for the system Python.
+  local tmp_req="/tmp/jarvis-requirements.txt"
+  grep -v "onnxruntime.*\.whl" "$req_file" > "$tmp_req" || true
+  echo "onnxruntime>=1.16.0" >> "$tmp_req"
+
+  local pip_args=""
+  if [ "$ARCH" = "armv7l" ]; then
+    pip_args="--extra-index-url https://www.piwheels.org/simple"
+  fi
+
+  info "Installing Python packages (this may take a few minutes on Pi Zero)..."
+  if ! "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+    -r "$tmp_req" \
+    $pip_args \
+    --quiet 2>&1; then
+    warn "Some packages failed to install — node may have reduced functionality"
+  fi
+
+  # openwakeword (installed without deps to avoid pulling ai-edge-litert)
+  "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+    openwakeword --no-deps \
+    $pip_args \
+    --quiet 2>/dev/null || warn "openwakeword install failed (non-fatal)"
+
+  # jarvis-command-sdk (bundled in tarball)
+  if [ -d "${INSTALL_DIR}/jarvis-command-sdk" ]; then
+    "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+      "${INSTALL_DIR}/jarvis-command-sdk" \
+      --quiet 2>/dev/null || warn "jarvis-command-sdk install failed (non-fatal)"
+  fi
+
+  rm -f "$tmp_req"
+  success "Venv rebuilt with system Python ($(${INSTALL_DIR}/.venv/bin/python --version 2>&1))"
+}
+
 # --- Run database migrations ---
 setup_database() {
   info "Running database migrations..."
@@ -433,6 +496,7 @@ main() {
   download_and_extract
   configure_audio
   setup_config
+  rebuild_venv
   setup_database
   create_service
   start_service
