@@ -71,6 +71,13 @@ def main():
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 
+    # Register SDK storage backend (must be after DB migrations)
+    try:
+        from services.storage_backend import init_storage_backend
+        init_storage_backend()
+    except Exception as e:
+        logger.warning("Storage backend init failed, commands may lack persistence", error=str(e))
+
     # Check if node is provisioned (skip in development mode)
     if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
         from provisioning.startup import is_provisioned
@@ -94,6 +101,16 @@ def main():
             logger.info("Restored timers from previous session", count=restored_count)
     except Exception as e:
         logger.warning("Timer service unavailable (pysqlcipher3 not installed?), continuing without timers", error=str(e))
+
+    # Initialize reminder service
+    try:
+        from services.reminder_service import initialize_reminder_service
+        reminder_service = initialize_reminder_service()
+        restored_reminders = reminder_service.restore_reminders()
+        if restored_reminders > 0:
+            logger.info("Restored reminders from previous session", count=restored_reminders)
+    except Exception as e:
+        logger.warning("Reminder service init failed, continuing without reminders", error=str(e))
 
     # Initialize alert queue + LED service for proactive notifications
     from services.alert_queue_service import get_alert_queue_service
@@ -131,13 +148,28 @@ def main():
         import time
         time.sleep(30)  # Let BlueZ initialize
         try:
+            from jarvis_command_sdk import JarvisStorage
             from core.platform_abstraction import get_bluetooth_provider
-            from services.bluetooth_service import BluetoothService
-            bt_service = BluetoothService(get_bluetooth_provider())
-            if bt_service.is_available():
-                count = bt_service.reconnect_known_devices()
-                if count > 0:
-                    logger.info("Bluetooth auto-reconnect complete", count=count)
+
+            storage = JarvisStorage("bluetooth")
+            records = storage.get_all()
+            if not records:
+                return
+
+            provider = get_bluetooth_provider()
+            if not provider.is_available():
+                return
+
+            count = 0
+            for record in records:
+                if not record.get("auto_connect", True):
+                    continue
+                mac = record.get("mac_address")
+                if mac and provider.connect(mac):
+                    count += 1
+                    logger.info("Auto-reconnected BT device", name=record.get("name", mac), mac=mac)
+            if count > 0:
+                logger.info("Bluetooth auto-reconnect complete", count=count)
         except Exception as e:
             logger.warning("Bluetooth auto-reconnect failed (non-fatal)", error=str(e))
 
