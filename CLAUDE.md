@@ -89,7 +89,11 @@ jarvis-node-setup/
 ├── services/
 │   ├── secret_service.py       # Secret management
 │   ├── mqtt_tts_listener.py    # MQTT TTS listener
-│   └── command_store_service.py # Pantry install/remove/list
+│   ├── command_store_service.py # Pantry install/remove/list
+│   ├── reminder_service.py     # Reminder CRUD, recurrence, snooze
+│   └── storage_backend.py      # JarvisStorage → SessionLocal bridge
+├── routines/
+│   └── custom_routines/        # Pantry-installed routine JSON files
 ├── ha_shared/                  # Home Assistant shared code
 │   ├── home_assistant_service.py  # HA WebSocket client + actions
 │   └── entity_resolver.py     # Fuzzy entity ID matching
@@ -98,9 +102,12 @@ jarvis-node-setup/
 │   ├── calculator_command.py
 │   ├── control_device/command.py   # HA device control (convention layout)
 │   ├── get_device_status/command.py
+│   ├── reminder_command.py         # Set/list/delete/snooze reminders
+│   ├── routine_command.py          # Multi-step voice routines
 │   └── ...
 ├── agents/                     # Background agents
-│   └── home_assistant/agent.py     # HA state caching (convention layout)
+│   ├── home_assistant/agent.py     # HA state caching (convention layout)
+│   └── reminder_agent.py           # Background agent for due reminders
 ├── device_managers/            # Device listing backends
 │   └── home_assistant/manager.py   # HA device listing (convention layout)
 └── utils/
@@ -171,6 +178,7 @@ Bundles scatter components to type-specific directories:
 | `agent` | `agents/custom_agents/{name}/` |
 | `device_protocol` | `device_families/custom_families/{name}/` |
 | `device_manager` | `device_managers/custom_managers/{name}/` |
+| `routine` | `routines/custom_routines/{name}/` |
 
 Shared code → `~/.jarvis/packages/{name}/lib/`
 Package metadata → `~/.jarvis/packages/{name}.json`
@@ -186,6 +194,8 @@ agents/<name>/agent.py              → agent
 device_families/<name>/protocol.py  → device_protocol
 device_managers/<name>/manager.py   → device_manager
 command.py (at root)                → single command
+routines/<name>/routine.json        → routine
+routine.json (at root)              → single routine
 ```
 
 ### Reference Bundle
@@ -193,6 +203,16 @@ command.py (at root)                → single command
 [jarvis-home-assistant-integration](https://github.com/alexberardi/jarvis-home-assistant-integration) —
 4 components (2 commands + 1 agent + 1 device manager) with `ha_shared/` for
 shared code. Use this as a template for new bundles.
+
+### Validate a Package
+
+Test that a package installs correctly without actually installing:
+
+```bash
+python scripts/command_store.py validate /path/to/package
+```
+
+Checks manifest, component paths, and import-tests commands/agents/protocols. Validates routine JSON structure for routine components. Skips platform checks.
 
 ## Extending Commands
 
