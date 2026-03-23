@@ -306,8 +306,13 @@ setup_config() {
 
   # .env
   if [ ! -f "${INSTALL_DIR}/.env" ]; then
-    cp "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/.env"
-    info "Created .env"
+    if [ -f "${INSTALL_DIR}/.env.example" ]; then
+      cp "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/.env"
+      info "Created .env"
+    else
+      touch "${INSTALL_DIR}/.env"
+      info "Created empty .env (no .env.example in release)"
+    fi
   else
     info ".env already exists, preserving"
   fi
