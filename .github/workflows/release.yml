@@ -22,9 +22,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: armv7l
-            platform: linux/arm/v7
-            docker_image: python:3.13-slim
           - arch: arm64
             platform: linux/arm64
             docker_image: python:3.13-slim
@@ -119,8 +116,7 @@ jobs:
             **Manual download:**
             | Platform | Tarball |
             |----------|---------|
-            | Pi Zero / Pi 3 (armv7l) | `jarvis-node-${{ steps.version.outputs.version }}-armv7l.tar.gz` |
-            | Pi 4 / Pi 5 (arm64) | `jarvis-node-${{ steps.version.outputs.version }}-arm64.tar.gz` |
+            | Pi Zero 2W / Pi 3 / Pi 4 / Pi 5 (arm64) | `jarvis-node-${{ steps.version.outputs.version }}-arm64.tar.gz` |
 
             After downloading:
             ```bash
