@@ -78,6 +78,17 @@ preflight() {
   if ! command -v curl >/dev/null 2>&1; then
     error "curl is required but not installed. Run: apt-get install curl"
   fi
+
+  # Ensure swap is available — Pi Zero 2W has only 512MB RAM which is
+  # not enough for extracting large tarballs or pip-compiling packages.
+  if [ "$(swapon --show --noheadings | wc -l)" -eq 0 ]; then
+    info "No swap detected — creating 1GB swapfile..."
+    fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile
+    success "Swap enabled (1GB)"
+  fi
 }
 
 # --- Version check ---
