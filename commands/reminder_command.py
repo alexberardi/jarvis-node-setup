@@ -92,7 +92,18 @@ class ReminderCommand(IJarvisCommand):
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
-        return []
+        from core.ijarvis_secret import JarvisSecret
+        return [
+            JarvisSecret(
+                "REMINDER_PUSH_NOTIFICATIONS",
+                "Also send reminders as push notifications to your phone",
+                "integration",
+                "bool",
+                required=False,
+                is_sensitive=False,
+                friendly_name="Push Notifications",
+            ),
+        ]
 
     @property
     def rules(self) -> List[str]:

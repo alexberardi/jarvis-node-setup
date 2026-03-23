@@ -4,7 +4,8 @@ Runs every 30 seconds. Produces Alert objects for due reminders via the
 existing alert queue pattern. One-shot reminders are marked announced;
 recurring reminders advance to the next occurrence.
 
-Inline listen / TTS announcement is a follow-up enhancement.
+When REMINDER_PUSH_NOTIFICATIONS is enabled, also sends push notifications
+to the user's phone via command-center → jarvis-notifications.
 """
 
 from datetime import timedelta, timezone, datetime
@@ -44,18 +45,20 @@ class ReminderAgent(IJarvisAgent):
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
-        return []  # No external services needed
+        return []
 
     @property
     def include_in_context(self) -> bool:
-        return False  # Side-effect only, no context injection
+        return False
 
     async def run(self) -> None:
         """Check for due reminders and generate alerts."""
         try:
             from services.reminder_service import get_reminder_service
+            from jarvis_command_sdk import UserSettings
 
             service = get_reminder_service()
+            settings = UserSettings("reminder")
 
             # Clean up expired one-shot reminders
             service.cleanup_expired()
@@ -65,6 +68,7 @@ class ReminderAgent(IJarvisAgent):
             self._alerts = []
 
             now = datetime.now(timezone.utc)
+            push_enabled = settings.is_enabled("push_notifications")
 
             for reminder in due_reminders:
                 self._alerts.append(Alert(
@@ -79,11 +83,16 @@ class ReminderAgent(IJarvisAgent):
                 # Mark as announced (advances recurring reminders automatically)
                 service.mark_announced(reminder.reminder_id)
 
+                # Send push notification if enabled
+                if push_enabled:
+                    self._send_push_notification(reminder.text)
+
                 logger.info(
                     "Reminder fired",
                     reminder_id=reminder.reminder_id,
                     text=reminder.text,
                     recurrence=reminder.recurrence,
+                    push_sent=push_enabled,
                 )
 
             if self._alerts:
@@ -92,6 +101,36 @@ class ReminderAgent(IJarvisAgent):
         except Exception as e:
             logger.error("Reminder agent run failed", error=str(e))
             self._alerts = []
+
+    def _send_push_notification(self, text: str) -> None:
+        """Send a push notification via command-center → jarvis-notifications."""
+        try:
+            from clients.rest_client import RestClient
+            from utils.service_discovery import get_command_center_url
+
+            cc_url = get_command_center_url()
+            if not cc_url:
+                logger.warning("Cannot send push notification — command center URL not configured")
+                return
+
+            result = RestClient.post(
+                f"{cc_url}/api/v0/node/push-notification",
+                data={
+                    "title": "Reminder",
+                    "body": text,
+                    "priority": "high",
+                    "category": "reminder",
+                },
+                timeout=5,
+            )
+
+            if result:
+                logger.debug("Push notification sent for reminder", text=text)
+            else:
+                logger.warning("Push notification failed for reminder", text=text)
+
+        except Exception as e:
+            logger.warning("Push notification error", error=str(e))
 
     def get_context_data(self) -> Dict[str, Any]:
         return {}
