@@ -28,7 +28,7 @@ tqdm
 zeroconf
 manuf
 cryptography>=41.0
-pysqlcipher3
+sqlcipher3
 sqlalchemy
 alembic
 pytz
