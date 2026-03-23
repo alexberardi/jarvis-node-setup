@@ -16,6 +16,7 @@ from clients.rest_client import RestClient
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
 from scripts.speech_to_text import listen, listen_for_follow_up
+from services.alert_queue_service import get_alert_queue_service
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
 from utils.service_discovery import get_command_center_url
@@ -230,6 +231,75 @@ def _follow_up_loop(
             break
 
 
+ALERT_ANNOUNCE_PRIORITY = 3  # Only announce priority >= this (reminders, urgent)
+INLINE_LISTEN_TIMEOUT = 8.0  # Seconds to wait for snooze/dismiss after announcement
+
+
+def _drain_alert_announcements(
+    command_service: CommandExecutionService,
+    stt_provider,
+    validation_handler: Callable[[ValidationRequest], str],
+) -> bool:
+    """Check for high-priority alerts and announce them via TTS.
+
+    Returns True if any announcements were made (caller should reopen stream).
+    """
+    try:
+        queue = get_alert_queue_service()
+        pending = queue.get_pending()
+    except Exception:
+        return False
+
+    # Filter to only high-priority alerts (reminders, urgent emails)
+    announcements = [a for a in pending if a.priority >= ALERT_ANNOUNCE_PRIORITY]
+    if not announcements:
+        return False
+
+    tts_provider = get_tts_provider()
+
+    for alert in announcements:
+        logger.info("Announcing alert", title=alert.title, priority=alert.priority)
+
+        # Speak the alert
+        try:
+            tts_provider.speak(True, alert.summary)
+        except Exception as e:
+            logger.warning("Alert TTS failed", error=str(e))
+            continue
+
+        # Inline listen for response (snooze/dismiss/silence)
+        try:
+            audio_file = listen_for_follow_up(timeout_seconds=INLINE_LISTEN_TIMEOUT)
+            if audio_file is None:
+                logger.debug("No response to alert announcement (silence)")
+                continue
+
+            transcription_result = stt_provider.transcribe_with_speaker(audio_file)
+            if not transcription_result.text:
+                continue
+
+            text = transcription_result.text
+            speaker_user_id = transcription_result.speaker_user_id
+            logger.info("Alert response received", text=text)
+
+            # Process the response (e.g., "snooze", "snooze for 20 minutes", "got it")
+            result = command_service.process_voice_command(
+                text, validation_handler, speaker_user_id=speaker_user_id,
+            )
+            command_service.speak_result(result)
+
+        except Exception as e:
+            logger.warning("Inline listen after alert failed", error=str(e))
+
+    # Flush the announced alerts from the queue
+    try:
+        queue.flush()
+    except Exception:
+        pass
+
+    return True
+
+
 def _start_keyboard_listener() -> None:
     """Fallback listener: press Enter to trigger a command (no wake word)."""
     logger.info("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
@@ -337,8 +407,54 @@ def start_voice_listener(ma_service):
                 threshold=WAKE_WORD_THRESHOLD, resample=needs_resample)
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
 
+    # Alert drain interval: check every ~5 seconds (each chunk is ~80ms)
+    alert_check_interval = 60  # reads between alert checks
+    alert_check_counter = 0
+
     try:
         while True:
+            # Periodically check for high-priority alerts to announce
+            alert_check_counter += 1
+            if alert_check_counter >= alert_check_interval:
+                alert_check_counter = 0
+
+                # Quick check without closing stream — only close if there's work to do
+                try:
+                    queue = get_alert_queue_service()
+                    has_announcements = any(
+                        a.priority >= ALERT_ANNOUNCE_PRIORITY
+                        for a in queue.get_pending()
+                    )
+                except Exception:
+                    has_announcements = False
+
+                if has_announcements:
+                    try:
+                        # Stop stream before announcing (TTS + mic contention)
+                        oww_stream.stop_stream()
+                        oww_stream.close()
+                        pa.terminate()
+
+                        _drain_alert_announcements(
+                            command_service, stt_provider, validation_handler,
+                        )
+
+                        # Reopen stream
+                        pa = pyaudio.PyAudio()
+                        oww_stream, needs_resample = _create_oww_stream(pa)
+                        chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
+                        oww.reset()
+                        print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
+                    except Exception as e:
+                        logger.warning("Alert drain failed, reopening stream", error=str(e))
+                        try:
+                            pa = pyaudio.PyAudio()
+                            oww_stream, needs_resample = _create_oww_stream(pa)
+                            chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
+                        except Exception as e2:
+                            logger.error("Failed to reopen stream after alert drain", error=str(e2))
+                            break
+
             raw_data = oww_stream.read(chunk_size, exception_on_overflow=False)
             samples = np.frombuffer(raw_data, dtype=np.int16)
 

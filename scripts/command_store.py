@@ -23,6 +23,7 @@ from services.command_store_service import (  # noqa: E402
     remove,
     list_installed,
     get_installed_metadata,
+    validate_package,
     InstallError,
     RemoveError,
 )
@@ -271,6 +272,45 @@ def cmd_update(args: argparse.Namespace) -> None:
     print(f"\n{updated} command(s) updated.")
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    """Validate a package can be installed and its commands load correctly."""
+    path = args.path
+    try:
+        result = validate_package(path)
+    except InstallError as e:
+        print(f"FAIL: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    manifest = result["manifest"]
+    print(f"Package: {manifest.name} v{manifest.version}")
+    print(f"  Type: {manifest.package_type}")
+    print(f"  Platforms: {manifest.platforms or ['all']}")
+    print(f"  Components: {len(manifest.components)}")
+    for comp in manifest.components:
+        print(f"    - {comp.type}: {comp.name} ({comp.path})")
+    if manifest.packages:
+        print(f"  Dependencies: {', '.join(p.name for p in manifest.packages)}")
+    if manifest.secrets:
+        print(f"  Secrets: {', '.join(s.key for s in manifest.secrets)}")
+
+    # Import test results
+    import_results = result.get("imports", {})
+    all_ok = True
+    for comp_name, import_result in import_results.items():
+        if import_result["ok"]:
+            cls = import_result.get("class_name", "?")
+            print(f"  Import {comp_name}: OK ({cls})")
+        else:
+            print(f"  Import {comp_name}: FAIL ({import_result['error']})")
+            all_ok = False
+
+    if all_ok:
+        print("\nAll checks passed.")
+    else:
+        print("\nSome checks failed.", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Jarvis Command Store CLI"
@@ -305,6 +345,11 @@ def main() -> None:
     search_parser.add_argument("query", nargs="?", help="Search query")
     search_parser.add_argument("--category", help="Filter by category")
     search_parser.set_defaults(func=cmd_search)
+
+    # validate
+    validate_parser = subparsers.add_parser("validate", help="Validate a package without installing")
+    validate_parser.add_argument("path", help="Path to package directory")
+    validate_parser.set_defaults(func=cmd_validate)
 
     # update
     update_parser = subparsers.add_parser("update", help="Update commands to latest versions")
