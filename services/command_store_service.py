@@ -582,6 +582,117 @@ def install_from_local(local_path: str | Path) -> CommandManifest:
     return _do_install(repo_dir, f"local:{repo_dir}")
 
 
+def validate_package(local_path: str | Path) -> dict[str, Any]:
+    """Validate a package without installing it.
+
+    Checks manifest, component paths, and tries to import each command class.
+    Skips platform checks so packages can be validated on any OS.
+
+    Args:
+        local_path: Path to the package directory.
+
+    Returns:
+        Dict with 'manifest' and 'imports' results.
+    """
+    import importlib.util
+
+    repo_dir = Path(local_path).resolve()
+    if not repo_dir.is_dir():
+        raise InstallError(f"Not a directory: {repo_dir}")
+
+    # Validate structure + manifest (reuses existing logic)
+    manifest = _validate_repo_structure(repo_dir)
+
+    # Map component types to their SDK base classes
+    _TYPE_TO_BASE: dict[str, tuple[str, str]] = {
+        "command": ("IJarvisCommand", "command_name"),
+        "agent": ("IJarvisAgent", "name"),
+        "device_protocol": ("IJarvisDeviceProtocol", "protocol_name"),
+        "device_manager": ("IJarvisDeviceManager", "name"),
+    }
+
+    # Try importing each component
+    imports: dict[str, dict[str, Any]] = {}
+    for comp in manifest.components:
+        base_info = _TYPE_TO_BASE.get(comp.type)
+        if base_info is None:
+            imports[comp.name] = {"ok": True, "class_name": f"({comp.type}, no import test)"}
+            continue
+
+        base_class_name, name_property = base_info
+
+        comp_file = repo_dir / comp.path
+        if not comp_file.exists():
+            imports[comp.name] = {"ok": False, "error": f"File not found: {comp.path}"}
+            continue
+
+        # Add repo root and lib dir to sys.path for imports
+        paths_to_add = [str(repo_dir)]
+        lib_dir = repo_dir / "lib"
+        if lib_dir.is_dir():
+            paths_to_add.append(str(lib_dir))
+
+        old_path = sys.path[:]
+        try:
+            for p in paths_to_add:
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+
+            spec = importlib.util.spec_from_file_location(
+                f"_validate_{comp.type}_{comp.name}", str(comp_file)
+            )
+            if spec is None or spec.loader is None:
+                imports[comp.name] = {"ok": False, "error": "Could not create import spec"}
+                continue
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Find the matching SDK base class subclass
+            import jarvis_command_sdk
+            base_class = getattr(jarvis_command_sdk, base_class_name, None)
+            if base_class is None:
+                imports[comp.name] = {"ok": False, "error": f"SDK class {base_class_name} not found"}
+                continue
+
+            found_class = None
+            for attr_name in dir(module):
+                attr = getattr(module, attr_name)
+                if (
+                    isinstance(attr, type)
+                    and issubclass(attr, base_class)
+                    and attr is not base_class
+                ):
+                    found_class = attr
+                    break
+
+            if found_class is None:
+                imports[comp.name] = {"ok": False, "error": f"No {base_class_name} subclass found"}
+                continue
+
+            # Try instantiation (skip for abstract classes like device_protocols)
+            try:
+                instance = found_class()
+                component_name = getattr(instance, name_property, "?")
+                imports[comp.name] = {
+                    "ok": True,
+                    "class_name": f"{found_class.__name__} ({name_property}={component_name})",
+                }
+            except TypeError:
+                # Abstract class — can't instantiate, but class was found and imported
+                imports[comp.name] = {
+                    "ok": True,
+                    "class_name": f"{found_class.__name__} (abstract, class found)",
+                }
+
+        except Exception as e:
+            imports[comp.name] = {"ok": False, "error": str(e)}
+        finally:
+            sys.path[:] = old_path
+
+    return {"manifest": manifest, "imports": imports}
+
+
 def _seed_secrets(manifest: CommandManifest) -> None:
     """Seed empty secret rows for the command's declared secrets."""
     if not manifest.secrets:

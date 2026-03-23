@@ -27,7 +27,7 @@ _TIME_CHUNK_RE = re.compile(
     re.IGNORECASE,
 )
 
-_TIMER_TRIGGERS = ('timer', 'remind me', 'wake me', 'let me know', 'notify me')
+_TIMER_TRIGGERS = ('timer', 'wake me', 'let me know', 'notify me')
 
 _LABEL_STRIP_WORDS = frozenset({
     'set', 'a', 'an', 'the', 'timer', 'for', 'remind', 'me', 'in',
@@ -58,7 +58,7 @@ class TimerCommand(IJarvisCommand):
     @property
     def keywords(self) -> List[str]:
         return [
-            "timer", "set timer", "alarm", "remind", "reminder",
+            "timer", "set timer", "alarm",
             "countdown", "wake me", "notify me"
         ]
 
