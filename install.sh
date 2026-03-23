@@ -87,7 +87,11 @@ preflight() {
     chmod 600 /swapfile
     mkswap /swapfile >/dev/null
     swapon /swapfile
-    success "Swap enabled (1GB)"
+    # Persist across reboots
+    if ! grep -q '/swapfile' /etc/fstab; then
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+    success "Swap enabled (1GB, persistent)"
   fi
 }
 
