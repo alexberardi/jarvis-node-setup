@@ -202,12 +202,6 @@ download_and_extract() {
 
   local tarball="jarvis-node-${VERSION}-${ARCH}.tar.gz"
   local url="https://github.com/${REPO}/releases/download/${TAG}/${tarball}"
-  local tmp="/tmp/${tarball}"
-
-  info "Downloading ${tarball}..."
-  if ! curl -fSL "$url" -o "$tmp"; then
-    error "Download failed. Check: https://github.com/${REPO}/releases/tag/${TAG}"
-  fi
 
   # Back up existing install
   if [ -d "$INSTALL_DIR" ]; then
@@ -217,9 +211,12 @@ download_and_extract() {
     mv "$INSTALL_DIR" "$backup"
   fi
 
-  info "Extracting to ${INSTALL_DIR}..."
-  tar xzf "$tmp" -C /
-  rm -f "$tmp"
+  # Stream directly to tar — avoids buffering the full tarball in /tmp
+  # (which is tmpfs / RAM-backed) and prevents OOM on 512MB boards.
+  info "Downloading and extracting ${tarball}..."
+  if ! curl -fSL "$url" | tar xzf - -C /; then
+    error "Download/extract failed. Check: https://github.com/${REPO}/releases/tag/${TAG}"
+  fi
 
   success "Extracted to ${INSTALL_DIR}"
 }
