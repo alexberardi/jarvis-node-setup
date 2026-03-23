@@ -112,6 +112,23 @@ get_version() {
   fi
 }
 
+# --- Detect Python ---
+detect_python() {
+  # Raspberry Pi OS Bookworm ships Python 3.11 as "python3" without a
+  # versioned "python3.11" package.  Detect which form is available so
+  # apt-get doesn't fail on a fresh install.
+  if apt-cache show python3.11 >/dev/null 2>&1; then
+    PY_PKG="python3.11"
+    PY_VENV_PKG="python3.11-venv"
+    PY_BIN="python3.11"
+  else
+    PY_PKG="python3"
+    PY_VENV_PKG="python3-venv"
+    PY_BIN="python3"
+  fi
+  info "Python package: ${PY_PKG} ($(${PY_BIN} --version 2>&1))"
+}
+
 # --- Install system packages ---
 install_apt_deps() {
   info "Installing system dependencies..."
@@ -122,10 +139,12 @@ install_apt_deps() {
     apt-get update -qq
   fi
 
+  detect_python
+
   # Core packages (always needed)
   apt-get install -y --no-install-recommends -qq \
-    python3.11 \
-    python3.11-venv \
+    "${PY_PKG}" \
+    "${PY_VENV_PKG}" \
     git \
     avahi-utils \
     hostapd \
