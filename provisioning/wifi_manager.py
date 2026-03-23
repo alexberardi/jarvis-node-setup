@@ -531,6 +531,7 @@ log-dhcp
             logger.info(f"Waiting for NetworkManager to find '{ssid}'...")
             time.sleep(3)
 
+        # Try simple connect first
         try:
             result = subprocess.run(
                 ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
@@ -541,6 +542,46 @@ log-dhcp
             if result.returncode == 0:
                 return True
             logger.warning(f"nmcli connect failed: {result.stderr.strip()}")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Fallback: create a full connection profile with explicit security.
+        # Newer NetworkManager (Trixie) requires key-mgmt to be set explicitly.
+        logger.info("Retrying with explicit WPA-PSK connection profile...")
+        conn_name = f"jarvis-{ssid[:20]}"
+        try:
+            # Remove any stale profile with this name
+            subprocess.run(
+                ["nmcli", "connection", "delete", conn_name],
+                capture_output=True, timeout=10
+            )
+            result = subprocess.run(
+                [
+                    "nmcli", "connection", "add",
+                    "type", "wifi",
+                    "con-name", conn_name,
+                    "ifname", self._interface,
+                    "ssid", ssid,
+                    "wifi-sec.key-mgmt", "wpa-psk",
+                    "wifi-sec.psk", password,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if result.returncode != 0:
+                logger.warning(f"nmcli connection add failed: {result.stderr.strip()}")
+                return False
+
+            result = subprocess.run(
+                ["nmcli", "connection", "up", conn_name],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                return True
+            logger.warning(f"nmcli connection up failed: {result.stderr.strip()}")
             return False
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
