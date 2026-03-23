@@ -404,32 +404,15 @@ def _run_provisioning(
             progress=30
         )
 
-        # Stop AP mode if running (real Pi only)
-        wifi_manager.stop_ap_mode()
-
-        # Wait for NetworkManager to fully initialize after being restored
-        import time
+        # Stop AP mode and connect to WiFi.
+        # connect() handles waiting for NM to detect the network after AP teardown.
         state_machine.transition_to(
             ProvisioningState.CONNECTING,
-            "Waiting for network services...",
+            f"Connecting to {ssid}...",
             progress=35
         )
-        time.sleep(5)
 
-        # Retry connection up to 3 times with delays
-        connected = False
-        for attempt in range(3):
-            state_machine.transition_to(
-                ProvisioningState.CONNECTING,
-                f"Connecting to {ssid} (attempt {attempt + 1}/3)...",
-                progress=40 + attempt * 3
-            )
-            if wifi_manager.connect(ssid, password):
-                connected = True
-                break
-            time.sleep(3)
-
-        if not connected:
+        if not wifi_manager.connect(ssid, password):
             state_machine.set_error(f"Failed to connect to {ssid}")
             return
 
