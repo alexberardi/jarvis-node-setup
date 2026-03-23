@@ -89,8 +89,9 @@ def _get_node_id() -> str:
         try:
             with open(config_path) as f:
                 config = json.load(f)
-                if "node_id" in config:
-                    return config["node_id"]
+                node_id = config.get("node_id", "")
+                if node_id and node_id != "your-node-id":
+                    return node_id
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
