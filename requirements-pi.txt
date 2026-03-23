@@ -34,6 +34,7 @@ alembic
 pytz
 pydantic
 python-dotenv
+pyyaml
 fastapi>=0.100.0
 uvicorn>=0.22.0
 packaging>=21.0
