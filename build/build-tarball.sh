@@ -47,12 +47,11 @@ REQ_FILE="/src/requirements-pi.txt"
 
 if [ "${ARCH}" = "armv7l" ]; then
   PIP_EXTRA_ARGS="--extra-index-url https://www.piwheels.org/simple"
-  # requirements-pi.txt has the armv7l-specific onnxruntime wheel URL — use as-is
-else
-  # arm64: filter out the armv7l onnxruntime wheel and use PyPI's native arm64 build
-  grep -v "onnxruntime.*armv7l" /src/requirements-pi.txt > /tmp/requirements-arm64.txt
-  echo "onnxruntime>=1.16.0" >> /tmp/requirements-arm64.txt
-  REQ_FILE="/tmp/requirements-arm64.txt"
+
+  # No onnxruntime wheel for armv7l + cp313. Strip it from requirements
+  # and attempt install separately so the rest of the build succeeds.
+  grep -v "^onnxruntime" /src/requirements-pi.txt > /tmp/requirements-armv7l.txt
+  REQ_FILE="/tmp/requirements-armv7l.txt"
 fi
 
 echo "==> Installing requirements"
@@ -60,6 +59,15 @@ echo "==> Installing requirements"
   -r "${REQ_FILE}" \
   ${PIP_EXTRA_ARGS} \
   --quiet
+
+# onnxruntime: arm64 gets it from requirements, armv7l tries best-effort
+if [ "${ARCH}" = "armv7l" ]; then
+  echo "==> Installing onnxruntime (best-effort on armv7l)"
+  "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+    "onnxruntime>=1.16.0" \
+    ${PIP_EXTRA_ARGS} \
+    --quiet 2>&1 || echo "WARN: onnxruntime unavailable for armv7l — wake word detection will be disabled"
+fi
 
 echo "==> Installing openwakeword (--no-deps)"
 "${INSTALL_DIR}/.venv/bin/python" -m pip install \
