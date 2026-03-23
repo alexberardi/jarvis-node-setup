@@ -502,19 +502,46 @@ log-dhcp
         return networks
 
     def connect(self, ssid: str, password: str) -> bool:
-        """Connect to a WiFi network using nmcli."""
+        """Connect to a WiFi network using nmcli.
+
+        After AP mode teardown, NetworkManager needs time to start scanning.
+        This method waits for NM to detect the target SSID before attempting
+        to connect, with a total timeout of 60 seconds.
+        """
+        import time
+
         # Stop AP mode first if active
         if self._ap_active:
             self.stop_ap_mode()
+
+        # Wait for NetworkManager to detect the target network
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                scan_result = subprocess.run(
+                    ["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "--rescan", "auto"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+                if ssid in scan_result.stdout:
+                    break
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+            logger.info(f"Waiting for NetworkManager to find '{ssid}'...")
+            time.sleep(3)
 
         try:
             result = subprocess.run(
                 ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=30
             )
-            return result.returncode == 0
+            if result.returncode == 0:
+                return True
+            logger.warning(f"nmcli connect failed: {result.stderr.strip()}")
+            return False
         except (subprocess.TimeoutExpired, FileNotFoundError):
             return False
 
