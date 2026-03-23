@@ -70,12 +70,24 @@ log_step "Installing system dependencies"
 log_info "Updating system..."
 sudo apt-get update && sudo apt-get upgrade -y
 
+# Detect Python package names — Bookworm ships 3.11 as "python3", not "python3.11"
+if apt-cache show python3.11 >/dev/null 2>&1; then
+    PY_PKG="python3.11"
+    PY_VENV_PKG="python3.11-venv"
+    PY_BIN="python3.11"
+else
+    PY_PKG="python3"
+    PY_VENV_PKG="python3-venv"
+    PY_BIN="python3"
+fi
+log_info "Using Python package: ${PY_PKG}"
+
 if [ "$PROVISIONING_ONLY" = "1" ]; then
     # Minimal dependencies for provisioning server
     log_info "Installing minimal dependencies (provisioning only)..."
     sudo apt-get install -y \
-        python3.11 \
-        python3.11-venv \
+        "${PY_PKG}" \
+        "${PY_VENV_PKG}" \
         python3-pip \
         git \
         avahi-utils \
@@ -92,10 +104,9 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
 else
     log_info "Installing dependencies..."
     sudo apt-get install -y \
-        python3.11 \
-        python3.11-venv \
+        "${PY_PKG}" \
+        "${PY_VENV_PKG}" \
         python3-pip \
-        python3-venv \
         git \
         alsa-utils \
         espeak \
@@ -119,10 +130,10 @@ else
 
     log_success "System dependencies installed"
 fi
-log_info "Python 3.11 version: $(python3.11 --version)"
+log_info "Python version: $(${PY_BIN} --version)"
 
-# Step 2: Python venv (use Python 3.11 on Pi)
-setup_python_venv "$PI_PROJECT_DIR/.venv" "python3.11"
+# Step 2: Python venv
+setup_python_venv "$PI_PROJECT_DIR/.venv" "${PY_BIN}"
 
 # Step 3: Config files
 setup_config
