@@ -575,6 +575,31 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
     thread.start()
 
 
+def _handle_test_install_notification(raw_payload: bytes) -> None:
+    """Handle test install nudge from CC — verify and install in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in test install notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    if not request_id:
+        logger.warning("Test install notification missing request_id")
+        return
+
+    logger.info("Test install requested", request_id=request_id[:8])
+
+    from services.test_install_handler import run_test_install_and_upload
+
+    thread = threading.Thread(
+        target=run_test_install_and_upload,
+        args=(request_id,),
+        daemon=True,
+    )
+    thread.start()
+
+
 def _handle_device_scan_notification(raw_payload: bytes) -> None:
     """Handle device scan request from CC — runs scan in background thread."""
     try:
@@ -622,6 +647,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/device-state"):
         _handle_device_state_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/test-install"):
+        _handle_test_install_notification(msg.payload)
         return
 
     if msg.topic.endswith("/package-install"):
@@ -681,6 +710,25 @@ def _heartbeat_loop() -> None:
         time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
 
 
+_TEST_CLEANUP_INTERVAL_SECONDS = 1200  # 20 minutes
+
+
+def _test_command_cleanup_loop() -> None:
+    """Periodically clean up expired test commands."""
+    import time
+
+    time.sleep(60)  # Initial delay to let services start
+    while True:
+        try:
+            from services.test_install_cleanup import cleanup_expired_test_commands
+            count = cleanup_expired_test_commands()
+            if count:
+                logger.info("Test command cleanup cycle complete", removed=count)
+        except Exception:
+            pass  # Best-effort, retries next cycle
+        time.sleep(_TEST_CLEANUP_INTERVAL_SECONDS)
+
+
 def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     global _mqtt_client
 
@@ -688,6 +736,11 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     heartbeat_thread.start()
     logger.info("Heartbeat thread started", interval_seconds=_HEARTBEAT_INTERVAL_SECONDS)
+
+    # Start test command cleanup thread (removes expired test installs every 20 min)
+    cleanup_thread = threading.Thread(target=_test_command_cleanup_loop, daemon=True)
+    cleanup_thread.start()
+    logger.info("Test command cleanup thread started")
 
     config = get_mqtt_config()
     client: mqtt.Client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
