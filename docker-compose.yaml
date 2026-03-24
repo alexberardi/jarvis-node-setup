@@ -17,8 +17,8 @@ services:
       - JARVIS_NODE_DB=/data/jarvis_node.db
       - JARVIS_SECRET_DIRECTORY=/data
     volumes:
-      # Config file (created via authorize_node.py)
-      - ./config-docker.json:/config/config.json:ro
+      # Config (writable — setup mode writes credentials on first run)
+      - jarvis-node-config:/config
       # Persistent data (encrypted DB, secrets, K2 keys)
       - jarvis-node-data:/data
     networks:
@@ -26,6 +26,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  jarvis-node-config:
   jarvis-node-data:
 
 networks:
