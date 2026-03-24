@@ -102,26 +102,57 @@ def serve_ui():
 @app.get("/setup/config")
 def get_config():
     """Return known service URLs for pre-filling the UI."""
+    config = _load_config()
     return {
-        "auth_url": _auth_url(),
-        "cc_url": _cc_url(),
+        "config_url": config.get("jarvis_config_service_url", os.environ.get("JARVIS_CONFIG_URL", "")),
     }
 
 
 @app.post("/setup/connect")
 async def connect_services(request: Request):
-    """Check connectivity to auth and CC, save URLs."""
+    """Resolve auth + CC URLs from the config service, verify connectivity."""
     body = await request.json()
-    auth_url = body.get("auth_url", "").rstrip("/")
-    cc_url = body.get("cc_url", "").rstrip("/")
+    config_url = body.get("config_url", "").rstrip("/")
+
+    if not config_url:
+        raise HTTPException(status_code=400, detail="config_url is required")
+
+    # Fetch service list from config service
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{config_url}/services")
+            if resp.status_code != 200:
+                return JSONResponse(
+                    {"ok": False, "errors": {"config": f"Config service returned {resp.status_code}"}},
+                    status_code=502,
+                )
+            services_data = resp.json()
+    except httpx.RequestError as e:
+        return JSONResponse(
+            {"ok": False, "errors": {"config": str(e)}},
+            status_code=502,
+        )
+
+    # Resolve auth and CC URLs from service list
+    auth_url = ""
+    cc_url = ""
+    for svc in services_data.get("services", []):
+        url = svc.get("url") or f"{svc['scheme']}://{svc['host']}:{svc['port']}"
+        if svc["name"] == "jarvis-auth":
+            auth_url = url.rstrip("/")
+        elif svc["name"] == "jarvis-command-center":
+            cc_url = url.rstrip("/")
 
     if not auth_url or not cc_url:
-        raise HTTPException(status_code=400, detail="auth_url and cc_url are required")
+        return JSONResponse(
+            {"ok": False, "errors": {"config": "Could not resolve auth and command center URLs from config service"}},
+            status_code=502,
+        )
 
     errors = {}
     auth_data: dict = {}
 
-    # Check auth service
+    # Verify auth service
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{auth_url}/auth/setup-status")
@@ -132,7 +163,7 @@ async def connect_services(request: Request):
     except httpx.RequestError as e:
         errors["auth"] = str(e)
 
-    # Check command center
+    # Verify command center
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{cc_url}/health")
@@ -144,11 +175,12 @@ async def connect_services(request: Request):
     if errors:
         return JSONResponse({"ok": False, "errors": errors}, status_code=502)
 
-    # Save URLs to session and config
+    # Save all URLs to session and config
     _session["auth_url"] = auth_url
     _session["cc_url"] = cc_url
 
     config = _load_config()
+    config["jarvis_config_service_url"] = config_url
     config["jarvis_auth_base_url"] = auth_url
     config["jarvis_command_center_api_url"] = cc_url
     # Derive MQTT broker from CC host

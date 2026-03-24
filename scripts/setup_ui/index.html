@@ -53,14 +53,12 @@
     <div class="dot" id="dot-3"></div>
   </div>
 
-  <!-- Step 0: Server URLs -->
+  <!-- Step 0: Server URL -->
   <div class="step active" id="step-0">
     <div class="step-title">Connect to Server</div>
-    <div class="step-desc">Enter the URLs of your Jarvis services. These are usually on the same machine.</div>
-    <label for="auth-url">Auth Service URL</label>
-    <input type="url" id="auth-url" placeholder="http://192.168.1.100:7701">
-    <label for="cc-url">Command Center URL</label>
-    <input type="url" id="cc-url" placeholder="http://192.168.1.100:7703">
+    <div class="step-desc">Enter the URL of your Jarvis config service. All other services will be discovered automatically.</div>
+    <label for="config-url">Config Service URL</label>
+    <input type="url" id="config-url" placeholder="http://192.168.1.100:7700">
     <div class="error" id="connect-error"></div>
     <button id="btn-connect" onclick="connectServices()">Connect</button>
   </div>
@@ -183,8 +181,7 @@ async function connectServices() {
   setBtnLoading('btn-connect', true);
   try {
     const data = await api('POST', '/setup/connect', {
-      auth_url: document.getElementById('auth-url').value.trim(),
-      cc_url: document.getElementById('cc-url').value.trim(),
+      config_url: document.getElementById('config-url').value.trim(),
     });
     needsSetup = data.needs_setup;
     if (needsSetup) {
@@ -314,8 +311,7 @@ async function completeSetup() {
 
 // Init: load saved config for pre-filling
 fetch('/setup/config').then(r => r.json()).then(data => {
-  if (data.auth_url) document.getElementById('auth-url').value = data.auth_url;
-  if (data.cc_url) document.getElementById('cc-url').value = data.cc_url;
+  if (data.config_url) document.getElementById('config-url').value = data.config_url;
 });
 </script>
 </body>
