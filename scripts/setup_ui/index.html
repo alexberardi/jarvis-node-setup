@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jarvis Node Setup</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .container { max-width: 460px; width: 100%; padding: 24px; }
+  h1 { font-size: 24px; font-weight: 600; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 32px; font-size: 14px; }
+  .step { display: none; }
+  .step.active { display: block; }
+  .step-title { font-size: 18px; font-weight: 500; margin-bottom: 16px; color: #fff; }
+  .step-desc { color: #999; font-size: 13px; margin-bottom: 20px; }
+  label { display: block; font-size: 13px; color: #aaa; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 14px; margin-bottom: 14px; outline: none; }
+  input:focus, select:focus { border-color: #4a9eff; }
+  button { width: 100%; padding: 11px; background: #4a9eff; color: #fff; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; margin-top: 4px; }
+  button:hover { background: #3a8eef; }
+  button:disabled { background: #333; color: #666; cursor: not-allowed; }
+  button.secondary { background: transparent; border: 1px solid #333; color: #aaa; margin-top: 8px; }
+  button.secondary:hover { border-color: #4a9eff; color: #fff; }
+  .error { color: #ff5555; font-size: 13px; margin-bottom: 12px; display: none; }
+  .error.show { display: block; }
+  .success-card { text-align: center; padding: 32px 0; }
+  .success-card .icon { font-size: 48px; margin-bottom: 16px; }
+  .success-card p { color: #999; margin-top: 8px; font-size: 13px; }
+  .stepper { display: flex; gap: 8px; margin-bottom: 28px; }
+  .stepper .dot { width: 8px; height: 8px; border-radius: 50%; background: #333; }
+  .stepper .dot.active { background: #4a9eff; }
+  .stepper .dot.done { background: #4a9eff; opacity: 0.5; }
+  .household-list { margin-bottom: 14px; }
+  .household-item { padding: 10px 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; margin-bottom: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+  .household-item:hover, .household-item.selected { border-color: #4a9eff; }
+  .household-item .name { font-size: 14px; }
+  .household-item .role { font-size: 12px; color: #888; }
+  .toggle-link { color: #4a9eff; font-size: 13px; cursor: pointer; margin-bottom: 16px; display: inline-block; }
+  .toggle-link:hover { text-decoration: underline; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #666; border-top-color: #4a9eff; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Jarvis Node Setup</h1>
+  <p class="subtitle">Configure this node to connect to your Jarvis server</p>
+  <div class="stepper">
+    <div class="dot active" id="dot-0"></div>
+    <div class="dot" id="dot-1"></div>
+    <div class="dot" id="dot-2"></div>
+    <div class="dot" id="dot-3"></div>
+  </div>
+
+  <!-- Step 0: Server URLs -->
+  <div class="step active" id="step-0">
+    <div class="step-title">Connect to Server</div>
+    <div class="step-desc">Enter the URLs of your Jarvis services. These are usually on the same machine.</div>
+    <label for="auth-url">Auth Service URL</label>
+    <input type="url" id="auth-url" placeholder="http://192.168.1.100:7701">
+    <label for="cc-url">Command Center URL</label>
+    <input type="url" id="cc-url" placeholder="http://192.168.1.100:7703">
+    <div class="error" id="connect-error"></div>
+    <button id="btn-connect" onclick="connectServices()">Connect</button>
+  </div>
+
+  <!-- Step 1: Auth -->
+  <div class="step" id="step-1">
+    <div class="step-title" id="auth-title">Sign In</div>
+    <div class="step-desc" id="auth-desc">Log in with your Jarvis account.</div>
+    <div id="auth-form-login">
+      <label for="login-email">Email</label>
+      <input type="email" id="login-email" placeholder="you@example.com">
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" placeholder="Password">
+      <div class="error" id="auth-error"></div>
+      <button onclick="doLogin()">Sign In</button>
+      <span class="toggle-link" id="toggle-register" onclick="showRegister()">Create an account</span>
+    </div>
+    <div id="auth-form-register" style="display:none">
+      <label for="reg-email">Email</label>
+      <input type="email" id="reg-email" placeholder="you@example.com">
+      <label for="reg-username">Username</label>
+      <input type="text" id="reg-username" placeholder="Username">
+      <label for="reg-password">Password</label>
+      <input type="password" id="reg-password" placeholder="Password (min 8 chars)">
+      <div class="error" id="reg-error"></div>
+      <button onclick="doRegister()">Create Account</button>
+      <span class="toggle-link" onclick="showLogin()">Already have an account</span>
+    </div>
+  </div>
+
+  <!-- Step 2: Household -->
+  <div class="step" id="step-2">
+    <div class="step-title">Select Household</div>
+    <div class="step-desc">Choose which household this node belongs to.</div>
+    <div id="household-list" class="household-list"></div>
+    <div class="error" id="household-error"></div>
+    <button id="btn-household" onclick="selectHousehold()" disabled>Continue</button>
+    <button class="secondary" onclick="showCreateHousehold()">Create New Household</button>
+    <div id="create-household-form" style="display:none; margin-top:14px;">
+      <label for="new-household-name">Household Name</label>
+      <input type="text" id="new-household-name" placeholder="My Home">
+      <button onclick="createHousehold()">Create</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Node Config -->
+  <div class="step" id="step-3">
+    <div class="step-title">Configure Node</div>
+    <div class="step-desc">Give this node a name and room.</div>
+    <label for="node-name">Node Name (optional)</label>
+    <input type="text" id="node-name" placeholder="Living Room Node">
+    <label for="node-room">Room</label>
+    <input type="text" id="node-room" placeholder="living_room" value="default">
+    <div class="error" id="complete-error"></div>
+    <button id="btn-complete" onclick="completeSetup()">Register Node</button>
+  </div>
+
+  <!-- Step 4: Success -->
+  <div class="step" id="step-4">
+    <div class="success-card">
+      <div class="icon">&#10003;</div>
+      <div class="step-title">Node Registered</div>
+      <p>Your node is restarting into normal mode.<br>This page will stop responding in a moment.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentStep = 0;
+let needsSetup = false;
+let selectedHousehold = null;
+let autoHouseholdId = null;
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(path, opts);
+  const data = await resp.json();
+  if (!resp.ok && !data.ok) {
+    throw new Error(data.detail || data.error || data.message || `Error ${resp.status}`);
+  }
+  return data;
+}
+
+function goToStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById(`step-${n}`).classList.add('active');
+  for (let i = 0; i < 4; i++) {
+    const dot = document.getElementById(`dot-${i}`);
+    dot.className = 'dot' + (i === n ? ' active' : i < n ? ' done' : '');
+  }
+  currentStep = n;
+}
+
+function showError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function clearError(id) {
+  document.getElementById(id).classList.remove('show');
+}
+
+function setBtnLoading(id, loading) {
+  const btn = document.getElementById(id);
+  if (loading) {
+    btn.disabled = true;
+    btn._orig = btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span>Connecting...';
+  } else {
+    btn.disabled = false;
+    btn.textContent = btn._orig || 'Submit';
+  }
+}
+
+// Step 0: Connect
+async function connectServices() {
+  clearError('connect-error');
+  setBtnLoading('btn-connect', true);
+  try {
+    const data = await api('POST', '/setup/connect', {
+      auth_url: document.getElementById('auth-url').value.trim(),
+      cc_url: document.getElementById('cc-url').value.trim(),
+    });
+    needsSetup = data.needs_setup;
+    if (needsSetup) {
+      document.getElementById('auth-title').textContent = 'Create First Account';
+      document.getElementById('auth-desc').textContent = 'No accounts exist yet. Create the admin account.';
+      showRegister();
+      document.getElementById('toggle-register').style.display = 'none';
+    }
+    goToStep(1);
+  } catch (e) {
+    showError('connect-error', e.message);
+  } finally {
+    setBtnLoading('btn-connect', false);
+  }
+}
+
+// Step 1: Auth
+function showLogin() {
+  document.getElementById('auth-form-login').style.display = '';
+  document.getElementById('auth-form-register').style.display = 'none';
+}
+
+function showRegister() {
+  document.getElementById('auth-form-login').style.display = 'none';
+  document.getElementById('auth-form-register').style.display = '';
+}
+
+async function doLogin() {
+  clearError('auth-error');
+  try {
+    await api('POST', '/setup/login', {
+      email: document.getElementById('login-email').value.trim(),
+      password: document.getElementById('login-password').value,
+    });
+    await loadHouseholds();
+    goToStep(2);
+  } catch (e) {
+    showError('auth-error', e.message);
+  }
+}
+
+async function doRegister() {
+  clearError('reg-error');
+  const endpoint = needsSetup ? '/setup/initial-setup' : '/setup/register';
+  try {
+    const data = await api('POST', endpoint, {
+      email: document.getElementById('reg-email').value.trim(),
+      username: document.getElementById('reg-username').value.trim(),
+      password: document.getElementById('reg-password').value,
+    });
+    // New users get auto-created household
+    if (data.household_id) {
+      autoHouseholdId = data.household_id;
+    }
+    await loadHouseholds();
+    goToStep(2);
+  } catch (e) {
+    showError('reg-error', e.message);
+  }
+}
+
+// Step 2: Household
+async function loadHouseholds() {
+  try {
+    const households = await api('GET', '/setup/households');
+    const list = document.getElementById('household-list');
+    list.innerHTML = '';
+    households.forEach(h => {
+      const div = document.createElement('div');
+      div.className = 'household-item' + (h.id === autoHouseholdId ? ' selected' : '');
+      div.innerHTML = `<span class="name">${h.name}</span><span class="role">${h.role}</span>`;
+      div.onclick = () => {
+        document.querySelectorAll('.household-item').forEach(i => i.classList.remove('selected'));
+        div.classList.add('selected');
+        selectedHousehold = h.id;
+        document.getElementById('btn-household').disabled = false;
+      };
+      list.appendChild(div);
+      if (h.id === autoHouseholdId) {
+        selectedHousehold = h.id;
+        document.getElementById('btn-household').disabled = false;
+      }
+    });
+  } catch (e) {
+    showError('household-error', e.message);
+  }
+}
+
+function selectHousehold() {
+  if (selectedHousehold) goToStep(3);
+}
+
+function showCreateHousehold() {
+  document.getElementById('create-household-form').style.display = '';
+}
+
+async function createHousehold() {
+  const name = document.getElementById('new-household-name').value.trim();
+  if (!name) return;
+  try {
+    const h = await api('POST', '/setup/households', { name });
+    autoHouseholdId = h.id;
+    await loadHouseholds();
+    document.getElementById('create-household-form').style.display = 'none';
+  } catch (e) {
+    showError('household-error', e.message);
+  }
+}
+
+// Step 3: Complete
+async function completeSetup() {
+  clearError('complete-error');
+  setBtnLoading('btn-complete', true);
+  try {
+    await api('POST', '/setup/complete', {
+      household_id: selectedHousehold,
+      room: document.getElementById('node-room').value.trim() || 'default',
+      name: document.getElementById('node-name').value.trim() || undefined,
+    });
+    goToStep(4);
+  } catch (e) {
+    showError('complete-error', e.message);
+  } finally {
+    setBtnLoading('btn-complete', false);
+  }
+}
+
+// Init: load saved config for pre-filling
+fetch('/setup/config').then(r => r.json()).then(data => {
+  if (data.auth_url) document.getElementById('auth-url').value = data.auth_url;
+  if (data.cc_url) document.getElementById('cc-url').value = data.cc_url;
+});
+</script>
+</body>
+</html>

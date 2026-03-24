@@ -1,0 +1,23 @@
+{
+  "node_id": "",
+  "api_key": "",
+  "jarvis_command_center_api_url": "",
+  "jarvis_auth_base_url": "",
+  "jarvis_llm_proxy_api_url": "",
+  "room": "default",
+  "user": "default",
+  "voice": "en",
+  "mqtt_broker": "",
+  "mqtt_port": 1884,
+  "mqtt_enabled": true,
+  "mic_sample_rate": 48000,
+  "mic_device_index": 1,
+  "max_record_seconds": 7,
+  "silence_threshold": 500,
+  "silence_duration": 1.0,
+  "min_record_seconds": 0.5,
+  "stt_provider": "jarvis-whisper-api",
+  "tts_provider": "jarvis-tts-api",
+  "wake_response_provider": "jarvis-tts-api",
+  "skip_warmup_inference": true
+}
