@@ -215,11 +215,17 @@ async def connect_services(request: Request):
             status_code=502,
         )
 
-    # Resolve auth and CC URLs from service list
+    # Resolve auth and CC URLs from service list.
+    # Replace localhost/127.0.0.1 with the config service host so URLs
+    # are reachable from inside the container.
+    config_host = urlparse(config_url).hostname or "localhost"
+
     auth_url = ""
     cc_url = ""
     for svc in services_data.get("services", []):
         url = svc.get("url") or f"{svc['scheme']}://{svc['host']}:{svc['port']}"
+        import re
+        url = re.sub(r"localhost|127\.0\.0\.1", config_host, url)
         if svc["name"] == "jarvis-auth":
             auth_url = url.rstrip("/")
         elif svc["name"] == "jarvis-command-center":
