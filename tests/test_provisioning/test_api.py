@@ -179,10 +179,10 @@ class TestProvisioningFlow:
                     import time
                     time.sleep(0.1)
 
-                    # Status should have changed (may be CONNECTING, REGISTERING, or PROVISIONED)
+                    # Status should have changed from AP_MODE
                     response = client.get("/api/v1/status")
                     state = response.json()["state"]
-                    assert state in ["CONNECTING", "REGISTERING", "PROVISIONED"]
+                    assert state in ["CONNECTING", "REGISTERING", "PROVISIONED", "ERROR"]
 
 
 @pytest.fixture
@@ -436,8 +436,8 @@ class TestProvisioningFlowTokenAuth:
                         # Must be called exactly once - no conditional guard
                         mock_reg.assert_called_once()
 
-    def test_registration_failure_is_non_fatal(self, client, tmp_path):
-        """Provisioning should complete even if registration fails."""
+    def test_registration_failure_is_fatal(self, client, tmp_path):
+        """Provisioning should fail with ERROR if registration fails."""
         with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
             with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
                 with patch("provisioning.api._update_config", return_value=True):
@@ -458,9 +458,9 @@ class TestProvisioningFlowTokenAuth:
                         import time
                         time.sleep(0.5)
 
-                        # Should reach PROVISIONED despite registration failure
+                        # Registration failure is now fatal — node goes to ERROR
                         status = client.get("/api/v1/status").json()
-                        assert status["state"] == "PROVISIONED"
+                        assert status["state"] == "ERROR"
 
     def test_node_keeps_local_name_for_info_endpoint(self, client):
         """Info endpoint should still return the local node name, not the CC-assigned UUID."""
