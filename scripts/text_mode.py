@@ -147,6 +147,26 @@ async def startup() -> None:
     except Exception as e:
         logger.warning("Storage backend init failed (non-fatal)", error=str(e))
 
+    # Register built-in commands (seeds command_registry table)
+    try:
+        from utils.command_discovery_service import CommandDiscoveryService
+        from repositories.command_registry_repository import CommandRegistryRepository
+        from db import SessionLocal
+
+        discovery = CommandDiscoveryService()
+        commands = discovery.get_all_commands(include_disabled=True)
+        if commands:
+            session = SessionLocal()
+            try:
+                repo = CommandRegistryRepository(session)
+                repo.ensure_registered(list(commands.keys()))
+                session.commit()
+                print(f"[startup] {len(commands)} commands registered", flush=True)
+            finally:
+                session.close()
+    except Exception as e:
+        print(f"[startup] command registration failed: {e}", flush=True)
+
     # Service discovery
     if init_service_discovery():
         logger.info("Service discovery initialized")
