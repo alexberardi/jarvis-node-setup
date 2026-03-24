@@ -188,8 +188,21 @@ def main():
     except Exception as e:
         logger.warning("LLM warmup failed (non-fatal)", error=str(e))
 
-    # Start voice listener in main thread
-    start_voice_listener(ma_service)
+    # Start voice listener (blocks until KeyboardInterrupt or audio failure)
+    try:
+        start_voice_listener(ma_service)
+    except Exception as e:
+        logger.error("Voice listener failed", error=str(e))
+
+    # If voice listener exits (no mic, audio failure, etc.), keep the process
+    # alive so MQTT, agents, and reminders continue to work. The node won't
+    # respond to voice but can still receive commands from the mobile app.
+    logger.warning("Voice listener exited — node running in headless mode (MQTT + agents only)")
+    try:
+        import signal
+        signal.pause()  # Block forever until SIGTERM/SIGINT
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Node shutting down")
 
 
 if __name__ == "__main__":
