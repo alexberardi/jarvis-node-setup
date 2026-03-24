@@ -16,7 +16,6 @@ services:
       - JARVIS_NODE_PORT=7771
       - JARVIS_MQTT_BROKER=host.docker.internal
       - JARVIS_MQTT_PORT=1884
-      - JARVIS_SKIP_ENCRYPTED_DB=true
       - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
     volumes:
       # Config file (created via authorize_node.py or manually)
