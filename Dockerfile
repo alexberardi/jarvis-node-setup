@@ -31,4 +31,4 @@ ENV JARVIS_SKIP_PROVISIONING_CHECK=true
 ENV CONFIG_PATH=/config/config.json
 ENV JARVIS_NODE_PORT=7771
 
-CMD ["python", "scripts/text_mode.py"]
+CMD ["python", "scripts/entrypoint.py"]

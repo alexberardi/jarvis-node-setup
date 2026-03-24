@@ -16,6 +16,8 @@ configs/
 !pyproject.toml
 !alembic.ini
 !config-docker.json
+!config-template.json
+!requirements-base.txt
 node_modules
 prds/
 *.wav
