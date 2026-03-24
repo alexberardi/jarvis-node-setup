@@ -133,6 +133,13 @@ async def startup() -> None:
 
     print("[startup] migrations done", flush=True)
 
+    # Encryption key (K1) — needed for K2 storage and encrypted settings
+    try:
+        from utils.encryption_utils import initialize_encryption_key
+        initialize_encryption_key()
+    except Exception as e:
+        logger.warning("Encryption key init failed (non-fatal)", error=str(e))
+
     # Storage backend (required for SDK JarvisStorage)
     try:
         from services.storage_backend import init_storage_backend
