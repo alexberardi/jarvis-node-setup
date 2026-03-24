@@ -444,6 +444,35 @@ def _pull_auth_credentials(provider: str) -> None:
     logger.warning("No command or device family found for auth provider", provider=provider)
 
 
+def _handle_k2_provision(raw_payload: bytes) -> None:
+    """Handle K2 encryption key provisioned via MQTT (for Docker/headless nodes)."""
+    try:
+        data: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in K2 provision message")
+        return
+
+    k2 = data.get("k2", "")
+    kid = data.get("kid", "")
+    created_at = data.get("created_at", "")
+
+    if not k2 or not kid:
+        logger.warning("K2 provision message missing required fields")
+        return
+
+    try:
+        from datetime import datetime
+        from utils.encryption_utils import save_k2
+
+        dt = datetime.fromisoformat(created_at) if created_at else datetime.utcnow()
+        save_k2(k2, kid, dt)
+        logger.info("K2 encryption key provisioned via MQTT", kid=kid)
+        print(f"[MQTT] K2 provisioned: kid={kid}", flush=True)
+    except Exception as e:
+        logger.error("K2 provisioning failed", error=str(e))
+        print(f"[MQTT] K2 provision error: {e}", flush=True)
+
+
 def _handle_config_push_notification(raw_payload: bytes) -> None:
     """Handle config push MQTT notification — triggers polling in background."""
     try:
@@ -632,6 +661,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
         return
 
     # Route by topic suffix — config push notifications are plain objects, not arrays
+    if msg.topic.endswith("/k2/provision"):
+        _handle_k2_provision(msg.payload)
+        return
+
     if msg.topic.endswith("/config/push"):
         _handle_config_push_notification(msg.payload)
         return
