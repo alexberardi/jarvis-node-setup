@@ -154,10 +154,11 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
 else
     log_step "Configuring audio system"
 
-    # Lock HifiBerry DAC as card 0, USB mic as card 1
+    # Lock HifiBerry DAC as card 0, USB mic as card 2
+    # (index=1 is taken by the HiFiBerry overlay — using index=2 avoids collision)
     sudo tee /etc/modprobe.d/alsa-base.conf > /dev/null <<EOF
 options snd_soc_hifiberry_dac index=0
-options snd_usb_audio index=1
+options snd_usb_audio index=2
 EOF
 
     # Set /etc/asound.conf with correct playback and capture config
@@ -188,7 +189,7 @@ pcm.dsnoopmic {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:1,0"
+    pcm "hw:2,0"
     channels 1
   }
 }
@@ -206,19 +207,19 @@ EOF
     log_info "Detecting USB microphone..."
     USB_MIC_CARD=$(arecord -l 2>/dev/null | grep -i "usb" | sed -n 's/.*card \([0-9]*\):.*/\1/p' | head -n 1)
 
-    if [[ -n "$USB_MIC_CARD" ]]; then
+    if [[ -n "$USB_MIC_CARD" && "$USB_MIC_CARD" =~ ^[0-9]+$ ]]; then
         log_success "USB mic detected as card $USB_MIC_CARD"
 
-        cat >> "$PI_HOME/.asoundrc" <<EOF
-
-# Input (mic)
+        cat > "$PI_HOME/.asoundrc" <<EOF
+# Input (mic) — auto-detected during setup
 defaults.capture.card $USB_MIC_CARD
 defaults.capture.device 0
 EOF
 
         chown "$PI_USER:$PI_USER" "$PI_HOME/.asoundrc"
     else
-        log_warn "No USB mic found — skipping capture default setup"
+        log_warn "No USB mic found — plug in a USB mic and re-run setup, or set capture card manually in ~/.asoundrc"
+        # Don't create a broken .asoundrc with empty values
     fi
 fi
 
