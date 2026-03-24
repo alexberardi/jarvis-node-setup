@@ -105,34 +105,64 @@ async def discover_config_service():
     import socket
     import asyncio
 
-    # Get this machine's IP to derive the subnet
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except OSError:
-        raise HTTPException(status_code=500, detail="Could not determine local IP")
+    import asyncio
 
-    subnet = ".".join(local_ip.split(".")[:3])
-    priority_hosts = [1, 2, 10, 50, 100, 103, 150, 200]
-
-    async def probe(ip: str) -> str | None:
-        url = f"http://{ip}:7700/info"
+    async def probe(host: str) -> str | None:
+        url = f"http://{host}:7700/info"
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
                     if data.get("service") == "jarvis-config-service":
-                        return f"http://{ip}:7700"
+                        return f"http://{host}:7700"
         except (httpx.RequestError, Exception):
             pass
         return None
 
+    # Try Docker-native hosts first
+    for docker_host in ["host.docker.internal", "jarvis-config-service"]:
+        result = await probe(docker_host)
+        if result:
+            return {"ok": True, "config_url": result}
+
+    # Get the host's real IP (not the container's Docker bridge IP)
+    # Try the default gateway which is typically the Docker host
+    try:
+        import subprocess
+        gw = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=2
+        )
+        # "default via 172.18.0.1 dev eth0" -> extract gateway IP
+        gateway_ip = ""
+        for part in gw.stdout.split():
+            if part.count(".") == 3:
+                gateway_ip = part
+                break
+        if gateway_ip:
+            result = await probe(gateway_ip)
+            if result:
+                return {"ok": True, "config_url": result}
+    except Exception:
+        pass
+
+    # Fall back to subnet scan using the host's real network
+    # Resolve host.docker.internal to get the host IP for subnet scanning
+    try:
+        host_ip = socket.gethostbyname("host.docker.internal")
+    except socket.gaierror:
+        host_ip = None
+
+    if not host_ip:
+        return {"ok": False, "error": "Could not determine host network. Enter the URL manually."}
+
+    subnet = ".".join(host_ip.split(".")[:3])
+    priority_hosts = [1, 2, 10, 50, 100, 103, 150, 200]
+
     # Probe priority hosts first
-    for host in priority_hosts:
-        result = await probe(f"{subnet}.{host}")
+    for h in priority_hosts:
+        result = await probe(f"{subnet}.{h}")
         if result:
             return {"ok": True, "config_url": result}
 
