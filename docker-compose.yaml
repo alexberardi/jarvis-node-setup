@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  jarvis-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        jarvis-command-sdk: ../jarvis-command-sdk
+    container_name: jarvis-node
+    ports:
+      - "7771:7771"
+    environment:
+      - JARVIS_SKIP_PROVISIONING_CHECK=true
+      - CONFIG_PATH=/config/config.json
+      - JARVIS_NODE_PORT=7771
+      - JARVIS_NODE_DB=/data/jarvis_node.db
+      - JARVIS_SECRET_DIRECTORY=/data
+    volumes:
+      # Config file (created via authorize_node.py)
+      - ./config-docker.json:/config/config.json:ro
+      # Persistent data (encrypted DB, secrets, K2 keys)
+      - jarvis-node-data:/data
+    networks:
+      - jarvis-net
+    restart: unless-stopped
+
+volumes:
+  jarvis-node-data:
+
+networks:
+  jarvis-net:
+    external: true

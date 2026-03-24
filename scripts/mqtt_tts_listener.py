@@ -40,8 +40,11 @@ def get_mqtt_config() -> Dict[str, Any]:
 
 def handle_tts(details: Dict[str, Any]) -> None:
     message: str = details.get("message", "")
-    tts_provider = get_tts_provider()
-    tts_provider.speak(True, message)
+    try:
+        tts_provider = get_tts_provider()
+        tts_provider.speak(True, message)
+    except (ValueError, Exception) as e:
+        logger.debug("TTS skipped (no audio output)", message=message[:80], error=str(e))
 
 
 def _verify_command(request_id: str) -> bool:

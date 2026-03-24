@@ -133,6 +133,13 @@ async def startup() -> None:
 
     print("[startup] migrations done", flush=True)
 
+    # Storage backend (required for SDK JarvisStorage)
+    try:
+        from services.storage_backend import init_storage_backend
+        init_storage_backend()
+    except Exception as e:
+        logger.warning("Storage backend init failed (non-fatal)", error=str(e))
+
     # Service discovery
     if init_service_discovery():
         logger.info("Service discovery initialized")
@@ -141,29 +148,36 @@ async def startup() -> None:
 
     print("[startup] service discovery done", flush=True)
 
-    # Timer service and agent scheduler need pysqlcipher3 with a valid K1
-    # encryption key. In Docker/text mode the encrypted DB is typically
-    # unavailable, so skip these to avoid retry loops that leak FDs.
-    skip_encrypted_db = os.getenv("JARVIS_SKIP_ENCRYPTED_DB", "").lower() in ("true", "1", "yes")
-    if not skip_encrypted_db:
-        try:
-            timer_service = initialize_timer_service()
-            restored = timer_service.restore_timers()
-            if restored > 0:
-                logger.info("Restored timers", count=restored)
-        except Exception as e:
-            logger.warning("Timer service unavailable", error=str(e))
+    # Timer service
+    try:
+        timer_service = initialize_timer_service()
+        restored = timer_service.restore_timers()
+        if restored > 0:
+            logger.info("Restored timers", count=restored)
+    except Exception as e:
+        logger.warning("Timer service unavailable", error=str(e))
 
-        try:
-            from services.alert_queue_service import get_alert_queue_service
-            alert_queue = get_alert_queue_service()
-            agent_scheduler = initialize_agent_scheduler()
-            agent_scheduler.set_alert_queue(alert_queue)
-            print("[startup] agent scheduler initialized", flush=True)
-        except Exception as e:
-            print(f"[startup] agent scheduler init failed: {e}", flush=True)
+    # Reminder service
+    try:
+        from services.reminder_service import initialize_reminder_service
+        reminder_service = initialize_reminder_service()
+        restored_reminders = reminder_service.restore_reminders()
+        if restored_reminders > 0:
+            logger.info("Restored reminders", count=restored_reminders)
+    except Exception as e:
+        logger.warning("Reminder service init failed (non-fatal)", error=str(e))
 
-    print("[startup] encrypted db section done", flush=True)
+    # Alert queue + agent scheduler
+    try:
+        from services.alert_queue_service import get_alert_queue_service
+        alert_queue = get_alert_queue_service()
+        agent_scheduler = initialize_agent_scheduler()
+        agent_scheduler.set_alert_queue(alert_queue)
+        print("[startup] agent scheduler initialized", flush=True)
+    except Exception as e:
+        logger.warning("Agent scheduler init failed (non-fatal)", error=str(e))
+
+    print("[startup] services done", flush=True)
 
     # MQTT listener (for package installs, TTS, etc.)
     mqtt_enabled: bool = Config.get_bool("mqtt_enabled", True) is not False

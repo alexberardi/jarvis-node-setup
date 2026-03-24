@@ -1,9 +1,9 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
 # git: Pantry package installs clone from GitHub
-# libsqlcipher-dev: pysqlcipher3 encrypted SQLite
+# libsqlcipher-dev: sqlcipher3 encrypted SQLite (fallback if no wheel)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        git build-essential libsqlcipher-dev \
