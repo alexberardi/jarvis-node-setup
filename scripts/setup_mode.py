@@ -99,6 +99,58 @@ def serve_ui():
 # ------------------------------------------------------------------
 
 
+@app.post("/setup/discover")
+async def discover_config_service():
+    """Scan the local network for jarvis-config-service on port 7700."""
+    import socket
+    import asyncio
+
+    # Get this machine's IP to derive the subnet
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except OSError:
+        raise HTTPException(status_code=500, detail="Could not determine local IP")
+
+    subnet = ".".join(local_ip.split(".")[:3])
+    priority_hosts = [1, 2, 10, 50, 100, 103, 150, 200]
+
+    async def probe(ip: str) -> str | None:
+        url = f"http://{ip}:7700/info"
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("service") == "jarvis-config-service":
+                        return f"http://{ip}:7700"
+        except (httpx.RequestError, Exception):
+            pass
+        return None
+
+    # Probe priority hosts first
+    for host in priority_hosts:
+        result = await probe(f"{subnet}.{host}")
+        if result:
+            return {"ok": True, "config_url": result}
+
+    # Scan remaining in batches of 20
+    priority_set = set(priority_hosts)
+    remaining = [i for i in range(1, 255) if i not in priority_set]
+
+    for i in range(0, len(remaining), 20):
+        batch = remaining[i:i + 20]
+        tasks = [probe(f"{subnet}.{h}") for h in batch]
+        results = await asyncio.gather(*tasks)
+        for r in results:
+            if r:
+                return {"ok": True, "config_url": r}
+
+    return {"ok": False, "error": "No Jarvis server found on your network"}
+
+
 @app.get("/setup/config")
 def get_config():
     """Return known service URLs for pre-filling the UI."""

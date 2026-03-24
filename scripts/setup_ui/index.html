@@ -56,7 +56,8 @@
   <!-- Step 0: Server URL -->
   <div class="step active" id="step-0">
     <div class="step-title">Connect to Server</div>
-    <div class="step-desc">Enter the URL of your Jarvis config service. All other services will be discovered automatically.</div>
+    <div class="step-desc">Auto-discover your Jarvis server on the local network, or enter the URL manually.</div>
+    <button id="btn-discover" onclick="discoverServer()" class="secondary" style="margin-bottom:16px">Scan Network</button>
     <label for="config-url">Config Service URL</label>
     <input type="url" id="config-url" placeholder="http://192.168.1.100:7700">
     <div class="error" id="connect-error"></div>
@@ -172,6 +173,29 @@ function setBtnLoading(id, loading) {
   } else {
     btn.disabled = false;
     btn.textContent = btn._orig || 'Submit';
+  }
+}
+
+// Step 0: Discover
+async function discoverServer() {
+  clearError('connect-error');
+  const btn = document.getElementById('btn-discover');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Scanning network...';
+  try {
+    const data = await api('POST', '/setup/discover');
+    if (data.ok && data.config_url) {
+      document.getElementById('config-url').value = data.config_url;
+      // Auto-connect
+      await connectServices();
+    } else {
+      showError('connect-error', data.error || 'No server found');
+    }
+  } catch (e) {
+    showError('connect-error', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Scan Network';
   }
 }
 
