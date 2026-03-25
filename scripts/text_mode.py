@@ -154,7 +154,7 @@ async def startup() -> None:
         from db import SessionLocal
 
         discovery = CommandDiscoveryService()
-        commands = discovery.get_all_commands(include_disabled=True)
+        commands = discovery.get_all_commands()
         if commands:
             session = SessionLocal()
             try:
