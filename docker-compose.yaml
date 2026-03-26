@@ -2,11 +2,7 @@ version: "3.8"
 
 services:
   jarvis-node:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      additional_contexts:
-        jarvis-command-sdk: ../jarvis-command-sdk
+    image: ghcr.io/alexberardi/jarvis-node:latest
     container_name: jarvis-node
     ports:
       - "7771:7771"
@@ -17,18 +13,10 @@ services:
       - JARVIS_NODE_DB=/data/jarvis_node.db
       - JARVIS_SECRET_DIRECTORY=/data
     volumes:
-      # Config (writable — setup mode writes credentials on first run)
       - jarvis-node-config:/config
-      # Persistent data (encrypted DB, secrets, K2 keys)
       - jarvis-node-data:/data
-    networks:
-      - jarvis-net
     restart: unless-stopped
 
 volumes:
   jarvis-node-config:
   jarvis-node-data:
-
-networks:
-  jarvis-net:
-    external: true
