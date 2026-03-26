@@ -108,11 +108,16 @@
   <!-- Step 3: Node Config -->
   <div class="step" id="step-3">
     <div class="step-title">Configure Node</div>
-    <div class="step-desc">Give this node a name and room.</div>
+    <div class="step-desc">Give this node a name and assign it to a room.</div>
     <label for="node-name">Node Name (optional)</label>
     <input type="text" id="node-name" placeholder="Living Room Node">
-    <label for="node-room">Room</label>
-    <input type="text" id="node-room" placeholder="living_room" value="default">
+    <label for="node-room-select">Room</label>
+    <select id="node-room-select" onchange="onRoomSelect()">
+      <option value="">Loading rooms...</option>
+    </select>
+    <div id="custom-room-wrap" style="display:none; margin-top:-6px;">
+      <input type="text" id="node-room-custom" placeholder="e.g. kitchen, office, garage">
+    </div>
     <div class="error" id="complete-error"></div>
     <button id="btn-complete" onclick="completeSetup()">Register Node</button>
   </div>
@@ -294,8 +299,44 @@ async function loadHouseholds() {
   }
 }
 
-function selectHousehold() {
-  if (selectedHousehold) goToStep(3);
+async function selectHousehold() {
+  if (!selectedHousehold) return;
+  goToStep(3);
+  await loadRooms();
+}
+
+async function loadRooms() {
+  const sel = document.getElementById('node-room-select');
+  sel.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const rooms = await api('GET', `/setup/households/${selectedHousehold}/rooms`);
+    sel.innerHTML = '';
+    if (rooms.length > 0) {
+      rooms.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.name || r.id;
+        opt.textContent = r.name || r.id;
+        sel.appendChild(opt);
+      });
+    }
+    const custom = document.createElement('option');
+    custom.value = '__custom__';
+    custom.textContent = '+ Add new room';
+    sel.appendChild(custom);
+  } catch (e) {
+    sel.innerHTML = '';
+    const custom = document.createElement('option');
+    custom.value = '__custom__';
+    custom.textContent = '+ Add new room';
+    sel.appendChild(custom);
+    onRoomSelect();
+  }
+}
+
+function onRoomSelect() {
+  const sel = document.getElementById('node-room-select');
+  const wrap = document.getElementById('custom-room-wrap');
+  wrap.style.display = sel.value === '__custom__' ? '' : 'none';
 }
 
 function showCreateHousehold() {
@@ -320,9 +361,15 @@ async function completeSetup() {
   clearError('complete-error');
   setBtnLoading('btn-complete', true);
   try {
+    const roomSel = document.getElementById('node-room-select');
+    let room = roomSel.value === '__custom__'
+      ? document.getElementById('node-room-custom').value.trim()
+      : roomSel.value;
+    room = room || 'default';
+
     await api('POST', '/setup/complete', {
       household_id: selectedHousehold,
-      room: document.getElementById('node-room').value.trim() || 'default',
+      room: room,
       name: document.getElementById('node-name').value.trim() || undefined,
     });
     goToStep(4);
