@@ -405,6 +405,30 @@ async def create_household(request: Request):
 
 
 # ------------------------------------------------------------------
+# Rooms
+# ------------------------------------------------------------------
+
+
+@app.get("/setup/households/{household_id}/rooms")
+async def list_rooms(household_id: str):
+    """List rooms for a household."""
+    cc = _cc_url()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{cc}/api/v0/households/{household_id}/rooms",
+                headers=_auth_headers(),
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    if resp.status_code != 200:
+        return JSONResponse(resp.json(), status_code=resp.status_code)
+
+    return resp.json()
+
+
+# ------------------------------------------------------------------
 # Node registration
 # ------------------------------------------------------------------
 
