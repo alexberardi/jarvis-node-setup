@@ -129,7 +129,6 @@ jobs:
             ```bash
             docker run -d --name jarvis-node \
               -p 7771:7771 \
-              --network jarvis-net \
               --restart unless-stopped \
               -v jarvis-node-config:/config \
               -v jarvis-node-data:/data \
