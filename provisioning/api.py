@@ -193,14 +193,16 @@ def _update_config(room: str, command_center_url: str, config_service_url: str |
         if config_service_url:
             config["jarvis_config_service_url"] = config_service_url
 
-        # Derive MQTT broker from CC URL host (same server runs mosquitto)
-        try:
-            from urllib.parse import urlparse
-            cc_host = urlparse(command_center_url).hostname
-            if cc_host:
-                config["mqtt_broker"] = cc_host
-        except Exception:
-            pass
+        # MQTT broker discovered at runtime via config-service.
+        # Only set from CC URL as a last-resort fallback if nothing else is configured.
+        if not config.get("mqtt_broker"):
+            try:
+                from urllib.parse import urlparse
+                cc_host = urlparse(command_center_url).hostname
+                if cc_host:
+                    config["mqtt_broker"] = cc_host
+            except Exception:
+                pass
 
         # Write back
         with open(config_path, "w") as f:
