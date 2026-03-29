@@ -19,6 +19,7 @@ _SERVICE_TO_CONFIG_KEY = {
     "auth": "jarvis_auth_api_url",
     "whisper": "jarvis_whisper_api_url",
     "tts": "jarvis_tts_api_url",
+    "mqtt-broker": "mqtt_broker",
 }
 
 # Default URLs if nothing else works
@@ -27,6 +28,7 @@ _DEFAULTS = {
     "jarvis-auth": "http://localhost:7701",
     "jarvis-whisper": "http://localhost:7706",
     "jarvis-tts": "http://localhost:7707",
+    "jarvis-mqtt-broker": "mqtt://localhost:1884",
 }
 
 # TODO: jarvis-llm-proxy is currently accessed directly by some commands
@@ -130,3 +132,28 @@ def get_tts_url() -> str:
 def get_auth_url() -> str:
     """Get auth service URL."""
     return _get_url("auth")
+
+
+def get_mqtt_broker_url() -> str:
+    """Get MQTT broker URL from config-service or fallbacks.
+
+    Returns URL in format: mqtt://host:port
+    """
+    # Config-service stores it as jarvis-mqtt-broker
+    url = _get_url("mqtt-broker")
+    if url:
+        return url
+
+    # Env var fallback
+    host = os.environ.get("JARVIS_MQTT_BROKER")
+    port = os.environ.get("JARVIS_MQTT_PORT", "1884")
+    if host:
+        return f"mqtt://{host}:{port}"
+
+    # JSON config fallback
+    config_host = _get_from_json_config("mqtt_broker")
+    config_port = _get_from_json_config("mqtt_port") or "1884"
+    if config_host:
+        return f"mqtt://{config_host}:{config_port}"
+
+    return "mqtt://localhost:1884"
