@@ -27,12 +27,39 @@ _mqtt_client: Optional[mqtt.Client] = None
 
 
 def get_mqtt_config() -> Dict[str, Any]:
-    """Get MQTT configuration at runtime"""
+    """Get MQTT configuration at runtime.
+
+    Discovery chain:
+    1. Config-service (jarvis-mqtt-broker)
+    2. Env vars (JARVIS_MQTT_BROKER, JARVIS_MQTT_PORT)
+    3. config.json (mqtt_broker, mqtt_port)
+    4. Default: localhost:1884
+    """
+    from utils.service_discovery import get_mqtt_broker_url
+
     node_id: str = Config.get_str("node_id", "unknown") or "unknown"
+
+    # Parse broker URL from service discovery
+    broker_url = get_mqtt_broker_url()
+    broker = "localhost"
+    port = 1884
+    if broker_url:
+        url = broker_url
+        if url.startswith("mqtt://"):
+            url = url[7:]
+        if ":" in url:
+            broker, port_str = url.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                pass
+        else:
+            broker = url
+
     return {
         "topic": Config.get_str("mqtt_topic", f"jarvis/nodes/{node_id}/#") or f"jarvis/nodes/{node_id}/#",
-        "broker": Config.get_str("mqtt_broker", "raspberrypi.local") or "raspberrypi.local",
-        "port": Config.get_int("mqtt_port", 1884) or 1884,
+        "broker": broker,
+        "port": port,
         "username": Config.get_str("mqtt_username", "") or "",
         "password": Config.get_str("mqtt_password", "") or ""
     }
