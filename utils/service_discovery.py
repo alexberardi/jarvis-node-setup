@@ -19,7 +19,9 @@ _SERVICE_TO_CONFIG_KEY = {
     "auth": "jarvis_auth_api_url",
     "whisper": "jarvis_whisper_api_url",
     "tts": "jarvis_tts_api_url",
-    "mqtt-broker": "mqtt_broker",
+    # Note: mqtt-broker is NOT here because config.json stores it as
+    # separate mqtt_broker (hostname) + mqtt_port fields, not a URL.
+    # It's handled in get_mqtt_broker_url() instead.
 }
 
 # Default URLs if nothing else works
@@ -139,10 +141,15 @@ def get_mqtt_broker_url() -> str:
 
     Returns URL in format: mqtt://host:port
     """
-    # Config-service stores it as jarvis-mqtt-broker
-    url = _get_url("mqtt-broker")
-    if url:
-        return url
+    # Config-service stores it as jarvis-mqtt-broker (full URL like mqtt://host:port)
+    if _initialized:
+        try:
+            from jarvis_config_client import get_service_url
+            url = get_service_url("jarvis-mqtt-broker")
+            if url:
+                return url
+        except (ImportError, RuntimeError):
+            pass
 
     # Env var fallback
     host = os.environ.get("JARVIS_MQTT_BROKER")
