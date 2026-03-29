@@ -15,6 +15,10 @@ services:
     volumes:
       - jarvis-node-config:/config
       - jarvis-node-data:/data
+    # Required on Linux so the container can reach host-mapped services
+    # (MQTT broker, config-service, etc.). Not needed on macOS/Windows.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:
