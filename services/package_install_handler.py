@@ -43,6 +43,27 @@ def run_install_and_upload(
         except Exception as e:
             logger.warning("Command discovery refresh failed (non-fatal)", error=str(e))
 
+        # Re-discover agents and run any new ones immediately so their
+        # context (e.g., HA devices) is cached before the first voice command.
+        try:
+            from utils.agent_discovery_service import get_agent_discovery_service
+            from services.agent_scheduler_service import get_agent_scheduler_service
+
+            discovery = get_agent_discovery_service()
+            old_agents = set(discovery.get_all_agents().keys())
+            discovery.refresh()
+            new_agents = discovery.get_all_agents()
+            added = set(new_agents.keys()) - old_agents
+
+            if added:
+                scheduler = get_agent_scheduler_service()
+                scheduler._agents = new_agents
+                for name in added:
+                    logger.info("Running newly installed agent", agent=name)
+                    scheduler.run_agent_now(name)
+        except Exception as e:
+            logger.warning("Agent refresh after install failed (non-fatal)", error=str(e))
+
         _upload_result(request_id, success=True, details={
             "package_name": manifest.name,
             "version": manifest.version,
