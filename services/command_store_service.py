@@ -747,6 +747,24 @@ def _seed_secrets(manifest: CommandManifest) -> None:
             logger.warning("Could not seed secrets", error=str(e))
 
 
+def _refresh_discovery_caches() -> None:
+    """Refresh command and agent discovery caches after install/remove.
+
+    Without this, in-memory caches hold stale state and subsequent
+    installs may hit false name-conflict errors.
+    """
+    try:
+        from utils.command_discovery_service import get_command_discovery_service
+        get_command_discovery_service().refresh_now()
+    except Exception as e:
+        logger.warning("Command discovery refresh failed (non-fatal)", error=str(e))
+    try:
+        from utils.agent_discovery_service import get_agent_discovery_service
+        get_agent_discovery_service().refresh()
+    except Exception as e:
+        logger.warning("Agent discovery refresh failed (non-fatal)", error=str(e))
+
+
 def remove(package_name: str) -> None:
     """Remove an installed package (command or bundle).
 
@@ -796,6 +814,7 @@ def remove(package_name: str) -> None:
                 _disable_in_registry(comp["name"])
 
         logger.info("Package removed", package=package_name)
+        _refresh_discovery_caches()
         return
 
     # Legacy fallback: single command in custom_commands/
@@ -810,6 +829,7 @@ def remove(package_name: str) -> None:
     _disable_in_registry(package_name)
     shutil.rmtree(install_dir)
     logger.info("Custom command removed", command=package_name)
+    _refresh_discovery_caches()
 
 
 def _enable_in_registry(command_name: str) -> None:
