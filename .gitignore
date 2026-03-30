@@ -108,3 +108,4 @@ dependency-snapshot.json
 
 # Multi-node bootstrap configs (contain credentials)
 configs/
+docker-compose.local.yaml
