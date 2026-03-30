@@ -39,7 +39,16 @@ def run_install_and_upload(
         try:
             from utils.command_discovery_service import get_command_discovery_service
             get_command_discovery_service().refresh_now()
-            logger.info("Command discovery refreshed after install")
+
+            discovered = get_command_discovery_service().get_all_commands(include_disabled=True)
+            if command_name in discovered:
+                logger.info("Verified: command discoverable after install", command=command_name)
+            else:
+                logger.warning(
+                    "Command NOT found after refresh",
+                    command=command_name,
+                    discovered_count=len(discovered),
+                )
         except Exception as e:
             logger.warning("Command discovery refresh failed (non-fatal)", error=str(e))
 

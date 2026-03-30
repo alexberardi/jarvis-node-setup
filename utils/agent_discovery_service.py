@@ -9,6 +9,7 @@ Mirrors the CommandDiscoveryService pattern but adapted for agents:
 
 import importlib
 import pkgutil
+import sys
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -62,6 +63,13 @@ class AgentDiscoveryService:
         Returns:
             Dict mapping agent name to agent instance
         """
+        # Invalidate Python's import system caches so newly-installed
+        # agent directories are visible to pkgutil/importlib.
+        importlib.invalidate_caches()
+        for key in list(sys.modules.keys()):
+            if key.startswith("agents.custom_agents"):
+                del sys.modules[key]
+
         from services.command_store_service import register_package_lib_paths
         register_package_lib_paths()
 
@@ -85,7 +93,6 @@ class AgentDiscoveryService:
                     agent_py = agent_dir / "agent.py"
                     if agent_py.exists():
                         # Add to path so import works
-                        import sys
                         if str(agent_dir) not in sys.path:
                             sys.path.insert(0, str(agent_dir))
                         self._try_load_agent(

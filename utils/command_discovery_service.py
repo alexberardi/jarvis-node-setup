@@ -1,5 +1,6 @@
 import importlib
 import pkgutil
+import sys
 import threading
 import time
 from typing import Dict, List, Optional
@@ -45,6 +46,16 @@ class CommandDiscoveryService:
 
     def _discover_commands(self):
         """Discover all IJarvisCommand implementations from built-in and custom commands."""
+        # Invalidate Python's import system caches so pkgutil.iter_modules()
+        # sees newly-installed package directories on disk.
+        importlib.invalidate_caches()
+
+        # Remove cached custom_commands modules so importlib.import_module()
+        # re-executes new module files instead of returning stale cache hits.
+        for key in list(sys.modules.keys()):
+            if key.startswith("commands.custom_commands"):
+                del sys.modules[key]
+
         from services.command_store_service import register_package_lib_paths
         register_package_lib_paths()
 
