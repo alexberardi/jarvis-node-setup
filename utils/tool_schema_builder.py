@@ -51,10 +51,8 @@ def _build_schema_from_sdk_command(cmd: Any) -> Tuple[Dict[str, Any], Dict[str, 
     properties: Dict[str, Any] = {}
     required: List[str] = []
     for param in params:
-        prop: Dict[str, Any] = {
-            "type": _param_type_to_json(param.param_type if hasattr(param, "param_type") else "string"),
-            "description": param.description or param.name,
-        }
+        prop = _param_type_to_json_schema(param.param_type if hasattr(param, "param_type") else "string")
+        prop["description"] = param.description or param.name
         if hasattr(param, "enum_values") and param.enum_values:
             prop["enum"] = param.enum_values
         properties[param.name] = prop
@@ -98,21 +96,30 @@ def _build_schema_from_sdk_command(cmd: Any) -> Tuple[Dict[str, Any], Dict[str, 
     return tool_schema, command_schema
 
 
-def _param_type_to_json(param_type: str) -> str:
-    """Map IJarvisParameter param_type to JSON Schema type."""
-    mapping = {
-        "string": "string",
-        "str": "string",
-        "int": "integer",
-        "integer": "integer",
-        "float": "number",
-        "number": "number",
-        "bool": "boolean",
-        "boolean": "boolean",
-        "date": "string",
-        "time": "string",
-        "datetime": "string",
-        "array": "array",
-        "enum": "string",
+def _param_type_to_json_schema(param_type: str) -> Dict[str, Any]:
+    """Map IJarvisParameter param_type to a JSON Schema object.
+
+    Handles generic array types like 'array<datetime>' by producing
+    {"type": "array", "items": {"type": "string", "format": "date-time"}}.
+    """
+    # Handle array<inner_type> syntax
+    if param_type.startswith("array<") and param_type.endswith(">"):
+        inner = param_type[6:-1]
+        return {"type": "array", "items": _param_type_to_json_schema(inner)}
+
+    simple: Dict[str, Dict[str, Any]] = {
+        "string": {"type": "string"},
+        "str": {"type": "string"},
+        "int": {"type": "integer"},
+        "integer": {"type": "integer"},
+        "float": {"type": "number"},
+        "number": {"type": "number"},
+        "bool": {"type": "boolean"},
+        "boolean": {"type": "boolean"},
+        "date": {"type": "string", "format": "date"},
+        "time": {"type": "string", "format": "time"},
+        "datetime": {"type": "string", "format": "date-time"},
+        "array": {"type": "array"},
+        "enum": {"type": "string"},
     }
-    return mapping.get(param_type, "string")
+    return dict(simple.get(param_type, {"type": "string"}))
