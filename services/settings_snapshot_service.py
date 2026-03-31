@@ -78,6 +78,10 @@ def build_snapshot(include_values: bool = False) -> dict[str, Any]:
             }
             if secret.friendly_name:
                 entry["friendly_name"] = secret.friendly_name
+            if getattr(secret, "enum_values", None):
+                entry["enum_values"] = secret.enum_values
+            if getattr(secret, "presets", None):
+                entry["presets"] = secret.presets
             # Include value: always for non-sensitive, only with include_values for sensitive
             if value and (not secret.is_sensitive or include_values):
                 entry["value"] = value
@@ -121,6 +125,10 @@ def build_snapshot(include_values: bool = False) -> dict[str, Any]:
                 }
                 if secret.friendly_name:
                     entry_f["friendly_name"] = secret.friendly_name
+                if getattr(secret, "enum_values", None):
+                    entry_f["enum_values"] = secret.enum_values
+                if getattr(secret, "presets", None):
+                    entry_f["presets"] = secret.presets
                 if not secret.is_sensitive and value_f:
                     entry_f["value"] = value_f
                 secrets_list_f.append(entry_f)
@@ -162,6 +170,10 @@ def build_snapshot(include_values: bool = False) -> dict[str, Any]:
                 }
                 if secret.friendly_name:
                     entry_m["friendly_name"] = secret.friendly_name
+                if getattr(secret, "enum_values", None):
+                    entry_m["enum_values"] = secret.enum_values
+                if getattr(secret, "presets", None):
+                    entry_m["presets"] = secret.presets
                 if not secret.is_sensitive and value_m:
                     entry_m["value"] = value_m
                 secrets_list_m.append(entry_m)
