@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, String, Text, DateTime
+from sqlalchemy import Column, Integer, String, Text, DateTime
 from models import Base
 
 
@@ -12,5 +12,6 @@ class Secret(Base):
     value = Column(Text, nullable=False)
     scope = Column(String(255), nullable=False)
     value_type = Column(String(255), nullable=False)
+    user_id = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)

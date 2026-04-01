@@ -62,17 +62,18 @@ class NodeStorageBackend(StorageBackend):
 
     # -- Secrets --
 
-    def get_secret(self, key: str, scope: str) -> str | None:
-        value = _get_secret_value(key, scope)
+    def get_secret(self, key: str, scope: str, user_id: int | None = None) -> str | None:
+        value = _get_secret_value(key, scope, user_id=user_id)
         return str(value) if value is not None else None
 
     def set_secret(
-        self, key: str, value: str, scope: str, value_type: str = "string"
+        self, key: str, value: str, scope: str, value_type: str = "string",
+        user_id: int | None = None,
     ) -> None:
-        _set_secret(key, value, scope, value_type)
+        _set_secret(key, value, scope, value_type, user_id=user_id)
 
-    def delete_secret(self, key: str, scope: str) -> None:
-        _delete_secret(key, scope)
+    def delete_secret(self, key: str, scope: str, user_id: int | None = None) -> None:
+        _delete_secret(key, scope, user_id=user_id)
 
 
 def init_storage_backend() -> None:

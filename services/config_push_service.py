@@ -218,15 +218,24 @@ def _dispatch_auth(provider: str, config_data: dict[str, str]) -> None:
 def _dispatch_secrets(config_data: dict[str, str]) -> None:
     """Store non-auth config values as secrets.
 
-    Looks up scope from the existing DB row (pre-seeded by install_command).
-    Falls back to "integration" if the key isn't in the DB yet.
+    If __user_id__ is present, secrets are stored with scope='user' and the
+    given user_id. Otherwise, scope is looked up from existing DB rows
+    (pre-seeded by install_command), falling back to 'integration'.
     """
     from services.secret_service import get_secret_scope, set_secret
 
+    user_id_str = config_data.pop("__user_id__", None)
+    user_id: int | None = int(user_id_str) if user_id_str else None
+
     for key, value in config_data.items():
-        scope: str = get_secret_scope(key) or "integration"
-        set_secret(key, str(value), scope)
-        logger.debug("Stored config secret", key=key, scope=scope)
+        if user_id is not None:
+            # Mobile sent a user_id — this is a personal secret
+            set_secret(key, str(value), "user", user_id=user_id)
+            logger.debug("Stored user secret", key=key, user_id=user_id)
+        else:
+            scope: str = get_secret_scope(key) or "integration"
+            set_secret(key, str(value), scope)
+            logger.debug("Stored config secret", key=key, scope=scope)
 
 
 def _ack_config(push_id: str) -> None:
