@@ -28,7 +28,7 @@ x-node-base: &node-base
     - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
   networks:
     - jarvis-net
-  restart: "no"
+  restart: unless-stopped
 
 x-node-volumes: &node-volumes
   # Live-reload app code in dev
@@ -50,7 +50,7 @@ services:
     container_name: jarvis-node-kitchen
     ports: ["7771:7771"]
     volumes:
-      - ./configs/node-kitchen.json:/config/config.json:ro
+      - ./configs/node-kitchen.json:/config/config.json:rw
       - node-kitchen-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -72,7 +72,7 @@ services:
     container_name: jarvis-node-bedroom
     ports: ["7772:7771"]
     volumes:
-      - ./configs/node-bedroom.json:/config/config.json:ro
+      - ./configs/node-bedroom.json:/config/config.json:rw
       - node-bedroom-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -94,7 +94,7 @@ services:
     container_name: jarvis-node-office
     ports: ["7773:7771"]
     volumes:
-      - ./configs/node-office.json:/config/config.json:ro
+      - ./configs/node-office.json:/config/config.json:rw
       - node-office-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -117,7 +117,7 @@ services:
     container_name: jarvis-node-living
     ports: ["7774:7771"]
     volumes:
-      - ./configs/node-living.json:/config/config.json:ro
+      - ./configs/node-living.json:/config/config.json:rw
       - node-living-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -139,7 +139,7 @@ services:
     container_name: jarvis-node-garage
     ports: ["7775:7771"]
     volumes:
-      - ./configs/node-garage.json:/config/config.json:ro
+      - ./configs/node-garage.json:/config/config.json:rw
       - node-garage-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -161,7 +161,7 @@ services:
     container_name: jarvis-node-deck
     ports: ["7776:7771"]
     volumes:
-      - ./configs/node-deck.json:/config/config.json:ro
+      - ./configs/node-deck.json:/config/config.json:rw
       - node-deck-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands
@@ -184,7 +184,7 @@ services:
     container_name: jarvis-node-ha-test
     ports: ["7778:7771"]
     volumes:
-      - ./configs/node-ha-test.json:/config/config.json:ro
+      - ./configs/node-ha-test.json:/config/config.json:rw
       - node-ha-test-data:/root/.jarvis
       - ./core:/app/core
       - ./commands:/app/commands

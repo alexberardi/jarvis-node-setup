@@ -38,14 +38,20 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def build_snapshot(include_values: bool = False) -> dict[str, Any]:
+def build_snapshot(include_values: bool = False, user_id: int | None = None) -> dict[str, Any]:
     """Build a plain (unencrypted) settings snapshot from all discovered commands.
 
     Args:
         include_values: If True, include actual values for ALL secrets (including
             sensitive ones like API keys). Used for secret sync between nodes.
             The snapshot is still encrypted with K2 in transit.
+        user_id: If provided, include user-scoped secret values for this user.
     """
+    # Set user context so commands that read user-scoped secrets in their
+    # required_secrets property (e.g. email's get_email_provider()) work correctly.
+    from jarvis_command_sdk.context import set_current_user_id
+    set_current_user_id(user_id)
+
     service = get_command_discovery_service()
     service.refresh_now()
     commands = service.get_all_commands(include_disabled=True)
@@ -66,7 +72,8 @@ def build_snapshot(include_values: bool = False) -> dict[str, Any]:
     for cmd in commands.values():
         secrets_list: list[dict[str, Any]] = []
         for secret in cmd.required_secrets:
-            value: str | None = get_secret_value(secret.key, secret.scope)
+            secret_user_id = user_id if secret.scope == "user" else None
+            value: str | None = get_secret_value(secret.key, secret.scope, user_id=secret_user_id)
             entry: dict[str, Any] = {
                 "key": secret.key,
                 "scope": secret.scope,
@@ -192,6 +199,8 @@ def build_snapshot(include_values: bool = False) -> dict[str, Any]:
     except Exception as e:
         logger.warning("Failed to build device manager entries", error=str(e))
 
+    set_current_user_id(None)  # reset context
+
     return {
         "schema_version": SCHEMA_VERSION,
         "commands_schema_version": COMMANDS_SCHEMA_VERSION,
@@ -259,13 +268,14 @@ def upload_snapshot(
     return True
 
 
-def handle_snapshot_request(request_id: str, include_values: bool = False) -> bool:
+def handle_snapshot_request(request_id: str, include_values: bool = False, user_id: int | None = None) -> bool:
     """Full flow: confirm request, build snapshot, encrypt, upload.
 
     Args:
         request_id: The settings request ID from CC.
         include_values: If True, include sensitive secret values in the snapshot
             (for secret sync between nodes).
+        user_id: If provided, include user-scoped secret values for this user.
 
     Returns True if successful.
     """
@@ -289,7 +299,7 @@ def handle_snapshot_request(request_id: str, include_values: bool = False) -> bo
     logger.info("Snapshot request confirmed", request_id=request_id[:8])
 
     # Build snapshot
-    snapshot: dict[str, Any] = build_snapshot(include_values=include_values)
+    snapshot: dict[str, Any] = build_snapshot(include_values=include_values, user_id=user_id)
     logger.info(
         "Snapshot built",
         request_id=request_id[:8],

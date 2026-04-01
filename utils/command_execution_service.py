@@ -52,6 +52,7 @@ class CommandExecutionService:
         self.room = Config.get_str("room")
         self.command_discovery = get_command_discovery_service()
         self.client = JarvisCommandCenterClient(self.command_center_url)
+        self._conversation_users: Dict[str, int | None] = {}
         # Force initial discovery
         self.command_discovery.refresh_now()
 
@@ -72,6 +73,8 @@ class CommandExecutionService:
         Returns:
             True if successful, False otherwise
         """
+        self._conversation_users[conversation_id] = speaker_user_id
+
         commands = self.command_discovery.get_all_commands()
 
         if not commands:
@@ -306,7 +309,7 @@ class CommandExecutionService:
         conversation_id = self._generate_conversation_id()
 
         # Try node-side pre-routing (skip CC entirely)
-        pre_result = self.try_pre_route(voice_command, conversation_id)
+        pre_result = self.try_pre_route(voice_command, conversation_id, speaker_user_id=speaker_user_id)
         if pre_result is not None:
             return pre_result
 
@@ -557,13 +560,20 @@ class CommandExecutionService:
                 arguments = tool_call.function.get_arguments_dict()
                 arguments = command.post_process_tool_call(arguments, voice_command)
 
+                user_id = self._conversation_users.get(conversation_id)
                 request_info = RequestInformation(
                     voice_command=voice_command or f"Tool call: {tool_name}",
                     conversation_id=conversation_id,
-                    is_validation_response=False
+                    is_validation_response=False,
+                    user_id=user_id,
                 )
 
-                command_response: CommandResponse = command.execute(request_info, **arguments)
+                from jarvis_command_sdk.context import set_current_user_id
+                set_current_user_id(user_id)
+                try:
+                    command_response: CommandResponse = command.execute(request_info, **arguments)
+                finally:
+                    set_current_user_id(None)
 
                 # Aggregate signals: OR across all tool responses
                 if command_response.wait_for_input:
@@ -620,7 +630,7 @@ class CommandExecutionService:
                 return f"Sorry, that didn't work: {output['error']}"
         return ""
 
-    def try_pre_route(self, voice_command: str, conversation_id: str) -> Dict[str, Any] | None:
+    def try_pre_route(self, voice_command: str, conversation_id: str, speaker_user_id: int | None = None) -> Dict[str, Any] | None:
         """Try node-side pre-routing across all discovered commands.
 
         Iterates commands, calls pre_route() on each.  First match wins.
@@ -648,8 +658,15 @@ class CommandExecutionService:
                     voice_command=voice_command,
                     conversation_id=conversation_id,
                     is_validation_response=False,
+                    user_id=speaker_user_id,
                 )
-                command_response: CommandResponse = command.execute(request_info, **pre.arguments)
+
+                from jarvis_command_sdk.context import set_current_user_id
+                set_current_user_id(speaker_user_id)
+                try:
+                    command_response: CommandResponse = command.execute(request_info, **pre.arguments)
+                finally:
+                    set_current_user_id(None)
 
                 message = pre.spoken_response
                 if not message:
