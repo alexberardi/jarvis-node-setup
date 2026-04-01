@@ -337,21 +337,8 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
             user_id=user_id,
         )
 
-        print(f"[MQTT] executing {command_name} with user_id={user_id} (type={type(user_id).__name__})", flush=True)
+        logger.info("Executing tool call", command=command_name, args=list(arguments.keys()), user_id=user_id)
         set_current_user_id(user_id)
-        from jarvis_command_sdk.context import get_current_user_id
-        print(f"[MQTT] context user_id after set: {get_current_user_id()}", flush=True)
-
-        # Debug: test email provider resolution
-        try:
-            import sys
-            if '/root/.jarvis/packages/email/lib' not in sys.path:
-                sys.path.insert(0, '/root/.jarvis/packages/email/lib')
-            from email_shared.email_service_factory import get_email_provider
-            print(f"[MQTT] DEBUG email provider = {get_email_provider()}", flush=True)
-        except Exception as e:
-            print(f"[MQTT] DEBUG email provider check failed: {e}", flush=True)
-
         try:
             response = cmd.run(ri, **arguments)
         finally:
