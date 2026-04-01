@@ -291,6 +291,7 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
     tool_call_id: str = details.get("tool_call_id", "")
     command_name: str = details.get("command_name", "")
     arguments: Dict[str, Any] = details.get("arguments", {})
+    print(f"[MQTT] tool_call received: {command_name} args={list(arguments.keys()) if isinstance(arguments, dict) else 'str'} user_id={details.get('user_id')}", flush=True)
 
     if not reply_request_id:
         logger.warning("tool_call: missing reply_request_id, ignoring")
@@ -318,6 +319,7 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
 
     try:
         from jarvis_command_sdk import RequestInformation
+        from jarvis_command_sdk.context import set_current_user_id
 
         # Parse arguments if they're a JSON string
         if isinstance(arguments, str):
@@ -327,13 +329,33 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
             except (ValueError, TypeError):
                 arguments = {}
 
+        user_id: int | None = details.get("user_id")
+
         ri = RequestInformation(
             voice_command="[mobile chat]",
             conversation_id=tool_call_id or "mobile",
+            user_id=user_id,
         )
 
-        logger.info("Executing tool call", command=command_name, args=list(arguments.keys()))
-        response = cmd.run(ri, **arguments)
+        print(f"[MQTT] executing {command_name} with user_id={user_id} (type={type(user_id).__name__})", flush=True)
+        set_current_user_id(user_id)
+        from jarvis_command_sdk.context import get_current_user_id
+        print(f"[MQTT] context user_id after set: {get_current_user_id()}", flush=True)
+
+        # Debug: test email provider resolution
+        try:
+            import sys
+            if '/root/.jarvis/packages/email/lib' not in sys.path:
+                sys.path.insert(0, '/root/.jarvis/packages/email/lib')
+            from email_shared.email_service_factory import get_email_provider
+            print(f"[MQTT] DEBUG email provider = {get_email_provider()}", flush=True)
+        except Exception as e:
+            print(f"[MQTT] DEBUG email provider check failed: {e}", flush=True)
+
+        try:
+            response = cmd.run(ri, **arguments)
+        finally:
+            set_current_user_id(None)
 
         # Build output from CommandResponse
         output: Dict[str, Any] = {}
@@ -370,11 +392,12 @@ def _post_tool_call_result(request_id: str, result: Dict[str, Any]) -> None:
 
     # Reuse the same result endpoint as device control
     url = f"{base_url.rstrip('/')}/api/v0/device-control-results/{request_id}"
+    print(f"[MQTT] posting tool_call result to {url[:60]}.../{request_id[:8]}", flush=True)
     try:
-        RestClient.post(url, data=result, timeout=5)
-        logger.debug("Posted tool call result to CC", request_id=request_id[:8])
+        resp = RestClient.post(url, data=result, timeout=5)
+        print(f"[MQTT] tool_call result posted: {resp}", flush=True)
     except Exception as e:
-        logger.warning("Failed to post tool call result", error=str(e))
+        print(f"[MQTT] tool_call result POST failed: {e}", flush=True)
 
 
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
@@ -538,16 +561,22 @@ def _handle_settings_request_notification(raw_payload: bytes) -> None:
         return
 
     include_values: bool = notification.get("include_values", False)
-    logger.info("Settings snapshot requested", request_id=request_id[:8], include_values=include_values)
-    thread = threading.Thread(target=_process_settings_request, args=(request_id, include_values), daemon=True)
+    user_id: int | None = notification.get("user_id")
+    logger.info("Settings snapshot requested", request_id=request_id[:8], include_values=include_values, user_id=user_id)
+    thread = threading.Thread(target=_process_settings_request, args=(request_id, include_values, user_id), daemon=True)
     thread.start()
 
 
-def _process_settings_request(request_id: str, include_values: bool = False) -> None:
+def _process_settings_request(request_id: str, include_values: bool = False, user_id: int | None = None) -> None:
     """Process a settings snapshot request (runs in background thread)."""
     try:
         print(f"[MQTT] processing settings request {request_id[:8]}", flush=True)
-        success: bool = handle_snapshot_request(request_id, include_values=include_values)
+        # Debug: log snapshot command count
+        from services.settings_snapshot_service import build_snapshot as _dbg_build
+        _dbg_snapshot = _dbg_build(include_values=include_values, user_id=user_id)
+        _dbg_cmds = [c["command_name"] for c in _dbg_snapshot.get("commands", [])]
+        print(f"[MQTT] snapshot has {len(_dbg_cmds)} commands: {_dbg_cmds}", flush=True)
+        success: bool = handle_snapshot_request(request_id, include_values=include_values, user_id=user_id)
         print(f"[MQTT] settings snapshot result: {success}", flush=True)
         if success:
             logger.info("Settings snapshot complete", request_id=request_id[:8])
@@ -619,10 +648,10 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
     git_tag: str | None = notification.get("git_tag")
 
     if not request_id or not github_repo_url:
-        logger.warning("Package install notification missing request_id or github_repo_url")
+        print(f"[INSTALL] missing request_id or github_repo_url, ignoring", flush=True)
         return
 
-    logger.info("Package install requested", request_id=request_id[:8], command=command_name)
+    print(f"[INSTALL] received: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
 
     from services.package_install_handler import run_install_and_upload
 
@@ -632,6 +661,7 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
         daemon=True,
     )
     thread.start()
+    print(f"[INSTALL] thread started", flush=True)
 
 
 def _handle_test_install_notification(raw_payload: bytes) -> None:
