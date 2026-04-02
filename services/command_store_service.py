@@ -500,7 +500,7 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
 
     # 4. Install shared code for bundles (ha_shared/, etc.)
     component_paths = [c.path for c in manifest.components]
-    shared_dirs = _collect_shared_dirs(repo_dir, component_paths) if manifest.is_bundle else []
+    shared_dirs = _collect_shared_dirs(repo_dir, component_paths)
     if shared_dirs:
         _install_shared_code(manifest.name, shared_dirs, repo_dir)
 
