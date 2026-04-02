@@ -23,10 +23,12 @@ def run_install_and_upload(
     git_tag: str | None,
 ) -> None:
     """Run package install and upload results to CC. Meant to run in a background thread."""
+    print(f"[INSTALL] starting install: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
     try:
         from services.command_store_service import install_from_github
 
         manifest = install_from_github(github_repo_url, version_tag=git_tag)
+        print(f"[INSTALL] success: {manifest.name} v{manifest.version}", flush=True)
         logger.info(
             "Package installed successfully",
             request_id=request_id[:8],
@@ -79,6 +81,9 @@ def run_install_and_upload(
             "components": len(manifest.components),
         })
     except Exception as e:
+        import traceback
+        print(f"[INSTALL] FAILED: {e}", flush=True)
+        traceback.print_exc()
         logger.error(
             "Package install failed",
             request_id=request_id[:8],
@@ -88,22 +93,56 @@ def run_install_and_upload(
         _upload_result(request_id, success=False, error=str(e))
 
 
+def run_uninstall_and_upload(
+    request_id: str,
+    command_name: str,
+) -> None:
+    """Run package uninstall and upload results to CC. Meant to run in a background thread."""
+    print(f"[UNINSTALL] starting uninstall: {command_name}", flush=True)
+    try:
+        from services.command_store_service import remove
+
+        remove(command_name)
+        print(f"[UNINSTALL] success: {command_name}", flush=True)
+        logger.info(
+            "Package uninstalled successfully",
+            request_id=request_id[:8],
+            package=command_name,
+        )
+
+        _upload_result(request_id, success=True, details={
+            "package_name": command_name,
+        }, action="uninstall")
+    except Exception as e:
+        import traceback
+        print(f"[UNINSTALL] FAILED: {e}", flush=True)
+        traceback.print_exc()
+        logger.error(
+            "Package uninstall failed",
+            request_id=request_id[:8],
+            command_name=command_name,
+            error=str(e),
+        )
+        _upload_result(request_id, success=False, error=str(e), action="uninstall")
+
+
 def _upload_result(
     request_id: str,
     success: bool,
     error: str | None = None,
     details: dict[str, Any] | None = None,
+    action: str = "install",
 ) -> None:
-    """POST install result to CC."""
+    """POST install/uninstall result to CC."""
     cc_url = get_command_center_url()
     if not cc_url:
-        logger.error("Cannot upload install result: CC URL not resolved")
+        logger.error("Cannot upload result: CC URL not resolved")
         return
 
     from utils.config_service import Config
     node_id: str = Config.get_str("node_id", "") or ""
 
-    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/package-install/{request_id}/results"
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/package-{action}/{request_id}/results"
 
     payload: dict[str, Any] = {"success": success}
     if error:
