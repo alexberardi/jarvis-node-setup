@@ -765,6 +765,50 @@ def _refresh_discovery_caches() -> None:
         logger.warning("Agent discovery refresh failed (non-fatal)", error=str(e))
 
 
+def _cleanup_secrets_for_package(package_name: str) -> None:
+    """Delete secrets associated with a package's commands before removal.
+
+    Loads commands from discovery to get their secret keys, then deletes
+    matching rows from the secrets table (all scopes and user_ids).
+    """
+    try:
+        from utils.command_discovery_service import get_command_discovery_service
+        from db import SessionLocal
+        from sqlalchemy import text
+
+        service = get_command_discovery_service()
+        commands = service.get_all_commands(include_disabled=True)
+
+        # Find commands that belong to this package
+        pkg_meta_path = PACKAGES_DIR / f"{package_name}.json"
+        command_names: list[str] = []
+        if pkg_meta_path.exists():
+            with open(pkg_meta_path) as f:
+                meta = json.load(f)
+            for comp in meta.get("components", []):
+                if comp.get("type") == "command":
+                    command_names.append(comp["name"])
+        if not command_names:
+            command_names = [package_name]
+
+        # Collect secret keys from matching commands
+        secret_keys: set[str] = set()
+        for name in command_names:
+            cmd = commands.get(name)
+            if cmd:
+                for secret in cmd.all_possible_secrets:
+                    secret_keys.add(secret.key)
+
+        if secret_keys:
+            with SessionLocal() as session:
+                for key in secret_keys:
+                    session.execute(text("DELETE FROM secrets WHERE key = :k"), {"k": key})
+                session.commit()
+            logger.info("Cleaned up secrets", package=package_name, keys=list(secret_keys))
+    except Exception as e:
+        logger.warning("Secret cleanup failed (non-fatal)", package=package_name, error=str(e))
+
+
 def remove(package_name: str) -> None:
     """Remove an installed package (command or bundle).
 
@@ -777,6 +821,9 @@ def remove(package_name: str) -> None:
     Raises:
         RemoveError: If the package is not found.
     """
+    # Collect secret keys to clean up (before removing files)
+    _cleanup_secrets_for_package(package_name)
+
     # Check for package metadata first
     pkg_meta_path = PACKAGES_DIR / f"{package_name}.json"
     if pkg_meta_path.exists():
