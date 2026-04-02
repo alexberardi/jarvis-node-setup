@@ -657,6 +657,34 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
     print(f"[INSTALL] thread started", flush=True)
 
 
+def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
+    """Handle package uninstall request from CC — runs uninstall in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in package uninstall notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    command_name: str = notification.get("command_name", "")
+
+    if not request_id or not command_name:
+        print("[UNINSTALL] missing request_id or command_name, ignoring", flush=True)
+        return
+
+    print(f"[UNINSTALL] received: {command_name}", flush=True)
+
+    from services.package_install_handler import run_uninstall_and_upload
+
+    thread = threading.Thread(
+        target=run_uninstall_and_upload,
+        args=(request_id, command_name),
+        daemon=True,
+    )
+    thread.start()
+    print("[UNINSTALL] thread started", flush=True)
+
+
 def _handle_test_install_notification(raw_payload: bytes) -> None:
     """Handle test install nudge from CC — verify and install in background thread."""
     try:
@@ -741,6 +769,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/package-install"):
         _handle_package_install_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/package-uninstall"):
+        _handle_package_uninstall_notification(msg.payload)
         return
 
     try:
