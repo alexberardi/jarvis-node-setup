@@ -311,6 +311,12 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
     cmd = commands.get(command_name)
 
     if not cmd:
+        # Command may have been installed after startup — refresh and retry
+        service.refresh_now()
+        commands = service.get_all_commands()
+        cmd = commands.get(command_name)
+
+    if not cmd:
         logger.warning("tool_call: unknown command", command_name=command_name)
         _post_tool_call_result(reply_request_id, {
             "output": {"error": f"Unknown command: {command_name}"},
