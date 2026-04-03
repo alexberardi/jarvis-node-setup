@@ -212,7 +212,10 @@ def handle_action(details: Dict[str, Any]) -> None:
         _post_action_result(reply_id_err, False, str(e))
 
 
-def _post_action_result(request_id: str, success: bool, error: Optional[str] = None) -> None:
+def _post_action_result(
+    request_id: str, success: bool, error: Optional[str] = None,
+    input_required: Optional[Dict[str, Any]] = None,
+) -> None:
     """POST action result back to CC via HTTP for synchronous callers."""
     from clients.rest_client import RestClient
     from utils.service_discovery import get_command_center_url
@@ -223,8 +226,11 @@ def _post_action_result(request_id: str, success: bool, error: Optional[str] = N
         return
 
     url = f"{base_url.rstrip('/')}/api/v0/device-control-results/{request_id}"
+    payload: Dict[str, Any] = {"success": success, "error": error}
+    if input_required:
+        payload["input_required"] = input_required
     try:
-        RestClient.post(url, data={"success": success, "error": error}, timeout=5)
+        RestClient.post(url, data=payload, timeout=5)
         logger.debug("Posted action result to CC", request_id=request_id[:8], success=success)
     except Exception as e:
         logger.warning("Failed to post action result", error=str(e))
@@ -584,7 +590,8 @@ def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], r
         try:
             result = loop.run_until_complete(protocol.control(device, action_name, context))
             print(f"[ACTION] device protocol control: {protocol_name} {action_name} success={result.success}", flush=True)
-            _post_action_result(reply_id, result.success, result.error if not result.success else None)
+            input_req = result.input_required.to_dict() if result.input_required else None
+            _post_action_result(reply_id, result.success, result.error if not result.success else None, input_required=input_req)
         finally:
             loop.close()
 
