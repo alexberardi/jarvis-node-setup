@@ -71,6 +71,28 @@ def _cc_url() -> str:
     return url.rstrip("/") if url else ""
 
 
+def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
+    """Fetch MQTT broker host and port from config-service.
+
+    Returns (host, port) or (None, 1884) if unavailable.
+    """
+    try:
+        resp = httpx.get(
+            f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker",
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            # Config-service returns host and port fields directly
+            host = data.get("host")
+            port = data.get("port", 1884)
+            if host:
+                return host, int(port)
+    except Exception:
+        pass
+    return None, 1884
+
+
 # ------------------------------------------------------------------
 # Health
 # ------------------------------------------------------------------
@@ -271,10 +293,16 @@ async def connect_services(request: Request):
     config["jarvis_config_service_url"] = config_url
     config["jarvis_auth_base_url"] = auth_url
     config["jarvis_command_center_api_url"] = cc_url
-    # Derive MQTT broker from CC host
-    cc_host = urlparse(cc_url).hostname
-    if cc_host:
-        config["mqtt_broker"] = cc_host
+
+    # Resolve MQTT broker from config-service, fall back to CC hostname
+    mqtt_host, mqtt_port = _resolve_mqtt_broker(config_url)
+    if mqtt_host:
+        config["mqtt_broker"] = mqtt_host
+        config["mqtt_port"] = mqtt_port
+    else:
+        cc_host = urlparse(cc_url).hostname
+        if cc_host:
+            config["mqtt_broker"] = cc_host
     _save_config(config)
 
     return {
