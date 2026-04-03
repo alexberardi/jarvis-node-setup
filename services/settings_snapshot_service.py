@@ -152,6 +152,8 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
             }
             if family.authentication:
                 family_entry["authentication"] = family.authentication.to_dict()
+            if hasattr(family, "setup_guide") and family.setup_guide:
+                family_entry["setup_guide"] = family.setup_guide
             family_entries.append(family_entry)
     except Exception as e:
         logger.warning("Failed to build device family entries", error=str(e))
