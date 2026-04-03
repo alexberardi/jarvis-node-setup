@@ -74,6 +74,9 @@ def _cc_url() -> str:
 def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
     """Fetch MQTT broker host and port from config-service.
 
+    Replaces localhost/127.0.0.1 with the config-service host so the
+    broker is reachable from inside Docker containers.
+
     Returns (host, port) or (None, 1884) if unavailable.
     """
     try:
@@ -83,10 +86,15 @@ def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
         )
         if resp.status_code == 200:
             data = resp.json()
-            # Config-service returns host and port fields directly
             host = data.get("host")
             port = data.get("port", 1884)
             if host:
+                # Inside Docker, localhost means the container — replace with
+                # the config-service host so the broker is reachable.
+                import os, re
+                if os.path.exists("/.dockerenv"):
+                    config_host = urlparse(config_service_url).hostname or "localhost"
+                    host = re.sub(r"^(localhost|127\.0\.0\.1)$", config_host, host)
                 return host, int(port)
     except Exception:
         pass
