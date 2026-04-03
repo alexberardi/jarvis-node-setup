@@ -15,7 +15,7 @@ from pathlib import Path
 
 from jarvis_log_client import JarvisLogger
 
-from device_families.base import IJarvisDeviceProtocol
+from jarvis_command_sdk import IJarvisDeviceProtocol
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -218,6 +218,36 @@ class DeviceFamilyDiscoveryService:
                     module=module_name,
                     error=str(e),
                 )
+
+        # Scan custom families (installed by Pantry)
+        custom_families_dir = Path(device_families.__path__[0]).parent / "device_families" / "custom_families"
+        if custom_families_dir.exists():
+            for family_dir in custom_families_dir.iterdir():
+                if family_dir.is_dir() and not family_dir.name.startswith("_"):
+                    protocol_py = family_dir / "protocol.py"
+                    if protocol_py.exists():
+                        import sys
+                        if str(family_dir) not in sys.path:
+                            sys.path.insert(0, str(family_dir))
+                        try:
+                            module = importlib.import_module(
+                                f"device_families.custom_families.{family_dir.name}.protocol",
+                            )
+                            for attr in dir(module):
+                                cls = getattr(module, attr)
+                                if (
+                                    isinstance(cls, type)
+                                    and issubclass(cls, IJarvisDeviceProtocol)
+                                    and cls is not IJarvisDeviceProtocol
+                                ):
+                                    instance = cls()
+                                    families[instance.protocol_name] = instance
+                        except Exception as e:
+                            logger.debug(
+                                "Custom device family skipped for snapshot",
+                                family=family_dir.name,
+                                error=str(e),
+                            )
 
         return families
 
