@@ -162,6 +162,32 @@ def _save_node_credentials(node_id: str, node_key: str) -> bool:
         return False
 
 
+def _resolve_mqtt_broker(config_service_url: str | None) -> tuple[str | None, int]:
+    """Fetch MQTT broker host and port from config-service.
+
+    Returns (host, port) or (None, 1884) if unavailable.
+    """
+    if not config_service_url:
+        return None, 1884
+    try:
+        import httpx
+
+        resp = httpx.get(
+            f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker",
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            # Config-service returns host and port fields directly
+            host = data.get("host")
+            port = data.get("port", 1884)
+            if host:
+                return host, int(port)
+    except Exception:
+        pass
+    return None, 1884
+
+
 def _update_config(room: str, command_center_url: str, config_service_url: str | None = None) -> bool:
     """
     Update the config.json with provisioning data.
@@ -193,9 +219,12 @@ def _update_config(room: str, command_center_url: str, config_service_url: str |
         if config_service_url:
             config["jarvis_config_service_url"] = config_service_url
 
-        # MQTT broker discovered at runtime via config-service.
-        # Only set from CC URL as a last-resort fallback if nothing else is configured.
-        if not config.get("mqtt_broker"):
+        # Resolve MQTT broker from config-service, fall back to CC hostname
+        mqtt_host, mqtt_port = _resolve_mqtt_broker(config_service_url)
+        if mqtt_host:
+            config["mqtt_broker"] = mqtt_host
+            config["mqtt_port"] = mqtt_port
+        elif not config.get("mqtt_broker"):
             try:
                 from urllib.parse import urlparse
                 cc_host = urlparse(command_center_url).hostname
