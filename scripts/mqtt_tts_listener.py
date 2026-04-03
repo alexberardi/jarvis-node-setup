@@ -141,6 +141,7 @@ def handle_train_adapter(details: Dict[str, Any]) -> None:
 
 def handle_action(details: Dict[str, Any]) -> None:
     """Verify and dispatch an interactive action (e.g. Send/Cancel button tap) to a command."""
+    print(f"[ACTION] handle_action called: {details.get('command_name')} action={details.get('action_name')}", flush=True)
     logger.info("handle_action called", details=details)
     request_id: Optional[str] = details.get("request_id")
     if not request_id:
@@ -503,6 +504,8 @@ def _handle_k2_provision(raw_payload: bytes) -> None:
         logger.warning("K2 provision message missing required fields")
         return
 
+    request_id: str = data.get("request_id", "")
+
     try:
         from datetime import datetime
         from utils.encryption_utils import save_k2
@@ -511,9 +514,39 @@ def _handle_k2_provision(raw_payload: bytes) -> None:
         save_k2(k2, kid, dt)
         logger.info("K2 encryption key provisioned via MQTT", kid=kid)
         print(f"[MQTT] K2 provisioned: kid={kid}", flush=True)
+
+        # Acknowledge receipt to CC
+        if request_id:
+            _ack_k2_provision(request_id, success=True)
     except Exception as e:
         logger.error("K2 provisioning failed", error=str(e))
         print(f"[MQTT] K2 provision error: {e}", flush=True)
+        if request_id:
+            _ack_k2_provision(request_id, success=False, error=str(e))
+
+
+def _ack_k2_provision(request_id: str, success: bool = True, error: str | None = None) -> None:
+    """POST K2 provision acknowledgment back to CC."""
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    cc_url: str = get_command_center_url() or ""
+    if not cc_url:
+        return
+
+    from utils.config_service import Config
+    node_id: str = Config.get_str("node_id", "") or ""
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/k2/ack/{request_id}"
+
+    payload: Dict[str, Any] = {"success": success}
+    if error:
+        payload["error"] = error
+
+    try:
+        result = RestClient.post(url, data=payload, timeout=10)
+        print(f"[MQTT] K2 ack posted: success={success}", flush=True)
+    except Exception as e:
+        print(f"[MQTT] K2 ack failed: {e}", flush=True)
 
 
 def _handle_config_push_notification(raw_payload: bytes) -> None:
@@ -789,7 +822,7 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
         logger.debug("MQTT non-command message on topic", topic=msg.topic)
         return
 
-    logger.info("MQTT commands received", topic=msg.topic, count=len(payload))
+    print(f"[MQTT] commands received: count={len(payload)} types={[c.get('command') for c in payload]}", flush=True)
     for command_obj in payload:
         command: str = command_obj.get("command", "")
         details: Dict[str, Any] = command_obj.get("details", {})
