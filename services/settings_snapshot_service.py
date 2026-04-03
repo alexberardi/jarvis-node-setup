@@ -148,7 +148,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                 "supported_domains": family.supported_domains,
                 "supported_actions": [a.to_dict() for a in family.supported_actions],
                 "secrets": secrets_list_f,
-                "is_configured": len(family.validate_secrets()) == 0,
+                "is_configured": len(family.validate_secrets()) == 0 if hasattr(family, 'validate_secrets') else True,
             }
             if family.authentication:
                 family_entry["authentication"] = family.authentication.to_dict()
