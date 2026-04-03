@@ -568,12 +568,13 @@ def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], r
 
         # Build a minimal DiscoveredDevice from the context
         device = DiscoveredDevice(
-            device_id=entity_id,
+            entity_id=entity_id,
             name=context.get("name", entity_id),
             domain=context.get("domain", "switch"),
+            manufacturer=protocol_name,
+            model=context.get("model", ""),
             protocol=protocol_name,
             cloud_id=context.get("cloud_id"),
-            model=context.get("model"),
             local_ip=context.get("local_ip"),
             mac_address=context.get("mac_address"),
         )
