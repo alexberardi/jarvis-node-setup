@@ -168,8 +168,16 @@ def handle_action(details: Dict[str, Any]) -> None:
     commands = service.get_all_commands()
     cmd = commands.get(command_name)
 
+    if not cmd and command_name == "control_device":
+        # Device control without HA bundle — dispatch directly to device protocol
+        reply_id: str = details.get("reply_request_id") or request_id
+        _handle_device_protocol_control(action_name, context, reply_id)
+        return
+
     if not cmd:
         logger.warning("action: unknown command", command_name=command_name)
+        reply_id_missing: str = details.get("reply_request_id") or request_id
+        _post_action_result(reply_id_missing, False, f"Command '{command_name}' not found on this node")
         return
 
     try:
@@ -523,6 +531,67 @@ def _handle_k2_provision(raw_payload: bytes) -> None:
         print(f"[MQTT] K2 provision error: {e}", flush=True)
         if request_id:
             _ack_k2_provision(request_id, success=False, error=str(e))
+
+
+def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], reply_id: str) -> None:
+    """Dispatch device control directly to a device protocol (no command needed).
+
+    Used when the control_device command isn't installed (e.g. standalone
+    Govee/Nest protocols without the HA integration bundle).
+    """
+    import asyncio
+
+    protocol_name: str = context.get("protocol", "")
+    entity_id: str = context.get("entity_id", "")
+
+    if not protocol_name:
+        _post_action_result(reply_id, False, "No protocol specified in device context")
+        return
+
+    try:
+        from utils.device_family_discovery_service import get_device_family_discovery_service
+        from jarvis_command_sdk import DiscoveredDevice
+
+        svc = get_device_family_discovery_service()
+        svc.discover_families()
+        families = svc.get_all_families()
+
+        protocol = families.get(protocol_name)
+        if not protocol:
+            # Try snapshot families (includes unconfigured ones)
+            all_families = svc.get_all_families_for_snapshot()
+            protocol = all_families.get(protocol_name)
+
+        if not protocol:
+            _post_action_result(reply_id, False, f"Device protocol '{protocol_name}' not found")
+            return
+
+        # Build a minimal DiscoveredDevice from the context
+        device = DiscoveredDevice(
+            device_id=entity_id,
+            name=context.get("name", entity_id),
+            domain=context.get("domain", "switch"),
+            protocol=protocol_name,
+            cloud_id=context.get("cloud_id"),
+            model=context.get("model"),
+            local_ip=context.get("local_ip"),
+            mac_address=context.get("mac_address"),
+        )
+
+        # Run async control
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(protocol.control(device, action_name, context))
+            print(f"[ACTION] device protocol control: {protocol_name} {action_name} success={result.success}", flush=True)
+            _post_action_result(reply_id, result.success, result.message if not result.success else None)
+        finally:
+            loop.close()
+
+    except Exception as e:
+        print(f"[ACTION] device protocol control error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        _post_action_result(reply_id, False, str(e))
 
 
 def _ack_k2_provision(request_id: str, success: bool = True, error: str | None = None) -> None:
