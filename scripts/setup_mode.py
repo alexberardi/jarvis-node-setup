@@ -89,8 +89,15 @@ def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
         )
         if resp.status_code == 200:
             data = resp.json()
-            host = data.get("host")
-            port = data.get("port", 1884)
+            # Use the url field (respects ?style=dockerized) and parse host from it
+            mqtt_url = data.get("url", "")
+            if mqtt_url:
+                parsed = urlparse(mqtt_url)
+                host = parsed.hostname or data.get("host")
+                port = parsed.port or data.get("port", 1884)
+            else:
+                host = data.get("host")
+                port = data.get("port", 1884)
             if host:
                 return host, int(port)
     except Exception:
