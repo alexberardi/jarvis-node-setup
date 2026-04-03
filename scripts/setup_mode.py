@@ -74,26 +74,24 @@ def _cc_url() -> str:
 def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
     """Fetch MQTT broker host and port from config-service.
 
-    Applies the same localhost → config_host replacement used for
-    auth/CC URLs, so the broker is reachable when accessed via
-    host.docker.internal or a remote IP.
+    Uses ?style=dockerized inside Docker so host.docker.internal is
+    returned instead of localhost.
 
     Returns (host, port) or (None, 1884) if unavailable.
     """
-    import re
-    config_host = urlparse(config_service_url).hostname or "localhost"
+    import os
+    style_param = "?style=dockerized" if os.path.exists("/.dockerenv") else ""
 
     try:
         resp = httpx.get(
-            f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker",
+            f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker{style_param}",
             timeout=5.0,
         )
         if resp.status_code == 200:
             data = resp.json()
-            host = data.get("host", "")
+            host = data.get("host")
             port = data.get("port", 1884)
             if host:
-                host = re.sub(r"^(localhost|127\.0\.0\.1)$", config_host, host)
                 return host, int(port)
     except Exception:
         pass
@@ -228,10 +226,14 @@ async def connect_services(request: Request):
     if not config_url:
         raise HTTPException(status_code=400, detail="config_url is required")
 
-    # Fetch service list from config service
+    # Fetch service list from config service.
+    # Use ?style=dockerized when running inside Docker so URLs use
+    # host.docker.internal instead of localhost.
+    import os
+    style_param = "?style=dockerized" if os.path.exists("/.dockerenv") else ""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{config_url}/services")
+            resp = await client.get(f"{config_url}/services{style_param}")
             if resp.status_code != 200:
                 return JSONResponse(
                     {"ok": False, "errors": {"config": f"Config service returned {resp.status_code}"}},
@@ -244,17 +246,11 @@ async def connect_services(request: Request):
             status_code=502,
         )
 
-    # Resolve auth and CC URLs from service list.
-    # Replace localhost/127.0.0.1 with the config service host so URLs
-    # are reachable from inside the container.
-    config_host = urlparse(config_url).hostname or "localhost"
-
+    # Resolve auth and CC URLs from service list
     auth_url = ""
     cc_url = ""
     for svc in services_data.get("services", []):
         url = svc.get("url") or f"{svc['scheme']}://{svc['host']}:{svc['port']}"
-        import re
-        url = re.sub(r"localhost|127\.0\.0\.1", config_host, url)
         if svc["name"] == "jarvis-auth":
             auth_url = url.rstrip("/")
         elif svc["name"] == "jarvis-command-center":
