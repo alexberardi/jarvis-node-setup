@@ -584,7 +584,7 @@ def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], r
         try:
             result = loop.run_until_complete(protocol.control(device, action_name, context))
             print(f"[ACTION] device protocol control: {protocol_name} {action_name} success={result.success}", flush=True)
-            _post_action_result(reply_id, result.success, result.message if not result.success else None)
+            _post_action_result(reply_id, result.success, result.error if not result.success else None)
         finally:
             loop.close()
 
