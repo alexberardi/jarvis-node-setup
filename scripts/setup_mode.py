@@ -74,8 +74,15 @@ def _cc_url() -> str:
 def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
     """Fetch MQTT broker host and port from config-service.
 
+    Applies the same localhost → config_host replacement used for
+    auth/CC URLs, so the broker is reachable when accessed via
+    host.docker.internal or a remote IP.
+
     Returns (host, port) or (None, 1884) if unavailable.
     """
+    import re
+    config_host = urlparse(config_service_url).hostname or "localhost"
+
     try:
         resp = httpx.get(
             f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker",
@@ -83,10 +90,10 @@ def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
         )
         if resp.status_code == 200:
             data = resp.json()
-            # Config-service returns host and port fields directly
-            host = data.get("host")
+            host = data.get("host", "")
             port = data.get("port", 1884)
             if host:
+                host = re.sub(r"^(localhost|127\.0\.0\.1)$", config_host, host)
                 return host, int(port)
     except Exception:
         pass
