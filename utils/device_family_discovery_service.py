@@ -107,7 +107,7 @@ class DeviceFamilyDiscoveryService:
                 ):
                     instance = cls()
 
-                    missing_secrets = instance.validate_secrets()
+                    missing_secrets = instance.validate_secrets() if hasattr(instance, 'validate_secrets') else []
                     if missing_secrets:
                         logger.warning(
                             "Device family skipped due to missing secrets",
