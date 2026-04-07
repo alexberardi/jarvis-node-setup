@@ -1,3 +1,4 @@
+import asyncio
 import json
 import subprocess
 import threading
@@ -539,14 +540,27 @@ def _handle_k2_provision(raw_payload: bytes) -> None:
             _ack_k2_provision(request_id, success=False, error=str(e))
 
 
+# Persistent event loop for device protocol calls. Protocols like Apple TV
+# store pairing state (pyatv objects) that are bound to the event loop they
+# were created on. Creating a new loop per call killed the pairing connection
+# between pair_start and pair_finish.
+_device_protocol_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _get_device_protocol_loop() -> asyncio.AbstractEventLoop:
+    """Return a persistent event loop for device protocol async calls."""
+    global _device_protocol_loop
+    if _device_protocol_loop is None or _device_protocol_loop.is_closed():
+        _device_protocol_loop = asyncio.new_event_loop()
+    return _device_protocol_loop
+
+
 def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], reply_id: str) -> None:
     """Dispatch device control directly to a device protocol (no command needed).
 
     Used when the control_device command isn't installed (e.g. standalone
     Govee/Nest protocols without the HA integration bundle).
     """
-    import asyncio
-
     protocol_name: str = context.get("protocol", "")
     entity_id: str = context.get("entity_id", "")
 
@@ -559,7 +573,6 @@ def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], r
         from jarvis_command_sdk import DiscoveredDevice
 
         svc = get_device_family_discovery_service()
-        svc.discover_families()
         families = svc.get_all_families()
 
         protocol = families.get(protocol_name)
@@ -585,15 +598,13 @@ def _handle_device_protocol_control(action_name: str, context: Dict[str, Any], r
             mac_address=context.get("mac_address"),
         )
 
-        # Run async control
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(protocol.control(device, action_name, context))
-            print(f"[ACTION] device protocol control: {protocol_name} {action_name} success={result.success}", flush=True)
-            input_req = result.input_required.to_dict() if result.input_required else None
-            _post_action_result(reply_id, result.success, result.error if not result.success else None, input_required=input_req)
-        finally:
-            loop.close()
+        # Use persistent loop so protocol objects (e.g. pyatv pairing sessions)
+        # survive across sequential calls like pair_start → pair_finish.
+        loop = _get_device_protocol_loop()
+        result = loop.run_until_complete(protocol.control(device, action_name, context))
+        print(f"[ACTION] device protocol control: {protocol_name} {action_name} success={result.success}", flush=True)
+        input_req = result.input_required.to_dict() if result.input_required else None
+        _post_action_result(reply_id, result.success, result.error if not result.success else None, input_required=input_req)
 
     except Exception as e:
         print(f"[ACTION] device protocol control error: {e}", flush=True)
