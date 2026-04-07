@@ -495,8 +495,12 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
     # 2. Check platform
     _check_platform_compatibility(manifest)
 
-    # 3. Check name conflicts for all components
-    _check_name_conflicts(manifest)
+    # 3. Check name conflicts (skip if package already installed — it's an update)
+    already_installed: bool = (PACKAGES_DIR / f"{manifest.name}.json").exists()
+    if already_installed:
+        logger.info("Updating existing package", package=manifest.name)
+    else:
+        _check_name_conflicts(manifest)
 
     # 4. Install shared code for bundles (ha_shared/, etc.)
     component_paths = [c.path for c in manifest.components]
