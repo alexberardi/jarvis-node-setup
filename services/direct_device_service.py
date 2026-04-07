@@ -73,10 +73,10 @@ class DirectDeviceService:
         Returns:
             Number of direct devices loaded.
         """
-        if not self._cc_base_url or not self._household_id:
+        if not self._cc_base_url:
             return 0
 
-        url = f"{self._cc_base_url}/api/v0/households/{self._household_id}/devices"
+        url = f"{self._cc_base_url}/api/v0/node/devices"
         headers = {"X-API-Key": f"{self._node_id}:{self._api_key}"}
 
         try:
@@ -162,15 +162,20 @@ class DirectDeviceService:
             ip=device.local_ip, action=action,
         )
 
-        return await adapter.control(
-            ip=device.local_ip,
-            action=action,
-            data=data,
+        from device_families.base import DiscoveredDevice
+
+        discovered = DiscoveredDevice(
             entity_id=entity_id,
-            mac_address=device.mac_address,
-            cloud_id=device.cloud_id,
+            name=device.name,
+            domain=device.domain,
+            manufacturer=device.protocol,
             model=device.model,
+            protocol=device.protocol,
+            cloud_id=device.cloud_id,
+            local_ip=device.local_ip,
+            mac_address=device.mac_address,
         )
+        return await adapter.control(discovered, action, data or {})
 
     async def get_state(self, entity_id: str) -> dict[str, Any] | None:
         """Query current state of a direct device.
