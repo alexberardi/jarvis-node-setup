@@ -181,6 +181,10 @@ def handle_action(details: Dict[str, Any]) -> None:
         _post_action_result(reply_id_missing, False, f"Command '{command_name}' not found on this node")
         return
 
+    user_id: Optional[int] = details.get("user_id")
+
+    from jarvis_command_sdk import set_current_user_id
+    set_current_user_id(user_id)
     try:
         response = cmd.handle_action(action_name, context)
         message = ""
@@ -203,14 +207,19 @@ def handle_action(details: Dict[str, Any]) -> None:
         reply_id: str = details.get("reply_request_id") or request_id
         _post_action_result(reply_id, response.success, error_msg)
 
-        # TTS only for voice-originated actions (no reply_request_id)
+        # TTS for voice-originated actions (best-effort, never overwrite result)
         if message and not details.get("reply_request_id"):
-            tts_provider = get_tts_provider()
-            tts_provider.speak(True, message)
+            try:
+                tts_provider = get_tts_provider()
+                tts_provider.speak(True, message)
+            except Exception as tts_err:
+                logger.warning("TTS playback failed for action", error=str(tts_err))
     except Exception as e:
         logger.error("Action handler error", command=command_name, action=action_name, error=str(e))
         reply_id_err: str = details.get("reply_request_id") or request_id
         _post_action_result(reply_id_err, False, str(e))
+    finally:
+        set_current_user_id(None)
 
 
 def _post_action_result(
@@ -409,12 +418,48 @@ def _post_tool_call_result(request_id: str, result: Dict[str, Any]) -> None:
         print(f"[MQTT] tool_call result POST failed: {e}", flush=True)
 
 
+def handle_toggle_command(details: Dict[str, Any]) -> None:
+    """Enable or disable a command in the local command_registry.
+
+    Published by CC when the user toggles smart_home.use_external_devices.
+    Prevents duplicate control_device commands (built-in vs Pantry package).
+    """
+    command_name: str = details.get("command_name", "")
+    enabled: bool = str(details.get("enabled", "true")).lower() in ("true", "1", "yes")
+
+    if not command_name:
+        logger.warning("toggle_command: missing command_name, ignoring")
+        return
+
+    try:
+        from db import SessionLocal
+        from repositories.command_registry_repository import CommandRegistryRepository
+
+        db = SessionLocal()
+        try:
+            repo = CommandRegistryRepository(db)
+            repo.set_enabled(command_name, enabled)
+        finally:
+            db.close()
+
+        # Refresh discovery so next warmup picks up the change
+        from utils.command_discovery_service import get_command_discovery_service
+        get_command_discovery_service().refresh_now()
+
+        print(f"[MQTT] toggle_command: {command_name} enabled={enabled}", flush=True)
+        logger.info("Command toggled", command_name=command_name, enabled=enabled)
+
+    except Exception as e:
+        logger.error("toggle_command failed", command_name=command_name, error=str(e))
+
+
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
     "action": handle_action,
     "report_tools": handle_report_tools,
     "tool_call": handle_tool_call,
+    "toggle_command": handle_toggle_command,
 }
 
 
