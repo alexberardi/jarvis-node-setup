@@ -63,6 +63,18 @@ class CommandDiscoveryService:
 
         new_commands: Dict[str, IJarvisCommand] = {}
 
+        # Fetch registry once so custom commands can override disabled built-ins
+        registry: Dict[str, bool] = {}
+        try:
+            db = SessionLocal()
+            try:
+                repo = CommandRegistryRepository(db)
+                registry = repo.get_all()
+            finally:
+                db.close()
+        except Exception:
+            pass  # Registry unavailable — all commands default to enabled
+
         # 1. Scan built-in commands (commands/*.py)
         self._scan_package(commands, "commands", new_commands)
 
@@ -82,11 +94,20 @@ class CommandDiscoveryService:
                             instance = cls()
                             name = instance.command_name
                             if name in new_commands:
-                                logger.warning(
-                                    "Custom command name conflicts with built-in, skipping",
-                                    custom_command=name,
-                                    custom_module=subpkg_name,
-                                )
+                                # Allow custom command to override a DISABLED built-in
+                                if not registry.get(name, True):
+                                    logger.info(
+                                        "Custom command overriding disabled built-in",
+                                        custom_command=name,
+                                        custom_module=subpkg_name,
+                                    )
+                                    new_commands[name] = instance
+                                else:
+                                    logger.warning(
+                                        "Custom command name conflicts with built-in, skipping",
+                                        custom_command=name,
+                                        custom_module=subpkg_name,
+                                    )
                                 continue
                             new_commands[name] = instance
                 except Exception as e:
