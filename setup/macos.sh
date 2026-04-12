@@ -42,17 +42,17 @@ brew install \
 log_success "System dependencies installed"
 
 # Step 3: Python venv
-setup_python_venv "$PROJECT_ROOT/venv" "python3"
+setup_python_venv "$PROJECT_ROOT/.venv" "python3"
 
 # Step 4: Config files
 setup_config
 setup_env
 
 # Step 5: Database
-setup_database "$PROJECT_ROOT/venv"
+setup_database "$PROJECT_ROOT/.venv"
 
 # Step 6: Verify
-verify_installation "$PROJECT_ROOT/venv"
+verify_installation "$PROJECT_ROOT/.venv"
 
 # macOS-specific: Audio permissions notice
 log_step "macOS Audio Permissions"
@@ -64,6 +64,6 @@ log_info "You can also enable it in: System Settings → Privacy & Security → 
 print_completion "macOS"
 
 echo "For development, you can run:"
-echo "  source venv/bin/activate"
+echo "  source .venv/bin/activate"
 echo "  python scripts/main.py"
 echo ""

@@ -4,7 +4,16 @@
 
 set -e
 
-cat > /etc/asound.conf << 'ALSA'
+# Auto-detect USB mic card number (same logic as pi.sh)
+USB_MIC_CARD=$(arecord -l 2>/dev/null | grep -i "usb" | sed -n 's/.*card \([0-9]*\):.*/\1/p' | head -n 1)
+if [[ -z "$USB_MIC_CARD" || ! "$USB_MIC_CARD" =~ ^[0-9]+$ ]]; then
+    echo "WARNING: No USB mic detected, defaulting to card 2"
+    USB_MIC_CARD=2
+else
+    echo "Detected USB mic on card $USB_MIC_CARD"
+fi
+
+cat > /etc/asound.conf << ALSA
 defaults.pcm.card 0
 defaults.pcm.device 0
 defaults.ctl.card 0
@@ -28,7 +37,7 @@ pcm.dsnoopmic {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:1,0"
+    pcm "hw:${USB_MIC_CARD},0"
     channels 1
   }
 }
@@ -40,7 +49,7 @@ pcm.!default {
 }
 ALSA
 
-echo "ALSA config written to /etc/asound.conf"
+echo "ALSA config written to /etc/asound.conf (mic card=$USB_MIC_CARD)"
 
 # Create the SoftMaster control by playing a short test tone
 speaker-test -c 1 -t sine -l 1 > /dev/null 2>&1 &
