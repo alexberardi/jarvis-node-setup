@@ -195,6 +195,25 @@ class JarvisCommandCenterClient:
             logger.error("Unified command failed", error=str(e))
             return ("error", str(e))
 
+    def get_acknowledgment(self, voice_command: str) -> str | None:
+        """Get a fast LLM-generated acknowledgment from CC (~1s).
+
+        Called in parallel with the main command pipeline so the node can
+        speak a quick acknowledgment while the full response is processing.
+
+        Returns:
+            Acknowledgment text (e.g., "Let me look into that."), or None on failure.
+        """
+        try:
+            result = RestClient.post(
+                f"{self.base_url}/api/v0/voice/acknowledge",
+                data={"voice_command": voice_command},
+                timeout=5,
+            )
+            return result.get("text") if result else None
+        except Exception:
+            return None
+
     def send_tool_results(
         self,
         conversation_id: str,

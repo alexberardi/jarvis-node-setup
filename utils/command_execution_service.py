@@ -316,12 +316,25 @@ class CommandExecutionService:
         logger.info("Starting conversation", conversation_id=conversation_id, command=voice_command)
 
         try:
+            # Fire acknowledgment in background — speak while pipeline processes.
+            # If the main pipeline returns before the ack finishes, join() will
+            # wait briefly so we don't overlap TTS.
+            ack_thread = threading.Thread(
+                target=self._speak_acknowledgment,
+                args=(voice_command,),
+                daemon=True,
+            )
+            ack_thread.start()
+
             # Register available tools if requested
             if register_tools:
                 self.register_tools_for_conversation(conversation_id, speaker_user_id=speaker_user_id)
 
             # Single unified request — handles audio, tool calls, and validation
             tag, payload = self.client.send_command_unified(voice_command, conversation_id)
+
+            # Wait for acknowledgment TTS to finish before speaking main response
+            ack_thread.join(timeout=5)
 
             if tag == "audio":
                 # Streamed PCM audio — play it directly
@@ -722,6 +735,20 @@ class CommandExecutionService:
             "wait_for_input": False,
             "clear_history": False,
         }
+
+    def _speak_acknowledgment(self, voice_command: str) -> None:
+        """Fetch and speak a fast LLM-generated acknowledgment (background thread).
+
+        Called in parallel with the main pipeline so the user hears something
+        like "Let me look into that." within ~2s instead of 20s of silence.
+        """
+        try:
+            text = self.client.get_acknowledgment(voice_command)
+            if text:
+                tts_provider = get_tts_provider()
+                tts_provider.speak(False, text)
+        except Exception as e:
+            logger.debug("Acknowledgment TTS failed (non-fatal)", error=str(e))
 
     def speak_result(self, result: Dict[str, Any]) -> None:
         """Speak the result of command execution.
