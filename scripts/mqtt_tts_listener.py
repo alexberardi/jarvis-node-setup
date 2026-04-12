@@ -2,6 +2,7 @@ import asyncio
 import json
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -25,6 +26,32 @@ _training_running = False
 
 # Global MQTT client reference for publishing replies
 _mqtt_client: Optional[mqtt.Client] = None
+
+# Shutdown event shared with main.py for graceful shutdown
+_shutdown_event: Optional[threading.Event] = None
+
+# Module-level reference to tracked threads for heartbeat reporting
+_tracked_threads: Optional[Dict[str, Any]] = None
+
+
+def set_shutdown_event(event: threading.Event) -> None:
+    """Accept a shutdown event from main.py for graceful shutdown."""
+    global _shutdown_event
+    _shutdown_event = event
+
+
+def set_tracked_threads(threads: Dict[str, Any]) -> None:
+    """Accept tracked threads dict from main.py for heartbeat status reporting."""
+    global _tracked_threads
+    _tracked_threads = threads
+
+
+def _on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
+    """Handle MQTT disconnection. paho-mqtt will auto-reconnect via loop_forever()."""
+    if rc == 0:
+        logger.info("MQTT disconnected cleanly")
+    else:
+        logger.warning("MQTT disconnected unexpectedly, will auto-reconnect", reason_code=rc)
 
 
 def get_mqtt_config() -> Dict[str, Any]:
@@ -205,7 +232,10 @@ def handle_action(details: Dict[str, Any]) -> None:
 
         # Send result back to CC FIRST so mobile gets unblocked immediately
         reply_id: str = details.get("reply_request_id") or request_id
-        _post_action_result(reply_id, response.success, error_msg)
+        input_req: Optional[Dict[str, Any]] = None
+        if response.context_data and response.context_data.get("input_required"):
+            input_req = response.context_data["input_required"]
+        _post_action_result(reply_id, response.success, error_msg, input_required=input_req)
 
         # TTS for voice-originated actions (best-effort, never overwrite result)
         if message and not details.get("reply_request_id"):
@@ -466,11 +496,11 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
 def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: int) -> None:
     logger.info("MQTT connected", result_code=rc)
     topic = get_mqtt_config()["topic"]
-    client.subscribe(topic)
+    client.subscribe(topic, qos=1)
     logger.info("MQTT subscribed", topic=topic)
 
     # Subscribe to auth-ready notifications from JCC OAuth flow
-    client.subscribe("jarvis/auth/+/ready")
+    client.subscribe("jarvis/auth/+/ready", qos=1)
     logger.info("MQTT subscribed", topic="jarvis/auth/+/ready")
 
 
@@ -976,22 +1006,39 @@ _HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
 
 def _heartbeat_loop() -> None:
     """Periodically POST heartbeat to command center to update last_seen."""
-    import time
     from clients.rest_client import RestClient
     from utils.service_discovery import get_command_center_url
 
     # Initial delay: let service discovery initialize
-    time.sleep(10)
+    if _shutdown_event is not None:
+        _shutdown_event.wait(timeout=10)
+        if _shutdown_event.is_set():
+            return
+    else:
+        time.sleep(10)
 
-    while True:
+    while not (_shutdown_event is not None and _shutdown_event.is_set()):
         try:
             base_url: str = get_command_center_url() or ""
             if base_url:
                 url = f"{base_url.rstrip('/')}/api/v0/admin/nodes/heartbeat"
-                RestClient.post(url, data={}, timeout=10)
+
+                # Build thread status for CC
+                data: Dict[str, Any] = {}
+                if _tracked_threads is not None:
+                    thread_status: Dict[str, bool] = {}
+                    for name, entry in _tracked_threads.items():
+                        thread_obj = entry[0] if isinstance(entry, tuple) else entry
+                        thread_status[name] = thread_obj.is_alive() if hasattr(thread_obj, "is_alive") else False
+                    data["thread_status"] = thread_status
+
+                RestClient.post(url, data=data, timeout=10)
         except Exception:
             pass  # Heartbeat is best-effort, retries next interval
-        time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
+        if _shutdown_event is not None:
+            _shutdown_event.wait(timeout=_HEARTBEAT_INTERVAL_SECONDS)
+        else:
+            time.sleep(_HEARTBEAT_INTERVAL_SECONDS)
 
 
 _TEST_CLEANUP_INTERVAL_SECONDS = 1200  # 20 minutes
@@ -999,10 +1046,14 @@ _TEST_CLEANUP_INTERVAL_SECONDS = 1200  # 20 minutes
 
 def _test_command_cleanup_loop() -> None:
     """Periodically clean up expired test commands."""
-    import time
+    if _shutdown_event is not None:
+        _shutdown_event.wait(timeout=60)
+        if _shutdown_event.is_set():
+            return
+    else:
+        time.sleep(60)  # Initial delay to let services start
 
-    time.sleep(60)  # Initial delay to let services start
-    while True:
+    while not (_shutdown_event is not None and _shutdown_event.is_set()):
         try:
             from services.test_install_cleanup import cleanup_expired_test_commands
             count = cleanup_expired_test_commands()
@@ -1010,7 +1061,10 @@ def _test_command_cleanup_loop() -> None:
                 logger.info("Test command cleanup cycle complete", removed=count)
         except Exception:
             pass  # Best-effort, retries next cycle
-        time.sleep(_TEST_CLEANUP_INTERVAL_SECONDS)
+        if _shutdown_event is not None:
+            _shutdown_event.wait(timeout=_TEST_CLEANUP_INTERVAL_SECONDS)
+        else:
+            time.sleep(_TEST_CLEANUP_INTERVAL_SECONDS)
 
 
 def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
@@ -1034,12 +1088,38 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
 
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_disconnect = _on_disconnect
+
+    # Enable paho-mqtt's built-in reconnect with exponential backoff
+    client.reconnect_delay_set(min_delay=1, max_delay=60)
 
     logger.info("MQTT listener starting", broker=config["broker"], port=config["port"])
-    try:
-        client.connect(config["broker"], config["port"], 60)
-    except (ConnectionRefusedError, OSError) as e:
-        logger.warning("MQTT broker not reachable, continuing without MQTT", broker=config["broker"], error=str(e))
-        return
+
+    # Retry initial connection with exponential backoff
+    max_attempts: int = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client.connect(config["broker"], config["port"], 60)
+            break
+        except (ConnectionRefusedError, OSError) as e:
+            if attempt == max_attempts:
+                logger.error(
+                    "MQTT broker not reachable after all retries, continuing without MQTT",
+                    broker=config["broker"],
+                    attempts=max_attempts,
+                    error=str(e),
+                )
+                return
+            backoff: int = 2 ** attempt
+            logger.warning(
+                "MQTT connection attempt failed, retrying",
+                broker=config["broker"],
+                attempt=attempt,
+                max_attempts=max_attempts,
+                retry_in_seconds=backoff,
+                error=str(e),
+            )
+            time.sleep(backoff)
+
     _mqtt_client = client
     client.loop_forever()
