@@ -141,6 +141,39 @@ class ControlDeviceCommand(IJarvisCommand):
             ))
         return examples
 
+    def handle_action(self, action_name: str, context: Dict[str, Any]) -> CommandResponse:
+        """Handle device control actions dispatched via MQTT from CC.
+
+        CC sends control_device actions with action_name (e.g., "turn_on")
+        and a context dict containing entity_id, protocol, cloud_id, etc.
+        """
+        if action_name == "cancel_click":
+            return CommandResponse.final_response(
+                context_data={"cancelled": True, "message": "Cancelled."}
+            )
+
+        result = self._control_with_context(context, action_name)
+
+        if not result.get("success"):
+            return CommandResponse.error_response(
+                error_details=result.get("error", "Control failed"),
+                context_data=result,
+            )
+
+        ctx_data: Dict[str, Any] = {
+            "device": result.get("device", ""),
+            "action": action_name,
+            "message": f"{action_name.replace('_', ' ').title()} {result.get('device', '')}",
+        }
+        # Pass through input_required (e.g., PIN entry for Apple TV pairing)
+        if result.get("input_required"):
+            ctx_data["input_required"] = result["input_required"]
+
+        return CommandResponse.success_response(
+            context_data=ctx_data,
+            wait_for_input=False,
+        )
+
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
         device_name: str = kwargs.get("device_name", "")
         action: str = kwargs.get("action", "")
@@ -248,9 +281,12 @@ class ControlDeviceCommand(IJarvisCommand):
             adapter.control(device, action, ctx)
         )
 
-        if result.success:
-            return {"success": True, "device": device_name, "action": action}
-        return {"success": False, "error": result.error or "Control failed", "device": device_name}
+        out: Dict[str, Any] = {"success": result.success, "device": device_name, "action": action}
+        if not result.success:
+            out["error"] = result.error or "Control failed"
+        if result.input_required:
+            out["input_required"] = result.input_required.to_dict()
+        return out
 
     def _control(self, device_name: str, action: str) -> Dict[str, Any]:
         """Resolve device and dispatch control via DirectDeviceService (fallback)."""
