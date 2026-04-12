@@ -4,6 +4,7 @@ set -e
 
 echo "🔁 Refreshing Jarvis node service..."
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICES=("jarvis-node.service")
 
 for service in "${SERVICES[@]}"; do
@@ -11,28 +12,16 @@ for service in "${SERVICES[@]}"; do
 	sudo rm -f /etc/systemd/system/$service
 done
 
-echo "📦 Re-registering services from latest script..."
+echo "📦 Re-registering services from latest template..."
 
-PI_PROJECT_DIR="/home/pi/projects/jarvis-node-setup"
+PI_USER="${SUDO_USER:-pi}"
+PI_HOME="/home/$PI_USER"
+PI_PROJECT_DIR="$PI_HOME/projects/jarvis-node-setup"
 
-cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service >/dev/null
-[Unit]
-Description=Jarvis Node Service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
-Restart=always
-Environment=HOME=/home/pi
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=$PI_PROJECT_DIR
-Environment=CONFIG_PATH=$PI_PROJECT_DIR/config.json
-WorkingDirectory=$PI_PROJECT_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sed -e "s|__VENV__|$PI_PROJECT_DIR/.venv|g" \
+    -e "s|__PROJECT_DIR__|$PI_PROJECT_DIR|g" \
+    -e "s|__HOME__|$PI_HOME|g" \
+    "$SCRIPT_DIR/setup/jarvis-node.service" | sudo tee /etc/systemd/system/jarvis-node.service > /dev/null
 
 echo "🔄 Reloading systemd daemon..."
 sudo systemctl daemon-reexec

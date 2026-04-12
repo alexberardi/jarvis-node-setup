@@ -26,6 +26,10 @@ class NodeInfo(BaseModel):
     mac_address: str = Field(..., description="Network MAC address")
     capabilities: list[str] = Field(default_factory=list, description="Node capabilities")
     state: ProvisioningState = Field(..., description="Current provisioning state")
+    previously_provisioned: bool = Field(
+        default=False,
+        description="True when node was previously provisioned but is re-entering AP mode (e.g., moved to new location)"
+    )
 
 
 class NetworkInfo(BaseModel):
@@ -79,4 +83,11 @@ class K2ProvisionResponse(BaseModel):
     success: bool = Field(..., description="Whether K2 was accepted and stored")
     node_id: Optional[str] = Field(default=None, description="Node ID if successful")
     kid: Optional[str] = Field(default=None, description="Key ID if successful")
+    error: Optional[str] = Field(default=None, description="Error message if unsuccessful")
+
+
+class FactoryResetResponse(BaseModel):
+    """Response for POST /api/v1/factory-reset."""
+    success: bool = Field(..., description="Whether factory reset succeeded")
+    cleared: list[str] = Field(default_factory=list, description="Items that were cleared")
     error: Optional[str] = Field(default=None, description="Error message if unsuccessful")
