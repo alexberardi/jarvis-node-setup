@@ -9,6 +9,22 @@ logger = JarvisLogger(service="jarvis-node")
 
 
 class RestClient:
+    """HTTP client for Jarvis service communication.
+
+    Uses a persistent requests.Session to reuse TCP connections via
+    HTTP keep-alive, preventing file descriptor exhaustion in long-running
+    container deployments.
+    """
+
+    _session: Optional[requests.Session] = None
+
+    @classmethod
+    def _get_session(cls) -> requests.Session:
+        """Get or create the shared HTTP session."""
+        if cls._session is None:
+            cls._session = requests.Session()
+        return cls._session
+
     @staticmethod
     def _build_auth_header() -> Dict[str, str]:
         """Build X-API-Key header in format 'node_id:node_key'."""
@@ -25,6 +41,7 @@ class RestClient:
         files: Optional[Dict[str, Any]] = None,
         timeout: int = 10
     ) -> Optional[Dict[str, Any]]:
+        session = RestClient._get_session()
         headers: Dict[str, str] = RestClient._build_auth_header()
 
         request_args: Dict[str, Any] = {"headers": headers, "timeout": timeout}
@@ -36,7 +53,7 @@ class RestClient:
             request_args["files"] = files
 
         try:
-            response = requests.post(url, **request_args)
+            response = session.post(url, **request_args)
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
@@ -48,12 +65,13 @@ class RestClient:
         url: str,
         timeout: int = 10
     ) -> Optional[Dict[str, Any]]:
+        session = RestClient._get_session()
         headers: Dict[str, str] = RestClient._build_auth_header()
 
         request_args: Dict[str, Any] = {"headers": headers, "timeout": timeout}
 
         try:
-            response = requests.get(url, **request_args)
+            response = session.get(url, **request_args)
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
@@ -66,6 +84,7 @@ class RestClient:
         data: Optional[Dict[str, Any]] = None,
         timeout: int = 10
     ) -> Optional[Dict[str, Any]]:
+        session = RestClient._get_session()
         headers: Dict[str, str] = RestClient._build_auth_header()
 
         request_args: Dict[str, Any] = {"headers": headers, "timeout": timeout}
@@ -74,7 +93,7 @@ class RestClient:
             request_args["json"] = data
 
         try:
-            response = requests.put(url, **request_args)
+            response = session.put(url, **request_args)
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
@@ -100,11 +119,12 @@ class RestClient:
             Response object with stream=True, or None on error.
             Caller should iterate via response.iter_content(chunk_size).
         """
+        session = RestClient._get_session()
         headers: Dict[str, str] = RestClient._build_auth_header()
         headers["Content-Type"] = "application/json"
 
         try:
-            response = requests.post(
+            response = session.post(
                 url, json=data, headers=headers, timeout=timeout, stream=True
             )
             # Allow 2xx range (200 audio, 202 JSON) — only raise on 3xx+
@@ -131,11 +151,12 @@ class RestClient:
         Returns:
             Response content as bytes, or None on error
         """
+        session = RestClient._get_session()
         headers: Dict[str, str] = RestClient._build_auth_header()
         headers["Content-Type"] = "application/json"
 
         try:
-            response = requests.post(url, json=data, headers=headers, timeout=timeout)
+            response = session.post(url, json=data, headers=headers, timeout=timeout)
             response.raise_for_status()
             return response.content
         except requests.RequestException as e:
