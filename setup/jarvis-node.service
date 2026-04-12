@@ -1,0 +1,22 @@
+[Unit]
+Description=Jarvis Node Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=__VENV__/bin/python -m scripts.main
+WorkingDirectory=__PROJECT_DIR__
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
+TimeoutStopSec=30
+KillSignal=SIGTERM
+Environment=HOME=__HOME__
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=__PROJECT_DIR__
+Environment=CONFIG_PATH=__PROJECT_DIR__/config.json
+SyslogIdentifier=jarvis-node
+
+[Install]
+WantedBy=multi-user.target

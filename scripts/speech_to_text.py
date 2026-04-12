@@ -6,8 +6,10 @@ import wave
 
 from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
+from utils.encryption_utils import get_cache_dir
 
 logger = JarvisLogger(service="jarvis-node")
+_cache_dir = get_cache_dir()
 
 
 def get_audio_config() -> dict:
@@ -54,8 +56,8 @@ def listen() -> str:
     logger.info("Listening for speech...")
     
     config = get_audio_config()
-    OUTPUT_FILENAME: str = "/tmp/command.wav"
-    
+    output_filename: str = str(_cache_dir / "command.wav")
+
     audio: pyaudio.PyAudio = pyaudio.PyAudio()
 
     open_kwargs: dict = dict(
@@ -109,13 +111,13 @@ def listen() -> str:
     audio.terminate()
 
     # Save to WAV
-    with wave.open(OUTPUT_FILENAME, "wb") as wf:
+    with wave.open(output_filename, "wb") as wf:
         wf.setnchannels(config["channels"])
         wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
         wf.setframerate(config["sample_rate"])
         wf.writeframes(b"".join(frames))
 
-    return OUTPUT_FILENAME
+    return output_filename
 
 
 def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
@@ -132,7 +134,7 @@ def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
         Path to WAV file if speech was captured, None if timeout expired.
     """
     config = get_audio_config()
-    OUTPUT_FILENAME: str = "/tmp/follow_up.wav"
+    output_filename: str = str(_cache_dir / "follow_up.wav")
 
     # Skip first ~0.3s to avoid TTS bleed from speaker into mic
     skip_frames: int = int(0.3 * config["sample_rate"] / config["frames_per_buffer"])
@@ -215,11 +217,11 @@ def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
     stream.close()
 
     # Save to WAV
-    with wave.open(OUTPUT_FILENAME, "wb") as wf:
+    with wave.open(output_filename, "wb") as wf:
         wf.setnchannels(config["channels"])
         wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
         wf.setframerate(config["sample_rate"])
         wf.writeframes(b"".join(frames))
 
     audio.terminate()
-    return OUTPUT_FILENAME
+    return output_filename
