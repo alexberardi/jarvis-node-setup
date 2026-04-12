@@ -105,7 +105,7 @@ def get_secret_scope(key: str) -> str | None:
         if user_secret is not None:
             return "user"
         repo = SecretRepository(session)
-        for scope in ("integration", "node"):
+        for scope in ("node", "integration"):
             secret = repo.get(key, scope)
             if secret is not None:
                 return scope

@@ -254,27 +254,36 @@ def _check_command_name_conflict(command_name: str) -> None:
 
 
 def _check_agent_name_conflict(agent_name: str) -> None:
-    """Check if the agent name conflicts with a built-in agent."""
+    """Check if the agent name conflicts with a built-in agent (not custom-installed)."""
     try:
         from utils.agent_discovery_service import get_agent_discovery_service
         svc = get_agent_discovery_service()
         existing = svc.get_agent(agent_name)
-        if existing:
+        if existing and not _is_custom_installed(existing, "agents", "custom_agents"):
             raise InstallError(f"Agent name '{agent_name}' conflicts with built-in agent")
     except ImportError:
         pass
 
 
 def _check_protocol_name_conflict(protocol_name: str) -> None:
-    """Check if the protocol name conflicts with a built-in device protocol."""
+    """Check if the protocol name conflicts with a built-in device protocol (not custom-installed)."""
     try:
         from utils.device_family_discovery_service import get_device_family_discovery_service
         svc = get_device_family_discovery_service()
         existing = svc.get_family(protocol_name)
-        if existing:
+        if existing and not _is_custom_installed(existing, "device_families", "custom_families"):
             raise InstallError(f"Protocol name '{protocol_name}' conflicts with built-in protocol")
     except ImportError:
         pass
+
+
+def _is_custom_installed(obj: object, package_dir: str, custom_subdir: str) -> bool:
+    """Check if an object was loaded from a custom (Pantry-installed) directory."""
+    try:
+        module = type(obj).__module__ or ""
+        return f"{package_dir}.{custom_subdir}" in module
+    except Exception:
+        return False
 
 
 def _install_pip_deps(manifest: CommandManifest) -> None:
