@@ -10,13 +10,13 @@ if [[ "$1" == "--files-only" || "$1" == "-f" ]]; then
     FILES_ONLY=true
 fi
 
-# Configuration
-REMOTE_HOST="zero-office.local"
-REMOTE_USER="pi"
-REMOTE_DIR="/home/pi/projects/jarvis-node-setup"
+# Configuration (override with env vars for multi-node setups)
+REMOTE_HOST="${JARVIS_PI_HOST:-zero-office.local}"
+REMOTE_USER="${JARVIS_PI_USER:-pi}"
+REMOTE_DIR="/home/$REMOTE_USER/projects/jarvis-node-setup"
 LOCAL_DIR="."
 
-echo "🚀 Fast sync to zero-office.local (files only)..."
+echo "🚀 Fast sync to ${REMOTE_HOST}..."
 
 # Create remote directory if it doesn't exist
 ssh ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_DIR}"

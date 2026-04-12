@@ -66,47 +66,55 @@ def _can_reach_command_center(url: str) -> bool:
         return False
 
 
-def is_provisioned(max_retries: int = 10, retry_delay: float = 3.0) -> bool:
+# Exponential backoff schedule for CC connectivity checks at boot.
+# Total wait: ~85s — long enough for slow network init, short enough
+# that a relocated node enters AP mode within ~2 minutes.
+_RETRY_DELAYS: list[float] = [2, 2, 3, 3, 5, 5, 5, 10, 10, 10, 15, 15]
+
+
+def has_provisioning_marker() -> bool:
+    """Check if the .provisioned marker file exists (no network check)."""
+    return _get_provisioned_marker().exists()
+
+
+def is_provisioned() -> bool:
     """
     Check if the node is provisioned and can reach the command center.
 
     Logic:
     1. Check if ~/.jarvis/.provisioned marker exists
        - No → return False (needs provisioning)
-    2. Try to ping command center health endpoint with retries
+    2. Try to ping command center health endpoint with exponential backoff
        - Success → return True (ready for normal operation)
        - Fail after all retries → return False (network changed, needs re-provisioning)
-
-    Args:
-        max_retries: Number of attempts to reach command center (default 10)
-        retry_delay: Seconds between retries (default 3.0)
 
     Returns:
         True if provisioned and command center reachable, False otherwise.
     """
     import time
 
-    marker = _get_provisioned_marker()
-
     # Step 1: Check marker file
-    if not marker.exists():
+    if not has_provisioning_marker():
         return False
 
-    # Step 2: Check command center connectivity with retries
+    # Step 2: Check command center connectivity with exponential backoff
     # Network may take time to come up after boot
     url = _get_command_center_url()
     if not url:
         # No URL configured, consider not provisioned
         return False
 
-    for attempt in range(max_retries):
+    max_attempts: int = len(_RETRY_DELAYS)
+    for attempt, delay in enumerate(_RETRY_DELAYS):
         if _can_reach_command_center(url):
             return True
-        if attempt < max_retries - 1:
-            logger.info(f"Waiting for network... attempt {attempt + 1}/{max_retries}")
-            time.sleep(retry_delay)
+        logger.info("Waiting for command center",
+                    attempt=attempt + 1, max_attempts=max_attempts,
+                    retry_in_seconds=delay)
+        time.sleep(delay)
 
-    logger.warning("Could not reach command center after retries")
+    logger.warning("Could not reach command center after retries",
+                   total_wait_seconds=sum(_RETRY_DELAYS))
     return False
 
 

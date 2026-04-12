@@ -2,7 +2,6 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any, Callable, Dict
 
 import numpy as np
@@ -19,14 +18,16 @@ from scripts.speech_to_text import listen, listen_for_follow_up
 from services.alert_queue_service import get_alert_queue_service
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
+from utils.encryption_utils import get_cache_dir
 from utils.service_discovery import get_command_center_url
 from clients.responses.jarvis_command_center import ValidationRequest
 
 logger = JarvisLogger(service="jarvis-node")
 
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
-WAKE_FILE = Path("/tmp/next_wake_response.txt")
-WAKE_AUDIO_FILE = Path("/tmp/next_wake_response.wav")
+_cache_dir = get_cache_dir()
+WAKE_FILE = _cache_dir / "next_wake_response.txt"
+WAKE_AUDIO_FILE = _cache_dir / "next_wake_response.wav"
 
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
 WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
@@ -375,25 +376,44 @@ def start_voice_listener(ma_service):
             logger.error("No TTY available for keyboard fallback, exiting")
         return
 
-    # Retry audio init — USB mic may not be ready immediately after boot
+    # Retry audio init — USB mic may not be ready immediately after boot.
+    # Exponential backoff: ~3 min total (down from 5 min with flat 10s delays).
+    _audio_retry_delays: list[int] = [2, 2, 5, 5, 10, 10, 15, 15, 30, 30, 30, 30]
     pa = None
     oww_stream = None
     needs_resample = False
-    for attempt in range(1, 31):
+    for attempt, delay in enumerate(_audio_retry_delays):
         try:
             pa = pyaudio.PyAudio()
+
+            # Log available input devices on first attempt for debugging
+            if attempt == 0:
+                device_count: int = pa.get_device_count()
+                input_devices: list[str] = []
+                for i in range(device_count):
+                    info = pa.get_device_info_by_index(i)
+                    if info.get("maxInputChannels", 0) > 0:
+                        input_devices.append(f"{i}: {info['name']}")
+                if input_devices:
+                    logger.info("Available input devices", devices=input_devices)
+                else:
+                    logger.warning("No input audio devices found")
+
             oww_stream, needs_resample = _create_oww_stream(pa)
             break
         except OSError as e:
             if pa is not None:
                 pa.terminate()
                 pa = None
-            logger.warning("No audio device available, retrying",
-                           error=str(e), attempt=attempt, max_attempts=30)
-            time.sleep(10)
+            logger.warning("Audio device unavailable",
+                           error=str(e), attempt=attempt + 1,
+                           max_attempts=len(_audio_retry_delays),
+                           retry_in_seconds=delay)
+            time.sleep(delay)
 
     if oww_stream is None:
-        logger.error("No audio device found after 30 attempts, giving up")
+        logger.error("No audio device found after retries, giving up",
+                     total_attempts=len(_audio_retry_delays))
         return
 
     chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK

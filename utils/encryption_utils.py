@@ -13,6 +13,13 @@ def get_secret_dir() -> Path:
     expanded = os.path.expandvars(os.path.expanduser(raw_path))
     return Path(expanded)
 
+def get_cache_dir() -> Path:
+    """Get ~/.jarvis/cache/ directory, creating it if needed."""
+    cache = get_secret_dir() / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
 def get_key_file() -> Path:
     secret_dir = get_secret_dir()
     raw_path = os.environ.get("JARVIS_KEY_FILE", str(secret_dir / "secrets.key"))

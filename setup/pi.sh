@@ -238,24 +238,10 @@ fi
 # Runs as root for:
 # - AP mode during provisioning (hostapd/dnsmasq)
 # - Future system-level commands (volume, shutdown, etc.)
-cat <<EOF | sudo tee /etc/systemd/system/jarvis-node.service
-[Unit]
-Description=Jarvis Node Service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-ExecStart=$PI_PROJECT_DIR/.venv/bin/python -m scripts.main
-Restart=always
-Environment=HOME=$PI_HOME
-Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=$PI_PROJECT_DIR
-Environment=CONFIG_PATH=$PI_PROJECT_DIR/config.json
-WorkingDirectory=$PI_PROJECT_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sed -e "s|__VENV__|$PI_PROJECT_DIR/.venv|g" \
+    -e "s|__PROJECT_DIR__|$PI_PROJECT_DIR|g" \
+    -e "s|__HOME__|$PI_HOME|g" \
+    "$SCRIPT_DIR/jarvis-node.service" | sudo tee /etc/systemd/system/jarvis-node.service > /dev/null
 
 sudo systemctl daemon-reload
 sudo systemctl enable jarvis-node.service

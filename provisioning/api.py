@@ -18,6 +18,7 @@ from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import Response, PlainTextResponse
 
 from provisioning.models import (
+    FactoryResetResponse,
     K2ProvisionRequest,
     K2ProvisionResponse,
     NodeInfo,
@@ -28,7 +29,7 @@ from provisioning.models import (
     ScanNetworksResponse,
 )
 from provisioning.registration import register_with_command_center
-from provisioning.startup import is_provisioned, mark_provisioned
+from provisioning.startup import has_provisioning_marker, is_provisioned, mark_provisioned
 from utils.encryption_utils import save_k2
 from provisioning.state_machine import ProvisioningStateMachine
 from provisioning.wifi_credentials import save_wifi_credentials
@@ -298,7 +299,8 @@ def create_provisioning_app(
             hardware=_get_hardware_type(),
             mac_address=_get_mac_address(),
             capabilities=_get_capabilities(),
-            state=state_machine.state
+            state=state_machine.state,
+            previously_provisioned=has_provisioning_marker(),
         )
 
     @app.get("/api/v1/scan-networks", response_model=ScanNetworksResponse)
@@ -394,6 +396,23 @@ def create_provisioning_app(
             node_id=request.node_id,
             kid=request.kid
         )
+
+    @app.post("/api/v1/factory-reset", response_model=FactoryResetResponse)
+    async def do_factory_reset() -> FactoryResetResponse:
+        """Clear all node state for a fresh provisioning.
+
+        Only available when the node is in AP mode (provisioning server running).
+        Clears provisioning marker, keys, database, and config credentials.
+        K1 master key is preserved for re-use.
+        """
+        from provisioning.factory_reset import factory_reset
+
+        try:
+            result = factory_reset()
+            state_machine.reset()
+            return FactoryResetResponse(success=True, cleared=result["cleared"])
+        except Exception as e:
+            return FactoryResetResponse(success=False, error=str(e))
 
     return app
 

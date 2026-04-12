@@ -34,23 +34,23 @@ sudo apt-get install -y \
 log_success "System dependencies installed"
 
 # Step 2: Python venv
-setup_python_venv "$PROJECT_ROOT/venv" "python3"
+setup_python_venv "$PROJECT_ROOT/.venv" "python3"
 
 # Step 3: Config files
 setup_config
 setup_env
 
 # Step 4: Database
-setup_database "$PROJECT_ROOT/venv"
+setup_database "$PROJECT_ROOT/.venv"
 
 # Step 5: Verify
-verify_installation "$PROJECT_ROOT/venv"
+verify_installation "$PROJECT_ROOT/.venv"
 
 # Done
 print_completion "Ubuntu Desktop"
 
 echo "For development, you can run:"
-echo "  source venv/bin/activate"
+echo "  source .venv/bin/activate"
 echo "  python scripts/main.py"
 echo ""
 echo "Note: This is a development setup. For production Pi nodes,"
