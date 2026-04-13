@@ -68,7 +68,7 @@ def run_install_and_upload(
 
             if added:
                 scheduler = get_agent_scheduler_service()
-                scheduler._agents = new_agents
+                scheduler.update_agents(new_agents)
                 for name in added:
                     logger.info("Running newly installed agent", agent=name)
                     scheduler.run_agent_now(name)

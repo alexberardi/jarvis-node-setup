@@ -88,11 +88,21 @@ def _upload_results(request_id: str, devices: list[DiscoveredDevice]) -> None:
 
     url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/device-scan/{request_id}/results"
 
+    # Build protocol -> supported_actions map
+    from utils.device_family_discovery_service import get_device_family_discovery_service
+    families = get_device_family_discovery_service().get_all_families_for_snapshot()
+    protocol_actions: dict[str, list[dict[str, str]]] = {}
+    for name, family in families.items():
+        protocol_actions[name] = [a.to_dict() for a in family.supported_actions]
+
     # Serialize DiscoveredDevice to dicts
     device_dicts: list[dict[str, Any]] = []
     for dev in devices:
         d = asdict(dev)
         d.pop("extra", None)  # Don't send internal extra data
+        # Attach protocol's supported_actions
+        if dev.protocol in protocol_actions:
+            d["supported_actions"] = protocol_actions[dev.protocol]
         device_dicts.append(d)
 
     result = RestClient.post(url, data={"devices": device_dicts}, timeout=15)
