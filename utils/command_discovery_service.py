@@ -34,10 +34,15 @@ class CommandDiscoveryService:
         self._refresh_thread = threading.Thread(target=self._background_refresh, daemon=True)
         self._refresh_thread.start()
 
-    def _background_refresh(self):
-        """Background thread that refreshes commands every refresh_interval seconds"""
+    def _background_refresh(self) -> None:
+        """Background thread that refreshes commands every refresh_interval seconds."""
         while True:
-            time.sleep(self.refresh_interval)
+            if _shutdown_event is not None:
+                _shutdown_event.wait(timeout=self.refresh_interval)
+                if _shutdown_event.is_set():
+                    return
+            else:
+                time.sleep(self.refresh_interval)
             try:
                 self._discover_commands()
                 logger.debug("Refreshed commands", count=len(self._commands_cache))
@@ -208,12 +213,24 @@ class CommandDiscoveryService:
 
 
 # Global instance
-_command_discovery_service = None
+_command_discovery_service: Optional[CommandDiscoveryService] = None
+_init_lock = threading.Lock()
+
+# Shutdown event shared with main.py for graceful shutdown
+_shutdown_event: Optional[threading.Event] = None
+
+
+def set_shutdown_event(event: threading.Event) -> None:
+    """Accept a shutdown event from main.py for graceful shutdown of background refresh."""
+    global _shutdown_event
+    _shutdown_event = event
 
 
 def get_command_discovery_service() -> CommandDiscoveryService:
-    """Get the global command discovery service instance"""
+    """Get the global command discovery service instance (thread-safe)."""
     global _command_discovery_service
     if _command_discovery_service is None:
-        _command_discovery_service = CommandDiscoveryService()
-    return _command_discovery_service 
+        with _init_lock:
+            if _command_discovery_service is None:
+                _command_discovery_service = CommandDiscoveryService()
+    return _command_discovery_service
