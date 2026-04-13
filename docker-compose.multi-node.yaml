@@ -21,8 +21,7 @@ x-node-base: &node-base
     - JARVIS_SKIP_PROVISIONING_CHECK=true
     - CONFIG_PATH=/config/config.json
     - JARVIS_NODE_PORT=7771
-    - JARVIS_MQTT_BROKER=host.docker.internal
-    - JARVIS_MQTT_PORT=1884
+    - JARVIS_CONFIG_URL_STYLE=dockerized
     - JARVIS_SKIP_ENCRYPTED_DB=false
     - JARVIS_CONFIG_URL=http://host.docker.internal:7700
     - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
