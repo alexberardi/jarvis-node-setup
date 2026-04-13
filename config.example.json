@@ -7,8 +7,6 @@
   "room": "your-room-name",
   "user": "your-username",
   "voice": "en",
-  "mqtt_broker": "your-mqtt-broker.local",
-  "mqtt_port": 1884,
   "mqtt_username": "",
   "mqtt_password": "",
   "mic_sample_rate": 48000,

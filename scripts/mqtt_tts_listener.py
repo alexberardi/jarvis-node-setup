@@ -57,17 +57,16 @@ def _on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
 def get_mqtt_config() -> Dict[str, Any]:
     """Get MQTT configuration at runtime.
 
-    Discovery chain:
-    1. Config-service (jarvis-mqtt-broker)
-    2. Env vars (JARVIS_MQTT_BROKER, JARVIS_MQTT_PORT)
-    3. config.json (mqtt_broker, mqtt_port)
-    4. Default: localhost:1884
+    Uses get_mqtt_broker_url() which checks:
+    1. Config-service (jarvis-mqtt-broker) — respects JARVIS_CONFIG_URL_STYLE
+       so Docker containers get host.docker.internal automatically
+    2. config.json fallback
+    3. Default: localhost:1884
     """
     from utils.service_discovery import get_mqtt_broker_url
 
     node_id: str = Config.get_str("node_id", "unknown") or "unknown"
 
-    # Parse broker URL from service discovery
     broker_url = get_mqtt_broker_url()
     broker = "localhost"
     port = 1884
