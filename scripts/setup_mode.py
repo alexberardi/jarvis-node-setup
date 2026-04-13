@@ -13,8 +13,6 @@ import os
 import sys
 import threading
 from pathlib import Path
-from urllib.parse import urlparse
-
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -70,39 +68,6 @@ def _cc_url() -> str:
     url = config.get("jarvis_command_center_api_url", os.environ.get("JARVIS_CC_URL", ""))
     return url.rstrip("/") if url else ""
 
-
-def _resolve_mqtt_broker(config_service_url: str) -> tuple[str | None, int]:
-    """Fetch MQTT broker host and port from config-service.
-
-    Uses ?style=dockerized inside Docker so host.docker.internal is
-    returned instead of localhost.
-
-    Returns (host, port) or (None, 1884) if unavailable.
-    """
-    import os
-    style_param = "?style=dockerized" if os.path.exists("/.dockerenv") else ""
-
-    try:
-        resp = httpx.get(
-            f"{config_service_url.rstrip('/')}/services/jarvis-mqtt-broker{style_param}",
-            timeout=5.0,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            # Use the url field (respects ?style=dockerized) and parse host from it
-            mqtt_url = data.get("url", "")
-            if mqtt_url:
-                parsed = urlparse(mqtt_url)
-                host = parsed.hostname or data.get("host")
-                port = parsed.port or data.get("port", 1884)
-            else:
-                host = data.get("host")
-                port = data.get("port", 1884)
-            if host:
-                return host, int(port)
-    except Exception:
-        pass
-    return None, 1884
 
 
 # ------------------------------------------------------------------
@@ -304,15 +269,8 @@ async def connect_services(request: Request):
     config["jarvis_auth_base_url"] = auth_url
     config["jarvis_command_center_api_url"] = cc_url
 
-    # Resolve MQTT broker from config-service, fall back to CC hostname
-    mqtt_host, mqtt_port = _resolve_mqtt_broker(config_url)
-    if mqtt_host:
-        config["mqtt_broker"] = mqtt_host
-        config["mqtt_port"] = mqtt_port
-    else:
-        cc_host = urlparse(cc_url).hostname
-        if cc_host:
-            config["mqtt_broker"] = cc_host
+    # MQTT broker is discovered at runtime from config-service.
+    # No need to stamp it in config.json.
     _save_config(config)
 
     return {
