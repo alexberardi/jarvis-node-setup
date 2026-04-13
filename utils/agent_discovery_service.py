@@ -196,15 +196,18 @@ class AgentDiscoveryService:
 
 # Global singleton instance
 _agent_discovery_service: Optional[AgentDiscoveryService] = None
+_init_lock = threading.Lock()
 
 
 def get_agent_discovery_service() -> AgentDiscoveryService:
-    """Get the global AgentDiscoveryService instance.
+    """Get the global AgentDiscoveryService instance (thread-safe).
 
     Returns:
         Singleton AgentDiscoveryService instance
     """
     global _agent_discovery_service
     if _agent_discovery_service is None:
-        _agent_discovery_service = AgentDiscoveryService()
+        with _init_lock:
+            if _agent_discovery_service is None:
+                _agent_discovery_service = AgentDiscoveryService()
     return _agent_discovery_service

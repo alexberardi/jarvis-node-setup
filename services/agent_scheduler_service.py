@@ -275,6 +275,27 @@ class AgentSchedulerService:
         )
         return True
 
+    def update_agents(self, new_agents: Dict[str, IJarvisAgent]) -> None:
+        """Thread-safe replacement of the agent dict.
+
+        Clears context cache entries for agents that were removed.
+        Safe to call from any thread (e.g., package install handler).
+
+        Args:
+            new_agents: New agent dict to replace the current one
+        """
+        with self._context_lock:
+            removed = set(self._agents.keys()) - set(new_agents.keys())
+            for name in removed:
+                self._context_cache.pop(name, None)
+                logger.info("Removed stale agent context", agent=name)
+            self._agents = new_agents
+
+    def restart(self) -> None:
+        """Stop and restart the scheduler for a clean agent reload."""
+        self.stop()
+        self.start()
+
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
         """Get status information for all agents.
 
