@@ -478,7 +478,16 @@ create_service() {
     rm -f /etc/systemd/system/jarvis-provisioning.service
   fi
 
-  cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+  # Use the service template shipped in the release
+  if [ -f "${INSTALL_DIR}/setup/jarvis-node.service" ]; then
+    sed -e "s|__VENV__|${INSTALL_DIR}/.venv|g" \
+        -e "s|__PROJECT_DIR__|${INSTALL_DIR}|g" \
+        -e "s|__HOME__|/root|g" \
+        "${INSTALL_DIR}/setup/jarvis-node.service" \
+        > "/etc/systemd/system/${SERVICE_NAME}.service"
+  else
+    # Fallback if template is missing (older releases)
+    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=Jarvis Node Service
 After=network-online.target
@@ -486,16 +495,23 @@ Wants=network-online.target
 
 [Service]
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m scripts.main
-Restart=always
+WorkingDirectory=${INSTALL_DIR}
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
+TimeoutStopSec=30
+KillSignal=SIGTERM
 Environment=HOME=/root
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${INSTALL_DIR}
 Environment=CONFIG_PATH=${INSTALL_DIR}/config.json
-WorkingDirectory=${INSTALL_DIR}
+SyslogIdentifier=jarvis-node
 
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
 
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}.service"

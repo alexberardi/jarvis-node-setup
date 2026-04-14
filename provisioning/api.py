@@ -413,23 +413,28 @@ def _run_provisioning(
         on_provisioned: Optional callback when provisioning completes successfully
     """
     try:
-        # Step 1: Save credentials
+        # Step 1: Save service URLs to config FIRST — even if WiFi fails,
+        # the node needs jarvis_config_service_url to discover services
+        # (e.g., if the Pi already has WiFi from SD card flash).
+        state_machine.transition_to(
+            ProvisioningState.CONNECTING,
+            "Saving configuration...",
+            progress=10
+        )
+
+        if not _update_config(room, command_center_url, config_service_url):
+            state_machine.set_error("Failed to update configuration")
+            return
+
+        # Step 2: Save WiFi credentials
         state_machine.transition_to(
             ProvisioningState.CONNECTING,
             f"Saving credentials for {ssid}...",
-            progress=10
+            progress=20
         )
         save_wifi_credentials(ssid, password)
 
-        # Step 2: Connect to WiFi
-        state_machine.transition_to(
-            ProvisioningState.CONNECTING,
-            f"Connecting to {ssid}...",
-            progress=30
-        )
-
-        # Stop AP mode and connect to WiFi.
-        # connect() handles waiting for NM to detect the network after AP teardown.
+        # Step 3: Connect to WiFi
         state_machine.transition_to(
             ProvisioningState.CONNECTING,
             f"Connecting to {ssid}...",
@@ -445,17 +450,6 @@ def _run_provisioning(
             f"Connected to {ssid}",
             progress=50
         )
-
-        # Step 3: Update config
-        state_machine.transition_to(
-            ProvisioningState.REGISTERING,
-            "Updating configuration...",
-            progress=60
-        )
-
-        if not _update_config(room, command_center_url, config_service_url):
-            state_machine.set_error("Failed to update configuration")
-            return
 
         # Step 4: Register with command center
         state_machine.transition_to(
