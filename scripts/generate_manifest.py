@@ -20,7 +20,7 @@ import yaml
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.ijarvis_command import IJarvisCommand  # noqa: E402
+from jarvis_command_sdk import IJarvisCommand  # noqa: E402
 from jarvis_command_sdk.command import IJarvisCommand as SDKIJarvisCommand  # noqa: E402
 from core.command_manifest import (  # noqa: E402
     CommandManifest,

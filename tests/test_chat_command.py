@@ -12,7 +12,7 @@ import pytest
 
 from commands.chat_command import ChatCommand
 from core.command_response import CommandResponse
-from core.ijarvis_command import CommandAntipattern, CommandExample
+from jarvis_command_sdk import CommandAntipattern, CommandExample
 from core.request_information import RequestInformation
 
 
