@@ -7,7 +7,7 @@ Returns follow_up_response to enable multi-turn conversation mode.
 from typing import List
 
 from core.command_response import CommandResponse
-from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
+from jarvis_command_sdk import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation

@@ -5,7 +5,7 @@ import threading
 import types
 from unittest.mock import patch, MagicMock
 
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from jarvis_command_sdk import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import JarvisParameter
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation

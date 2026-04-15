@@ -7,13 +7,13 @@ from typing import Dict, List, Optional
 
 from jarvis_log_client import JarvisLogger
 
-from core.ijarvis_command import IJarvisCommand
+from jarvis_command_sdk import IJarvisCommand
 from db import SessionLocal
 from repositories.command_registry_repository import CommandRegistryRepository
 
 logger = JarvisLogger(service="jarvis-node")
 
-# Community packages (Pantry) import from jarvis_command_sdk, not core.ijarvis_command.
+# Community packages (Pantry) import from jarvis_command_sdk, not jarvis_command_sdk.
 # Both define IJarvisCommand but they're different classes, so issubclass() fails.
 # We check against both so custom commands are discovered properly.
 try:
