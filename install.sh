@@ -249,10 +249,11 @@ configure_audio() {
     warn "Could not find config.txt — skipping I2S DAC setup"
   fi
 
-  # --- Lock card order: HifiBerry=0, USB mic=1 ---
+  # --- Lock card order: HifiBerry=0, USB mic=2 ---
+  # (index=1 is taken by the HiFiBerry overlay — using index=2 avoids collision)
   cat > /etc/modprobe.d/alsa-base.conf <<'ALSA_MOD'
 options snd_soc_hifiberry_dac index=0
-options snd_usb_audio index=1
+options snd_usb_audio index=2
 ALSA_MOD
 
   # --- ALSA system config ---
@@ -281,7 +282,7 @@ pcm.dsnoopmic {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:1,0"
+    pcm "hw:2,0"
     channels 1
   }
 }
