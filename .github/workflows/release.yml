@@ -178,6 +178,8 @@ jobs:
           push: true
           build-contexts: |
             jarvis-command-sdk=jarvis-command-sdk
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
           tags: |
             ghcr.io/alexberardi/jarvis-node:latest
             ghcr.io/alexberardi/jarvis-node:${{ steps.version.outputs.version }}
