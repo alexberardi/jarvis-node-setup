@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from jarvis_log_client import JarvisLogger
 
-from core.ijarvis_command import CommandExample
+from jarvis_command_sdk import CommandExample
 
 logger = JarvisLogger(service="jarvis-node")
 

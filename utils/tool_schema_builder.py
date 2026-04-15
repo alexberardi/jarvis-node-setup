@@ -1,6 +1,6 @@
 """Build OpenAI tool schemas from discovered commands.
 
-Handles both JarvisCommandBase (built-in) commands that have
+Handles both IJarvisCommand (built-in) commands that have
 to_openai_tool_schema() and SDK-only (Pantry) commands that don't.
 """
 
@@ -25,7 +25,7 @@ def build_tool_schemas(
 
     for cmd in commands.values():
         try:
-            # Built-in commands have these methods via JarvisCommandBase
+            # Built-in commands have these methods via IJarvisCommand
             if hasattr(cmd, "to_openai_tool_schema"):
                 client_tools.append(cmd.to_openai_tool_schema(date_context))
                 available_commands.append(cmd.get_command_schema(date_context))

@@ -33,7 +33,7 @@ def _install_fake_command() -> Path:
     pkg_dir.mkdir(parents=True, exist_ok=True)
     (pkg_dir / "__init__.py").write_text("")
     (pkg_dir / "command.py").write_text(
-        "from core.ijarvis_command import IJarvisCommand\n"
+        "from jarvis_command_sdk import IJarvisCommand\n"
         "from core.command_response import CommandResponse\n"
         "\n"
         "\n"

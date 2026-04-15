@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from core.command_response import CommandResponse
-from core.ijarvis_command import PreRouteResult
+from jarvis_command_sdk import PreRouteResult
 from core.request_information import RequestInformation
 
 
@@ -331,7 +331,7 @@ class TestSubCommandExecution:
 
     def test_missing_secrets_step_skipped(self, routine_cmd, custom_routines):
         """Steps raising MissingSecretsError are caught and skipped."""
-        from exceptions.missing_secrets_error import MissingSecretsError
+        from jarvis_command_sdk import MissingSecretsError
 
         weather_cmd = MagicMock()
         weather_cmd.execute.side_effect = MissingSecretsError(["OPENWEATHER_API_KEY"])

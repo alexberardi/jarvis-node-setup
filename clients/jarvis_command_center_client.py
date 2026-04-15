@@ -5,7 +5,7 @@ from urllib.parse import unquote
 from jarvis_log_client import JarvisLogger
 from pydantic import BaseModel
 
-from core.ijarvis_command import IJarvisCommand
+from jarvis_command_sdk import IJarvisCommand
 from .responses.jarvis_command_center import DateContext, ToolCallingResponse, ValidationRequest
 from .rest_client import RestClient
 from utils.config_loader import Config

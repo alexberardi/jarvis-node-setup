@@ -8,7 +8,7 @@ import re
 from typing import List
 
 from core.command_response import CommandResponse
-from core.ijarvis_command import CommandExample, IJarvisCommand, PreRouteResult
+from jarvis_command_sdk import CommandExample, IJarvisCommand, PreRouteResult
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation

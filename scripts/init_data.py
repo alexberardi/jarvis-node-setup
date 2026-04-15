@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.ijarvis_command import IJarvisCommand
+from jarvis_command_sdk import IJarvisCommand
 
 
 def get_all_commands() -> Dict[str, IJarvisCommand]:

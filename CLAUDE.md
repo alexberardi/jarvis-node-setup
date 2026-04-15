@@ -226,7 +226,7 @@ Checks manifest, component paths, and import-tests commands/agents/protocols. Va
 Implement `IJarvisCommand`:
 
 ```python
-from core.ijarvis_command import IJarvisCommand
+from jarvis_command_sdk import IJarvisCommand
 from core.command_response import CommandResponse
 
 class MyCommand(IJarvisCommand):

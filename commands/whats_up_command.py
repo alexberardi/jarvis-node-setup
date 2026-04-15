@@ -13,7 +13,7 @@ from jarvis_log_client import JarvisLogger
 
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.command_response import CommandResponse
-from core.ijarvis_command import (
+from jarvis_command_sdk import (
     CommandExample,
     IJarvisCommand,
     PreRouteResult,

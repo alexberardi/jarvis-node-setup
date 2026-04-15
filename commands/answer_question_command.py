@@ -1,7 +1,7 @@
 from typing import Any, List
 
 from core.command_response import CommandResponse
-from core.ijarvis_command import CommandAntipattern, CommandExample, IJarvisCommand
+from jarvis_command_sdk import CommandAntipattern, CommandExample, IJarvisCommand
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation

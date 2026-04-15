@@ -14,7 +14,7 @@ from jarvis_log_client import JarvisLogger
 
 from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.command_response import CommandResponse
-from core.ijarvis_command import (
+from jarvis_command_sdk import (
     CommandExample,
     IJarvisCommand,
     PreRouteResult,
@@ -319,7 +319,12 @@ class RoutineCommand(IJarvisCommand):
                 continue
 
             try:
-                response = command.execute(request_info, **args)
+                from services.secret_service import get_secret_value  # lazy
+                step_secrets = {
+                    s.key: v for s in command.required_secrets
+                    if (v := get_secret_value(s.key, s.scope)) is not None
+                }
+                response = command.execute(request_info, secrets=step_secrets, **args)
                 if response.success:
                     results[label] = response.context_data or {}
                 else:

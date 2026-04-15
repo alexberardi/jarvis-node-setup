@@ -18,6 +18,25 @@ from utils.config_service import Config
 from utils.service_discovery import get_command_center_url
 from utils.tool_result_formatter import format_tool_result, format_tool_error
 
+
+def _build_secrets(command) -> Dict[str, str]:
+    """Build the secrets dict a command needs from the node's encrypted store.
+
+    Returns key → value for every required secret that's present. Absent
+    required secrets surface via MissingSecretsError when execute() runs.
+
+    Secret service is imported lazily so test environments without the
+    encrypted SQLite driver (sqlcipher3) can still import this module.
+    """
+    from services.secret_service import get_secret_value  # lazy — avoids sqlcipher at import time
+
+    secrets: Dict[str, str] = {}
+    for s in command.required_secrets:
+        value = get_secret_value(s.key, s.scope)
+        if value is not None:
+            secrets[s.key] = value
+    return secrets
+
 logger = JarvisLogger(service="jarvis-node")
 
 
@@ -584,7 +603,9 @@ class CommandExecutionService:
                 from jarvis_command_sdk.context import set_current_user_id
                 set_current_user_id(user_id)
                 try:
-                    command_response: CommandResponse = command.execute(request_info, **arguments)
+                    command_response: CommandResponse = command.execute(
+                        request_info, secrets=_build_secrets(command), **arguments,
+                    )
                 finally:
                     set_current_user_id(None)
 
@@ -677,7 +698,9 @@ class CommandExecutionService:
                 from jarvis_command_sdk.context import set_current_user_id
                 set_current_user_id(speaker_user_id)
                 try:
-                    command_response: CommandResponse = command.execute(request_info, **pre.arguments)
+                    command_response: CommandResponse = command.execute(
+                        request_info, secrets=_build_secrets(command), **pre.arguments,
+                    )
                 finally:
                     set_current_user_id(None)
 

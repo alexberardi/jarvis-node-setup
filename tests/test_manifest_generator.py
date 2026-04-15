@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import yaml
 
-from core.ijarvis_command import IJarvisCommand, CommandExample
+from jarvis_command_sdk import IJarvisCommand, CommandExample
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import JarvisSecret
 from core.ijarvis_package import JarvisPackage
@@ -340,7 +340,7 @@ class TestGenerateManifest:
         with tempfile.TemporaryDirectory() as tmpdir:
             cmd_path = Path(tmpdir) / "command.py"
             cmd_path.write_text(
-                'from core.ijarvis_command import IJarvisCommand, CommandExample\n'
+                'from jarvis_command_sdk import IJarvisCommand, CommandExample\n'
                 'from core.command_response import CommandResponse\n'
                 'from core.ijarvis_parameter import JarvisParameter\n'
                 '\n'

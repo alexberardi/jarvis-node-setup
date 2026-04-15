@@ -5,7 +5,7 @@ Converts between various units using base unit conversion for maximum flexibilit
 """
 
 from typing import List, Optional
-from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
+from jarvis_command_sdk import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse

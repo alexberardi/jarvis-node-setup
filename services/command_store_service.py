@@ -233,7 +233,7 @@ def _check_command_name_conflict(command_name: str) -> None:
         for _, mod_name, _ in pkgutil.iter_modules(commands.__path__):
             try:
                 module = importlib.import_module(f"commands.{mod_name}")
-                from core.ijarvis_command import IJarvisCommand
+                from jarvis_command_sdk import IJarvisCommand
                 for attr in dir(module):
                     cls = getattr(module, attr)
                     if (isinstance(cls, type)

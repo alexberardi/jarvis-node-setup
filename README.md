@@ -79,7 +79,7 @@ jarvis-node-setup/
 Implement the `IJarvisCommand` interface:
 
 ```python
-from core.ijarvis_command import IJarvisCommand
+from jarvis_command_sdk import IJarvisCommand
 from core.ijarvis_parameter import IJarvisParameter
 from core.command_response import CommandResponse
 

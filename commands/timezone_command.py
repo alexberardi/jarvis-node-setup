@@ -8,7 +8,7 @@ from typing import List
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from core.ijarvis_command import IJarvisCommand, CommandExample, CommandAntipattern
+from jarvis_command_sdk import IJarvisCommand, CommandExample, CommandAntipattern
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
