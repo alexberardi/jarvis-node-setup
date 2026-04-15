@@ -23,6 +23,12 @@ RUN pip install --no-cache-dir /tmp/jarvis-command-sdk && rm -rf /tmp/jarvis-com
 # Using .dockerignore to exclude .venv, __pycache__, tests, etc.
 COPY . .
 
+# Bake the release version so core/version.py can report it at runtime.
+# Passed as a build-arg by the release workflow; defaults to "unknown" for
+# local builds without a tag.
+ARG VERSION=unknown
+RUN printf "%s" "$VERSION" > /app/VERSION
+
 # Ensure all top-level packages are importable (bare imports like "from services.xxx")
 ENV PYTHONPATH=/app
 
