@@ -257,18 +257,17 @@ options snd_usb_audio index=2
 ALSA_MOD
 
   # --- ALSA system config ---
+  # Use stable card *names* (CARD=...) instead of numeric indexes. With the
+  # vc4-kms-v3d overlay enabled, vc4hdmi often grabs card 0 before the
+  # HiFiBerry module loads, so the modprobe `index=0` hint isn't reliable.
+  # Card names are stable across that race.
   cat > /etc/asound.conf <<'ASOUND'
-# Output (speaker) with software volume control
-defaults.pcm.card 0
-defaults.pcm.device 0
-defaults.ctl.card 0
-
 pcm.softvol {
   type softvol
-  slave.pcm "plughw:0,0"
+  slave.pcm "plughw:CARD=sndrpihifiberry,DEV=0"
   control {
     name "SoftMaster"
-    card 0
+    card sndrpihifiberry
   }
 }
 
@@ -277,12 +276,12 @@ pcm.output {
   slave.pcm "softvol"
 }
 
-# Input (microphone) via dsnoop
+# Input (microphone) via dsnoop — "Device" is the C-Media USB mic's ALSA name
 pcm.dsnoopmic {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:2,0"
+    pcm "hw:CARD=Device,DEV=0"
     channels 1
   }
 }
