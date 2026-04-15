@@ -14,7 +14,9 @@ from models import Base
 # Alembic Config
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False so JarvisLogger (set up before
+    # migrations) keeps emitting after this call. Default True silences it.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 config.set_main_option(
