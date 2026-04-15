@@ -135,6 +135,23 @@ def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]
     return validation_handler
 
 
+def _is_non_speech(text: str | None) -> bool:
+    """True if Whisper output is a non-speech annotation like [BLANK_AUDIO]
+    or (wind blowing) rather than an actual utterance. Whisper emits these
+    for silence/noise, and treating them as commands keeps the follow-up
+    loop alive forever when the node is near a fan or other constant noise.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return (
+        (stripped.startswith("[") and stripped.endswith("]"))
+        or (stripped.startswith("(") and stripped.endswith(")"))
+    )
+
+
 def send_for_transcription(
     filename: str,
     command_service: CommandExecutionService,
@@ -143,6 +160,10 @@ def send_for_transcription(
 ) -> Dict[str, Any] | None:
     logger.info("Sending audio to transcription server")
     result = stt_provider.transcribe_with_speaker(filename)
+
+    if _is_non_speech(result.text):
+        logger.info("Non-speech transcription, skipping", text=result.text)
+        return None
 
     if result.text:
         transcription = result.text
@@ -197,8 +218,11 @@ def _follow_up_loop(
             logger.warning("Follow-up transcription failed", error=str(e))
             break
 
-        if not transcription_result.text:
-            logger.debug("Empty follow-up transcription (noise), ending follow-up")
+        if _is_non_speech(transcription_result.text):
+            logger.info(
+                "Non-speech follow-up transcription, ending follow-up",
+                text=transcription_result.text,
+            )
             break
 
         text = transcription_result.text
