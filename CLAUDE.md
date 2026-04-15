@@ -2,6 +2,13 @@
 
 Client software for Pi Zero voice nodes. Captures audio, detects wake word, sends commands to command-center.
 
+## Installers
+
+Two install paths exist — use the right one for the situation:
+
+- **`install.sh`** — production installer. Curl-piped from a GitHub release tag, runs as root on the Pi, installs to `/opt/jarvis-node`, writes `/etc/modprobe.d/alsa-base.conf` and `/etc/asound.conf`, creates the systemd unit. This is what real Pi Zero nodes run. Any audio / system / service config change for production must land here.
+- **`setup/pi.sh`, `setup/macos.sh`, `setup/ubuntu.sh`** — dev-machine setup scripts (clone repo, install deps into a local `.venv`). Not used by Pi nodes anymore. Treat `setup/pi.sh` as legacy reference; if you change audio config, mirror it into `install.sh` (the two have drifted before — see commit `08d2e1f`).
+
 ## Quick Reference
 
 ```bash
