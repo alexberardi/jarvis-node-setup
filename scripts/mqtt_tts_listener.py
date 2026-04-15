@@ -1004,8 +1004,15 @@ _HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
 
 
 def _heartbeat_loop() -> None:
-    """Periodically POST heartbeat to command center to update last_seen."""
+    """Periodically POST heartbeat to command center to update last_seen.
+
+    The response may carry a `pending_update` block the CC wants us to apply;
+    the handler in update_service picks that up (added in a later step — for
+    now the response is ignored).
+    """
     from clients.rest_client import RestClient
+    from core.runtime_state import is_busy
+    from core.version import version_info
     from utils.service_discovery import get_command_center_url
 
     # Initial delay: let service discovery initialize
@@ -1022,8 +1029,10 @@ def _heartbeat_loop() -> None:
             if base_url:
                 url = f"{base_url.rstrip('/')}/api/v0/admin/nodes/heartbeat"
 
-                # Build thread status for CC
-                data: Dict[str, Any] = {}
+                data: Dict[str, Any] = {
+                    "version_info": version_info().to_dict(),
+                    "is_busy": is_busy(),
+                }
                 if _tracked_threads is not None:
                     thread_status: Dict[str, bool] = {}
                     for name, entry in _tracked_threads.items():
