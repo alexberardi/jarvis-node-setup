@@ -1013,6 +1013,7 @@ def _heartbeat_loop() -> None:
     from clients.rest_client import RestClient
     from core.runtime_state import is_busy
     from core.version import version_info
+    from services.update_service import maybe_apply_update
     from utils.service_discovery import get_command_center_url
 
     # Initial delay: let service discovery initialize
@@ -1040,7 +1041,14 @@ def _heartbeat_loop() -> None:
                         thread_status[name] = thread_obj.is_alive() if hasattr(thread_obj, "is_alive") else False
                     data["thread_status"] = thread_status
 
-                RestClient.post(url, data=data, timeout=10)
+                response = RestClient.post(url, data=data, timeout=10)
+                # CC may return a pending_update block when the mobile app has
+                # queued an upgrade. Hand it off to update_service, which forks
+                # a detached installer and lets systemd do the restart dance.
+                if response and isinstance(response, dict):
+                    pending = response.get("pending_update")
+                    if pending:
+                        maybe_apply_update(pending)
         except Exception:
             pass  # Heartbeat is best-effort, retries next interval
         if _shutdown_event is not None:
