@@ -520,10 +520,49 @@ EOF
 }
 
 # --- Start the service ---
+#
+# After restart, poll `systemctl is-active` for HEALTH_TIMEOUT seconds. If
+# the service doesn't come back up we treat that as a failed upgrade and
+# restore from the pre-upgrade .bak so the node recovers on its own.
+# Mobile-triggered updates depend on this — a node that never heartbeats
+# again is a node stuck in "in_progress" until the CC sweeper gives up.
 start_service() {
   info "Starting ${SERVICE_NAME}..."
   systemctl restart "${SERVICE_NAME}.service"
-  success "Service started"
+
+  local health_timeout=60
+  local waited=0
+  while [ "$waited" -lt "$health_timeout" ]; do
+    if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      success "Service started"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  warn "Service did not become active within ${health_timeout}s"
+
+  local backup="${INSTALL_DIR}.bak"
+  if [ -d "$backup" ]; then
+    warn "Rolling back to previous install at ${backup}"
+    systemctl stop "${SERVICE_NAME}.service" || true
+    rm -rf "${INSTALL_DIR}.failed"
+    mv "$INSTALL_DIR" "${INSTALL_DIR}.failed"
+    mv "$backup" "$INSTALL_DIR"
+    systemctl restart "${SERVICE_NAME}.service"
+    waited=0
+    while [ "$waited" -lt "$health_timeout" ]; do
+      if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+        warn "Rollback successful — node running previous version"
+        exit 1
+      fi
+      sleep 2
+      waited=$((waited + 2))
+    done
+    error "Rollback also failed — manual intervention required"
+  fi
+  error "Service failed to start and no rollback target was available"
 }
 
 # --- Verify ---
