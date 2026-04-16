@@ -54,24 +54,80 @@ class AudioProvider(ABC):
         Returns:
             True if playback succeeded
         """
+        # Pipe raw PCM into aplay over stdin instead of going through PyAudio.
+        # PyAudio on Pi Zero 2 W + softvol + asym + plughw was glitching
+        # audibly even when network chunks arrived on time. aplay is the
+        # same binary the short-TTS path uses successfully, and it talks
+        # directly to the ALSA device we've configured in /etc/asound.conf.
+        import subprocess
+        import time
+        format_arg = {1: "U8", 2: "S16_LE", 3: "S24_LE", 4: "S32_LE"}.get(
+            sample_width, "S16_LE"
+        )
+        cmd = [
+            "aplay",
+            "-D", "output",      # the softvol alias defined in asound.conf
+            "-q",
+            "-f", format_arg,
+            "-r", str(sample_rate),
+            "-c", str(channels),
+            "-t", "raw",
+            "-",
+        ]
+        logger.info(
+            "PCM stream starting aplay",
+            sample_rate=sample_rate,
+            channels=channels,
+            sample_width=sample_width,
+            format=format_arg,
+        )
         try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            stream = p.open(
-                format=p.get_format_from_width(sample_width),
-                channels=channels,
-                rate=sample_rate,
-                output=True,
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
+            start_ts = time.monotonic()
+            total_bytes = 0
+            chunk_count = 0
+            assert proc.stdin is not None
             try:
                 for chunk in pcm_iterator:
-                    if chunk:
-                        stream.write(chunk)
+                    if not chunk:
+                        continue
+                    chunk_count += 1
+                    total_bytes += len(chunk)
+                    try:
+                        proc.stdin.write(chunk)
+                    except BrokenPipeError:
+                        logger.warning("aplay pipe closed early")
+                        break
             finally:
-                stream.stop_stream()
-                stream.close()
-                p.terminate()
-            return True
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
+                # Wait for aplay to drain the buffer. 30s is way more than
+                # any realistic message length.
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                    logger.warning("aplay did not drain within 30s, killed")
+            stderr_out = (proc.stderr.read() if proc.stderr else b"").decode(
+                errors="replace"
+            ).strip()
+            logger.info(
+                "PCM stream complete",
+                total_bytes=total_bytes,
+                chunks=chunk_count,
+                duration_s=round(time.monotonic() - start_ts, 2),
+                returncode=proc.returncode,
+                stderr=stderr_out[:200] if stderr_out else None,
+            )
+            return proc.returncode == 0
         except Exception as e:
             logger.error(f"Error playing PCM stream: {e}")
             return False
