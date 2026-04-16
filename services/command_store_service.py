@@ -304,11 +304,18 @@ def _install_pip_deps(manifest: CommandManifest) -> None:
         return
 
     logger.info("Installing pip dependencies", packages=deps)
+    # --prefer-binary: grab pre-built wheels instead of compiling C
+    # extensions from source (lxml, etc.). ARM64 wheels exist for most
+    # packages and avoid the 100% CPU + swap thrashing that kills the
+    # node service on Pi Zero 2 W (512 MB).
+    # nice -n 15: lower priority so the install doesn't starve the voice
+    # pipeline, MQTT, SSH, and other threads sharing the same 4 cores.
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet"] + deps,
+        ["nice", "-n", "15", sys.executable, "-m", "pip", "install",
+         "--quiet", "--prefer-binary"] + deps,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=300,
     )
     if result.returncode != 0:
         raise InstallError(f"pip install failed: {result.stderr.strip()}")
