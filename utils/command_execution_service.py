@@ -334,13 +334,16 @@ class CommandExecutionService:
 
         logger.info("Starting conversation", conversation_id=conversation_id, command=voice_command)
 
+        # Gate the ack on a timer so fast conversational responses aren't
+        # preceded by a pointless "Let me look into that." For slow tool
+        # calls (deep research, external APIs, multi-iteration LLM loops)
+        # the timer fires and the ack plays to cover the wait.
+        main_response_ready = threading.Event()
+
         try:
-            # Fire acknowledgment in background — speak while pipeline processes.
-            # If the main pipeline returns before the ack finishes, join() will
-            # wait briefly so we don't overlap TTS.
             ack_thread = threading.Thread(
                 target=self._speak_acknowledgment,
-                args=(voice_command,),
+                args=(voice_command, main_response_ready),
                 daemon=True,
             )
             ack_thread.start()
@@ -352,7 +355,11 @@ class CommandExecutionService:
             # Single unified request — handles audio, tool calls, and validation
             tag, payload = self.client.send_command_unified(voice_command, conversation_id)
 
-            # Wait for acknowledgment TTS to finish before speaking main response
+            # Signal the ack thread: the main response is here. If the ack
+            # hasn't started speaking yet (still in its pre-speak wait), it
+            # will exit quietly. If it has, join() waits for it to finish
+            # so the main answer doesn't talk over it.
+            main_response_ready.set()
             ack_thread.join(timeout=5)
 
             if tag == "audio":
@@ -759,17 +766,38 @@ class CommandExecutionService:
             "clear_history": False,
         }
 
-    def _speak_acknowledgment(self, voice_command: str) -> None:
+    ACK_TIMER_SECONDS = 1.5
+
+    def _speak_acknowledgment(
+        self,
+        voice_command: str,
+        main_response_ready: threading.Event,
+    ) -> None:
         """Fetch and speak a fast LLM-generated acknowledgment (background thread).
 
-        Called in parallel with the main pipeline so the user hears something
-        like "Let me look into that." within ~2s instead of 20s of silence.
+        Waits ``ACK_TIMER_SECONDS`` on ``main_response_ready`` before
+        speaking. If the main pipeline finishes within that window (fast
+        conversational replies), the event is set and we skip the ack
+        entirely — no "Let me look into that." in front of a 1-second
+        answer. If the window expires, we proceed with the ack so the
+        user hears something while a slow tool loop grinds.
         """
+        if main_response_ready.wait(timeout=self.ACK_TIMER_SECONDS):
+            logger.debug("Main response arrived before ack timer, skipping ack")
+            return
+
         try:
             text = self.client.get_acknowledgment(voice_command)
-            if text:
-                tts_provider = get_tts_provider()
-                tts_provider.speak(False, text)
+            if not text:
+                return
+            # One more check: the ack-text fetch itself took some time. If
+            # main landed while we were fetching, still skip to avoid
+            # talking over the answer.
+            if main_response_ready.is_set():
+                logger.debug("Main response arrived during ack fetch, skipping ack")
+                return
+            tts_provider = get_tts_provider()
+            tts_provider.speak(False, text)
         except Exception as e:
             logger.debug("Acknowledgment TTS failed (non-fatal)", error=str(e))
 
