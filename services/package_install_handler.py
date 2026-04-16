@@ -75,6 +75,22 @@ def run_install_and_upload(
         except Exception as e:
             logger.warning("Agent refresh after install failed (non-fatal)", error=str(e))
 
+        # Re-discover device protocol families so a newly installed
+        # device_protocol component (e.g. govee, lifx) is usable without a
+        # service restart. Without this, scan handlers still see the cached
+        # "no families" snapshot from startup and return zero devices.
+        try:
+            from utils.device_family_discovery_service import get_device_family_discovery_service
+
+            dfd = get_device_family_discovery_service()
+            dfd.refresh()
+            logger.info(
+                "Device family cache refreshed after install",
+                families=sorted(dfd.get_all_families().keys()),
+            )
+        except Exception as e:
+            logger.warning("Device family refresh after install failed (non-fatal)", error=str(e))
+
         _upload_result(request_id, success=True, details={
             "package_name": manifest.name,
             "version": manifest.version,
