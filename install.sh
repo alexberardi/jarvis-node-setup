@@ -219,6 +219,22 @@ download_and_extract() {
   fi
 
   success "Extracted to ${INSTALL_DIR}"
+
+  # Restore user data from the .bak dir. Without this, an upgrade blows
+  # away config.json/DB and the node drops back to provisioning mode.
+  local backup="${INSTALL_DIR}.bak"
+  if [ -d "$backup" ]; then
+    for f in config.json .env; do
+      if [ -f "${backup}/${f}" ]; then
+        cp "${backup}/${f}" "${INSTALL_DIR}/${f}"
+        info "Restored ${f} from backup"
+      fi
+    done
+    # Encrypted SQLite DB + WAL/SHM journals
+    for f in "${backup}"/*.db "${backup}"/*.db-shm "${backup}"/*.db-wal; do
+      [ -f "$f" ] && cp "$f" "${INSTALL_DIR}/" && info "Restored $(basename "$f") from backup"
+    done
+  fi
 }
 
 # --- Configure audio ---
