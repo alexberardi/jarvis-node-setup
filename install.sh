@@ -612,11 +612,10 @@ print_success() {
   printf "\n"
 
   if [ "${NEEDS_REBOOT:-0}" -eq 1 ]; then
-    printf "  ${BOLD}Reboot required${NC} to activate the I2S DAC:\n"
-    printf "    sudo reboot\n"
-    printf "\n"
-    printf "  After reboot, the node will start automatically in provisioning\n"
-    printf "  mode. Connect with the Jarvis mobile app to complete setup.\n"
+    printf "  ${BOLD}Rebooting now${NC} to activate kernel overlays (HiFiBerry DAC,\n"
+    printf "  USB audio slot). The node will start automatically in\n"
+    printf "  provisioning mode after reboot. Connect with the Jarvis mobile\n"
+    printf "  app to complete setup.\n"
   else
     printf "  The node is running in provisioning mode.\n"
     printf "  Connect with the Jarvis mobile app to complete setup.\n"
@@ -642,6 +641,22 @@ main() {
   setup_database
   register_commands
   create_service
+
+  # Kernel overlays (e.g. hifiberry-dac) and modprobe options only take effect
+  # on the next boot. Starting the service now would make it race against a
+  # half-configured ALSA stack: asound.conf references card names that don't
+  # exist yet, PyAudio retries for minutes, provisioning API runs but slowly.
+  # Reboot instead — systemctl enable already ran, so the service comes up
+  # clean on the next boot with all overlays in place.
+  if [ "${NEEDS_REBOOT:-0}" -eq 1 ]; then
+    verify
+    print_success
+    info "Rebooting in 5 seconds to finish setup..."
+    sleep 5
+    reboot
+    return
+  fi
+
   start_service
   verify
   print_success
