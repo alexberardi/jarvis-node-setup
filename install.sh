@@ -546,39 +546,44 @@ start_service() {
   info "Starting ${SERVICE_NAME}..."
   systemctl restart "${SERVICE_NAME}.service"
 
-  local health_timeout=60
+  # Only run the health-check + rollback dance during upgrades (when
+  # there's a .bak to rollback TO). Fresh installs on a Pi Zero can
+  # take >60s to boot Python + run migrations — a strict timeout here
+  # would kill the installer before the service ever came up.
+  local backup="${INSTALL_DIR}.bak"
+  if [ ! -d "$backup" ]; then
+    success "Service started (fresh install — skipping health check)"
+    return 0
+  fi
+
+  local health_timeout=120
   local waited=0
   while [ "$waited" -lt "$health_timeout" ]; do
     if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
       success "Service started"
       return 0
     fi
-    sleep 2
-    waited=$((waited + 2))
+    sleep 3
+    waited=$((waited + 3))
   done
 
   warn "Service did not become active within ${health_timeout}s"
-
-  local backup="${INSTALL_DIR}.bak"
-  if [ -d "$backup" ]; then
-    warn "Rolling back to previous install at ${backup}"
-    systemctl stop "${SERVICE_NAME}.service" || true
-    rm -rf "${INSTALL_DIR}.failed"
-    mv "$INSTALL_DIR" "${INSTALL_DIR}.failed"
-    mv "$backup" "$INSTALL_DIR"
-    systemctl restart "${SERVICE_NAME}.service"
-    waited=0
-    while [ "$waited" -lt "$health_timeout" ]; do
-      if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-        warn "Rollback successful — node running previous version"
-        exit 1
-      fi
-      sleep 2
-      waited=$((waited + 2))
-    done
-    error "Rollback also failed — manual intervention required"
-  fi
-  error "Service failed to start and no rollback target was available"
+  warn "Rolling back to previous install at ${backup}"
+  systemctl stop "${SERVICE_NAME}.service" || true
+  rm -rf "${INSTALL_DIR}.failed"
+  mv "$INSTALL_DIR" "${INSTALL_DIR}.failed"
+  mv "$backup" "$INSTALL_DIR"
+  systemctl restart "${SERVICE_NAME}.service"
+  waited=0
+  while [ "$waited" -lt "$health_timeout" ]; do
+    if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      warn "Rollback successful — node running previous version"
+      exit 1
+    fi
+    sleep 3
+    waited=$((waited + 3))
+  done
+  error "Rollback also failed — manual intervention required"
 }
 
 # --- Verify ---
