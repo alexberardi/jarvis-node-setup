@@ -64,6 +64,10 @@ out.wav
 *.wav
 *.mp3
 *.flac
+
+# Exceptions: bundled audio assets (chime + wake response variants)
+!sounds/chime.wav
+!sounds/wake/*.wav
 *.ogg
 
 # Logs

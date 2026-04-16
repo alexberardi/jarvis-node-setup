@@ -1,7 +1,9 @@
 import os
+import random
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict
 
 import numpy as np
@@ -44,24 +46,47 @@ _mic_index_str: str | None = Config.get_str("mic_device_index")
 MIC_DEVICE_INDEX: int | None = int(_mic_index_str) if _mic_index_str is not None else None
 
 
+_WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
+
+
+def _bundled_wake_chimes() -> list[Path]:
+    """List the pre-generated wake chime WAVs bundled with the node."""
+    if not _WAKE_CHIMES_DIR.exists():
+        return []
+    return sorted(_WAKE_CHIMES_DIR.glob("*.wav"))
+
+
 def handle_keyword_detected():
     logger.info("Wake word detected, listening for command")
     print("Wake word detected! Listening...")
 
-    # Try cached audio first (near-instant, no HTTP round trip)
-    played_cached = False
+    # Priority order:
+    # 1. WAKE_AUDIO_FILE (LLM-generated variety, cached on prior wake)
+    # 2. Random pick from bundled sounds/wake/*.wav (always-present fallback)
+    # 3. TTS speak (last-resort, requires network)
+    played = False
+
     if WAKE_AUDIO_FILE.exists():
         try:
-            played_cached = platform_audio.play_audio_file(str(WAKE_AUDIO_FILE))
+            played = platform_audio.play_audio_file(str(WAKE_AUDIO_FILE))
         except Exception as e:
             logger.warning("Failed to play cached wake audio", error=str(e))
         finally:
-            # Clean up audio cache regardless of success
             WAKE_AUDIO_FILE.unlink(missing_ok=True)
             WAKE_FILE.unlink(missing_ok=True)
 
-    # Fall back to text cache + TTS if no cached audio
-    if not played_cached:
+    if not played:
+        bundled = _bundled_wake_chimes()
+        if bundled:
+            chime = random.choice(bundled)
+            try:
+                played = platform_audio.play_audio_file(str(chime))
+                if played:
+                    logger.debug("Played bundled wake chime", chime=chime.name)
+            except Exception as e:
+                logger.warning("Failed to play bundled wake chime", chime=chime.name, error=str(e))
+
+    if not played:
         tts_provider = get_tts_provider()
         if WAKE_FILE.exists():
             wake_text = WAKE_FILE.read_text().strip()
