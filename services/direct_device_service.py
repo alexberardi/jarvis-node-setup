@@ -151,6 +151,10 @@ class DirectDeviceService:
 
         adapter = self._protocols.get(device.protocol)
         if not adapter:
+            # Protocol may have been installed at runtime (Pantry) — reload once
+            self._load_protocols()
+            adapter = self._protocols.get(device.protocol)
+        if not adapter:
             return DeviceControlResult(
                 success=False, entity_id=entity_id, action=action,
                 error=f"No adapter for protocol: {device.protocol}",
