@@ -105,6 +105,41 @@ class TestClimateDomainHandler:
         assert hints.unit == "C"
 
     @patch("device_families.domains.climate._get_temp_unit", return_value="F")
+    def test_normalize_state_nest_sdm_style(self, _mock: object, handler: ClimateDomainHandler) -> None:
+        """Nest SDM adapter returns current_temperature, target_temperature, and setpoints."""
+        raw = {
+            "state": "on",
+            "mode": "HEAT",
+            "current_temperature": 72.5,
+            "target_temperature": 70.0,
+            "heat_setpoint": 70.0,
+            "humidity": 45,
+            "available_modes": ["HEAT", "COOL", "HEATCOOL", "OFF"],
+        }
+        state = handler.normalize_state(raw)
+        assert state["state"] == "on"
+        assert state["mode"] == "heat"
+        assert state["current_temperature"] == 72  # round(72.5) → 72 (banker's rounding)
+        assert state["target_temperature"] == 70
+        assert state["humidity"] == 45
+
+    @patch("device_families.domains.climate._get_temp_unit", return_value="F")
+    def test_normalize_state_nest_cool_mode(self, _mock: object, handler: ClimateDomainHandler) -> None:
+        """In cool mode, target_temperature should come from cool_setpoint."""
+        raw = {
+            "state": "on",
+            "mode": "COOL",
+            "current_temperature": 78.0,
+            "heat_setpoint": 68.0,
+            "cool_setpoint": 75.0,
+            "humidity": 50,
+        }
+        state = handler.normalize_state(raw)
+        assert state["mode"] == "cool"
+        assert state["current_temperature"] == 78
+        assert state["target_temperature"] == 75
+
+    @patch("device_families.domains.climate._get_temp_unit", return_value="F")
     def test_ui_hints_custom_features(self, _mock: object, handler: ClimateDomainHandler) -> None:
         hints = handler.get_ui_hints(features=["heat", "off"])
         assert hints.features == ["heat", "off"]
