@@ -320,6 +320,27 @@ ASOUND
   else
     warn "No USB microphone detected — plug one in and reboot"
   fi
+
+  # --- Disable WiFi power management ---
+  # Pi Zero 2 W's wlan0 enters power-save mode after idle, dropping off the
+  # network entirely. SSH becomes unreachable, MQTT disconnects, and the node
+  # looks dead even though the CPU is still running. This is a one-liner in
+  # NetworkManager or a cron @reboot fallback for systems using wpa_supplicant.
+  if command -v nmcli >/dev/null 2>&1; then
+    local wifi_con
+    wifi_con="$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ':802-11-wireless' | head -1 | cut -d: -f1 || true)"
+    if [ -n "$wifi_con" ]; then
+      nmcli connection modify "$wifi_con" wifi.powersave 2 2>/dev/null && \
+        success "WiFi power-save disabled (NetworkManager)" || true
+    fi
+  fi
+  # Persistent fallback: iwconfig at every boot via cron
+  if command -v iwconfig >/dev/null 2>&1; then
+    local cron_line="@reboot /sbin/iwconfig wlan0 power off 2>/dev/null || true"
+    (crontab -l 2>/dev/null | grep -qF "iwconfig wlan0 power off") || \
+      (crontab -l 2>/dev/null; echo "$cron_line") | crontab - && \
+      success "WiFi power-off cron installed"
+  fi
 }
 
 # --- Set up config and env files ---
