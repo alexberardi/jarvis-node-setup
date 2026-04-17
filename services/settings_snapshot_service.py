@@ -136,7 +136,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                     entry_f["enum_values"] = secret.enum_values
                 if getattr(secret, "presets", None):
                     entry_f["presets"] = secret.presets
-                if not secret.is_sensitive and value_f:
+                if value_f and (not secret.is_sensitive or include_values):
                     entry_f["value"] = value_f
                 secrets_list_f.append(entry_f)
 
