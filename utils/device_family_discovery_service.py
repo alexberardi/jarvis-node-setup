@@ -10,6 +10,7 @@ Mirrors the AgentDiscoveryService pattern:
 
 import importlib
 import pkgutil
+import sys
 import threading
 from pathlib import Path
 
@@ -59,6 +60,14 @@ class DeviceFamilyDiscoveryService:
         except ImportError:
             logger.warning("No device_families package found, skipping family discovery")
             return {}
+
+        # Invalidate Python's import caches so newly-installed or
+        # reinstalled Pantry packages are picked up without a restart
+        # (same pattern as command_discovery_service._discover_commands).
+        importlib.invalidate_caches()
+        for key in list(sys.modules.keys()):
+            if key.startswith("device_families.custom_families"):
+                del sys.modules[key]
 
         new_families: dict[str, IJarvisDeviceProtocol] = {}
 
