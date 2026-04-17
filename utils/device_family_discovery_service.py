@@ -84,7 +84,6 @@ class DeviceFamilyDiscoveryService:
                 if family_dir.is_dir() and not family_dir.name.startswith("_"):
                     protocol_py = family_dir / "protocol.py"
                     if protocol_py.exists():
-                        import sys
                         if str(family_dir) not in sys.path:
                             sys.path.insert(0, str(family_dir))
                         self._try_load_family(
@@ -96,7 +95,11 @@ class DeviceFamilyDiscoveryService:
         self._families_cache = new_families
         self._discovered = True
 
-        logger.info("Device family discovery complete", count=len(new_families))
+        logger.info(
+            "Device family discovery complete",
+            count=len(new_families),
+            families=sorted(new_families.keys()),
+        )
         return new_families
 
     def _try_load_family(
@@ -135,7 +138,7 @@ class DeviceFamilyDiscoveryService:
                     )
 
         except ImportError as e:
-            logger.debug(
+            logger.warning(
                 "Device family module skipped (missing dependency)",
                 module=module_name,
                 error=str(e),
@@ -235,7 +238,6 @@ class DeviceFamilyDiscoveryService:
                 if family_dir.is_dir() and not family_dir.name.startswith("_"):
                     protocol_py = family_dir / "protocol.py"
                     if protocol_py.exists():
-                        import sys
                         if str(family_dir) not in sys.path:
                             sys.path.insert(0, str(family_dir))
                         try:
