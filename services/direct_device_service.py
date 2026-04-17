@@ -195,7 +195,8 @@ class DirectDeviceService:
             return None
 
         return await adapter.get_state(
-            ip=device.local_ip,
+            ip=device.local_ip or "",
+            device=device,
             mac_address=device.mac_address,
         )
 
