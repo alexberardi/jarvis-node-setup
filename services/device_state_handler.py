@@ -64,7 +64,9 @@ async def _async_query_and_upload(request_id: str, details: dict[str, Any]) -> N
     handler = get_domain_handler(domain)
     if handler:
         normalized = handler.normalize_state(raw_state)
-        ui_hints = handler.get_ui_hints()
+        # Pass device-reported modes (e.g. Nest available_modes) to UI hints
+        available = [m.lower() for m in raw_state.get("available_modes", [])]
+        ui_hints = handler.get_ui_hints(features=available if available else None)
     else:
         normalized = raw_state
         ui_hints = UIControlHints(control_type="toggle")
