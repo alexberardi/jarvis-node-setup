@@ -17,8 +17,8 @@ services:
       - JARVIS_CONFIG_URL_STYLE=dockerized
       - JARVIS_NODE_DB=/root/.jarvis/jarvis_node.db
     volumes:
-      # Config file (created via authorize_node.py or manually)
-      - ./config-docker.json:/config/config.json:ro
+      # Config file (writable — setup wizard writes credentials here)
+      - ./config-docker.json:/config/config.json
       # Persistent data (secrets DB, installed packages)
       - jarvis-node-data:/root/.jarvis
       # Live-reload app code in dev
