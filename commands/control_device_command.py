@@ -68,7 +68,8 @@ class ControlDeviceCommand(IJarvisCommand):
                 required=True,
                 description=(
                     "Action to perform: turn_on, turn_off, play, pause, "
-                    "volume_up, volume_down, next, previous, lock, unlock."
+                    "volume_up, volume_down, next, previous, lock, unlock, "
+                    "set_temperature, set_mode, set_brightness."
                 ),
             ),
             JarvisParameter(
@@ -76,6 +77,16 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description="Entity ID from the device list (e.g. 'light.office'). Pass if shown in context.",
+            ),
+            JarvisParameter(
+                "value",
+                "string",
+                required=False,
+                description=(
+                    "Value for the action. Examples: temperature in degrees for set_temperature (e.g. '69'), "
+                    "mode name for set_mode (e.g. 'heat', 'cool', 'off'), "
+                    "brightness percentage for set_brightness (e.g. '50')."
+                ),
             ),
         ]
 
@@ -108,8 +119,12 @@ class ControlDeviceCommand(IJarvisCommand):
                 expected_parameters={"device_name": "office light", "action": "turn_off"},
             ),
             CommandExample(
-                voice_command="Pause the TV",
-                expected_parameters={"device_name": "TV", "action": "pause"},
+                voice_command="Set the thermostat to 72 degrees",
+                expected_parameters={"device_name": "thermostat", "action": "set_temperature", "value": "72"},
+            ),
+            CommandExample(
+                voice_command="Set the Nest to heat mode",
+                expected_parameters={"device_name": "Nest Thermostat", "action": "set_mode", "value": "heat"},
             ),
             CommandExample(
                 voice_command="Turn up the volume on the speaker",
@@ -123,13 +138,12 @@ class ControlDeviceCommand(IJarvisCommand):
             ("Turn off the office light", {"device_name": "office light", "action": "turn_off"}),
             ("Pause the TV", {"device_name": "TV", "action": "pause"}),
             ("Turn up the volume on the speaker", {"device_name": "speaker", "action": "volume_up"}),
+            ("Set the thermostat to 69 degrees", {"device_name": "thermostat", "action": "set_temperature", "value": "69"}),
+            ("Set the Nest to cool mode", {"device_name": "Nest Thermostat", "action": "set_mode", "value": "cool"}),
             ("Turn on the living room lights", {"device_name": "living room lights", "action": "turn_on"}),
             ("Turn off the bedroom lamp", {"device_name": "bedroom lamp", "action": "turn_off"}),
-            ("Play the TV", {"device_name": "TV", "action": "play"}),
             ("Lock the front door", {"device_name": "front door", "action": "lock"}),
             ("Unlock the back door", {"device_name": "back door", "action": "unlock"}),
-            ("Turn down the volume", {"device_name": "speaker", "action": "volume_down"}),
-            ("Skip to the next track", {"device_name": "speaker", "action": "next"}),
             ("Turn off all the lights", {"device_name": "all lights", "action": "turn_off"}),
         ]
         examples = []
@@ -185,13 +199,26 @@ class ControlDeviceCommand(IJarvisCommand):
             )
 
         entity_id: str = kwargs.get("entity_id", "")
+        value: str = kwargs.get("value", "")
+
+        # Build action data from value param based on action type
+        data: Dict[str, Any] = {}
+        if value:
+            if action == "set_temperature":
+                data["temperature"] = value
+            elif action == "set_mode":
+                data["mode"] = value
+            elif action == "set_brightness":
+                data["brightness"] = value
+            else:
+                data["value"] = value
 
         try:
             if entity_id:
                 # LLM passed entity_id from prompt context — dispatch directly
-                result = self._control_by_entity_id(entity_id, action, device_name)
+                result = self._control_by_entity_id(entity_id, action, device_name, data)
             else:
-                result = self._control(device_name, action)
+                result = self._control(device_name, action, data)
         except Exception as e:
             return CommandResponse.error_response(
                 error_details=f"Device control failed: {e}",
@@ -214,7 +241,9 @@ class ControlDeviceCommand(IJarvisCommand):
             wait_for_input=False,
         )
 
-    def _control_by_entity_id(self, entity_id: str, action: str, device_name: str) -> Dict[str, Any]:
+    def _control_by_entity_id(
+        self, entity_id: str, action: str, device_name: str, data: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         """Dispatch control using entity_id from the LLM.
 
         Resolves device details from the DirectDeviceService cache
@@ -233,7 +262,7 @@ class ControlDeviceCommand(IJarvisCommand):
             return {"success": False, "error": f"Device '{entity_id}' not found"}
 
         loop = _get_device_loop()
-        result = loop.run_until_complete(service.control_device(entity_id, action))
+        result = loop.run_until_complete(service.control_device(entity_id, action, data))
 
         if result.success:
             return {"success": True, "device": device.name, "action": action}
@@ -288,7 +317,7 @@ class ControlDeviceCommand(IJarvisCommand):
             out["input_required"] = result.input_required.to_dict()
         return out
 
-    def _control(self, device_name: str, action: str) -> Dict[str, Any]:
+    def _control(self, device_name: str, action: str, data: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """Resolve device and dispatch control via DirectDeviceService (fallback)."""
         from services.direct_device_service import DirectDeviceService
 
@@ -316,7 +345,7 @@ class ControlDeviceCommand(IJarvisCommand):
 
         # Execute control
         loop = _get_device_loop()
-        result = loop.run_until_complete(service.control_device(match.entity_id, action))
+        result = loop.run_until_complete(service.control_device(match.entity_id, action, data))
 
         if result.success:
             return {"success": True, "device": match.name, "action": action}

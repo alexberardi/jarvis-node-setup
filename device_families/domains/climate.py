@@ -66,8 +66,23 @@ class ClimateDomainHandler(DomainHandler):
         if current is not None:
             state["current_temperature"] = round(float(current))
 
-        # Target temperature
-        target = raw.get("temperature") or raw.get("target_temperature")
+        # Target temperature: prefer explicit target, then setpoints, then HA "temperature"
+        target = raw.get("target_temperature")
+        if target is None:
+            # Nest adapter: use heat/cool setpoint based on mode
+            mode_lower = str(mode).lower()
+            if mode_lower == "cool" and "cool_setpoint" in raw:
+                target = raw.get("cool_setpoint")
+            elif "heat_setpoint" in raw:
+                target = raw.get("heat_setpoint")
+        if target is None:
+            # HA format: "temperature" is the target (only when current_temperature
+            # is already set separately, so we don't confuse ambient with target)
+            if "current_temperature" in raw or "current_temperature" in state:
+                target = raw.get("temperature")
+            elif raw.get("temperature") is not None and current is None:
+                # No current temp available — "temperature" is likely HA target
+                target = raw.get("temperature")
         if target is None:
             if unit == "F":
                 target = raw.get("target_temperature_f")
