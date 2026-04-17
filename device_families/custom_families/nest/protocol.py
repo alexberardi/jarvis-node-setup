@@ -136,6 +136,7 @@ class NestProtocol(IJarvisDeviceProtocol):
             base.extend([
                 JarvisSecret("NEST_WEB_CLIENT_ID", "Web Application OAuth client ID", "integration", "string", required=True, is_sensitive=False, friendly_name="Web Client ID"),
                 JarvisSecret("NEST_WEB_CLIENT_SECRET", "Web Application OAuth client secret", "integration", "string", required=True, friendly_name="Web Client Secret"),
+                JarvisSecret("NEST_REFRESH_TOKEN", "OAuth refresh token (auto-populated)", "integration", "string", required=False),
             ])
 
         return base
