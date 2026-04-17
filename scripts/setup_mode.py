@@ -378,7 +378,11 @@ async def list_households():
         raise HTTPException(status_code=502, detail=str(e))
 
     if resp.status_code != 200:
-        return JSONResponse(resp.json(), status_code=resp.status_code)
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"detail": resp.text or f"HTTP {resp.status_code}"}
+        return JSONResponse(body, status_code=resp.status_code)
 
     return resp.json()
 
@@ -419,7 +423,11 @@ async def list_rooms(household_id: str):
         raise HTTPException(status_code=502, detail=str(e))
 
     if resp.status_code != 200:
-        return JSONResponse(resp.json(), status_code=resp.status_code)
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"detail": resp.text or f"HTTP {resp.status_code}"}
+        return JSONResponse(body, status_code=resp.status_code)
 
     return resp.json()
 
