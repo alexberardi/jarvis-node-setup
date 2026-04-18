@@ -17,7 +17,7 @@ from jarvis_log_client import JarvisLogger
 from clients.rest_client import RestClient
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
-from scripts.speech_to_text import listen, listen_for_follow_up
+from scripts.speech_to_text import RecordingResult, listen, listen_for_follow_up
 from services.alert_queue_service import get_alert_queue_service
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
@@ -221,9 +221,9 @@ def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]
         tts_provider_instance.speak(False, question)
 
         logger.debug("Listening for validation response")
-        validation_audio = listen()
+        validation_recording = listen()
 
-        validation_transcription = stt_provider.transcribe(validation_audio)
+        validation_transcription = stt_provider.transcribe(validation_recording.audio_file)
 
         if validation_transcription:
             logger.info("User validation response", response=validation_transcription)
@@ -252,8 +252,42 @@ def _is_non_speech(text: str | None) -> bool:
     )
 
 
+_ABORT_PHRASES: set[str] = {
+    "never mind", "nevermind", "cancel", "forget it",
+    "that wasn't for you", "not you", "sorry jarvis",
+    "ignore that", "ignore me",
+}
+
+
+def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
+    """Detect false wake word triggers from ambient conversation.
+
+    Uses a combination of signals:
+    1. Abort phrases — user heard the chime and wants to cancel
+    2. Max recording duration + long/mid-sentence transcription — ambient speech
+    """
+    text = transcription.strip().lower()
+
+    # Signal 1: abort phrases
+    for phrase in _ABORT_PHRASES:
+        if text == phrase or text.startswith(phrase):
+            return True
+
+    # Signal 2: recording hit max duration (speaker never paused)
+    if recording.hit_max_duration:
+        words = text.split()
+        # Long transcription — ambient conversation, not a command
+        if len(words) > 20:
+            return True
+        # Starts mid-sentence (lowercase, not "i" or "ok")
+        if text and text[0].islower() and not text.startswith(("i ", "i'", "ok")):
+            return True
+
+    return False
+
+
 def send_for_transcription(
-    filename: str,
+    recording: RecordingResult,
     command_service: CommandExecutionService,
     stt_provider,
     validation_handler: Callable[[ValidationRequest], str],
@@ -264,10 +298,15 @@ def send_for_transcription(
     global _last_speaker_user_id
 
     logger.info("Sending audio to transcription server")
-    result = stt_provider.transcribe_with_speaker(filename)
+    result = stt_provider.transcribe_with_speaker(recording.audio_file)
 
     if _is_non_speech(result.text):
         logger.info("Non-speech transcription, skipping", text=result.text)
+        return None
+
+    if result.text and _is_false_wake(result.text, recording):
+        logger.info("False wake detected, aborting silently", text=result.text[:80],
+                     duration=recording.duration, hit_max=recording.hit_max_duration)
         return None
 
     if result.text:
@@ -462,13 +501,13 @@ def _start_keyboard_listener() -> None:
             )
             warmup_thread.start()
 
-            audio_file = listen()
+            recording = listen()
 
             threading.Thread(target=_play_processing_ack, daemon=True).start()
 
             start = time.perf_counter()
             result = send_for_transcription(
-                audio_file, command_service, stt_provider, validation_handler,
+                recording, command_service, stt_provider, validation_handler,
                 warmup_thread=warmup_thread,
                 conversation_id=conversation_id,
                 warmup_result=warmup_result,
@@ -667,14 +706,14 @@ def start_voice_listener(ma_service):
 
                 result = None
                 try:
-                    audio_file = listen()  # warmup runs during recording
+                    recording = listen()  # warmup runs during recording
 
                     # Play cached processing ack in background while STT starts
                     threading.Thread(target=_play_processing_ack, daemon=True).start()
 
                     start = time.perf_counter()
                     result = send_for_transcription(
-                        audio_file, command_service, stt_provider, validation_handler,
+                        recording, command_service, stt_provider, validation_handler,
                         warmup_thread=warmup_thread,
                         conversation_id=conversation_id,
                         warmup_result=warmup_result,
