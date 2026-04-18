@@ -82,9 +82,11 @@ def _spawn_upgrade(target_version: str) -> None:
     upgrade gets stuck.
     """
     log_path = "/var/log/jarvis-node-update.log"
+    # Pull install.sh from the TARGET version tag, not main. Curling from
+    # main is dangerous — a broken push would brick every node that updates.
     cmd = (
         "curl -fsSL https://raw.githubusercontent.com/alexberardi/"
-        f"jarvis-node-setup/main/install.sh "
+        f"jarvis-node-setup/v{target_version}/install.sh "
         f"| bash -s -- --force --version v{target_version}"
     )
     wrapped = f"({cmd}) >>{log_path} 2>&1"
