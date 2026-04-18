@@ -127,6 +127,7 @@ class JarvisCommandCenterClient:
         self,
         voice_command: str,
         conversation_id: str,
+        speaker_user_id: int | None = None,
     ) -> tuple[str, Any]:
         """Send a voice command to the unified streaming endpoint.
 
@@ -137,6 +138,8 @@ class JarvisCommandCenterClient:
         Args:
             voice_command: The transcribed voice command
             conversation_id: Unique conversation identifier
+            speaker_user_id: Actual speaker from STT (for mismatch detection
+                            when warmup used a cached speaker ID)
 
         Returns:
             A tuple of (tag, payload):
@@ -144,10 +147,12 @@ class JarvisCommandCenterClient:
             - ("control", ToolCallingResponse) — caller enters tool loop
             - ("error", message) — something went wrong
         """
-        payload = {
+        payload: dict[str, Any] = {
             "voice_command": voice_command,
             "conversation_id": conversation_id,
         }
+        if speaker_user_id is not None:
+            payload["speaker_user_id"] = speaker_user_id
 
         logger.info(
             "Sending unified voice command",
