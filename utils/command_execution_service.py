@@ -306,6 +306,9 @@ class CommandExecutionService:
         validation_handler: Optional[Callable[[ValidationRequest], str]] = None,
         register_tools: bool = True,
         speaker_user_id: Optional[int] = None,
+        conversation_id: Optional[str] = None,
+        warmup_thread: Optional[threading.Thread] = None,
+        warmup_result: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -320,12 +323,17 @@ class CommandExecutionService:
                                If None, default behavior is used
             register_tools: Whether to register available tools before processing (default: True)
             speaker_user_id: Optional speaker identity from voice recognition
+            conversation_id: Optional pre-generated conversation ID (from parallel warmup)
+            warmup_thread: Optional background warmup thread to join instead of
+                          calling register_tools_for_conversation inline
+            warmup_result: Optional dict with warmup outcome ({"success": bool})
 
         Returns:
             Execution result dictionary with success, message, conversation_id,
             wait_for_input, and clear_history
         """
-        conversation_id = self._generate_conversation_id()
+        if conversation_id is None:
+            conversation_id = self._generate_conversation_id()
 
         # Try node-side pre-routing (skip CC entirely)
         pre_result = self.try_pre_route(voice_command, conversation_id, speaker_user_id=speaker_user_id)
@@ -349,11 +357,23 @@ class CommandExecutionService:
             ack_thread.start()
 
             # Register available tools if requested
-            if register_tools:
+            if warmup_thread is not None and register_tools:
+                # Parallel warmup was started during recording — wait for it
+                warmup_thread.join(timeout=10)
+                if warmup_result and not warmup_result.get("success"):
+                    logger.warning("Parallel warmup failed, falling back to inline warmup")
+                    self.register_tools_for_conversation(conversation_id, speaker_user_id=speaker_user_id)
+                else:
+                    # Warmup succeeded but used last_speaker_user_id — store
+                    # the actual speaker for tool execution later
+                    self._conversation_users[conversation_id] = speaker_user_id
+            elif register_tools:
                 self.register_tools_for_conversation(conversation_id, speaker_user_id=speaker_user_id)
 
             # Single unified request — handles audio, tool calls, and validation
-            tag, payload = self.client.send_command_unified(voice_command, conversation_id)
+            tag, payload = self.client.send_command_unified(
+                voice_command, conversation_id, speaker_user_id=speaker_user_id,
+            )
 
             # Signal the ack thread: the main response is here. If the ack
             # hasn't started speaking yet (still in its pre-speak wait), it
@@ -766,7 +786,7 @@ class CommandExecutionService:
             "clear_history": False,
         }
 
-    ACK_TIMER_SECONDS = 1.5
+    ACK_TIMER_SECONDS = 3.0
 
     def _speak_acknowledgment(
         self,

@@ -3,6 +3,7 @@ import random
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -30,6 +31,18 @@ CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", 
 _cache_dir = get_cache_dir()
 WAKE_FILE = _cache_dir / "next_wake_response.txt"
 WAKE_AUDIO_FILE = _cache_dir / "next_wake_response.wav"
+PROCESSING_ACK_FILE = _cache_dir / "next_processing_ack.wav"
+
+# Short, snappy acks played immediately after recording ends to fill the
+# dead air while STT + LLM process.  No LLM needed — just variety.
+_PROCESSING_ACK_POOL: list[str] = [
+    "One moment.",
+    "Got it.",
+    "Working on it.",
+    "Let me check.",
+    "On it.",
+    "Give me a second.",
+]
 
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
 WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
@@ -47,6 +60,31 @@ MIC_DEVICE_INDEX: int | None = int(_mic_index_str) if _mic_index_str is not None
 
 
 _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
+
+# Track the last identified speaker so parallel warmup can load their memories.
+# Updated after every successful transcription with speaker identification.
+_last_speaker_user_id: int | None = None
+
+
+def _run_warmup(
+    command_service: CommandExecutionService,
+    conversation_id: str,
+    speaker_user_id: int | None,
+    result: dict,
+) -> None:
+    """Run conversation warmup in a background thread (during recording).
+
+    Populates ``result["success"]`` so the caller can check whether the
+    warmup succeeded after joining the thread.
+    """
+    try:
+        success = command_service.register_tools_for_conversation(
+            conversation_id, speaker_user_id=speaker_user_id,
+        )
+        result["success"] = success
+    except Exception as e:
+        logger.warning("Background warmup failed", error=str(e))
+        result["success"] = False
 
 
 def _bundled_wake_chimes() -> list[Path]:
@@ -132,6 +170,43 @@ def fetch_next_wake_response():
         logger.error("Failed to fetch next greeting", error=str(e))
 
 
+def _play_processing_ack() -> None:
+    """Play the pre-cached processing ack (instant, no network)."""
+    if not PROCESSING_ACK_FILE.exists():
+        return
+    try:
+        platform_audio.play_audio_file(str(PROCESSING_ACK_FILE))
+    except Exception as e:
+        logger.warning("Failed to play processing ack", error=str(e))
+    finally:
+        PROCESSING_ACK_FILE.unlink(missing_ok=True)
+
+
+def _fetch_next_processing_ack() -> None:
+    """Pre-generate a processing ack WAV for the next interaction.
+
+    Mirrors :func:`fetch_next_wake_response` — picks a random short ack,
+    synthesises audio via TTS, and caches it to disk so the next wake
+    cycle can play it instantly after recording ends.
+    """
+    try:
+        command_center_url = get_command_center_url()
+        if not command_center_url:
+            return
+
+        text = random.choice(_PROCESSING_ACK_POOL)
+        audio_bytes: bytes | None = RestClient.post_binary(
+            f"{command_center_url}/api/v0/media/tts/speak",
+            data={"text": text},
+            timeout=15,
+        )
+        if audio_bytes:
+            PROCESSING_ACK_FILE.write_bytes(audio_bytes)
+            logger.debug("Cached processing ack audio", text=text, size_bytes=len(audio_bytes))
+    except Exception as e:
+        logger.debug("Failed to pre-generate processing ack (non-fatal)", error=str(e))
+
+
 def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]:
     """Create a validation handler that prompts via TTS and re-listens."""
     def validation_handler(validation: ValidationRequest) -> str:
@@ -182,7 +257,12 @@ def send_for_transcription(
     command_service: CommandExecutionService,
     stt_provider,
     validation_handler: Callable[[ValidationRequest], str],
+    warmup_thread: threading.Thread | None = None,
+    conversation_id: str | None = None,
+    warmup_result: dict | None = None,
 ) -> Dict[str, Any] | None:
+    global _last_speaker_user_id
+
     logger.info("Sending audio to transcription server")
     result = stt_provider.transcribe_with_speaker(filename)
 
@@ -194,13 +274,18 @@ def send_for_transcription(
         transcription = result.text
         speaker_user_id = result.speaker_user_id
         if speaker_user_id:
+            _last_speaker_user_id = speaker_user_id
             logger.info("Transcription received", text=transcription,
                         speaker_user_id=speaker_user_id, speaker_confidence=result.speaker_confidence)
         else:
             logger.info("Transcription received", text=transcription)
 
         result = command_service.process_voice_command(
-            transcription, validation_handler, speaker_user_id=speaker_user_id
+            transcription, validation_handler,
+            speaker_user_id=speaker_user_id,
+            conversation_id=conversation_id,
+            warmup_thread=warmup_thread,
+            warmup_result=warmup_result,
         )
         command_service.speak_result(result)
 
@@ -367,15 +452,35 @@ def _start_keyboard_listener() -> None:
             except Exception as e:
                 logger.warning("Wake response TTS failed, continuing", error=str(e))
 
+            # Parallel warmup during recording
+            conversation_id = str(uuid.uuid4())
+            warmup_result: dict = {"success": False}
+            warmup_thread = threading.Thread(
+                target=_run_warmup,
+                args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                daemon=True,
+            )
+            warmup_thread.start()
+
             audio_file = listen()
 
+            threading.Thread(target=_play_processing_ack, daemon=True).start()
+
             start = time.perf_counter()
-            result = send_for_transcription(audio_file, command_service, stt_provider, validation_handler)
+            result = send_for_transcription(
+                audio_file, command_service, stt_provider, validation_handler,
+                warmup_thread=warmup_thread,
+                conversation_id=conversation_id,
+                warmup_result=warmup_result,
+            )
             end = time.perf_counter()
 
             logger.info("Transcription complete", duration_seconds=round(end - start, 2))
 
             _follow_up_loop(result, command_service, stt_provider, validation_handler)
+
+            # Pre-generate the next processing ack in the background
+            threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
 
             logger.info("Press Enter to speak another command")
     except KeyboardInterrupt:
@@ -549,13 +654,30 @@ def start_voice_listener(ma_service):
                 except Exception as e:
                     logger.warning("Wake response TTS failed, continuing", error=str(e))
 
+                # Start warmup in parallel with recording — the KV cache
+                # will be warm by the time STT finishes.
+                conversation_id = str(uuid.uuid4())
+                warmup_result: dict = {"success": False}
+                warmup_thread = threading.Thread(
+                    target=_run_warmup,
+                    args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                    daemon=True,
+                )
+                warmup_thread.start()
+
                 result = None
                 try:
-                    audio_file = listen()
+                    audio_file = listen()  # warmup runs during recording
+
+                    # Play cached processing ack in background while STT starts
+                    threading.Thread(target=_play_processing_ack, daemon=True).start()
 
                     start = time.perf_counter()
                     result = send_for_transcription(
-                        audio_file, command_service, stt_provider, validation_handler
+                        audio_file, command_service, stt_provider, validation_handler,
+                        warmup_thread=warmup_thread,
+                        conversation_id=conversation_id,
+                        warmup_result=warmup_result,
                     )
                     end = time.perf_counter()
 
@@ -569,6 +691,9 @@ def start_voice_listener(ma_service):
                     _follow_up_loop(result, command_service, stt_provider, validation_handler)
                 except Exception as e:
                     logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+
+                # Pre-generate the next processing ack in the background
+                threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
 
                 # Reopen wake-word stream
                 pa = pyaudio.PyAudio()

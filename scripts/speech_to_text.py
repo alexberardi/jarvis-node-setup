@@ -24,7 +24,7 @@ def get_audio_config() -> dict:
         "frames_per_buffer": int(sample_rate * 0.032),  # 32ms
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "silence_threshold": Config.get_int("silence_threshold", 500),  # RMS threshold for silence
-        "silence_duration": Config.get_float("silence_duration", 0.8),  # Seconds of silence to trigger stop
+        "silence_duration": Config.get_float("silence_duration", 0.5),  # Seconds of silence to trigger stop
         "min_record_seconds": Config.get_float("min_record_seconds", 1.0)  # Minimum recording time
     }
 
