@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import List
 
 import numpy as np
@@ -7,6 +8,14 @@ import wave
 from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
 from utils.encryption_utils import get_cache_dir
+
+
+@dataclass
+class RecordingResult:
+    """Metadata from a recording session."""
+    audio_file: str          # path to the WAV file
+    duration: float          # actual recording duration in seconds
+    hit_max_duration: bool   # True if recording stopped due to max_record_seconds
 
 logger = JarvisLogger(service="jarvis-node")
 _cache_dir = get_cache_dir()
@@ -52,9 +61,9 @@ def calculate_rms(audio_data: bytes) -> float:
     return float(rms)
 
 
-def listen() -> str:
+def listen() -> RecordingResult:
     logger.info("Listening for speech...")
-    
+
     config = get_audio_config()
     output_filename: str = str(_cache_dir / "command.wav")
 
@@ -103,8 +112,9 @@ def listen() -> str:
             elapsed = frame_count * config["frames_per_buffer"] / config["sample_rate"]
             logger.debug("Recording progress", elapsed=f"{elapsed:.1f}s", rms=f"{rms:.0f}", silence_frames=silence_frames, silence_threshold_frames=silence_threshold_frames)
 
+    hit_max = (len(frames) >= max_record_frames)
     actual_duration = len(frames) * config["frames_per_buffer"] / config["sample_rate"]
-    logger.info("Recording complete", duration=f"{actual_duration:.2f}s")
+    logger.info("Recording complete", duration=f"{actual_duration:.2f}s", hit_max=hit_max)
 
     stream.stop_stream()
     stream.close()
@@ -117,7 +127,7 @@ def listen() -> str:
         wf.setframerate(config["sample_rate"])
         wf.writeframes(b"".join(frames))
 
-    return output_filename
+    return RecordingResult(output_filename, actual_duration, hit_max)
 
 
 def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
