@@ -681,6 +681,18 @@ main() {
   start_service
   verify
   print_success
+
+  # On resource-constrained devices (Pi Zero 2W, 512MB RAM) the update
+  # process (pip install, tarball extraction) can leave heavy swap/cache
+  # pressure.  A reboot after a successful upgrade gives the cleanest
+  # runtime state.  Fresh installs already reboot above when NEEDS_REBOOT
+  # is set; this covers the upgrade path.
+  local backup="${INSTALL_DIR}.bak"
+  if [ -d "$backup" ] || [ -d "${INSTALL_DIR}.failed" ]; then
+    info "Upgrade complete — rebooting to reclaim resources..."
+    sleep 3
+    reboot
+  fi
 }
 
 main
