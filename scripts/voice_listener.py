@@ -15,6 +15,7 @@ from scipy.signal import resample_poly
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
+from core.barge_in import BargeInMonitor
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
 from scripts.speech_to_text import RecordingResult, listen, listen_for_follow_up
@@ -46,6 +47,10 @@ _PROCESSING_ACK_POOL: list[str] = [
 
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
 WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
+
+# Barge-in: allow interrupting TTS with wake word
+BARGE_IN_ENABLED = Config.get_str("barge_in_enabled", "true").lower() in ("true", "1", "yes")
+BARGE_IN_THRESHOLD = Config.get_float("barge_in_threshold", 0.7)
 
 # openWakeWord needs 16 kHz audio in 1280-sample (80 ms) chunks
 OWW_RATE = 16000
@@ -286,6 +291,20 @@ def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
     return False
 
 
+_ERRORS_DIR = Path(__file__).resolve().parent.parent / "sounds" / "errors"
+
+
+def _speak_error(message: str) -> None:
+    """Speak an error message, falling back to a bundled sound if TTS fails."""
+    try:
+        tts = get_tts_provider()
+        tts.speak(False, message)
+    except Exception:
+        chime = _ERRORS_DIR / "error_generic.wav"
+        if chime.exists():
+            platform_audio.play_audio_file(str(chime))
+
+
 def send_for_transcription(
     recording: RecordingResult,
     command_service: CommandExecutionService,
@@ -298,7 +317,18 @@ def send_for_transcription(
     global _last_speaker_user_id
 
     logger.info("Sending audio to transcription server")
-    result = stt_provider.transcribe_with_speaker(recording.audio_file)
+
+    # STT with specific error handling
+    try:
+        result = stt_provider.transcribe_with_speaker(recording.audio_file)
+    except (ConnectionError, OSError, TimeoutError) as e:
+        logger.error("STT connection failed", error=str(e))
+        _speak_error("I'm having trouble connecting right now.")
+        return None
+    except Exception as e:
+        logger.error("STT failed", error=str(e))
+        _speak_error("I couldn't understand that, sorry.")
+        return None
 
     if _is_non_speech(result.text):
         logger.info("Non-speech transcription, skipping", text=result.text)
@@ -319,19 +349,28 @@ def send_for_transcription(
         else:
             logger.info("Transcription received", text=transcription)
 
-        result = command_service.process_voice_command(
-            transcription, validation_handler,
-            speaker_user_id=speaker_user_id,
-            conversation_id=conversation_id,
-            warmup_thread=warmup_thread,
-            warmup_result=warmup_result,
-        )
-        command_service.speak_result(result)
+        # Command processing with specific error handling
+        try:
+            result = command_service.process_voice_command(
+                transcription, validation_handler,
+                speaker_user_id=speaker_user_id,
+                conversation_id=conversation_id,
+                warmup_thread=warmup_thread,
+                warmup_result=warmup_result,
+            )
+        except (ConnectionError, OSError, TimeoutError) as e:
+            logger.error("Command center unreachable", error=str(e))
+            _speak_error("I can't reach my server right now.")
+            return None
+        except Exception as e:
+            logger.error("Command processing failed", error=str(e))
+            _speak_error("Something went wrong, sorry about that.")
+            return None
 
+        command_service.speak_result(result)
         return result
     else:
-        tts_provider = get_tts_provider()
-        tts_provider.speak(False, "An error occurred during transcription")
+        _speak_error("I couldn't understand that, sorry.")
         return None
 
 
@@ -616,6 +655,15 @@ def start_voice_listener(ma_service):
     stt_provider = get_stt_provider()
     validation_handler = _make_validation_handler(stt_provider)
 
+    # Pre-warm the LLM's KV cache and processing ack on boot so the
+    # first interaction is as fast as subsequent ones.
+    threading.Thread(
+        target=_run_warmup,
+        args=(command_service, str(uuid.uuid4()), None, {}),
+        daemon=True,
+    ).start()
+    threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
+
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
                 threshold=WAKE_WORD_THRESHOLD, resample=needs_resample)
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
@@ -704,12 +752,27 @@ def start_voice_listener(ma_service):
                 )
                 warmup_thread.start()
 
+                # Start barge-in monitor so the user can interrupt TTS
+                barge_in: BargeInMonitor | None = None
+                if BARGE_IN_ENABLED:
+                    barge_in = BargeInMonitor(
+                        oww_model=oww,
+                        wake_word_model_name=WAKE_WORD_MODEL,
+                        threshold=BARGE_IN_THRESHOLD,
+                        needs_resample=needs_resample,
+                        mic_device_index=MIC_DEVICE_INDEX,
+                    )
+
                 result = None
                 try:
                     recording = listen()  # warmup runs during recording
 
                     # Play cached processing ack in background while STT starts
                     threading.Thread(target=_play_processing_ack, daemon=True).start()
+
+                    # Start monitoring for barge-in during STT + LLM + TTS
+                    if barge_in:
+                        barge_in.start()
 
                     start = time.perf_counter()
                     result = send_for_transcription(
@@ -724,12 +787,27 @@ def start_voice_listener(ma_service):
                 except Exception as e:
                     logger.warning("Command processing failed, resuming listener", error=str(e))
                     print(f"Command failed: {e}")
+                finally:
+                    if barge_in:
+                        barge_in.stop()
 
-                # Follow-up listening window (before reopening wake word stream)
-                try:
-                    _follow_up_loop(result, command_service, stt_provider, validation_handler)
-                except Exception as e:
-                    logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+                if barge_in and barge_in.was_interrupted:
+                    # Barge-in detected — skip follow-up, record new command
+                    logger.info("Barge-in: TTS interrupted, listening for new command")
+                    try:
+                        new_recording = listen()
+                        new_result = send_for_transcription(
+                            new_recording, command_service, stt_provider, validation_handler,
+                        )
+                        _follow_up_loop(new_result, command_service, stt_provider, validation_handler)
+                    except Exception as e:
+                        logger.warning("Barge-in command failed", error=str(e))
+                else:
+                    # Normal flow — follow-up listening window
+                    try:
+                        _follow_up_loop(result, command_service, stt_provider, validation_handler)
+                    except Exception as e:
+                        logger.warning("Follow-up loop error, resuming wake word", error=str(e))
 
                 # Pre-generate the next processing ack in the background
                 threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
