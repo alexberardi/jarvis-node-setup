@@ -291,6 +291,10 @@ class CommandExecutionService:
         try:
             for chunk in response.iter_content(chunk_size=4096):
                 if chunk:
+                    # Stop fetching if barge-in cancelled playback
+                    if platform_audio.is_cancelled:
+                        logger.info("Streaming audio cancelled (barge-in)")
+                        break
                     has_audio = True
                     audio_queue.put(chunk)
         finally:

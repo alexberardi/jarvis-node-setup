@@ -38,6 +38,15 @@ class PlatformAudio:
             pcm_iterator, sample_rate, channels, sample_width
         )
 
+    def cancel_playback(self) -> bool:
+        """Cancel any active audio playback (barge-in)."""
+        return self.audio_provider.cancel_playback()
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True if playback was cancelled."""
+        return self.audio_provider.is_cancelled
+
 
 # Global instance
 platform_audio = PlatformAudio() 

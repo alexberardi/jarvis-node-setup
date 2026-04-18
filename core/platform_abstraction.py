@@ -8,6 +8,8 @@ using dependency injection and composition patterns.
 import os
 import platform
 import re
+import threading
+import time as _time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Any
@@ -20,6 +22,43 @@ logger = JarvisLogger(service="jarvis-node")
 
 class AudioProvider(ABC):
     """Abstract interface for audio operations"""
+
+    def __init__(self):
+        self._playback_lock = threading.Lock()
+        self._playback_proc: subprocess.Popen | None = None
+        self._cancel_event = threading.Event()
+
+    def cancel_playback(self) -> bool:
+        """Cancel any active audio playback (barge-in support).
+
+        Kills the active aplay/afplay subprocess immediately.
+        Thread-safe — can be called from any thread.
+
+        Returns True if a process was cancelled.
+        """
+        with self._playback_lock:
+            proc = self._playback_proc
+            if proc is None:
+                return False
+            try:
+                proc.kill()
+                logger.info("Cancelled active audio playback (barge-in)")
+                return True
+            except OSError:
+                return False
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True if playback was cancelled (reset on next playback start)."""
+        return self._cancel_event.is_set()
+
+    def _set_playback_proc(self, proc: subprocess.Popen) -> None:
+        with self._playback_lock:
+            self._playback_proc = proc
+
+    def _clear_playback_proc(self) -> None:
+        with self._playback_lock:
+            self._playback_proc = None
 
     @abstractmethod
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
@@ -59,8 +98,6 @@ class AudioProvider(ABC):
         # audibly even when network chunks arrived on time. aplay is the
         # same binary the short-TTS path uses successfully, and it talks
         # directly to the ALSA device we've configured in /etc/asound.conf.
-        import subprocess
-        import time
         format_arg = {1: "U8", 2: "S16_LE", 3: "S24_LE", 4: "S32_LE"}.get(
             sample_width, "S16_LE"
         )
@@ -81,6 +118,7 @@ class AudioProvider(ABC):
             sample_width=sample_width,
             format=format_arg,
         )
+        self._cancel_event.clear()
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -88,7 +126,8 @@ class AudioProvider(ABC):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
-            start_ts = time.monotonic()
+            self._set_playback_proc(proc)
+            start_ts = _time.monotonic()
             total_bytes = 0
             chunk_count = 0
             assert proc.stdin is not None
@@ -96,6 +135,9 @@ class AudioProvider(ABC):
                 for chunk in pcm_iterator:
                     if not chunk:
                         continue
+                    if self._cancel_event.is_set():
+                        logger.info("PCM stream cancelled (barge-in)")
+                        break
                     chunk_count += 1
                     total_bytes += len(chunk)
                     try:
@@ -104,6 +146,7 @@ class AudioProvider(ABC):
                         logger.warning("aplay pipe closed early")
                         break
             finally:
+                self._clear_playback_proc()
                 try:
                     proc.stdin.close()
                 except BrokenPipeError:
@@ -123,7 +166,7 @@ class AudioProvider(ABC):
                 "PCM stream complete",
                 total_bytes=total_bytes,
                 chunks=chunk_count,
-                duration_s=round(time.monotonic() - start_ts, 2),
+                duration_s=round(_time.monotonic() - start_ts, 2),
                 returncode=proc.returncode,
                 stderr=stderr_out[:200] if stderr_out else None,
             )
@@ -174,18 +217,29 @@ class SystemProvider(ABC):
 # macOS Implementations
 class MacOSAudioProvider(AudioProvider):
     """macOS-specific audio provider using afplay"""
-    
+
+    def __init__(self):
+        super().__init__()
+
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
+        self._cancel_event.clear()
         try:
-            # macOS doesn't have a direct volume control with afplay
-            # We could use sox for volume control if needed
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["afplay", file_path],
-                capture_output=True,
-                text=True,
-                timeout=300
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
-            return result.returncode == 0
+            self._set_playback_proc(proc)
+            try:
+                while proc.poll() is None:
+                    if self._cancel_event.is_set():
+                        proc.kill()
+                        logger.info("afplay cancelled (barge-in)")
+                        return False
+                    _time.sleep(0.05)
+                return proc.returncode == 0
+            finally:
+                self._clear_playback_proc()
         except Exception as e:
             logger.error(f"Error playing audio file: {e}")
             return False
@@ -352,26 +406,37 @@ class MacOSSystemProvider(SystemProvider):
 # Raspberry Pi/Linux Implementations
 class PiAudioProvider(AudioProvider):
     """Raspberry Pi/Linux-specific audio provider using ALSA"""
-    
+
+    def __init__(self):
+        super().__init__()
+
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
+        self._cancel_event.clear()
         try:
-            # Use sox for volume control and aplay for playback
             if volume != 1.0:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     f"sox {file_path} -t wav - vol {volume} | aplay -D output",
                     shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
             else:
-                result = subprocess.run(
+                proc = subprocess.Popen(
                     ["aplay", "-D", "output", file_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
-            return result.returncode == 0
+            self._set_playback_proc(proc)
+            try:
+                while proc.poll() is None:
+                    if self._cancel_event.is_set():
+                        proc.kill()
+                        logger.info("aplay cancelled (barge-in)")
+                        return False
+                    _time.sleep(0.05)
+                return proc.returncode == 0
+            finally:
+                self._clear_playback_proc()
         except Exception as e:
             logger.error(f"Error playing audio file: {e}")
             return False
