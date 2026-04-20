@@ -32,6 +32,12 @@ services:
       - ./clients:/app/clients
       - ./utils:/app/utils
       - ./scripts:/app/scripts
+      # Phase 2 eval tooling — live-reload from host
+      - ./test_command_parsing.py:/app/test_command_parsing.py
+      - ./eval_gate.py:/app/eval_gate.py
+      - ./import_review_queue.py:/app/import_review_queue.py
+      # Bidirectional dir for test artifacts (test_results.json, review_queue.jsonl)
+      - ./eval_artifacts:/app/eval_artifacts
     networks:
       - jarvis-net
     restart: unless-stopped
