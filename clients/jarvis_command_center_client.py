@@ -469,6 +469,7 @@ class JarvisCommandCenterClient:
         date_context: Optional[DateContext] = None,
         speaker_user_id: Optional[int] = None,
         agents: Optional[dict] = None,
+        adapter_settings: Optional[dict] = None,
     ) -> bool:
         """
         Start a conversation session and register available client-side tools.
@@ -480,6 +481,9 @@ class JarvisCommandCenterClient:
             speaker_user_id: Optional speaker identity from voice recognition
             agents: Optional agent context to inject (e.g., Home Assistant data).
                     If provided, overrides auto-discovered agent context.
+            adapter_settings: Optional dict with {hash, scale, enabled} to override
+                              the server-side adapter for eval/test runs. Server
+                              honors this only when JARVIS_TEST_MODE=1 is set.
 
         Returns:
             True if successful, False otherwise
@@ -535,6 +539,8 @@ class JarvisCommandCenterClient:
             "client_tools": client_tools,
             "skip_warmup_inference": skip_warmup
         }
+        if adapter_settings:
+            payload["adapter_settings"] = adapter_settings
 
         try:
             response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=30, data=payload)
