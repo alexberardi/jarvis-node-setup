@@ -482,6 +482,60 @@ def handle_toggle_command(details: Dict[str, Any]) -> None:
         logger.error("toggle_command failed", command_name=command_name, error=str(e))
 
 
+def handle_update_node_config(details: Dict[str, Any]) -> None:
+    """Update node config.json values from mobile app.
+
+    Writes key/value pairs to config.json. Changes to most settings
+    take effect immediately (Config re-reads on each access). Settings
+    captured at module level (wake_word_threshold, barge_in_threshold)
+    require a service restart — the caller can request one via the
+    ``restart`` flag.
+
+    Expected details:
+        settings: dict of key/value pairs to merge into config.json
+        restart: bool (optional) — restart the service after applying
+    """
+    settings: Dict[str, Any] = details.get("settings", {})
+    if not settings:
+        logger.warning("update_node_config: no settings provided")
+        return
+
+    try:
+        config_path = os.path.expandvars(os.path.expanduser(
+            os.environ.get("CONFIG_PATH", "config.json")
+        ))
+
+        # Read current config
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            config = {}
+
+        # Merge new settings
+        config.update(settings)
+
+        # Write back
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+        logger.info("Node config updated via MQTT", keys=list(settings.keys()))
+        print(f"[MQTT] update_node_config: updated {list(settings.keys())}", flush=True)
+
+        # Restart if requested (for module-level settings like wake_word_threshold)
+        if details.get("restart"):
+            logger.info("Restarting service after config update")
+            import subprocess
+            subprocess.Popen(
+                ["sudo", "systemctl", "restart", "jarvis-node"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    except Exception as e:
+        logger.error("update_node_config failed", error=str(e))
+
+
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
@@ -489,6 +543,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "report_tools": handle_report_tools,
     "tool_call": handle_tool_call,
     "toggle_command": handle_toggle_command,
+    "update_node_config": handle_update_node_config,
 }
 
 
@@ -880,6 +935,91 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
     print("[UNINSTALL] thread started", flush=True)
 
 
+def _handle_factory_reset(raw_payload: bytes) -> None:
+    """Handle factory-reset request from CC after node deletion.
+
+    Security: Before resetting, calls CC's verify-reset endpoint to confirm
+    the request_id was actually issued by CC. This prevents spoofed MQTT
+    messages from triggering a factory reset.
+    """
+    try:
+        data: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in factory-reset message")
+        return
+
+    request_id: str = data.get("request_id", "")
+    node_id_from_msg: str = data.get("node_id", "")
+    my_node_id: str = Config.get_str("node_id", "") or ""
+
+    if not request_id or not node_id_from_msg:
+        logger.warning("Factory-reset message missing required fields, ignoring")
+        return
+
+    if node_id_from_msg != my_node_id:
+        logger.warning(
+            "Factory-reset node_id mismatch, ignoring",
+            expected=my_node_id[:8],
+            received=node_id_from_msg[:8],
+        )
+        return
+
+    print(f"[FACTORY-RESET] received reset request, verifying with CC...", flush=True)
+
+    # Verify with CC that this reset was legitimately issued
+    from utils.service_discovery import get_command_center_url
+
+    cc_url: str = get_command_center_url() or ""
+    if not cc_url:
+        logger.warning("Cannot verify factory-reset: CC URL not resolved")
+        return
+
+    import requests
+
+    verify_url: str = f"{cc_url.rstrip('/')}/api/v0/nodes/verify-reset"
+    try:
+        resp = requests.post(
+            verify_url,
+            json={"node_id": my_node_id, "request_id": request_id},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        logger.error("Factory-reset verification request failed", error=str(e))
+        return
+
+    if resp.status_code != 200:
+        logger.warning(
+            "Factory-reset verification REJECTED by CC — ignoring (possible spoof)",
+            status=resp.status_code,
+        )
+        print("[FACTORY-RESET] REJECTED by CC — ignoring", flush=True)
+        return
+
+    # Verified — proceed with factory reset
+    print("[FACTORY-RESET] VERIFIED by CC — resetting node...", flush=True)
+    logger.info("Factory-reset verified by CC, resetting node")
+
+    try:
+        from provisioning.factory_reset import factory_reset
+        result: dict = factory_reset()
+        logger.info("Factory reset complete", cleared=result.get("cleared", []))
+        print(f"[FACTORY-RESET] complete: {result}", flush=True)
+    except Exception as e:
+        logger.error("Factory reset failed", error=str(e))
+        print(f"[FACTORY-RESET] error: {e}", flush=True)
+        return
+
+    # Restart into provisioning mode
+    print("[FACTORY-RESET] restarting into provisioning mode...", flush=True)
+    logger.info("Restarting node into provisioning mode after factory reset")
+
+    if _shutdown_event:
+        _shutdown_event.set()
+    else:
+        import sys
+        sys.exit(0)
+
+
 def _handle_test_install_notification(raw_payload: bytes) -> None:
     """Handle test install nudge from CC — verify and install in background thread."""
     try:
@@ -968,6 +1108,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/package-uninstall"):
         _handle_package_uninstall_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/factory-reset"):
+        _handle_factory_reset(msg.payload)
         return
 
     try:
