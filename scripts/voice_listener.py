@@ -175,14 +175,19 @@ def fetch_next_wake_response():
         logger.error("Failed to fetch next greeting", error=str(e))
 
 
-def _play_processing_ack() -> None:
-    """Play the pre-cached processing ack (instant, no network)."""
+def _play_processing_ack() -> bool:
+    """Play the pre-cached processing ack (instant, no network).
+
+    Returns True if an ack was played (caller should suppress the ack timer).
+    """
     if not PROCESSING_ACK_FILE.exists():
-        return
+        return False
     try:
         platform_audio.play_audio_file(str(PROCESSING_ACK_FILE))
+        return True
     except Exception as e:
         logger.warning("Failed to play processing ack", error=str(e))
+        return False
     finally:
         PROCESSING_ACK_FILE.unlink(missing_ok=True)
 
@@ -313,6 +318,7 @@ def send_for_transcription(
     warmup_thread: threading.Thread | None = None,
     conversation_id: str | None = None,
     warmup_result: dict | None = None,
+    skip_ack: bool = False,
 ) -> Dict[str, Any] | None:
     global _last_speaker_user_id
 
@@ -357,6 +363,7 @@ def send_for_transcription(
                 conversation_id=conversation_id,
                 warmup_thread=warmup_thread,
                 warmup_result=warmup_result,
+                skip_ack=skip_ack,
             )
         except (ConnectionError, OSError, TimeoutError) as e:
             logger.error("Command center unreachable", error=str(e))
@@ -542,7 +549,7 @@ def _start_keyboard_listener() -> None:
 
             recording = listen()
 
-            threading.Thread(target=_play_processing_ack, daemon=True).start()
+            ack_played = _play_processing_ack()
 
             start = time.perf_counter()
             result = send_for_transcription(
@@ -550,6 +557,7 @@ def _start_keyboard_listener() -> None:
                 warmup_thread=warmup_thread,
                 conversation_id=conversation_id,
                 warmup_result=warmup_result,
+                skip_ack=ack_played,
             )
             end = time.perf_counter()
 
@@ -767,8 +775,9 @@ def start_voice_listener(ma_service):
                 try:
                     recording = listen()  # warmup runs during recording
 
-                    # Play cached processing ack in background while STT starts
-                    threading.Thread(target=_play_processing_ack, daemon=True).start()
+                    # Play cached processing ack in background while STT starts.
+                    # If an ack plays, suppress the ack timer to avoid double ack.
+                    ack_played = _play_processing_ack()
 
                     # Start monitoring for barge-in during STT + LLM + TTS
                     if barge_in:
@@ -780,6 +789,7 @@ def start_voice_listener(ma_service):
                         warmup_thread=warmup_thread,
                         conversation_id=conversation_id,
                         warmup_result=warmup_result,
+                        skip_ack=ack_played,
                     )
                     end = time.perf_counter()
 

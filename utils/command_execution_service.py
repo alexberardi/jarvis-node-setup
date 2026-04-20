@@ -80,6 +80,7 @@ class CommandExecutionService:
         conversation_id: str,
         speaker_user_id: Optional[int] = None,
         agents: Optional[Dict[str, Any]] = None,
+        adapter_settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Register available client-side tools with the Command Center for a conversation
@@ -88,6 +89,9 @@ class CommandExecutionService:
             conversation_id: The conversation identifier
             speaker_user_id: Optional speaker identity from voice recognition
             agents: Optional agent context to inject (e.g., Home Assistant data)
+            adapter_settings: Optional test-mode override for the server-side
+                              adapter (hash/scale/enabled). Honored only when
+                              the server was started with JARVIS_TEST_MODE=1.
 
         Returns:
             True if successful, False otherwise
@@ -110,6 +114,7 @@ class CommandExecutionService:
             success = self.client.start_conversation(
                 conversation_id, commands, date_context,
                 speaker_user_id=speaker_user_id, agents=agents,
+                adapter_settings=adapter_settings,
             )
 
             if success:
@@ -129,6 +134,7 @@ class CommandExecutionService:
         speaker_user_id: int | None = None,
         agents: dict | None = None,
         warmup_delay: float = 0,
+        adapter_settings: dict | None = None,
     ) -> ParseResult:
         """Classify a voice command through the production code path without executing tools.
 
@@ -170,6 +176,7 @@ class CommandExecutionService:
         # Step 2: Register tools
         if not self.register_tools_for_conversation(
             conversation_id, speaker_user_id=speaker_user_id, agents=agents,
+            adapter_settings=adapter_settings,
         ):
             return ParseResult(
                 conversation_id=conversation_id,
@@ -313,6 +320,7 @@ class CommandExecutionService:
         conversation_id: Optional[str] = None,
         warmup_thread: Optional[threading.Thread] = None,
         warmup_result: Optional[Dict[str, Any]] = None,
+        skip_ack: bool = False,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -331,6 +339,7 @@ class CommandExecutionService:
             warmup_thread: Optional background warmup thread to join instead of
                           calling register_tools_for_conversation inline
             warmup_result: Optional dict with warmup outcome ({"success": bool})
+            skip_ack: If True, suppress the ack timer (processing ack already played)
 
         Returns:
             Execution result dictionary with success, message, conversation_id,
@@ -350,7 +359,10 @@ class CommandExecutionService:
         # preceded by a pointless "Let me look into that." For slow tool
         # calls (deep research, external APIs, multi-iteration LLM loops)
         # the timer fires and the ack plays to cover the wait.
+        # Skip if a processing ack was already played (avoids double ack).
         main_response_ready = threading.Event()
+        if skip_ack:
+            main_response_ready.set()  # pre-signal so ack thread exits immediately
 
         try:
             ack_thread = threading.Thread(
