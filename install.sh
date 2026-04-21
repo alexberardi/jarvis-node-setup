@@ -146,49 +146,52 @@ detect_python() {
 
 # --- Install system packages ---
 install_apt_deps() {
-  info "Installing system dependencies..."
+  detect_python
 
-  # Only update if cache is stale (> 1 hour)
+  # Build the list of packages we'd want installed. Include audio packages
+  # only when --no-audio isn't set.
+  local wanted=(
+    "${PY_PKG}" "${PY_VENV_PKG}"
+    git avahi-utils hostapd dnsmasq
+    sqlcipher libsqlcipher-dev libopenblas-dev
+    mosquitto-clients
+  )
+  if [ "$SKIP_AUDIO" -eq 0 ]; then
+    wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak)
+  fi
+
+  # Filter to only packages that aren't already installed. On upgrades this
+  # is almost always empty — dpkg inspection is cheap (< 1s for 14 packages)
+  # whereas `apt-get install` of already-present packages takes 10-20 minutes
+  # on Pi Zero due to its slow SD card and per-package state verification.
+  local missing=()
+  local pkg
+  for pkg in "${wanted[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      missing+=("$pkg")
+    fi
+  done
+
+  # Always (re)assert hostapd/dnsmasq masking — the node manages these
+  # directly and auto-start from systemd would conflict with provisioning.
+  systemctl stop hostapd dnsmasq 2>/dev/null || true
+  systemctl disable hostapd dnsmasq 2>/dev/null || true
+  systemctl mask hostapd dnsmasq 2>/dev/null || true
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    info "System dependencies already installed — skipping apt"
+    return
+  fi
+
+  info "Installing ${#missing[@]} missing package(s): ${missing[*]}"
+
+  # Refresh apt cache only when missing packages means we actually care.
   local apt_cache="/var/cache/apt/pkgcache.bin"
   if [ ! -f "$apt_cache" ] || [ "$(( $(date +%s) - $(stat -c %Y "$apt_cache" 2>/dev/null || echo 0) ))" -gt 3600 ]; then
     apt-get update -qq
   fi
 
-  detect_python
-
-  # Core packages (always needed)
-  apt-get install -y --no-install-recommends -qq \
-    "${PY_PKG}" \
-    "${PY_VENV_PKG}" \
-    git \
-    avahi-utils \
-    hostapd \
-    dnsmasq \
-    sqlcipher \
-    libsqlcipher-dev \
-    libopenblas-dev \
-    > /dev/null
-
-  # Audio packages (unless --no-audio)
-  if [ "$SKIP_AUDIO" -eq 0 ]; then
-    apt-get install -y --no-install-recommends -qq \
-      alsa-utils \
-      portaudio19-dev \
-      sox \
-      ffmpeg \
-      espeak \
-      > /dev/null
-  fi
-
-  # MQTT client for TTS
-  apt-get install -y --no-install-recommends -qq \
-    mosquitto-clients \
-    > /dev/null
-
-  # Disable system hostapd/dnsmasq (node manages them directly)
-  systemctl stop hostapd dnsmasq 2>/dev/null || true
-  systemctl disable hostapd dnsmasq 2>/dev/null || true
-  systemctl mask hostapd dnsmasq 2>/dev/null || true
+  apt-get install -y --no-install-recommends -qq "${missing[@]}" > /dev/null
 
   success "System dependencies installed"
 }
@@ -655,6 +658,18 @@ main() {
   preflight
   get_version
   install_apt_deps
+
+  # Stop jarvis-node before the heavy steps (download / extract / rebuild
+  # venv / pip). On a Pi Zero 2W with 512 MB RAM the running service and a
+  # concurrent install will OOM each other. The installer runs as its own
+  # transient systemd unit (see services/update_service.py::_spawn_upgrade)
+  # so stopping the service here only tears down jarvis-node, not us.
+  # start_service at the end handles the restart either way.
+  if systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+    info "Stopping ${SERVICE_NAME} to free memory for the upgrade..."
+    systemctl stop "${SERVICE_NAME}.service" || true
+  fi
+
   download_and_extract
   configure_audio
   setup_config
