@@ -23,6 +23,7 @@ in the heartbeat payload is the success signal.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -74,12 +75,29 @@ def clear_state() -> None:
 
 
 def _spawn_upgrade(target_version: str) -> None:
-    """Fork a detached installer shell.
+    """Fork a detached installer as its own systemd unit.
 
-    `setsid` gives it its own session so systemd stopping jarvis-node (when
-    install.sh calls `systemctl restart`) doesn't cascade into killing the
-    installer itself. Output is tee'd to a log the Pi owner can tail if an
-    upgrade gets stuck.
+    Running the installer via `systemd-run --unit=jarvis-node-update` places
+    it in a separate cgroup from jarvis-node.service. Under cgroups v2 (Pi OS
+    Bookworm and later) child processes inherit their parent's cgroup — so
+    the previous `setsid` approach wasn't enough:
+      - install.sh was subject to jarvis-node's memory pressure, so the OOM
+        killer could (and did, on a 512 MB Pi Zero 2W) take out the installer
+        mid-run.
+      - install.sh couldn't safely `systemctl stop jarvis-node` to free RAM
+        because that would tear down its own cgroup.
+
+    With a dedicated transient unit both problems go away: the installer owns
+    its own memory accounting and can stop/start jarvis-node freely. Output
+    is appended to a log the Pi owner can tail if an upgrade gets stuck.
+
+    `--collect` GCs the unit once the command exits. `--no-block` returns
+    immediately so the caller (this Python service) can exit without waiting.
+    `--same-dir` preserves CWD so relative paths in install.sh keep working.
+
+    Falls back to the legacy `setsid` launch if `systemd-run` isn't on PATH
+    (very old systems) — loses the cgroup isolation but preserves the
+    existing behavior.
     """
     log_path = "/var/log/jarvis-node-update.log"
     # Pull install.sh from the TARGET version tag, not main. Curling from
@@ -91,8 +109,24 @@ def _spawn_upgrade(target_version: str) -> None:
     )
     wrapped = f"({cmd}) >>{log_path} 2>&1"
 
+    if shutil.which("systemd-run"):
+        popen_args = [
+            "systemd-run",
+            "--unit=jarvis-node-update",
+            "--collect",
+            "--no-block",
+            "--same-dir",
+            "bash", "-c", wrapped,
+        ]
+    else:
+        logger.warning(
+            "systemd-run not found — falling back to setsid; installer will "
+            "share jarvis-node's cgroup and may OOM on low-memory devices"
+        )
+        popen_args = ["setsid", "bash", "-c", wrapped]
+
     subprocess.Popen(
-        ["setsid", "bash", "-c", wrapped],
+        popen_args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
