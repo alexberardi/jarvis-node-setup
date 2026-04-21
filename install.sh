@@ -660,12 +660,18 @@ main() {
   install_apt_deps
 
   # Stop jarvis-node before the heavy steps (download / extract / rebuild
-  # venv / pip). On a Pi Zero 2W with 512 MB RAM the running service and a
-  # concurrent install will OOM each other. The installer runs as its own
-  # transient systemd unit (see services/update_service.py::_spawn_upgrade)
-  # so stopping the service here only tears down jarvis-node, not us.
-  # start_service at the end handles the restart either way.
-  if systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
+  # venv / pip) to free RAM on 512 MB boards where the running service and
+  # a concurrent install will OOM-kill each other.
+  #
+  # Safety: only stop if we're NOT inside jarvis-node's cgroup. Under
+  # cgroups v2 a `systemctl stop jarvis-node` tears down the whole cgroup
+  # including any installer bash that was spawned as a child of the service
+  # (the pre-v0.1.11 launch path used setsid, which doesn't detach from
+  # cgroups). The v0.1.11+ launcher uses `systemd-run --unit=` so the
+  # installer lands in its own cgroup — then this stop is safe.
+  if grep -q "jarvis-node" /proc/self/cgroup 2>/dev/null; then
+    info "Installer is inside jarvis-node's cgroup — leaving service running"
+  elif systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
     info "Stopping ${SERVICE_NAME} to free memory for the upgrade..."
     systemctl stop "${SERVICE_NAME}.service" || true
   fi
