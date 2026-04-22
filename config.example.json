@@ -10,6 +10,7 @@
   "mqtt_username": "",
   "mqtt_password": "",
   "mic_sample_rate": 48000,
+  "mic_device_name": "USB PnP",
   "mic_device_index": 1,
   "max_record_seconds": 7,
   "silence_threshold": 500,
