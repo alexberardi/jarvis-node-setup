@@ -252,33 +252,55 @@ def main():
     # See services/device_scan_handler.py and mqtt_tts_listener.py.
 
     # Auto-reconnect known Bluetooth devices in background
+    # Re-try reconnect every 10 min so a device that appears after boot
+    # (e.g. speaker powered on late) gets picked up. Long enough to avoid
+    # log spam + BT radio churn on Pi Zero, short enough that the user
+    # doesn't wait an hour for auto-connect to retry.
+    BT_RECONNECT_INTERVAL_SECONDS = 600
+
     def _bt_reconnect() -> None:
-        time.sleep(30)  # Let BlueZ initialize
-        try:
-            from jarvis_command_sdk import JarvisStorage
-            from core.platform_abstraction import get_bluetooth_provider
+        """Long-running reconnect loop for saved BT devices.
 
-            storage = JarvisStorage("bluetooth")
-            records = storage.get_all()
-            if not records:
-                return
+        Runs forever (until shutdown) so the thread-supervisor doesn't
+        treat one-shot completion as a crash — previously this returned
+        after the first pass and got re-launched every 30s by the
+        supervisor, producing "Supervised thread died, restarting" log
+        spam + constant CPU churn.
+        """
+        # Give BlueZ time to finish initializing at boot.
+        if _shutdown_event.wait(timeout=30):
+            return
 
-            provider = get_bluetooth_provider()
-            if not provider.is_available():
-                return
+        while not _shutdown_event.is_set():
+            try:
+                from jarvis_command_sdk import JarvisStorage
+                from core.platform_abstraction import get_bluetooth_provider
 
-            count = 0
-            for record in records:
-                if not record.get("auto_connect", True):
-                    continue
-                mac = record.get("mac_address")
-                if mac and provider.connect(mac):
-                    count += 1
-                    logger.info("Auto-reconnected BT device", name=record.get("name", mac), mac=mac)
-            if count > 0:
-                logger.info("Bluetooth auto-reconnect complete", count=count)
-        except Exception as e:
-            logger.warning("Bluetooth auto-reconnect failed (non-fatal)", error=str(e))
+                storage = JarvisStorage("bluetooth")
+                records = storage.get_all()
+                if records:
+                    provider = get_bluetooth_provider()
+                    if provider.is_available():
+                        count = 0
+                        for record in records:
+                            if not record.get("auto_connect", True):
+                                continue
+                            mac = record.get("mac_address")
+                            if mac and provider.connect(mac):
+                                count += 1
+                                logger.info(
+                                    "Auto-reconnected BT device",
+                                    name=record.get("name", mac),
+                                    mac=mac,
+                                )
+                        if count > 0:
+                            logger.info("Bluetooth auto-reconnect complete", count=count)
+            except Exception as e:
+                logger.warning("Bluetooth auto-reconnect failed (non-fatal)", error=str(e))
+
+            # Sleep until next cycle (waking early on shutdown)
+            if _shutdown_event.wait(timeout=BT_RECONNECT_INTERVAL_SECONDS):
+                break
 
     def _make_bt_thread() -> threading.Thread:
         t = threading.Thread(target=_bt_reconnect, daemon=True)
