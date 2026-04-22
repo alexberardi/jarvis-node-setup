@@ -1,9 +1,14 @@
-"""Wake response provider that uses command-center's media proxy.
+"""Wake response provider that uses command-center's wake-response endpoint.
 
-Phase 6 Migration: Direct TTS calls → Command-center proxy
-- Calls command-center's /api/v0/media/tts/generate-wake-response endpoint
-- Uses node authentication (X-API-Key header)
-- Command-center handles app-to-app auth with jarvis-tts
+Migration history:
+- Pre-Phase-6: node called jarvis-tts directly for dynamic greetings.
+- Phase 6:    node → CC proxy → jarvis-tts. CC handled app-to-app auth
+              but jarvis-tts still did the LLM call + any sanitation.
+- Current:    node → CC /wake-response. CC owns the LLM call, runs the
+              active prompt provider's sanitize_text (strips Qwen3
+              <think> blocks, etc.), returns clean text. TTS and
+              llm-proxy stay dumb — single source of truth for voice
+              response generation.
 """
 
 from typing import Any, Dict, Optional
@@ -35,8 +40,7 @@ class JarvisTTSWakeResponseProvider(IJarvisWakeResponseProvider):
                 logger.error("command_center_url not configured", context={"provider": "wake-response"})
                 return None
 
-            # Call command-center's wake response proxy endpoint
-            url = f"{command_center_url}/api/v0/media/tts/generate-wake-response"
+            url = f"{command_center_url}/api/v0/wake-response"
 
             response: Optional[Dict[str, Any]] = RestClient.post(url, timeout=10)
 
