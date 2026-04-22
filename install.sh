@@ -266,9 +266,22 @@ download_and_extract() {
         info "Restored ${f} from backup"
       fi
     done
-    # Encrypted SQLite DB + WAL/SHM journals
+    # Encrypted SQLite DB + WAL/SHM journals.
+    #
+    # Use `if [ -f ... ]` rather than the `[ ... ] && cmd && cmd` idiom:
+    # when a glob pattern matches nothing, bash leaves the literal
+    # pattern as the loop variable (e.g. "/opt/jarvis-node.bak/*.db-wal").
+    # The test then returns 1 for "file doesn't exist", and under
+    # `set -e` that non-zero becomes the loop's final exit status, which
+    # becomes download_and_extract's return value, which kills the entire
+    # script from main's context — silently, because the failure is many
+    # frames away from where we "expected" exit to happen. The explicit
+    # `if` is set-e-safe because the test is the if-condition (exempt).
     for f in "${backup}"/*.db "${backup}"/*.db-shm "${backup}"/*.db-wal; do
-      [ -f "$f" ] && cp "$f" "${INSTALL_DIR}/" && info "Restored $(basename "$f") from backup"
+      if [ -f "$f" ]; then
+        cp "$f" "${INSTALL_DIR}/"
+        info "Restored $(basename "$f") from backup"
+      fi
     done
   fi
 }
