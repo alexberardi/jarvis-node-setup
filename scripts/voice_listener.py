@@ -63,6 +63,99 @@ MIC_CHUNK = OWW_CHUNK * (MIC_RATE // OWW_RATE)  # 3840 samples at 48 kHz = 80 ms
 _mic_index_str: str | None = Config.get_str("mic_device_index")
 MIC_DEVICE_INDEX: int | None = int(_mic_index_str) if _mic_index_str is not None else None
 
+# Substring to match against PyAudio device names (case-insensitive). When
+# present, takes precedence over the numeric mic_device_index — ALSA card
+# order on Raspberry Pi isn't stable across boots (HDMI driver vs hifiberry
+# overlay races), so a string like "USB PnP" or "Device" is far more
+# resilient than a numeric index.
+MIC_DEVICE_NAME: str | None = Config.get_str("mic_device_name")
+
+
+def _resolve_input_device_index(
+    pa_instance: "pyaudio.PyAudio | None" = None,
+) -> int | None:
+    """Pick an input device index at stream-open time.
+
+    Resolution order, with each fallback logged so boot diagnostics are
+    obvious:
+
+      1. Name-substring match against a configured ``mic_device_name``.
+         Most resilient — survives ALSA card reordering across reboots.
+      2. A configured ``mic_device_index``, IF that index is actually an
+         input device on the current system. Rejected (with warning) if
+         the index points at an output-only device like the HifiBerry DAC.
+      3. First device with ``maxInputChannels > 0``. Last-ditch fallback
+         so the node still boots even with no config.
+
+    Returns None only if there are no input devices at all — caller should
+    let PyAudio pick its default in that case.
+
+    If no ``pa_instance`` is supplied, a throwaway PyAudio instance is
+    created and terminated for the resolution (useful from call sites
+    that have already torn down their main PA handle).
+    """
+    owns_pa = pa_instance is None
+    if pa_instance is None:
+        pa_instance = pyaudio.PyAudio()
+    try:
+        return _resolve_input_device_index_impl(pa_instance)
+    finally:
+        if owns_pa:
+            pa_instance.terminate()
+
+
+def _resolve_input_device_index_impl(pa_instance: "pyaudio.PyAudio") -> int | None:
+    # 1. Name-based lookup.
+    if MIC_DEVICE_NAME:
+        needle = MIC_DEVICE_NAME.lower()
+        for i in range(pa_instance.get_device_count()):
+            info = pa_instance.get_device_info_by_index(i)
+            if (info.get("maxInputChannels", 0) > 0
+                    and needle in str(info.get("name", "")).lower()):
+                logger.info(
+                    "Mic resolved by name",
+                    pattern=MIC_DEVICE_NAME,
+                    matched=info.get("name"),
+                    index=i,
+                )
+                return i
+        logger.warning(
+            "mic_device_name set but no input device matched — falling back",
+            pattern=MIC_DEVICE_NAME,
+        )
+
+    # 2. Configured index, validated.
+    if MIC_DEVICE_INDEX is not None:
+        try:
+            info = pa_instance.get_device_info_by_index(MIC_DEVICE_INDEX)
+            if info.get("maxInputChannels", 0) > 0:
+                return MIC_DEVICE_INDEX
+            logger.warning(
+                "mic_device_index points at an output-only device — falling back",
+                index=MIC_DEVICE_INDEX,
+                name=info.get("name"),
+            )
+        except (OSError, ValueError) as e:
+            logger.warning(
+                "mic_device_index invalid — falling back",
+                index=MIC_DEVICE_INDEX,
+                error=str(e),
+            )
+
+    # 3. First available input device.
+    for i in range(pa_instance.get_device_count()):
+        info = pa_instance.get_device_info_by_index(i)
+        if info.get("maxInputChannels", 0) > 0:
+            logger.warning(
+                "Auto-selected first input device (no mic_device_name/index configured)",
+                name=info.get("name"),
+                index=i,
+            )
+            return i
+
+    logger.error("No input devices found on this system")
+    return None
+
 
 _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
 
@@ -587,8 +680,9 @@ def _create_oww_stream(pa_instance: pyaudio.PyAudio) -> tuple:
         format=pyaudio.paInt16,
         input=True,
     )
-    if MIC_DEVICE_INDEX is not None:
-        base_kwargs["input_device_index"] = MIC_DEVICE_INDEX
+    resolved_index = _resolve_input_device_index(pa_instance)
+    if resolved_index is not None:
+        base_kwargs["input_device_index"] = resolved_index
 
     # Try native 16 kHz first
     try:
@@ -768,7 +862,7 @@ def start_voice_listener(ma_service):
                         wake_word_model_name=WAKE_WORD_MODEL,
                         threshold=BARGE_IN_THRESHOLD,
                         needs_resample=needs_resample,
-                        mic_device_index=MIC_DEVICE_INDEX,
+                        mic_device_index=_resolve_input_device_index(),
                     )
 
                 result = None
