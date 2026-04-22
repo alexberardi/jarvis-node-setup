@@ -12,6 +12,40 @@
 
 set -euo pipefail
 
+# --- Unbuffered logging ---
+# When bash redirects stdout to a file (like this installer does via
+# `... >>/var/log/jarvis-node-update.log 2>&1`), stdout is block-buffered
+# instead of line-buffered. If bash is killed mid-script (OOM, SIGKILL,
+# signal from systemd) before the next flush, the BUFFER is lost — and the
+# log abruptly stops several lines before the actual death point. That has
+# been masking the real failure on Pi Zero 2W installs for several
+# versions. Re-exec under `stdbuf -oL -eL` so every line hits the log file
+# immediately.
+if command -v stdbuf >/dev/null 2>&1 && [ -z "${_STDBUF_ON:-}" ]; then
+    export _STDBUF_ON=1
+    exec stdbuf -oL -eL "$0" "$@"
+fi
+
+# --- Tracing ---
+# Write every executed command to stderr with file:line:function context.
+# Combined with the unbuffered redirect above, this means the LAST trace
+# line in the log is the command that was running when the installer died.
+# Eliminates the "silent death between functions" guesswork we've been
+# doing for several versions.
+export PS4='+ [${BASH_SOURCE##*/}:${LINENO}${FUNCNAME:+:${FUNCNAME[0]}}] '
+set -x
+
+# --- Exit trap ---
+# Capture final status regardless of how we leave (success, set -e failure,
+# signal). Unbuffered + set -x + this trap = no more silent deaths.
+trap '_ec=$?;
+      _line=$LINENO;
+      _func=${FUNCNAME:-main};
+      _last=$BASH_COMMAND;
+      set +x;
+      printf "[INSTALL-EXIT] status=%d line=%s func=%s last_command=%q\\n" \
+             "$_ec" "$_line" "$_func" "$_last" >&2' EXIT
+
 REPO="alexberardi/jarvis-node-setup"
 INSTALL_DIR="/opt/jarvis-node"
 SERVICE_NAME="jarvis-node"
