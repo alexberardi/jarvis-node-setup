@@ -663,14 +663,19 @@ main() {
   # venv / pip) to free RAM on 512 MB boards where the running service and
   # a concurrent install will OOM-kill each other.
   #
-  # Safety: only stop if we're NOT inside jarvis-node's cgroup. Under
-  # cgroups v2 a `systemctl stop jarvis-node` tears down the whole cgroup
-  # including any installer bash that was spawned as a child of the service
-  # (the pre-v0.1.11 launch path used setsid, which doesn't detach from
-  # cgroups). The v0.1.11+ launcher uses `systemd-run --unit=` so the
-  # installer lands in its own cgroup — then this stop is safe.
-  if grep -q "jarvis-node" /proc/self/cgroup 2>/dev/null; then
-    info "Installer is inside jarvis-node's cgroup — leaving service running"
+  # Safety: only stop if we're NOT inside jarvis-node's own service cgroup.
+  # Under cgroups v2 a `systemctl stop jarvis-node` tears down the whole
+  # cgroup including any installer bash that was spawned as a child of the
+  # service (the pre-v0.1.11 launch path used setsid, which doesn't detach
+  # from cgroups). The v0.1.11+ launcher uses `systemd-run --unit=` so the
+  # installer lands in its own "jarvis-node-update.service" cgroup — safe
+  # to stop jarvis-node.service from there.
+  #
+  # Match "jarvis-node.service" (not bare "jarvis-node") so we don't
+  # false-positive on "jarvis-node-update.service" — the isolated unit
+  # systemd-run creates also contains "jarvis-node" as a substring.
+  if grep -qE "/jarvis-node\\.service(\$|/)" /proc/self/cgroup 2>/dev/null; then
+    info "Installer is inside jarvis-node.service's cgroup — leaving service running"
   elif systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
     info "Stopping ${SERVICE_NAME} to free memory for the upgrade..."
     systemctl stop "${SERVICE_NAME}.service" || true
