@@ -26,7 +26,11 @@ set -euo pipefail
 # ("bash"), so exec'ing `stdbuf ... "$0" "$@"` becomes
 # `stdbuf bash --force ...` and bash rejects --force as an unknown flag
 # before install.sh even gets to download. Dropped.
-export PS4='+ [${BASH_SOURCE##*/}:${LINENO}${FUNCNAME:+:${FUNCNAME[0]}}] '
+# PS4 uses $LINENO + $FUNCNAME only — NOT $BASH_SOURCE — because under
+# `bash -s` (piped from curl) $BASH_SOURCE is unset, and with `set -u`
+# active that triggers "unbound variable" on every single traced command.
+# Previous v0.1.17 attempt failed on line 42 with exactly that.
+export PS4='+ [L${LINENO}${FUNCNAME:+:${FUNCNAME[0]}}] '
 set -x
 
 # --- Exit trap ---
