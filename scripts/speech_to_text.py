@@ -85,7 +85,18 @@ def listen() -> RecordingResult:
     silence_threshold_frames: int = int(config["silence_duration"] * config["sample_rate"] / config["frames_per_buffer"])
     min_record_frames: int = int(config["min_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
     max_record_frames: int = int(config["max_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
-    
+
+    # Discard the first ~1s before real recording starts. USB mics commonly
+    # run a hardware AEC that attenuates the mic for ~1s *after* loud
+    # speaker output (our wake-response TTS). If we start recording too
+    # soon, the user's command lands in that attenuated window and never
+    # clears ``silence_threshold`` — whisper then returns [BLANK_AUDIO]
+    # even though the user spoke clearly. 1s is empirical headroom for
+    # the recovery envelope; most mics settle within 500-800ms.
+    skip_frames: int = int(1.0 * config["sample_rate"] / config["frames_per_buffer"])
+    for _ in range(skip_frames):
+        stream.read(config["frames_per_buffer"], exception_on_overflow=False)
+
     logger.debug("Audio config", silence_threshold=config['silence_threshold'], silence_duration=config['silence_duration'], min_seconds=config['min_record_seconds'], max_seconds=config['max_record_seconds'])
 
     for frame_count in range(max_record_frames):
