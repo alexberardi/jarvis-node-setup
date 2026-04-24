@@ -8,6 +8,7 @@ import wave
 from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
 from utils.encryption_utils import get_cache_dir
+from utils.mic_device import resolve_input_device_index
 
 
 @dataclass
@@ -69,6 +70,10 @@ def listen() -> RecordingResult:
 
     audio: pyaudio.PyAudio = pyaudio.PyAudio()
 
+    device_index = config["device_index"]
+    if device_index is None:
+        device_index = resolve_input_device_index(audio)
+
     open_kwargs: dict = dict(
         format=pyaudio.paInt16,
         channels=config["channels"],
@@ -76,8 +81,8 @@ def listen() -> RecordingResult:
         input=True,
         frames_per_buffer=config["frames_per_buffer"],
     )
-    if config["device_index"] is not None:
-        open_kwargs["input_device_index"] = config["device_index"]
+    if device_index is not None:
+        open_kwargs["input_device_index"] = device_index
     stream: pyaudio.Stream = audio.open(**open_kwargs)
 
     frames: List[bytes] = []
@@ -168,6 +173,10 @@ def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
 
     audio: pyaudio.PyAudio = pyaudio.PyAudio()
 
+    device_index = config["device_index"]
+    if device_index is None:
+        device_index = resolve_input_device_index(audio)
+
     open_kwargs: dict = dict(
         format=pyaudio.paInt16,
         channels=config["channels"],
@@ -175,8 +184,8 @@ def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
         input=True,
         frames_per_buffer=config["frames_per_buffer"],
     )
-    if config["device_index"] is not None:
-        open_kwargs["input_device_index"] = config["device_index"]
+    if device_index is not None:
+        open_kwargs["input_device_index"] = device_index
     stream: pyaudio.Stream = audio.open(**open_kwargs)
 
     logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
