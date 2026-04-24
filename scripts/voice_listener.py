@@ -1,4 +1,5 @@
 import os
+import queue
 import random
 import sys
 import threading
@@ -15,6 +16,7 @@ from scipy.signal import resample_poly
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
+from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
@@ -23,7 +25,6 @@ from services.alert_queue_service import get_alert_queue_service
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
 from utils.encryption_utils import get_cache_dir
-from utils.mic_device import resolve_input_device_index
 from utils.service_discovery import get_command_center_url
 from clients.responses.jarvis_command_center import ValidationRequest
 
@@ -214,7 +215,7 @@ def _fetch_next_processing_ack() -> None:
         logger.debug("Failed to pre-generate processing ack (non-fatal)", error=str(e))
 
 
-def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]:
+def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[ValidationRequest], str]:
     """Create a validation handler that prompts via TTS and re-listens."""
     def validation_handler(validation: ValidationRequest) -> str:
         tts_provider_instance = get_tts_provider()
@@ -228,7 +229,7 @@ def _make_validation_handler(stt_provider) -> Callable[[ValidationRequest], str]
         tts_provider_instance.speak(False, question)
 
         logger.debug("Listening for validation response")
-        validation_recording = listen()
+        validation_recording = listen(bus, history_secs=0.5)
 
         validation_transcription = stt_provider.transcribe(validation_recording.audio_file)
 
@@ -379,6 +380,7 @@ def send_for_transcription(
 
 
 def _follow_up_loop(
+    bus: AudioBus,
     initial_result: dict | None,
     command_service: CommandExecutionService,
     stt_provider,
@@ -399,7 +401,7 @@ def _follow_up_loop(
         conversation_id = initial_result.get("conversation_id")
 
     while True:
-        audio_file = listen_for_follow_up(timeout_seconds=follow_up_seconds)
+        audio_file = listen_for_follow_up(bus, timeout_seconds=follow_up_seconds)
         if audio_file is None:
             logger.debug("Follow-up window expired, returning to wake word mode")
             break
@@ -453,6 +455,7 @@ INLINE_LISTEN_TIMEOUT = 8.0  # Seconds to wait for snooze/dismiss after announce
 
 
 def _drain_alert_announcements(
+    bus: AudioBus,
     command_service: CommandExecutionService,
     stt_provider,
     validation_handler: Callable[[ValidationRequest], str],
@@ -486,7 +489,7 @@ def _drain_alert_announcements(
 
         # Inline listen for response (snooze/dismiss/silence)
         try:
-            audio_file = listen_for_follow_up(timeout_seconds=INLINE_LISTEN_TIMEOUT)
+            audio_file = listen_for_follow_up(bus, timeout_seconds=INLINE_LISTEN_TIMEOUT)
             if audio_file is None:
                 logger.debug("No response to alert announcement (silence)")
                 continue
@@ -517,14 +520,24 @@ def _drain_alert_announcements(
     return True
 
 
-def _start_keyboard_listener() -> None:
-    """Fallback listener: press Enter to trigger a command (no wake word)."""
+def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
+    """Fallback listener: press Enter to trigger a command (no wake word).
+
+    If ``bus`` is None, a standalone bus is created and started for the
+    duration of the session — so this works both as a fallback after
+    openwakeword init failure and as an opt-in dev-mode input.
+    """
     logger.info("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
     print("Keyboard mode: press Enter to speak a command, Ctrl+C to quit")
 
+    owns_bus = bus is None
+    if bus is None:
+        bus = AudioBus(rate=MIC_RATE, chunk_samples=MIC_CHUNK, history_secs=2.0)
+        bus.start()
+
     command_service = CommandExecutionService()
     stt_provider = get_stt_provider()
-    validation_handler = _make_validation_handler(stt_provider)
+    validation_handler = _make_validation_handler(bus, stt_provider)
 
     try:
         while True:
@@ -544,7 +557,7 @@ def _start_keyboard_listener() -> None:
             )
             warmup_thread.start()
 
-            recording = listen()
+            recording = listen(bus, history_secs=1.0)
 
             ack_played = _play_processing_ack()
 
@@ -560,7 +573,7 @@ def _start_keyboard_listener() -> None:
 
             logger.info("Transcription complete", duration_seconds=round(end - start, 2))
 
-            _follow_up_loop(result, command_service, stt_provider, validation_handler)
+            _follow_up_loop(bus, result, command_service, stt_provider, validation_handler)
 
             # Pre-generate the next processing ack in the background
             threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
@@ -568,41 +581,34 @@ def _start_keyboard_listener() -> None:
             logger.info("Press Enter to speak another command")
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
-
-
-def _create_oww_stream(pa_instance: pyaudio.PyAudio) -> tuple:
-    """Open a mono input stream for openWakeWord.
-
-    Tries native 16 kHz first.  If the device doesn't support it, falls back
-    to 48 kHz (which will be downsampled before feeding to the model).
-
-    Returns:
-        (stream, needs_resample) — needs_resample is True when capturing at 48 kHz.
-    """
-    base_kwargs: dict = dict(
-        channels=1,
-        format=pyaudio.paInt16,
-        input=True,
-    )
-    resolved_index = resolve_input_device_index(pa_instance)
-    if resolved_index is not None:
-        base_kwargs["input_device_index"] = resolved_index
-
-    # Try native 16 kHz first
-    try:
-        stream = pa_instance.open(**base_kwargs, rate=OWW_RATE, frames_per_buffer=OWW_CHUNK)
-        return stream, False
-    except OSError:
-        pass
-
-    # Fall back to 48 kHz — we'll downsample in the read loop
-    stream = pa_instance.open(**base_kwargs, rate=MIC_RATE, frames_per_buffer=MIC_CHUNK)
-    logger.info("Mic does not support 16 kHz, capturing at 48 kHz with resample")
-    return stream, True
+    finally:
+        if owns_bus:
+            bus.stop()
 
 
 def start_voice_listener(ma_service):
-    # Download model if needed and initialise openWakeWord
+    """Main voice loop: wake → respond → listen → process → follow-up.
+
+    One long-running AudioBus owns the mic for the lifetime of the node.
+    Every audio consumer (wake detector, barge-in, command listen,
+    follow-up) subscribes to the bus instead of opening its own PyAudio
+    stream. This eliminates the concurrent-dsnoop-open race that caused
+    BLANK_AUDIO captures in the pre-AudioBus implementation.
+
+    Flow per iteration:
+      1. Subscribe ``wake`` on the bus (48 kHz chunks).
+      2. Downsample each chunk to 16 kHz and score with openWakeWord.
+      3. On wake, unsubscribe ``wake`` so the wake detector doesn't
+         fight the command listener for the queue.
+      4. Play wake response (blocking TTS).
+      5. Record the command via ``listen(bus, history_secs=1.0)`` —
+         the history prime captures any speech that arrived during the
+         tail of the TTS playback.
+      6. Start barge-in monitor (also a bus subscriber) during
+         STT → CC → TTS response playback.
+      7. On barge-in OR normal completion, run the follow-up loop.
+      8. Back to step 1 with a fresh ``wake`` subscription.
+    """
     try:
         openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
         oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
@@ -614,55 +620,37 @@ def start_voice_listener(ma_service):
             logger.error("No TTY available for keyboard fallback, exiting")
         return
 
-    # Retry audio init — USB mic may not be ready immediately after boot.
-    # Exponential backoff: ~3 min total (down from 5 min with flat 10s delays).
+    # Retry bus start — USB mic may not be ready immediately after boot.
     _audio_retry_delays: list[int] = [2, 2, 5, 5, 10, 10, 15, 15, 30, 30, 30, 30]
-    pa = None
-    oww_stream = None
-    needs_resample = False
+    bus: AudioBus | None = None
     for attempt, delay in enumerate(_audio_retry_delays):
         try:
-            pa = pyaudio.PyAudio()
-
-            # Log available input devices on first attempt for debugging
-            if attempt == 0:
-                device_count: int = pa.get_device_count()
-                input_devices: list[str] = []
-                for i in range(device_count):
-                    info = pa.get_device_info_by_index(i)
-                    if info.get("maxInputChannels", 0) > 0:
-                        input_devices.append(f"{i}: {info['name']}")
-                if input_devices:
-                    logger.info("Available input devices", devices=input_devices)
-                else:
-                    logger.warning("No input audio devices found")
-
-            oww_stream, needs_resample = _create_oww_stream(pa)
+            bus = AudioBus(rate=MIC_RATE, chunk_samples=MIC_CHUNK, history_secs=2.0)
+            bus.start()
             break
         except OSError as e:
-            if pa is not None:
-                pa.terminate()
-                pa = None
             logger.warning("Audio device unavailable",
                            error=str(e), attempt=attempt + 1,
                            max_attempts=len(_audio_retry_delays),
                            retry_in_seconds=delay)
+            if bus is not None:
+                try:
+                    bus.stop()
+                except Exception:
+                    pass
+                bus = None
             time.sleep(delay)
 
-    if oww_stream is None:
+    if bus is None:
         logger.error("No audio device found after retries, giving up",
                      total_attempts=len(_audio_retry_delays))
         return
 
-    chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
-
-    # Create shared services once for the lifetime of the listener
     command_service = CommandExecutionService()
     stt_provider = get_stt_provider()
-    validation_handler = _make_validation_handler(stt_provider)
+    validation_handler = _make_validation_handler(bus, stt_provider)
 
-    # Pre-warm the LLM's KV cache and processing ack on boot so the
-    # first interaction is as fast as subsequent ones.
+    # Pre-warm the LLM's KV cache and processing ack on boot.
     threading.Thread(
         target=_run_warmup,
         args=(command_service, str(uuid.uuid4()), None, {}),
@@ -671,165 +659,145 @@ def start_voice_listener(ma_service):
     threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
 
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
-                threshold=WAKE_WORD_THRESHOLD, resample=needs_resample)
+                threshold=WAKE_WORD_THRESHOLD)
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
 
-    # Alert drain interval: check every ~5 seconds (each chunk is ~80ms)
-    alert_check_interval = 60  # reads between alert checks
+    resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
+    alert_check_interval = 60             # ~every 5s at 80 ms chunks
     alert_check_counter = 0
 
     try:
         while True:
-            # Periodically check for high-priority alerts to announce
-            alert_check_counter += 1
-            if alert_check_counter >= alert_check_interval:
-                alert_check_counter = 0
-
-                # Quick check without closing stream — only close if there's work to do
-                try:
-                    queue = get_alert_queue_service()
-                    has_announcements = any(
-                        a.priority >= ALERT_ANNOUNCE_PRIORITY
-                        for a in queue.get_pending()
-                    )
-                except Exception:
-                    has_announcements = False
-
-                if has_announcements:
-                    try:
-                        # Stop stream before announcing (TTS + mic contention)
-                        oww_stream.stop_stream()
-                        oww_stream.close()
-                        pa.terminate()
-
-                        _drain_alert_announcements(
-                            command_service, stt_provider, validation_handler,
-                        )
-
-                        # Reopen stream
-                        pa = pyaudio.PyAudio()
-                        oww_stream, needs_resample = _create_oww_stream(pa)
-                        chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
-                        oww.reset()
-                        print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
-                    except Exception as e:
-                        logger.warning("Alert drain failed, reopening stream", error=str(e))
+            wake_q = bus.subscribe("wake")
+            score = 0.0
+            try:
+                while True:
+                    alert_check_counter += 1
+                    if alert_check_counter >= alert_check_interval:
+                        alert_check_counter = 0
                         try:
-                            pa = pyaudio.PyAudio()
-                            oww_stream, needs_resample = _create_oww_stream(pa)
-                            chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
-                        except Exception as e2:
-                            logger.error("Failed to reopen stream after alert drain", error=str(e2))
-                            break
+                            aq = get_alert_queue_service()
+                            has_announcements = any(
+                                a.priority >= ALERT_ANNOUNCE_PRIORITY
+                                for a in aq.get_pending()
+                            )
+                        except Exception:
+                            has_announcements = False
+                        if has_announcements:
+                            # Let the alert drain run — it uses the bus too.
+                            break  # ← exits inner loop with score==0; see below
 
-            raw_data = oww_stream.read(chunk_size, exception_on_overflow=False)
-            samples = np.frombuffer(raw_data, dtype=np.int16)
-
-            if needs_resample:
-                # Downsample 48 kHz → 16 kHz (factor of 3)
-                resampled = resample_poly(samples, up=1, down=3)
-                samples = np.clip(resampled, -32768, 32767).astype(np.int16)
-
-            predictions = oww.predict(samples)
-            score = predictions.get(WAKE_WORD_MODEL, 0)
-            if score > 0.05:
-                logger.debug("Wake word score", score=round(float(score), 3), threshold=WAKE_WORD_THRESHOLD)
-            if score > WAKE_WORD_THRESHOLD:
-                oww.reset()
-
-                # Stop wake-word stream before recording
-                oww_stream.stop_stream()
-                oww_stream.close()
-                pa.terminate()
-
-                try:
-                    handle_keyword_detected()
-                except Exception as e:
-                    logger.warning("Wake response TTS failed, continuing", error=str(e))
-
-                # Start warmup in parallel with recording — the KV cache
-                # will be warm by the time STT finishes.
-                conversation_id = str(uuid.uuid4())
-                warmup_result: dict = {"success": False}
-                warmup_thread = threading.Thread(
-                    target=_run_warmup,
-                    args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
-                    daemon=True,
-                )
-                warmup_thread.start()
-
-                # Start barge-in monitor so the user can interrupt TTS
-                barge_in: BargeInMonitor | None = None
-                if BARGE_IN_ENABLED:
-                    barge_in = BargeInMonitor(
-                        oww_model=oww,
-                        wake_word_model_name=WAKE_WORD_MODEL,
-                        threshold=BARGE_IN_THRESHOLD,
-                        needs_resample=needs_resample,
-                        mic_device_index=resolve_input_device_index(),
-                    )
-
-                result = None
-                try:
-                    recording = listen()  # warmup runs during recording
-
-                    # Play cached processing ack in background while STT starts.
-                    # If an ack plays, suppress the ack timer to avoid double ack.
-                    ack_played = _play_processing_ack()
-
-                    # Start monitoring for barge-in during STT + LLM + TTS
-                    if barge_in:
-                        barge_in.start()
-
-                    start = time.perf_counter()
-                    result = send_for_transcription(
-                        recording, command_service, stt_provider, validation_handler,
-                        warmup_thread=warmup_thread,
-                        conversation_id=conversation_id,
-                        warmup_result=warmup_result,
-                        skip_ack=ack_played,
-                    )
-                    end = time.perf_counter()
-
-                    logger.info("Transcription complete", duration_seconds=round(end - start, 2))
-                except Exception as e:
-                    logger.warning("Command processing failed, resuming listener", error=str(e))
-                    print(f"Command failed: {e}")
-                finally:
-                    if barge_in:
-                        barge_in.stop()
-
-                if barge_in and barge_in.was_interrupted:
-                    # Barge-in detected — skip follow-up, record new command
-                    logger.info("Barge-in: TTS interrupted, listening for new command")
                     try:
-                        new_recording = listen()
-                        new_result = send_for_transcription(
-                            new_recording, command_service, stt_provider, validation_handler,
+                        raw_data = wake_q.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
+
+                    samples = np.frombuffer(raw_data, dtype=np.int16)
+                    if resample_down > 1:
+                        resampled = resample_poly(samples, up=1, down=resample_down)
+                        samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+
+                    predictions = oww.predict(samples)
+                    score = predictions.get(WAKE_WORD_MODEL, 0)
+                    if score > 0.05:
+                        logger.debug(
+                            "Wake word score",
+                            score=round(float(score), 3),
+                            threshold=WAKE_WORD_THRESHOLD,
                         )
-                        _follow_up_loop(new_result, command_service, stt_provider, validation_handler)
-                    except Exception as e:
-                        logger.warning("Barge-in command failed", error=str(e))
-                else:
-                    # Normal flow — follow-up listening window
-                    try:
-                        _follow_up_loop(result, command_service, stt_provider, validation_handler)
-                    except Exception as e:
-                        logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+                    if score > WAKE_WORD_THRESHOLD:
+                        break
+            finally:
+                bus.unsubscribe("wake")
 
-                # Pre-generate the next processing ack in the background
-                threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
-
-                # Reopen wake-word stream
-                pa = pyaudio.PyAudio()
-                oww_stream, needs_resample = _create_oww_stream(pa)
-                chunk_size = MIC_CHUNK if needs_resample else OWW_CHUNK
+            # If we broke out without a wake (alert-drain case), handle
+            # alerts and loop.
+            if score <= WAKE_WORD_THRESHOLD:
+                try:
+                    _drain_alert_announcements(
+                        bus, command_service, stt_provider, validation_handler,
+                    )
+                except Exception as e:
+                    logger.warning("Alert drain failed", error=str(e))
+                oww.reset()
                 print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
+                continue
+
+            oww.reset()
+
+            try:
+                handle_keyword_detected()
+            except Exception as e:
+                logger.warning("Wake response TTS failed, continuing", error=str(e))
+
+            conversation_id = str(uuid.uuid4())
+            warmup_result: dict = {"success": False}
+            warmup_thread = threading.Thread(
+                target=_run_warmup,
+                args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                daemon=True,
+            )
+            warmup_thread.start()
+
+            barge_in: BargeInMonitor | None = None
+            if BARGE_IN_ENABLED:
+                barge_in = BargeInMonitor(
+                    bus, oww, WAKE_WORD_MODEL, threshold=BARGE_IN_THRESHOLD,
+                )
+
+            result = None
+            try:
+                # history_secs=1.0 replays the tail of the ring buffer so
+                # speech that arrived during the wake-response TTS tail
+                # still lands in the recording.
+                recording = listen(bus, history_secs=1.0)
+
+                ack_played = _play_processing_ack()
+
+                if barge_in:
+                    barge_in.start()
+
+                start = time.perf_counter()
+                result = send_for_transcription(
+                    recording, command_service, stt_provider, validation_handler,
+                    warmup_thread=warmup_thread,
+                    conversation_id=conversation_id,
+                    warmup_result=warmup_result,
+                    skip_ack=ack_played,
+                )
+                end = time.perf_counter()
+                logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+            except Exception as e:
+                logger.warning("Command processing failed, resuming listener", error=str(e))
+                print(f"Command failed: {e}")
+            finally:
+                if barge_in:
+                    barge_in.stop()
+
+            if barge_in and barge_in.was_interrupted:
+                logger.info("Barge-in: TTS interrupted, listening for new command")
+                try:
+                    # No onset delay: user already speaking, use small
+                    # history window.
+                    new_recording = listen(bus, history_secs=0.5)
+                    new_result = send_for_transcription(
+                        new_recording, command_service, stt_provider, validation_handler,
+                    )
+                    _follow_up_loop(bus, new_result, command_service, stt_provider, validation_handler)
+                except Exception as e:
+                    logger.warning("Barge-in command failed", error=str(e))
+            else:
+                try:
+                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler)
+                except Exception as e:
+                    logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+
+            threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
+            print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
 
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
     finally:
-        oww_stream.stop_stream()
-        oww_stream.close()
+        bus.stop()
         pa.terminate()
         del oww

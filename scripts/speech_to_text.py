@@ -1,14 +1,35 @@
+"""Command-capture primitives over an AudioBus.
+
+These are pure functions: they subscribe to the bus, consume chunks
+until a stopping condition (silence, speech-onset, timeout), write a
+WAV to the cache dir, and return a RecordingResult. They do not open
+PyAudio. They do not resolve devices. The bus owns the mic; we just
+read from it.
+
+The old `skip_frames` hack (discarding the first 0.3s/1.0s of a fresh
+PyAudio open to dodge TTS bleed) is gone. Its job is now done by
+subscribing with ``history_secs`` at the state-machine layer — the
+first second of "recording" is replayed from the ring buffer, so
+audio the user emitted during the tail of TTS playback is captured
+rather than discarded.
+"""
+
+from __future__ import annotations
+
+import queue
+import time
+import wave
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pyaudio
-import wave
 
 from jarvis_log_client import JarvisLogger
+
+from core.audio_bus import AudioBus
 from utils.config_service import Config
 from utils.encryption_utils import get_cache_dir
-from utils.mic_device import resolve_input_device_index
 
 
 @dataclass
@@ -18,240 +39,214 @@ class RecordingResult:
     duration: float          # actual recording duration in seconds
     hit_max_duration: bool   # True if recording stopped due to max_record_seconds
 
+
 logger = JarvisLogger(service="jarvis-node")
 _cache_dir = get_cache_dir()
 
 
-def get_audio_config() -> dict:
-    """Get audio configuration at runtime"""
-    sample_rate = Config.get_int("mic_sample_rate", 48000)
-    mic_index_str: str | None = Config.get_str("mic_device_index")
-    device_index: int | None = int(mic_index_str) if mic_index_str is not None else None
+def _audio_defaults() -> dict:
+    """Live read of audio-related config values."""
     return {
-        "sample_rate": sample_rate,
-        "channels": 1,
-        "device_index": device_index,
-        "frames_per_buffer": int(sample_rate * 0.032),  # 32ms
+        "silence_threshold": Config.get_int("silence_threshold", 300),
+        "silence_duration": Config.get_float("silence_duration", 1.5),
+        "min_record_seconds": Config.get_float("min_record_seconds", 2.0),
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
-        "silence_threshold": Config.get_int("silence_threshold", 500),  # RMS threshold for silence
-        "silence_duration": Config.get_float("silence_duration", 0.5),  # Seconds of silence to trigger stop
-        "min_record_seconds": Config.get_float("min_record_seconds", 1.0)  # Minimum recording time
     }
 
 
 def calculate_rms(audio_data: bytes) -> float:
-    """Calculate RMS (Root Mean Square) of audio data to detect volume level"""
-    # Handle empty data
+    """RMS of a 16-bit PCM chunk. Returns 0.0 on empty or NaN."""
     if not audio_data:
         return 0.0
-    
-    # Convert bytes to numpy array
     audio_array = np.frombuffer(audio_data, dtype=np.int16)
-    
-    # Handle empty array
     if len(audio_array) == 0:
         return 0.0
-    
-    # Calculate RMS
     rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
-    
-    # Convert numpy float to Python float and handle NaN
     if np.isnan(rms):
         return 0.0
-    
     return float(rms)
 
 
-def listen() -> RecordingResult:
-    logger.info("Listening for speech...")
-
-    config = get_audio_config()
-    output_filename: str = str(_cache_dir / "command.wav")
-
-    audio: pyaudio.PyAudio = pyaudio.PyAudio()
-
-    device_index = config["device_index"]
-    if device_index is None:
-        device_index = resolve_input_device_index(audio)
-
-    open_kwargs: dict = dict(
-        format=pyaudio.paInt16,
-        channels=config["channels"],
-        rate=config["sample_rate"],
-        input=True,
-        frames_per_buffer=config["frames_per_buffer"],
-    )
-    if device_index is not None:
-        open_kwargs["input_device_index"] = device_index
-    stream: pyaudio.Stream = audio.open(**open_kwargs)
-
-    frames: List[bytes] = []
-    silence_frames: int = 0
-    silence_threshold_frames: int = int(config["silence_duration"] * config["sample_rate"] / config["frames_per_buffer"])
-    min_record_frames: int = int(config["min_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
-    max_record_frames: int = int(config["max_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
-
-    # Discard the first ~1s before real recording starts. USB mics commonly
-    # run a hardware AEC that attenuates the mic for ~1s *after* loud
-    # speaker output (our wake-response TTS). If we start recording too
-    # soon, the user's command lands in that attenuated window and never
-    # clears ``silence_threshold`` — whisper then returns [BLANK_AUDIO]
-    # even though the user spoke clearly. 1s is empirical headroom for
-    # the recovery envelope; most mics settle within 500-800ms.
-    skip_frames: int = int(1.0 * config["sample_rate"] / config["frames_per_buffer"])
-    for _ in range(skip_frames):
-        stream.read(config["frames_per_buffer"], exception_on_overflow=False)
-
-    logger.debug("Audio config", silence_threshold=config['silence_threshold'], silence_duration=config['silence_duration'], min_seconds=config['min_record_seconds'], max_seconds=config['max_record_seconds'])
-
-    for frame_count in range(max_record_frames):
-        data: bytes = stream.read(config["frames_per_buffer"], exception_on_overflow=False)
-        frames.append(data)
-        
-        # Calculate audio level
-        rms = calculate_rms(data)
-        
-        # Check if this frame is silence
-        if rms < config["silence_threshold"]:
-            silence_frames += 1
-        else:
-            silence_frames = 0  # Reset silence counter when speech is detected
-        
-        # Stop if we've had enough silence and minimum recording time
-        if (silence_frames >= silence_threshold_frames and 
-            frame_count >= min_record_frames):
-            logger.debug("Silence detected, stopping recording", silence_duration=config['silence_duration'])
-            break
-        
-        # Optional: Print progress for debugging
-        if frame_count % 50 == 0:  # Every ~1.6 seconds at 48kHz
-            elapsed = frame_count * config["frames_per_buffer"] / config["sample_rate"]
-            logger.debug("Recording progress", elapsed=f"{elapsed:.1f}s", rms=f"{rms:.0f}", silence_frames=silence_frames, silence_threshold_frames=silence_threshold_frames)
-
-    hit_max = (len(frames) >= max_record_frames)
-    actual_duration = len(frames) * config["frames_per_buffer"] / config["sample_rate"]
-    logger.info("Recording complete", duration=f"{actual_duration:.2f}s", hit_max=hit_max)
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-
-    # Save to WAV
-    with wave.open(output_filename, "wb") as wf:
-        wf.setnchannels(config["channels"])
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(config["sample_rate"])
+def _write_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(bus.channels)
+        wf.setsampwidth(pyaudio.get_sample_size(bus.sample_format))
+        wf.setframerate(bus.rate)
         wf.writeframes(b"".join(frames))
 
+
+def listen(
+    bus: AudioBus,
+    *,
+    subscriber_name: str = "listen",
+    history_secs: float = 1.0,
+    silence_threshold: Optional[int] = None,
+    silence_duration: Optional[float] = None,
+    min_record_secs: Optional[float] = None,
+    max_record_secs: Optional[float] = None,
+) -> RecordingResult:
+    """Record a command from the bus until end-of-speech.
+
+    Subscribes to ``bus`` with ``history_secs`` of pre-buffered audio,
+    reads chunks, tracks consecutive-silence frames, and stops when the
+    silence window has been exceeded AND the minimum record length has
+    been reached. Writes the captured audio to ``command.wav`` and
+    returns metadata.
+
+    All four timing knobs fall back to live Config if not overridden —
+    so the state machine can pass longer silence windows for command
+    capture without hard-coding them.
+    """
+    defaults = _audio_defaults()
+    silence_threshold = silence_threshold if silence_threshold is not None else defaults["silence_threshold"]
+    silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
+    min_record_secs = min_record_secs if min_record_secs is not None else defaults["min_record_seconds"]
+    max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
+
+    output_filename = str(_cache_dir / "command.wav")
+    chunk_secs = bus.chunk_samples / bus.rate
+    silence_frames_threshold = max(1, int(silence_duration / chunk_secs))
+    min_frames = max(1, int(min_record_secs / chunk_secs))
+    max_frames = max(min_frames, int(max_record_secs / chunk_secs))
+
+    logger.info(
+        "Listening for speech",
+        history_secs=history_secs,
+        silence_threshold=silence_threshold,
+        silence_duration=silence_duration,
+        min_seconds=min_record_secs,
+        max_seconds=max_record_secs,
+    )
+
+    q = bus.subscribe(subscriber_name, history_secs=history_secs)
+    frames: List[bytes] = []
+    silence_frames = 0
+    hit_max = False
+    try:
+        for frame_count in range(max_frames):
+            try:
+                data = q.get(timeout=max(chunk_secs * 10, 1.0))
+            except queue.Empty:
+                logger.warning("listen() timeout waiting for audio chunk")
+                break
+
+            frames.append(data)
+            rms = calculate_rms(data)
+
+            if rms < silence_threshold:
+                silence_frames += 1
+            else:
+                silence_frames = 0
+
+            if silence_frames >= silence_frames_threshold and frame_count >= min_frames:
+                logger.debug("Silence detected, stopping recording", silence_duration=silence_duration)
+                break
+
+            if frame_count % 50 == 0:
+                elapsed = frame_count * chunk_secs
+                logger.debug(
+                    "Recording progress",
+                    elapsed=f"{elapsed:.1f}s",
+                    rms=f"{rms:.0f}",
+                    silence_frames=silence_frames,
+                    silence_threshold_frames=silence_frames_threshold,
+                )
+        else:
+            hit_max = True
+    finally:
+        bus.unsubscribe(subscriber_name)
+
+    actual_duration = len(frames) * chunk_secs
+    logger.info("Recording complete", duration=f"{actual_duration:.2f}s", hit_max=hit_max)
+
+    _write_wav(output_filename, frames, bus)
     return RecordingResult(output_filename, actual_duration, hit_max)
 
 
-def listen_for_follow_up(timeout_seconds: float = 5.0) -> str | None:
+def listen_for_follow_up(
+    bus: AudioBus,
+    *,
+    subscriber_name: str = "follow_up",
+    timeout_seconds: float = 5.0,
+    history_secs: float = 0.0,
+    silence_threshold: Optional[int] = None,
+    silence_duration: Optional[float] = None,
+    max_record_secs: Optional[float] = None,
+) -> str | None:
     """Listen for follow-up speech within a timeout window.
 
-    Opens the mic and waits for speech onset. If speech is detected
-    (RMS exceeds silence_threshold for 3+ consecutive frames), switches
-    to normal recording mode (silence-for-1s = done, max 7s).
+    Subscribes to the bus, waits up to ``timeout_seconds`` for speech
+    onset (3 consecutive frames with RMS >= silence_threshold). If
+    detected, switches to normal recording mode until silence. If the
+    timeout expires without speech, returns None.
 
-    Args:
-        timeout_seconds: Max seconds to wait for speech onset.
-
-    Returns:
-        Path to WAV file if speech was captured, None if timeout expired.
+    Defaults ``history_secs=0`` — follow-up cares about NEW speech, not
+    the tail of the preceding TTS.
     """
-    config = get_audio_config()
-    output_filename: str = str(_cache_dir / "follow_up.wav")
+    defaults = _audio_defaults()
+    silence_threshold = silence_threshold if silence_threshold is not None else defaults["silence_threshold"]
+    silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
+    max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
 
-    # Skip first ~0.3s to avoid TTS bleed from speaker into mic
-    skip_frames: int = int(0.3 * config["sample_rate"] / config["frames_per_buffer"])
-
-    # 3 consecutive frames above threshold = speech onset (~96ms)
-    speech_onset_required: int = 3
-    speech_onset_count: int = 0
-
-    timeout_frames: int = int(timeout_seconds * config["sample_rate"] / config["frames_per_buffer"])
-
-    audio: pyaudio.PyAudio = pyaudio.PyAudio()
-
-    device_index = config["device_index"]
-    if device_index is None:
-        device_index = resolve_input_device_index(audio)
-
-    open_kwargs: dict = dict(
-        format=pyaudio.paInt16,
-        channels=config["channels"],
-        rate=config["sample_rate"],
-        input=True,
-        frames_per_buffer=config["frames_per_buffer"],
-    )
-    if device_index is not None:
-        open_kwargs["input_device_index"] = device_index
-    stream: pyaudio.Stream = audio.open(**open_kwargs)
+    output_filename = str(_cache_dir / "follow_up.wav")
+    chunk_secs = bus.chunk_samples / bus.rate
+    silence_frames_threshold = max(1, int(silence_duration / chunk_secs))
+    max_frames = max(1, int(max_record_secs / chunk_secs))
+    onset_required = 3
 
     logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
 
+    q = bus.subscribe(subscriber_name, history_secs=history_secs)
     frames: List[bytes] = []
-    speech_detected: bool = False
+    speech_detected = False
+    onset_count = 0
+    onset_deadline = time.monotonic() + timeout_seconds
+    try:
+        while time.monotonic() < onset_deadline:
+            remaining = max(0.05, onset_deadline - time.monotonic())
+            try:
+                data = q.get(timeout=min(remaining, 0.5))
+            except queue.Empty:
+                continue
 
-    # Phase 1: Wait for speech onset
-    for frame_idx in range(timeout_frames):
-        data: bytes = stream.read(config["frames_per_buffer"], exception_on_overflow=False)
+            rms = calculate_rms(data)
+            if rms >= silence_threshold:
+                onset_count += 1
+                frames.append(data)
+                if onset_count >= onset_required:
+                    speech_detected = True
+                    logger.info("Follow-up speech detected", rms=f"{rms:.0f}")
+                    break
+            else:
+                onset_count = 0
+                frames.clear()
 
-        # Skip initial frames (TTS bleed avoidance)
-        if frame_idx < skip_frames:
-            continue
+        if not speech_detected:
+            logger.debug("No follow-up speech detected, timeout expired")
+            return None
 
-        rms = calculate_rms(data)
-
-        if rms >= config["silence_threshold"]:
-            speech_onset_count += 1
-            frames.append(data)  # Keep audio from potential speech start
-            if speech_onset_count >= speech_onset_required:
-                speech_detected = True
-                logger.info("Follow-up speech detected", frame=frame_idx, rms=f"{rms:.0f}")
+        silence_frames = 0
+        for _ in range(max_frames):
+            try:
+                data = q.get(timeout=max(chunk_secs * 10, 1.0))
+            except queue.Empty:
+                logger.warning("listen_for_follow_up timeout waiting for chunk")
                 break
-        else:
-            speech_onset_count = 0
-            frames.clear()  # Discard non-speech audio
 
-    if not speech_detected:
-        logger.debug("No follow-up speech detected, timeout expired")
-        stream.stop_stream()
-        stream.close()
-        audio.terminate()
-        return None
+            frames.append(data)
+            rms = calculate_rms(data)
+            if rms < silence_threshold:
+                silence_frames += 1
+            else:
+                silence_frames = 0
 
-    # Phase 2: Record until silence (same logic as listen())
-    silence_frames: int = 0
-    silence_threshold_frames: int = int(config["silence_duration"] * config["sample_rate"] / config["frames_per_buffer"])
-    max_record_frames: int = int(config["max_record_seconds"] * config["sample_rate"] / config["frames_per_buffer"])
+            if silence_frames >= silence_frames_threshold:
+                logger.debug("Follow-up recording: silence detected, stopping")
+                break
+    finally:
+        bus.unsubscribe(subscriber_name)
 
-    for _ in range(max_record_frames):
-        data = stream.read(config["frames_per_buffer"], exception_on_overflow=False)
-        frames.append(data)
-
-        rms = calculate_rms(data)
-        if rms < config["silence_threshold"]:
-            silence_frames += 1
-        else:
-            silence_frames = 0
-
-        if silence_frames >= silence_threshold_frames:
-            logger.debug("Follow-up recording: silence detected, stopping")
-            break
-
-    actual_duration = len(frames) * config["frames_per_buffer"] / config["sample_rate"]
+    actual_duration = len(frames) * chunk_secs
     logger.info("Follow-up recording complete", duration=f"{actual_duration:.2f}s")
-
-    stream.stop_stream()
-    stream.close()
-
-    # Save to WAV
-    with wave.open(output_filename, "wb") as wf:
-        wf.setnchannels(config["channels"])
-        wf.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-        wf.setframerate(config["sample_rate"])
-        wf.writeframes(b"".join(frames))
-
-    audio.terminate()
+    _write_wav(output_filename, frames, bus)
     return output_filename
