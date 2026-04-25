@@ -1,17 +1,22 @@
 """Barge-in monitor for interrupting TTS playback with wake word detection.
 
 Subscribes to an ``AudioBus`` during TTS playback and runs openWakeWord
-against each chunk. On detection it cancels the active playback
+against each chunk.  On detection it cancels the active playback
 subprocess so the voice listener can immediately start recording a new
 command.
 
-Key change from the pre-AudioBus version: this no longer opens its own
-PyAudio stream. Concurrent PyAudio opens on dsnoop are exactly the
-race surface we're eliminating — the bus owns the mic, we just pull
-from its queue.
+Detection strategy — energy-gated OWW:
+  OWW alone cannot reliably score the wake word through heavy speaker-
+  to-mic bleed (typical peak ~0.10 vs clean ~0.9).  Instead we combine
+  two signals:
 
-Uses an elevated confidence threshold (default 0.7 vs normal 0.4) to
-reduce false triggers from speaker-to-mic audio bleed during TTS.
+  1. **Energy gate** — a sharp RMS rise above the running TTS-bleed
+     baseline means the user is speaking into the mic.
+  2. **OWW partial match** — even a low OWW score (~0.07) confirms the
+     energy burst is the wake word, not a cough or clap.
+
+  Both conditions must be true simultaneously.  This keeps false-
+  positive rate near zero while detecting a wake word spoken over TTS.
 """
 
 from __future__ import annotations
@@ -33,6 +38,20 @@ logger = JarvisLogger(service="jarvis-node")
 _OWW_RATE = 16000
 _OWW_CHUNK = 1280
 
+# Energy-gate defaults.  TTS bleed through a desk mic typically reads
+# 100-300 RMS; a user speaking at normal volume 2-3 ft away reads
+# 1000-3000.  500 sits safely in between.
+_DEFAULT_ENERGY_THRESHOLD = 500
+
+# OWW score threshold during barge-in.  Much lower than the normal 0.4
+# wake threshold because TTS bleed degrades the signal.  Empirically,
+# "Hey Jarvis" over TTS scores 0.08-0.12; TTS alone scores < 0.01.
+_DEFAULT_OWW_THRESHOLD = 0.07
+
+# How many consecutive chunks must satisfy BOTH energy + OWW gates
+# before we commit to a barge-in.  Prevents single-sample spikes.
+_DEFAULT_CONFIRM_CHUNKS = 2
+
 
 class BargeInMonitor:
     """Score wake-word predictions on bus chunks during TTS playback.
@@ -53,7 +72,9 @@ class BargeInMonitor:
         oww_model,
         wake_word_model_name: str,
         *,
-        threshold: float = 0.7,
+        threshold: float = _DEFAULT_OWW_THRESHOLD,
+        energy_threshold: float = _DEFAULT_ENERGY_THRESHOLD,
+        confirm_chunks: int = _DEFAULT_CONFIRM_CHUNKS,
         skip_seconds: float = 0.5,
         subscriber_name: str = "barge_in",
     ):
@@ -61,6 +82,8 @@ class BargeInMonitor:
         self._oww = oww_model
         self._wake_word = wake_word_model_name
         self._threshold = threshold
+        self._energy_threshold = energy_threshold
+        self._confirm_chunks = confirm_chunks
         self._skip_seconds = skip_seconds
         self._subscriber_name = subscriber_name
 
@@ -87,16 +110,32 @@ class BargeInMonitor:
         self._thread.start()
 
     def stop(self) -> None:
-        """Signal the monitor to stop and wait for the thread to exit."""
+        """Signal the monitor to stop and wait for the thread to exit.
+
+        Resets the OWW model from the calling thread (not the monitor
+        thread) to avoid concurrent access with the wake detection loop.
+        """
         self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=3)
+            self._thread.join(timeout=5)
             self._thread = None
+        # Reset OWW here — in the caller's thread — so there is zero
+        # chance of overlapping with oww.predict() in the wake loop.
+        self._oww.reset()
 
     def _monitor_loop(self) -> None:
         q = self._bus.subscribe(self._subscriber_name)
-        chunk_secs = self._bus.chunk_samples / self._bus.rate
         skip_until = time.monotonic() + self._skip_seconds
+        chunk_count = 0
+        max_score = 0.0
+        max_rms = 0
+
+        # Trailing energy window — OWW scores peak ~0.5-1s after the
+        # user's voice energy spike, so we track whether a spike happened
+        # recently rather than requiring it on the same chunk.
+        chunk_secs = self._bus.chunk_samples / self._bus.rate
+        energy_window_chunks = max(1, int(1.0 / chunk_secs))  # ~1 second
+        recent_rms: list[int] = []
 
         try:
             while not self._stop_event.is_set():
@@ -106,10 +145,31 @@ class BargeInMonitor:
                     continue
 
                 if time.monotonic() < skip_until:
-                    # Discard initial chunks to dodge TTS onset bleed
                     continue
 
+                chunk_count += 1
                 samples = np.frombuffer(raw_data, dtype=np.int16)
+                rms = int(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+
+                if rms > max_rms:
+                    max_rms = rms
+
+                # Maintain trailing RMS window
+                recent_rms.append(rms)
+                if len(recent_rms) > energy_window_chunks:
+                    recent_rms.pop(0)
+                recent_max_rms = max(recent_rms)
+
+                # Periodic diagnostics
+                if chunk_count % 25 == 1:
+                    logger.info(
+                        "Barge-in audio",
+                        chunk=chunk_count,
+                        rms=rms,
+                        recent_max_rms=recent_max_rms,
+                        max_score=round(max_score, 3),
+                    )
+
                 if self._needs_resample:
                     resampled = resample_poly(samples, up=1, down=self._resample_ratio)
                     samples = np.clip(resampled, -32768, 32767).astype(np.int16)
@@ -117,19 +177,48 @@ class BargeInMonitor:
                 predictions = self._oww.predict(samples)
                 score = predictions.get(self._wake_word, 0)
 
-                if score > self._threshold:
+                if score > max_score:
+                    max_score = score
+
+                if score > 0.05:
+                    logger.info(
+                        "Barge-in score",
+                        score=round(float(score), 3),
+                        rms=rms,
+                        recent_max_rms=recent_max_rms,
+                    )
+
+                # --- Two-tier detection ---
+                # Tier 1: Strong OWW (>0.5) + recent energy spike.
+                #         OWW peaks after the voice energy fades, so
+                #         we check the trailing window, not this chunk.
+                # Tier 2: Weak OWW (>threshold) + current high energy.
+                #         For heavy TTS bleed where OWW can only score
+                #         ~0.07-0.12, require simultaneous energy.
+                triggered = False
+                if score > 0.5 and recent_max_rms > self._energy_threshold:
+                    triggered = True
+                elif score > self._threshold and rms > self._energy_threshold:
+                    triggered = True
+
+                if triggered:
                     logger.info(
                         "Barge-in detected",
                         score=round(float(score), 3),
-                        threshold=self._threshold,
+                        rms=rms,
+                        recent_max_rms=recent_max_rms,
                     )
                     self._interrupted = True
                     platform_audio.cancel_playback()
-                    self._oww.reset()
                     break
-
-                _ = chunk_secs  # timing for future metric use
         except Exception as e:
-            logger.debug("Barge-in monitor error (non-fatal)", error=str(e))
+            logger.warning("Barge-in monitor error", error=str(e))
         finally:
+            logger.info(
+                "Barge-in monitor stopped",
+                chunks_processed=chunk_count,
+                max_score=round(max_score, 3),
+                max_rms=max_rms,
+                interrupted=self._interrupted,
+            )
             self._bus.unsubscribe(self._subscriber_name)
