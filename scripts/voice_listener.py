@@ -5,8 +5,9 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterator
 
 import numpy as np
 import openwakeword
@@ -52,7 +53,8 @@ WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
 
 # Barge-in: allow interrupting TTS with wake word
 BARGE_IN_ENABLED = Config.get_str("barge_in_enabled", "true").lower() in ("true", "1", "yes")
-BARGE_IN_THRESHOLD = Config.get_float("barge_in_threshold", 0.7)
+BARGE_IN_THRESHOLD = Config.get_float("barge_in_threshold", 0.07)
+BARGE_IN_ENERGY_THRESHOLD = Config.get_float("barge_in_energy_threshold", 500.0)
 
 # openWakeWord needs 16 kHz audio in 1280-sample (80 ms) chunks
 OWW_RATE = 16000
@@ -67,6 +69,55 @@ _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
 # Track the last identified speaker so parallel warmup can load their memories.
 # Updated after every successful transcription with speaker identification.
 _last_speaker_user_id: int | None = None
+
+# Shared AudioBus, set when start_voice_listener() initializes its bus.
+# Other subsystems (e.g. enrollment-via-MQTT) need a way to consume mic
+# audio without opening a competing PyAudio stream — they call
+# ``get_audio_bus()`` and subscribe.
+_audio_bus: AudioBus | None = None
+
+
+def get_audio_bus() -> AudioBus | None:
+    """Return the running AudioBus, or None if voice_listener hasn't started."""
+    return _audio_bus
+
+
+# When set, the main wake loop short-circuits its score check and yields
+# the CPU. Used by transient flows that want to consume the mic via the
+# bus without competing with wake detection — voice-profile enrollment
+# in particular, where reading a sample prompt aloud near the mic would
+# otherwise re-fire the wake detector and clash with the recording.
+_wake_paused = threading.Event()
+
+
+def pause_wake() -> None:
+    """Disable wake detection until ``resume_wake()`` is called."""
+    _wake_paused.set()
+    logger.debug("Wake detection paused")
+
+
+def resume_wake() -> None:
+    """Re-enable wake detection."""
+    _wake_paused.clear()
+    logger.debug("Wake detection resumed")
+
+
+@contextmanager
+def wake_paused() -> Iterator[None]:
+    """``with`` block that disables wake detection for its duration.
+
+    Usage::
+
+        from scripts.voice_listener import wake_paused
+        with wake_paused():
+            # capture mic via the bus without wake firing on what we hear
+            ...
+    """
+    pause_wake()
+    try:
+        yield
+    finally:
+        resume_wake()
 
 
 def _run_warmup(
@@ -174,20 +225,26 @@ def fetch_next_wake_response():
 
 
 def _play_processing_ack() -> bool:
-    """Play the pre-cached processing ack (instant, no network).
+    """Play the pre-cached processing ack in a background thread.
 
-    Returns True if an ack was played (caller should suppress the ack timer).
+    Non-blocking so STT + LLM can start immediately — the ack is meant
+    to MASK their latency, not precede it. Returning True tells the
+    caller an ack will play, so it can suppress the delayed ack timer
+    to avoid double-acking.
     """
     if not PROCESSING_ACK_FILE.exists():
         return False
-    try:
-        platform_audio.play_audio_file(str(PROCESSING_ACK_FILE))
-        return True
-    except Exception as e:
-        logger.warning("Failed to play processing ack", error=str(e))
-        return False
-    finally:
-        PROCESSING_ACK_FILE.unlink(missing_ok=True)
+
+    def _play_and_cleanup() -> None:
+        try:
+            platform_audio.play_audio_file(str(PROCESSING_ACK_FILE))
+        except Exception as e:
+            logger.warning("Failed to play processing ack", error=str(e))
+        finally:
+            PROCESSING_ACK_FILE.unlink(missing_ok=True)
+
+    threading.Thread(target=_play_and_cleanup, daemon=True).start()
+    return True
 
 
 def _fetch_next_processing_ack() -> None:
@@ -229,7 +286,7 @@ def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[Validatio
         tts_provider_instance.speak(False, question)
 
         logger.debug("Listening for validation response")
-        validation_recording = listen(bus, history_secs=0.5)
+        validation_recording = listen(bus, history_secs=0.0, skip_secs=0.3)
 
         validation_transcription = stt_provider.transcribe(validation_recording.audio_file)
 
@@ -385,12 +442,17 @@ def _follow_up_loop(
     command_service: CommandExecutionService,
     stt_provider,
     validation_handler: Callable[[ValidationRequest], str],
+    oww=None,
 ) -> None:
     """Listen for follow-up speech after TTS completes.
 
     If the user speaks within the follow-up window, process it as a
     continuation of the conversation. Each successful follow-up restarts
     the timer. Silence or error breaks out to wake word mode.
+
+    If ``oww`` is provided, barge-in monitoring is active during TTS
+    playback — the wake word interrupts the response and returns to the
+    main wake detection loop.
     """
     follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 5.0)
     if follow_up_seconds <= 0:
@@ -423,6 +485,16 @@ def _follow_up_loop(
         speaker_user_id = transcription_result.speaker_user_id
         logger.info("Follow-up speech received", text=text, conversation_id=conversation_id)
 
+        # Start barge-in monitor for TTS playback (if OWW available)
+        barge_in: BargeInMonitor | None = None
+        if oww and BARGE_IN_ENABLED:
+            barge_in = BargeInMonitor(
+                bus, oww, WAKE_WORD_MODEL,
+                threshold=BARGE_IN_THRESHOLD,
+                energy_threshold=BARGE_IN_ENERGY_THRESHOLD,
+            )
+            barge_in.start()
+
         try:
             # Try pre-routing first (e.g., "stop", "pause")
             pre_result = command_service.try_pre_route(text, conversation_id or "")
@@ -447,6 +519,14 @@ def _follow_up_loop(
 
         except Exception as e:
             logger.warning("Follow-up processing failed, returning to wake word mode", error=str(e))
+            break
+        finally:
+            if barge_in:
+                barge_in.stop()
+
+        if barge_in and barge_in.was_interrupted:
+            logger.info("Barge-in during follow-up, returning to wake word mode")
+            platform_audio.reset_cancel()
             break
 
 
@@ -557,7 +637,7 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
             )
             warmup_thread.start()
 
-            recording = listen(bus, history_secs=1.0)
+            recording = listen(bus, history_secs=0.0, skip_secs=0.3)
 
             ack_played = _play_processing_ack()
 
@@ -601,9 +681,11 @@ def start_voice_listener(ma_service):
       3. On wake, unsubscribe ``wake`` so the wake detector doesn't
          fight the command listener for the queue.
       4. Play wake response (blocking TTS).
-      5. Record the command via ``listen(bus, history_secs=1.0)`` —
-         the history prime captures any speech that arrived during the
-         tail of the TTS playback.
+      5. Record the command via ``listen(bus, history_secs=0.0, skip_secs=0.3)`` —
+         the 0.3s skip dodges TTS-tail bleed / AEC recovery without
+         replaying the tail of the wake response into the recording
+         (which would otherwise cause the node to transcribe its own
+         TTS and respond to itself — "talking to itself" bug).
       6. Start barge-in monitor (also a bus subscriber) during
          STT → CC → TTS response playback.
       7. On barge-in OR normal completion, run the follow-up loop.
@@ -646,6 +728,11 @@ def start_voice_listener(ma_service):
                      total_attempts=len(_audio_retry_delays))
         return
 
+    # Expose the running bus to other subsystems that need to consume mic
+    # audio (e.g. MQTT-triggered voice enrollment).
+    global _audio_bus
+    _audio_bus = bus
+
     command_service = CommandExecutionService()
     stt_provider = get_stt_provider()
     validation_handler = _make_validation_handler(bus, stt_provider)
@@ -668,6 +755,10 @@ def start_voice_listener(ma_service):
 
     try:
         while True:
+            # Safety net: ensure no stale cancel state from a prior
+            # barge-in prevents wake-response or other audio.
+            platform_audio.reset_cancel()
+
             wake_q = bus.subscribe("wake")
             score = 0.0
             try:
@@ -690,6 +781,12 @@ def start_voice_listener(ma_service):
                     try:
                         raw_data = wake_q.get(timeout=0.5)
                     except queue.Empty:
+                        continue
+
+                    # While paused, drop the chunk and don't score it. The
+                    # queue still drains so we don't process stale audio
+                    # the moment we resume.
+                    if _wake_paused.is_set():
                         continue
 
                     samples = np.frombuffer(raw_data, dtype=np.int16)
@@ -742,15 +839,17 @@ def start_voice_listener(ma_service):
             barge_in: BargeInMonitor | None = None
             if BARGE_IN_ENABLED:
                 barge_in = BargeInMonitor(
-                    bus, oww, WAKE_WORD_MODEL, threshold=BARGE_IN_THRESHOLD,
+                    bus, oww, WAKE_WORD_MODEL,
+                    threshold=BARGE_IN_THRESHOLD,
+                    energy_threshold=BARGE_IN_ENERGY_THRESHOLD,
                 )
 
             result = None
             try:
-                # history_secs=1.0 replays the tail of the ring buffer so
-                # speech that arrived during the wake-response TTS tail
-                # still lands in the recording.
-                recording = listen(bus, history_secs=1.0)
+                # history_secs=0 + skip_secs=0.3: do NOT replay the
+                # wake-response TTS tail (that bug made the node
+                # transcribe and respond to itself).
+                recording = listen(bus, history_secs=0.0, skip_secs=0.3)
 
                 ack_played = _play_processing_ack()
 
@@ -775,20 +874,14 @@ def start_voice_listener(ma_service):
                     barge_in.stop()
 
             if barge_in and barge_in.was_interrupted:
-                logger.info("Barge-in: TTS interrupted, listening for new command")
-                try:
-                    # No onset delay: user already speaking, use small
-                    # history window.
-                    new_recording = listen(bus, history_secs=0.5)
-                    new_result = send_for_transcription(
-                        new_recording, command_service, stt_provider, validation_handler,
-                    )
-                    _follow_up_loop(bus, new_result, command_service, stt_provider, validation_handler)
-                except Exception as e:
-                    logger.warning("Barge-in command failed", error=str(e))
+                logger.info("Barge-in: TTS interrupted, returning to wake word")
+                platform_audio.reset_cancel()
+                # Don't try to capture a new command here — the user
+                # interrupted to STOP the response.  They'll say the
+                # wake word again when they're ready.
             else:
                 try:
-                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler)
+                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww)
                 except Exception as e:
                     logger.warning("Follow-up loop error, resuming wake word", error=str(e))
 

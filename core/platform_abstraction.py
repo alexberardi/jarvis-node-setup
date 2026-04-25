@@ -31,11 +31,13 @@ class AudioProvider(ABC):
     def cancel_playback(self) -> bool:
         """Cancel any active audio playback (barge-in support).
 
-        Kills the active aplay/afplay subprocess immediately.
+        Sets the cancel event (checked by playback loops and used to
+        pre-empt future playback calls) and kills the active subprocess.
         Thread-safe — can be called from any thread.
 
         Returns True if a process was cancelled.
         """
+        self._cancel_event.set()
         with self._playback_lock:
             proc = self._playback_proc
             if proc is None:
@@ -46,6 +48,14 @@ class AudioProvider(ABC):
                 return True
             except OSError:
                 return False
+
+    def reset_cancel(self) -> None:
+        """Clear the cancel event so future playback proceeds normally.
+
+        Call this after handling a barge-in before starting a new
+        interaction that needs audio playback.
+        """
+        self._cancel_event.clear()
 
     @property
     def is_cancelled(self) -> bool:
@@ -93,6 +103,11 @@ class AudioProvider(ABC):
         Returns:
             True if playback succeeded
         """
+        # Pre-empt: if cancel was requested before playback started
+        # (e.g. barge-in during STT/processing), skip entirely.
+        if self._cancel_event.is_set():
+            logger.info("PCM playback pre-empted (barge-in)")
+            return False
         # Pipe raw PCM into aplay over stdin instead of going through PyAudio.
         # PyAudio on Pi Zero 2 W + softvol + asym + plughw was glitching
         # audibly even when network chunks arrived on time. aplay is the
@@ -222,6 +237,9 @@ class MacOSAudioProvider(AudioProvider):
         super().__init__()
 
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
+        if self._cancel_event.is_set():
+            logger.info("Audio playback pre-empted (barge-in)")
+            return False
         self._cancel_event.clear()
         try:
             proc = subprocess.Popen(
@@ -411,6 +429,9 @@ class PiAudioProvider(AudioProvider):
         super().__init__()
 
     def play_audio_file(self, file_path: str, volume: float = 1.0) -> bool:
+        if self._cancel_event.is_set():
+            logger.info("Audio playback pre-empted (barge-in)")
+            return False
         self._cancel_event.clear()
         try:
             if volume != 1.0:
