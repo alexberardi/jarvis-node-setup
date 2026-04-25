@@ -42,6 +42,10 @@ class PlatformAudio:
         """Cancel any active audio playback (barge-in)."""
         return self.audio_provider.cancel_playback()
 
+    def reset_cancel(self) -> None:
+        """Clear the cancel event so future playback proceeds normally."""
+        self.audio_provider.reset_cancel()
+
     @property
     def is_cancelled(self) -> bool:
         """True if playback was cancelled."""

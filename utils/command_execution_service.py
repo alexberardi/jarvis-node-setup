@@ -519,6 +519,29 @@ class CommandExecutionService:
                 logger.debug("Executing tools", count=len(response.tool_calls))
                 last_tool_result = self._execute_tools(response.tool_calls, conversation_id, voice_command)
 
+                # Try the streaming continue endpoint first when we don't
+                # need a text follow-up — server streams iter-2 PCM directly
+                # to the speaker, saving 2-3s perceived latency on chatty
+                # answers (news, weather, etc.). If the server signals
+                # fallback (202 JSON) we fall through to the blocking path.
+                if not last_tool_result.wait_for_input:
+                    audio_resp, audio_meta = self.client.send_tool_results_stream(
+                        conversation_id, last_tool_result.api_results,
+                    )
+                    if audio_resp is not None:
+                        played = self._play_streaming_audio(audio_resp, audio_meta)
+                        if played:
+                            logger.info("Streaming continue played successfully")
+                            return {
+                                "success": not last_tool_result.all_failed,
+                                "message": "(streamed audio)",
+                                "conversation_id": conversation_id,
+                                "wait_for_input": False,
+                                "clear_history": last_tool_result.clear_history,
+                                "audio_played": True,
+                            }
+                        logger.warning("Streaming continue playback failed, falling back")
+
                 response = self.client.send_tool_results(conversation_id, last_tool_result.api_results)
 
                 if not response:
@@ -847,6 +870,10 @@ class CommandExecutionService:
         buffering the entire WAV and hitting playback timeouts.
         """
         if result.get("audio_played"):
+            return
+        # Bail immediately if barge-in cancelled playback — avoids a
+        # wasted TTS HTTP roundtrip that blocks the return to wake mode.
+        if platform_audio.is_cancelled:
             return
         tts_provider = get_tts_provider()
         message = result.get("message", "An error occurred")
