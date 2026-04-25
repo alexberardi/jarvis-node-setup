@@ -55,20 +55,20 @@ def _get_credentials() -> tuple[str | None, str | None]:
 
 
 def _build_schlage_client():
-    """Authenticate and return a pyschlage.Schlage instance.
+    """Authenticate and return a SchlageClient instance.
 
-    Runs the AWS Cognito SRP handshake synchronously — callers should
+    Runs the Cognito SRP handshake synchronously — callers should
     wrap in asyncio.to_thread().
     """
-    from pyschlage import Auth, Schlage
+    from .schlage_client import CognitoSRPAuth, SchlageClient
 
     username, password = _get_credentials()
     if not username or not password:
         raise ValueError("SCHLAGE_USERNAME and SCHLAGE_PASSWORD must be configured")
 
-    auth = Auth(username, password)
+    auth = CognitoSRPAuth(username, password)
     auth.authenticate()
-    return Schlage(auth)
+    return SchlageClient(auth)
 
 
 class SchlageProtocol(IJarvisDeviceProtocol):
@@ -139,8 +139,8 @@ the node and never leave it."""
             return []
 
         try:
-            schlage = await asyncio.to_thread(_build_schlage_client)
-            locks = await asyncio.to_thread(schlage.locks)
+            client = await asyncio.to_thread(_build_schlage_client)
+            locks = await asyncio.to_thread(client.get_locks)
         except Exception as e:
             logger.error(f"Schlage discovery failed: {e}")
             return []
@@ -161,7 +161,7 @@ the node and never leave it."""
                         "is_locked": lock.is_locked,
                         "is_jammed": lock.is_jammed,
                         "battery_level": lock.battery_level,
-                        "connected": getattr(lock, "connected", None),
+                        "connected": lock.connected,
                     },
                 )
             )
@@ -185,8 +185,7 @@ the node and never leave it."""
             )
 
         try:
-            schlage = await asyncio.to_thread(_build_schlage_client)
-            locks = await asyncio.to_thread(schlage.locks)
+            client = await asyncio.to_thread(_build_schlage_client)
         except Exception as e:
             return DeviceControlResult(
                 success=False,
@@ -196,16 +195,26 @@ the node and never leave it."""
             )
 
         # Find the target lock by cloud_id or entity_id
-        target = None
+        try:
+            locks = await asyncio.to_thread(client.get_locks)
+        except Exception as e:
+            return DeviceControlResult(
+                success=False,
+                entity_id=device.entity_id,
+                action=action,
+                error=f"Failed to list locks: {e}",
+            )
+
+        target_id: str | None = None
         for lock in locks:
             if device.cloud_id and lock.device_id == device.cloud_id:
-                target = lock
+                target_id = lock.device_id
                 break
             if _slugify(lock.name) == device.entity_id:
-                target = lock
+                target_id = lock.device_id
                 break
 
-        if not target:
+        if not target_id:
             return DeviceControlResult(
                 success=False,
                 entity_id=device.entity_id,
@@ -215,19 +224,19 @@ the node and never leave it."""
 
         try:
             if action == "lock":
-                await asyncio.to_thread(target.lock)
+                await asyncio.to_thread(client.lock, target_id)
             elif action == "unlock":
-                await asyncio.to_thread(target.unlock)
+                await asyncio.to_thread(client.unlock, target_id)
             elif action == "get_status":
-                await asyncio.to_thread(target.refresh)
+                refreshed = await asyncio.to_thread(client.refresh, target_id)
                 return DeviceControlResult(
                     success=True,
                     entity_id=device.entity_id,
                     action=action,
                     extra={
-                        "is_locked": target.is_locked,
-                        "is_jammed": target.is_jammed,
-                        "battery_level": target.battery_level,
+                        "is_locked": refreshed.is_locked,
+                        "is_jammed": refreshed.is_jammed,
+                        "battery_level": refreshed.battery_level,
                     },
                 )
             else:
@@ -260,20 +269,25 @@ the node and never leave it."""
             return {"error": "Schlage credentials not configured"}
 
         try:
-            schlage = await asyncio.to_thread(_build_schlage_client)
-            locks = await asyncio.to_thread(schlage.locks)
+            client = await asyncio.to_thread(_build_schlage_client)
         except Exception as e:
             return {"error": f"Schlage auth failed: {e}"}
+
+        # Find and refresh the target lock
+        try:
+            locks = await asyncio.to_thread(client.get_locks)
+        except Exception as e:
+            return {"error": f"Failed to list locks: {e}"}
 
         for lock in locks:
             if (device.cloud_id and lock.device_id == device.cloud_id) or \
                _slugify(lock.name) == device.entity_id:
-                await asyncio.to_thread(lock.refresh)
+                refreshed = await asyncio.to_thread(client.refresh, lock.device_id)
                 return {
-                    "is_locked": lock.is_locked,
-                    "is_jammed": lock.is_jammed,
-                    "battery_level": lock.battery_level,
-                    "connected": getattr(lock, "connected", None),
+                    "is_locked": refreshed.is_locked,
+                    "is_jammed": refreshed.is_jammed,
+                    "battery_level": refreshed.battery_level,
+                    "connected": refreshed.connected,
                 }
 
         return {"error": f"Lock '{device.name}' not found"}
