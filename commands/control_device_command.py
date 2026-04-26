@@ -374,27 +374,14 @@ class ControlDeviceCommand(IJarvisCommand):
         return None
 
     @staticmethod
-    def _get_device_service() -> "DirectDeviceService":
-        """Get or create the DirectDeviceService singleton."""
-        from services.direct_device_service import DirectDeviceService
-        from utils.config_service import Config
-        from utils.service_discovery import get_command_center_url
+    def _get_device_service():
+        """Return the process-wide DirectDeviceService.
 
-        # Check if there's already a service instance on the module
-        import commands.control_device_command as _self_mod
-        if hasattr(_self_mod, "_device_service") and _self_mod._device_service is not None:
-            return _self_mod._device_service
-
-        cc_url: str = get_command_center_url() or ""
-        node_id: str = Config.get_str("node_id", "") or ""
-        api_key: str = Config.get_str("api_key", "") or ""
-        household_id: str = Config.get_str("household_id", "") or ""
-
-        service = DirectDeviceService(
-            cc_base_url=cc_url,
-            node_id=node_id,
-            api_key=api_key,
-            household_id=household_id,
-        )
-        _self_mod._device_service = service  # type: ignore[attr-defined]
-        return service
+        Shared with DeviceDiscoveryAgent so the agent's 5-min refresh
+        keeps this command's view of devices fresh — pre-fix, this
+        command had its own instance that was populated on first use
+        and never refreshed, so devices added to CC after cold start
+        were invisible until process restart.
+        """
+        from services.direct_device_service import get_direct_device_service
+        return get_direct_device_service()
