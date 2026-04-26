@@ -431,7 +431,8 @@ def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
     1. Abort phrases — user heard the chime and wants to cancel
     2. Max recording duration + long/mid-sentence transcription — ambient speech
     """
-    text = transcription.strip().lower()
+    raw = transcription.strip()
+    text = raw.lower()
 
     # Signal 1: abort phrases
     for phrase in _ABORT_PHRASES:
@@ -444,8 +445,8 @@ def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
         # Long transcription — ambient conversation, not a command
         if len(words) > 20:
             return True
-        # Starts mid-sentence (lowercase, not "i" or "ok")
-        if text and text[0].islower() and not text.startswith(("i ", "i'", "ok")):
+        # Starts mid-sentence (lowercase in original, not "i" or "ok")
+        if raw and raw[0].islower() and not text.startswith(("i ", "i'", "ok")):
             return True
 
     return False
