@@ -203,12 +203,23 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
     set_current_user_id(None)  # reset context
 
+    node_config: dict[str, Any] = {
+        "wake_word_threshold": Config.get_float("wake_word_threshold", 0.5),
+        "silence_threshold": Config.get_int("silence_threshold", 300),
+        "silence_duration": Config.get_float("silence_duration", 0.8),
+        "min_record_seconds": Config.get_float("min_record_seconds", 1.0),
+        "max_record_seconds": Config.get_int("max_record_seconds", 7),
+        "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
+        "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 5),
+    }
+
     return {
         "schema_version": SCHEMA_VERSION,
         "commands_schema_version": COMMANDS_SCHEMA_VERSION,
         "commands": command_entries,
         "device_families": family_entries,
         "device_managers": manager_entries,
+        "node_config": node_config,
     }
 
 
@@ -306,6 +317,7 @@ def handle_snapshot_request(request_id: str, include_values: bool = False, user_
         "Snapshot built",
         request_id=request_id[:8],
         command_count=len(snapshot["commands"]),
+        node_config_keys=len(snapshot.get("node_config", {})),
     )
 
     # Encrypt
