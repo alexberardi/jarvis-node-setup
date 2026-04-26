@@ -178,11 +178,11 @@ class ZWaveService:
         if url:
             logger.debug("Z-Wave JS URL resolved", url=url)
         else:
-            logger.debug(
-                "Z-Wave JS URL not found in JarvisStorage",
-                storage_namespace=_storage._namespace,
-                backend_type=type(_storage._backend).__name__ if _storage._backend else "None",
-            )
+            # Don't introspect JarvisStorage internals here — the SDK was
+            # refactored (no more `_namespace` / instance `_backend`) and
+            # this debug log was raising AttributeError that propagated up
+            # as the user-visible "device control failed" error.
+            logger.debug("Z-Wave JS URL not found in JarvisStorage")
         return url
 
     def _next_msg_id(self) -> str:

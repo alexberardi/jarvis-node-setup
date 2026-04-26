@@ -697,6 +697,23 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.error("update_node_config failed", error=str(e))
 
 
+def handle_invalidate_device_cache(details: Dict[str, Any]) -> None:
+    """Drop the DirectDeviceService cache so the next list/get refreshes from CC.
+
+    CC publishes this to every node in the household whenever a device is
+    added, updated, or deleted. Without it, ``control_device`` could miss
+    a freshly-added device for up to 5 minutes (until the periodic
+    DeviceDiscoveryAgent refresh) and report "device not found" errors
+    from a stale cache.
+    """
+    try:
+        from services.direct_device_service import get_direct_device_service
+        get_direct_device_service().invalidate_cache()
+        logger.info("Device cache invalidated by CC notification")
+    except Exception as e:
+        logger.warning("invalidate_device_cache failed", error=str(e))
+
+
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
@@ -706,6 +723,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "toggle_command": handle_toggle_command,
     "update_node_config": handle_update_node_config,
     "enroll_voice": handle_enroll_voice,
+    "invalidate_device_cache": handle_invalidate_device_cache,
 }
 
 

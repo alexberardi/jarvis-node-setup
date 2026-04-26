@@ -18,8 +18,6 @@ from jarvis_log_client import JarvisLogger
 from core.ijarvis_agent import AgentSchedule, IJarvisAgent
 from core.ijarvis_secret import IJarvisSecret
 from services.direct_device_service import DirectDeviceService
-from utils.config_service import Config
-from utils.service_discovery import get_command_center_url
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -55,13 +53,11 @@ class DeviceDiscoveryAgent(IJarvisAgent):
         return []
 
     def _get_service(self) -> DirectDeviceService:
+        # Use the shared singleton so ControlDeviceCommand sees the same
+        # cache this agent's periodic refresh updates.
         if self._service is None:
-            self._service = DirectDeviceService(
-                cc_base_url=get_command_center_url() or "",
-                node_id=Config.get_str("node_id", "") or "",
-                api_key=Config.get_str("api_key", "") or "",
-                household_id=Config.get_str("household_id", "") or "",
-            )
+            from services.direct_device_service import get_direct_device_service
+            self._service = get_direct_device_service()
         return self._service
 
     async def run(self) -> None:
