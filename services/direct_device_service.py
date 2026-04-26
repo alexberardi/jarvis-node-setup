@@ -183,6 +183,15 @@ class DirectDeviceService:
         )
         return await adapter.control(discovered, action, data or {})
 
+    def invalidate_cache(self) -> None:
+        """Drop the cached device registry.
+
+        Call after CC reports a device add/remove so the next list/get
+        triggers a fresh ``refresh_from_cc()`` instead of serving stale
+        entries. Cheap — the next caller pays one HTTP round-trip.
+        """
+        self._device_cache = {}
+
     async def get_state(self, entity_id: str) -> dict[str, Any] | None:
         """Query current state of a direct device.
 
@@ -223,3 +232,43 @@ class DirectDeviceService:
                 "protocol": record.protocol,
             })
         return {"device_controls": device_controls}
+
+
+# ---------------------------------------------------------------------------
+# Process-wide singleton
+#
+# Pre-fix: DeviceDiscoveryAgent and ControlDeviceCommand each instantiated
+# their own DirectDeviceService. The agent's 5-min refresh updated only
+# its own cache; the command's cache was populated once on first use and
+# never refreshed again. Result: a device added to CC after the command's
+# cold start was invisible to control_device until process restart.
+#
+# All callers should now go through ``get_direct_device_service()`` so the
+# agent's periodic refresh keeps the command path fresh too.
+# ---------------------------------------------------------------------------
+
+_direct_device_service_singleton: DirectDeviceService | None = None
+
+
+def get_direct_device_service() -> DirectDeviceService:
+    """Return the process-wide DirectDeviceService, creating it on first call."""
+    global _direct_device_service_singleton
+    if _direct_device_service_singleton is None:
+        # Local imports keep this module importable without a Config — tests
+        # that construct DirectDeviceService directly don't need it loaded.
+        from utils.config_service import Config
+        from utils.service_discovery import get_command_center_url
+
+        _direct_device_service_singleton = DirectDeviceService(
+            cc_base_url=get_command_center_url() or "",
+            node_id=Config.get_str("node_id", "") or "",
+            api_key=Config.get_str("api_key", "") or "",
+            household_id=Config.get_str("household_id", "") or "",
+        )
+    return _direct_device_service_singleton
+
+
+def reset_direct_device_service() -> None:
+    """Drop the singleton (test hook). Production code should not call this."""
+    global _direct_device_service_singleton
+    _direct_device_service_singleton = None
