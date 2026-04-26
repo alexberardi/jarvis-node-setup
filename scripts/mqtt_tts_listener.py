@@ -11,6 +11,7 @@ import paho.mqtt.client as mqtt
 
 from jarvis_log_client import JarvisLogger
 
+from utils.audio_volume import set_volume_percent
 from utils.config_service import Config
 from core.helpers import get_tts_provider
 from services.config_push_service import process_pending_configs
@@ -662,6 +663,12 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.warning("update_node_config: no settings provided")
         return
 
+    # Volume is an OS-level setting (ALSA softvol). Apply via amixer
+    # immediately AND persist to config.json so it survives reboot
+    # (alsa-restore is unreliable — node startup re-applies from config).
+    if "volume_percent" in settings:
+        set_volume_percent(int(settings["volume_percent"]))
+
     try:
         config_path = os.path.expandvars(os.path.expanduser(
             os.environ.get("CONFIG_PATH", "config.json")
@@ -684,8 +691,11 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.info("Node config updated via MQTT", keys=list(settings.keys()))
         print(f"[MQTT] update_node_config: updated {list(settings.keys())}", flush=True)
 
-        # Restart if requested (for module-level settings like wake_word_threshold)
-        if details.get("restart"):
+        # Restart only if the change touches a setting that needs it
+        # (module-level captures like wake_word_threshold). Volume-only
+        # changes apply live via amixer — no restart needed.
+        non_volume_keys = [k for k in settings if k != "volume_percent"]
+        if details.get("restart") and non_volume_keys:
             logger.info("Restarting service after config update")
             import subprocess
             subprocess.Popen(
