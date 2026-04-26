@@ -33,6 +33,7 @@ class DeviceRecord:
     name: str
     cloud_id: str = ""
     model: str = ""
+    room_name: str = ""
 
 
 class DirectDeviceService:
@@ -98,6 +99,7 @@ class DirectDeviceService:
                     name=dev["name"],
                     cloud_id=dev.get("cloud_id", ""),
                     model=dev.get("model", ""),
+                    room_name=dev.get("room_name", ""),
                 )
                 self._device_cache[record.entity_id] = record
                 count += 1
