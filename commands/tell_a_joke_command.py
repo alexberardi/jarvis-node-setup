@@ -1,3 +1,4 @@
+import random
 from typing import List
 
 from jarvis_command_sdk import IJarvisCommand, CommandExample
@@ -83,10 +84,13 @@ class TellAJokeCommand(IJarvisCommand):
 
     def run(self, request_info, **kwargs) -> CommandResponse:
         topic = kwargs.get("topic")
-        
-        # Return raw request - server will generate the joke
+
+        # Return raw request - server will generate the joke.
+        # variety_seed ensures the LLM sees different input each invocation,
+        # preventing deterministic repetition at low temperatures.
         return CommandResponse.success_response(
             context_data={
-                "topic": topic if topic else "random"
+                "topic": topic if topic else "random",
+                "variety_seed": random.randint(1, 10000),
             }
         )
