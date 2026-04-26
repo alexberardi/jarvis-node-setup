@@ -79,7 +79,8 @@ def listen(
     bus: AudioBus,
     *,
     subscriber_name: str = "listen",
-    history_secs: float = 1.0,
+    history_secs: float = 0.0,
+    skip_secs: float = 0.3,
     silence_threshold: Optional[int] = None,
     silence_duration: Optional[float] = None,
     min_record_secs: Optional[float] = None,
@@ -122,7 +123,18 @@ def listen(
     frames: List[bytes] = []
     silence_frames = 0
     hit_max = False
+    # Discard the first ``skip_secs`` worth of chunks to dodge TTS tail
+    # bleed / AEC recovery after the wake-response playback. Without this,
+    # the mic still captures residual speaker output as "audio", Whisper
+    # transcribes it, and the node ends up responding to itself.
+    skip_chunks = max(0, int(skip_secs / chunk_secs)) if skip_secs > 0 else 0
     try:
+        for _ in range(skip_chunks):
+            try:
+                q.get(timeout=max(chunk_secs * 10, 1.0))
+            except queue.Empty:
+                break
+
         for frame_count in range(max_frames):
             try:
                 data = q.get(timeout=max(chunk_secs * 10, 1.0))
@@ -161,6 +173,54 @@ def listen(
 
     _write_wav(output_filename, frames, bus)
     return RecordingResult(output_filename, actual_duration, hit_max)
+
+
+def record_fixed_duration(
+    bus: AudioBus,
+    seconds: float,
+    output_path: str,
+    *,
+    subscriber_name: str = "fixed_record",
+    skip_secs: float = 0.0,
+) -> RecordingResult:
+    """Record exactly ``seconds`` of audio from the bus and write a WAV.
+
+    Unlike ``listen()``, this ignores silence — useful for voice-profile
+    enrollment where we want a fixed-length sample regardless of pauses.
+    """
+    chunk_secs = bus.chunk_samples / bus.rate
+    skip_chunks = max(0, int(skip_secs / chunk_secs)) if skip_secs > 0 else 0
+    record_chunks = max(1, int(seconds / chunk_secs))
+
+    logger.info(
+        "Fixed-duration recording starting",
+        seconds=seconds,
+        skip_secs=skip_secs,
+        output=output_path,
+    )
+
+    q = bus.subscribe(subscriber_name)
+    frames: List[bytes] = []
+    try:
+        for _ in range(skip_chunks):
+            try:
+                q.get(timeout=max(chunk_secs * 10, 1.0))
+            except queue.Empty:
+                break
+        for _ in range(record_chunks):
+            try:
+                data = q.get(timeout=max(chunk_secs * 10, 1.0))
+            except queue.Empty:
+                logger.warning("record_fixed_duration: timeout waiting for chunk")
+                break
+            frames.append(data)
+    finally:
+        bus.unsubscribe(subscriber_name)
+
+    actual_duration = len(frames) * chunk_secs
+    logger.info("Fixed-duration recording complete", duration=f"{actual_duration:.2f}s")
+    _write_wav(output_path, frames, bus)
+    return RecordingResult(output_path, actual_duration, hit_max_duration=True)
 
 
 def listen_for_follow_up(
