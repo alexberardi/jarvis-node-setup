@@ -78,7 +78,7 @@ class DeviceDiscoveryAgent(IJarvisAgent):
                 device_controls.setdefault(domain, []).append({
                     "entity_id": d.entity_id,
                     "name": d.name,
-                    "area": "",
+                    "area": d.room_name or "",
                     "state": "unknown",
                 })
 
