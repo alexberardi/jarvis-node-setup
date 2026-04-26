@@ -1,3 +1,4 @@
+import faulthandler
 import os
 import signal
 import sys
@@ -20,7 +21,7 @@ if not os.environ.get("JARVIS_CONFIG_URL"):
     except (json.JSONDecodeError, KeyError) as _e:
         print(f"WARNING: Config parse error: {_e}", file=sys.stderr)
 
-from jarvis_log_client import init as init_logging, JarvisLogger
+from jarvis_log_client import init as init_logging, init_node as init_logging_node, JarvisLogger
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
@@ -30,11 +31,22 @@ from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
 from utils.service_discovery import init as init_service_discovery
 
-# Initialize logging
-init_logging(
-    app_id=os.getenv("JARVIS_APP_ID", "jarvis-node"),
-    app_key=os.getenv("JARVIS_APP_KEY", ""),
-)
+# Initialize logging.
+# Prefer node-mode auth using the node credentials we already have in
+# config.json — the node has no separate app credential registered with
+# jarvis-auth, so app-mode auth would 401 every batch and trigger the
+# fallback-to-console replay (entries appear duplicated in the journal).
+# Fall back to app-mode if node credentials aren't present, so non-node
+# environments (e.g. CLI invocations) still get console logging.
+_node_id = Config.get_str("node_id") or os.getenv("JARVIS_NODE_ID", "")
+_node_key = Config.get_str("api_key") or os.getenv("JARVIS_NODE_KEY", "")
+if _node_id and _node_key:
+    init_logging_node(node_id=_node_id, node_key=_node_key)
+else:
+    init_logging(
+        app_id=os.getenv("JARVIS_APP_ID", "jarvis-node"),
+        app_key=os.getenv("JARVIS_APP_KEY", ""),
+    )
 logger = JarvisLogger(service="jarvis-node")
 
 # Module-level shutdown event for graceful shutdown
@@ -134,6 +146,11 @@ def main():
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
+
+    # `kill -USR1 <pid>` dumps Python frames for every live thread to
+    # stderr (→ journalctl). Hook for diagnosing voice-loop deadlocks
+    # without rebuilding with py-spy on the Pi.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
 
     # Startup banner — visible in journalctl for debugging
     logger.info("Jarvis node starting",

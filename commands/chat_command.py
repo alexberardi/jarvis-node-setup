@@ -21,7 +21,11 @@ class ChatCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Casual conversation: greetings, small talk, opinions, open-ended chat. For facts use answer_question, for current events use search_web."
+        return (
+            "Use for casual conversation: greetings, small talk, opinions, open-ended chat. "
+            "Put YOUR friendly conversational reply in the `message` parameter — do NOT echo "
+            "the user's words. For facts use answer_question, for current events use search_web."
+        )
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -44,7 +48,11 @@ class ChatCommand(IJarvisCommand):
                 "message",
                 "string",
                 required=True,
-                description="The user's conversational message or greeting"
+                description=(
+                    "YOUR natural-language reply to the user (not the user's words). "
+                    "Example: if the user says 'how are you?', set message to 'Doing well, thanks!' — "
+                    "NOT 'how are you?'. This string is spoken aloud exactly as written."
+                ),
             ),
         ]
 
@@ -114,70 +122,73 @@ class ChatCommand(IJarvisCommand):
 
     def generate_adapter_examples(self) -> List[CommandExample]:
         return [
+            # Each example's `message` is the LLM's reply to the user, NOT the user's
+            # own words. These examples appear in the tool schema and teach the model
+            # what a good response looks like.
             # Greetings
             CommandExample(
                 voice_command="Hey Jarvis, how's it going?",
-                expected_parameters={"message": "Hey Jarvis, how's it going?"},
+                expected_parameters={"message": "Doing great, thanks for asking. What can I do for you?"},
                 is_primary=True,
             ),
             CommandExample(
                 voice_command="Good morning!",
-                expected_parameters={"message": "Good morning!"},
+                expected_parameters={"message": "Good morning! How can I help?"},
             ),
             CommandExample(
                 voice_command="Hello there",
-                expected_parameters={"message": "Hello there"},
+                expected_parameters={"message": "Hi there! What's up?"},
             ),
             CommandExample(
                 voice_command="Hi Jarvis",
-                expected_parameters={"message": "Hi Jarvis"},
+                expected_parameters={"message": "Hi! Ready when you are."},
             ),
             CommandExample(
                 voice_command="Good evening, how are you?",
-                expected_parameters={"message": "Good evening, how are you?"},
+                expected_parameters={"message": "I'm well, thanks. How's your evening going?"},
             ),
             # Small talk
             CommandExample(
                 voice_command="How are you doing today?",
-                expected_parameters={"message": "How are you doing today?"},
+                expected_parameters={"message": "Pretty good, thanks. How about you?"},
             ),
             CommandExample(
                 voice_command="What's up?",
-                expected_parameters={"message": "What's up?"},
+                expected_parameters={"message": "Not much, just hanging out. What's on your mind?"},
             ),
             CommandExample(
                 voice_command="How's your day going?",
-                expected_parameters={"message": "How's your day going?"},
+                expected_parameters={"message": "Can't complain. What's up with yours?"},
             ),
             # Opinions / open-ended
             CommandExample(
                 voice_command="What do you think about space travel?",
-                expected_parameters={"message": "What do you think about space travel?"},
+                expected_parameters={"message": "Endlessly fascinating — humans leaving Earth is one of the coolest things we've pulled off."},
             ),
             CommandExample(
                 voice_command="Tell me something interesting",
-                expected_parameters={"message": "Tell me something interesting"},
+                expected_parameters={"message": "Octopuses have three hearts and blue blood — two of the hearts stop beating when they swim."},
             ),
             CommandExample(
                 voice_command="Do you have a favorite color?",
-                expected_parameters={"message": "Do you have a favorite color?"},
+                expected_parameters={"message": "I'll pick deep blue — feels calm."},
             ),
             CommandExample(
                 voice_command="Tell me about yourself",
-                expected_parameters={"message": "Tell me about yourself"},
+                expected_parameters={"message": "I'm Jarvis, your voice assistant. Happy to help with timers, weather, questions, you name it."},
             ),
             # Casual conversation
             CommandExample(
                 voice_command="I'm having a great day",
-                expected_parameters={"message": "I'm having a great day"},
+                expected_parameters={"message": "Love to hear it! Anything fun going on?"},
             ),
             CommandExample(
                 voice_command="Thanks Jarvis, you're awesome",
-                expected_parameters={"message": "Thanks Jarvis, you're awesome"},
+                expected_parameters={"message": "You're welcome — happy to help."},
             ),
             CommandExample(
                 voice_command="Let's just chat for a bit",
-                expected_parameters={"message": "Let's just chat for a bit"},
+                expected_parameters={"message": "Sure, what's on your mind?"},
             ),
         ]
 

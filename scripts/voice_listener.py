@@ -89,6 +89,15 @@ def get_audio_bus() -> AudioBus | None:
 # otherwise re-fire the wake detector and clash with the recording.
 _wake_paused = threading.Event()
 
+# Dedupe back-to-back wake fires for a single utterance.
+# openWakeWord can score >threshold on consecutive 80ms chunks for one
+# "Hey Jarvis", and the wake loop break can re-trigger before the
+# conversation flow takes the lock. This guard ignores any wake whose
+# previous trigger was less than _WAKE_DEBOUNCE_SEC ago.
+_WAKE_DEBOUNCE_SEC = 8.0
+_last_wake_ts: float = 0.0
+_last_wake_lock = threading.Lock()
+
 
 def pause_wake() -> None:
     """Disable wake detection until ``resume_wake()`` is called."""
@@ -149,6 +158,7 @@ def _bundled_wake_chimes() -> list[Path]:
 
 
 def handle_keyword_detected():
+    t_enter = time.perf_counter()
     logger.info("Wake word detected, listening for command")
     print("Wake word detected! Listening...")
 
@@ -157,26 +167,59 @@ def handle_keyword_detected():
     # 2. Random pick from bundled sounds/wake/*.wav (always-present fallback)
     # 3. TTS speak (last-resort, requires network)
     played = False
+    source = "none"
+    file_size = 0
 
     if WAKE_AUDIO_FILE.exists():
+        source = "cached_llm"
         try:
-            played = platform_audio.play_audio_file(str(WAKE_AUDIO_FILE))
+            file_size = WAKE_AUDIO_FILE.stat().st_size
+        except OSError:
+            pass
+        t_pre = time.perf_counter()
+        # Pause wake detection while we play the wake response — otherwise
+        # the wake-word model can hear our own response audio and retrigger,
+        # causing 2x playback (~2.7s of dead air for one "Hey Jarvis").
+        try:
+            with wake_paused():
+                played = platform_audio.play_audio_file(str(WAKE_AUDIO_FILE))
         except Exception as e:
             logger.warning("Failed to play cached wake audio", error=str(e))
         finally:
+            t_post = time.perf_counter()
             WAKE_AUDIO_FILE.unlink(missing_ok=True)
             WAKE_FILE.unlink(missing_ok=True)
+            logger.info(
+                f"wake audio timing | source={source} size={file_size}B "
+                f"pre={int((t_pre - t_enter) * 1000)}ms "
+                f"play={int((t_post - t_pre) * 1000)}ms "
+                f"total={int((t_post - t_enter) * 1000)}ms"
+            )
 
     if not played:
         bundled = _bundled_wake_chimes()
         if bundled:
             chime = random.choice(bundled)
+            source = "bundled"
             try:
-                played = platform_audio.play_audio_file(str(chime))
+                file_size = chime.stat().st_size
+            except OSError:
+                pass
+            t_pre = time.perf_counter()
+            try:
+                with wake_paused():
+                    played = platform_audio.play_audio_file(str(chime))
                 if played:
                     logger.debug("Played bundled wake chime", chime=chime.name)
             except Exception as e:
                 logger.warning("Failed to play bundled wake chime", chime=chime.name, error=str(e))
+            t_post = time.perf_counter()
+            logger.info(
+                f"wake audio timing | source={source} size={file_size}B "
+                f"pre={int((t_pre - t_enter) * 1000)}ms "
+                f"play={int((t_post - t_pre) * 1000)}ms "
+                f"total={int((t_post - t_enter) * 1000)}ms"
+            )
 
     if not played:
         tts_provider = get_tts_provider()
@@ -189,6 +232,54 @@ def handle_keyword_detected():
 
     # Fetch the next wake response in the background if provider is configured
     threading.Thread(target=fetch_next_wake_response, daemon=True).start()
+
+
+def _trim_wav_silence(wav_bytes: bytes, threshold: int = 200) -> bytes:
+    """Strip leading/trailing silence from a WAV byte string.
+
+    TTS providers commonly bookend output with 200-400ms of silence which
+    bloats cached wake responses (where every ms costs perceived latency).
+    Threshold is the abs sample value below which a frame counts as silent;
+    default 200 ≈ -42 dB at 16-bit, conservative enough to not clip speech.
+    """
+    import io
+    import wave
+
+    import numpy as np
+
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+        params = wav.getparams()
+        frames = wav.readframes(wav.getnframes())
+
+    if params.sampwidth != 2:  # 16-bit only — bail on float / 24-bit
+        return wav_bytes
+
+    samples = np.frombuffer(frames, dtype=np.int16)
+    if params.nchannels > 1:
+        samples = samples.reshape(-1, params.nchannels)
+        active = np.any(np.abs(samples) > threshold, axis=1)
+    else:
+        active = np.abs(samples) > threshold
+
+    if not active.any():
+        return wav_bytes  # nothing above threshold, leave it alone
+
+    first = int(active.argmax())
+    last = len(active) - 1 - int(active[::-1].argmax())
+
+    # Keep ~5ms pad on each side so we don't clip plosives. Aggressive
+    # because every ms of leading silence is perceived latency on wake.
+    pad = int(params.framerate * 0.005)
+    first = max(0, first - pad)
+    last = min(len(active) - 1, last + pad)
+
+    trimmed = samples[first : last + 1]
+
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav_out:
+        wav_out.setparams(params)
+        wav_out.writeframes(trimmed.tobytes())
+    return out.getvalue()
 
 
 def fetch_next_wake_response():
@@ -217,8 +308,17 @@ def fetch_next_wake_response():
             timeout=30,
         )
         if audio_bytes:
+            original_size = len(audio_bytes)
+            try:
+                audio_bytes = _trim_wav_silence(audio_bytes)
+            except Exception as e:
+                logger.debug("Silence trim failed, using original", error=str(e))
             WAKE_AUDIO_FILE.write_bytes(audio_bytes)
-            logger.debug("Cached wake response audio", size_bytes=len(audio_bytes))
+            logger.debug(
+                "Cached wake response audio",
+                size_bytes=len(audio_bytes),
+                trimmed_from=original_size,
+            )
 
     except Exception as e:
         logger.error("Failed to fetch next greeting", error=str(e))
@@ -443,6 +543,7 @@ def _follow_up_loop(
     stt_provider,
     validation_handler: Callable[[ValidationRequest], str],
     oww=None,
+    tts_end_ts: float | None = None,
 ) -> None:
     """Listen for follow-up speech after TTS completes.
 
@@ -454,7 +555,12 @@ def _follow_up_loop(
     playback — the wake word interrupts the response and returns to the
     main wake detection loop.
     """
-    follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 5.0)
+    # Default bumped 5→10s on 2026-04-25: the window opens as soon as the
+    # caller returns from playing the response, but in practice the user
+    # often needs 2-3s to react. 5s often expired before the user could
+    # start speaking, making follow-ups feel "hit or miss". 10s gives
+    # comfortable headroom; users can override via config.
+    follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 10.0)
     if follow_up_seconds <= 0:
         return
 
@@ -462,10 +568,34 @@ def _follow_up_loop(
     if initial_result and initial_result.get("success"):
         conversation_id = initial_result.get("conversation_id")
 
+    # The AudioBus ring buffer is already capturing post-TTS audio. Track
+    # when TTS ended so each iteration can ask the bus for "everything
+    # since then" via history_secs, capping at the bus's 2s ring capacity.
+    # Without this, anything the user said in the gap between TTS-end and
+    # listener-attach (~1.5s typical, dominated by barge_in.stop drain)
+    # was lost. The caller passes its own measurement of "TTS just ended"
+    # because by the time we're called the gap may already be ~1.5s old.
+    if tts_end_ts is None:
+        tts_end_ts = time.monotonic()
+    iteration = 0
+
     while True:
-        audio_file = listen_for_follow_up(bus, timeout_seconds=follow_up_seconds)
+        iteration += 1
+        elapsed = time.monotonic() - tts_end_ts
+        history_secs = max(0.0, min(2.0, elapsed))
+        logger.info(
+            "Follow-up iteration begin",
+            iteration=iteration,
+            elapsed_since_tts=round(elapsed, 3),
+            history_secs=round(history_secs, 3),
+            timeout=follow_up_seconds,
+        )
+        audio_file = listen_for_follow_up(
+            bus, timeout_seconds=follow_up_seconds, history_secs=history_secs,
+        )
         if audio_file is None:
-            logger.debug("Follow-up window expired, returning to wake word mode")
+            logger.info("Follow-up window expired, returning to wake word mode",
+                        iteration=iteration)
             break
 
         try:
@@ -516,6 +646,14 @@ def _follow_up_loop(
                 )
                 command_service.speak_result(result)
                 conversation_id = result.get("conversation_id") if result.get("success") else None
+
+            # Capture TTS-end timestamp HERE (right after speak_result), not
+            # after the finally block. barge_in.stop() routinely takes ~1.5s
+            # to drain (oww.reset + thread.join), and that 1.5s is exactly
+            # the window the user uses to start their next follow-up. If we
+            # mark tts_end_ts after the finally, elapsed≈0 → history_secs≈0
+            # → the user's speech in the gap is dropped on iter 2+.
+            tts_end_ts = time.monotonic()
 
         except Exception as e:
             logger.warning("Follow-up processing failed, returning to wake word mode", error=str(e))
@@ -649,11 +787,12 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
                 warmup_result=warmup_result,
                 skip_ack=ack_played,
             )
+            tts_end_ts = time.monotonic()
             end = time.perf_counter()
 
             logger.info("Transcription complete", duration_seconds=round(end - start, 2))
 
-            _follow_up_loop(bus, result, command_service, stt_provider, validation_handler)
+            _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, tts_end_ts=tts_end_ts)
 
             # Pre-generate the next processing ack in the background
             threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
@@ -762,6 +901,7 @@ def start_voice_listener(ma_service):
             wake_q = bus.subscribe("wake")
             score = 0.0
             try:
+                was_paused = False
                 while True:
                     alert_check_counter += 1
                     if alert_check_counter >= alert_check_interval:
@@ -787,7 +927,16 @@ def start_voice_listener(ma_service):
                     # queue still drains so we don't process stale audio
                     # the moment we resume.
                     if _wake_paused.is_set():
+                        was_paused = True
                         continue
+
+                    # First chunk after a pause: reset the openWakeWord LSTM
+                    # state. Without this, residual context from before the
+                    # pause (often the wake response audio echoing back)
+                    # immediately re-triggers a wake event.
+                    if was_paused:
+                        oww.reset()
+                        was_paused = False
 
                     samples = np.frombuffer(raw_data, dtype=np.int16)
                     if resample_down > 1:
@@ -864,11 +1013,20 @@ def start_voice_listener(ma_service):
                     warmup_result=warmup_result,
                     skip_ack=ack_played,
                 )
+                # Capture TTS-end time RIGHT after send_for_transcription
+                # returns (which is right after speak_result completes).
+                # The follow-up loop uses this to know how far back to look
+                # in the bus history for speech the user uttered before the
+                # listener subscribed. barge_in.stop() in the finally below
+                # routinely costs ~1.5s — that 1.5s is exactly the gap users
+                # speak into.
+                tts_end_ts = time.monotonic()
                 end = time.perf_counter()
                 logger.info("Transcription complete", duration_seconds=round(end - start, 2))
             except Exception as e:
                 logger.warning("Command processing failed, resuming listener", error=str(e))
                 print(f"Command failed: {e}")
+                tts_end_ts = time.monotonic()
             finally:
                 if barge_in:
                     barge_in.stop()
@@ -881,7 +1039,7 @@ def start_voice_listener(ma_service):
                 # wake word again when they're ready.
             else:
                 try:
-                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww)
+                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww, tts_end_ts=tts_end_ts)
                 except Exception as e:
                     logger.warning("Follow-up loop error, resuming wake word", error=str(e))
 
