@@ -211,6 +211,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
         "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 5),
+        "volume_percent": Config.get_int("volume_percent", 100),
     }
 
     return {

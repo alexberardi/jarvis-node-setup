@@ -168,6 +168,17 @@ def main():
     except Exception as e:
         logger.warning("Encryption key init failed", error=str(e))
 
+    # Apply persisted audio volume to ALSA. Reboots / alsa-restore aren't
+    # reliable for keeping softvol where the user set it, so config.json
+    # is the source of truth and we re-apply on every startup.
+    try:
+        from utils.audio_volume import set_volume_percent
+        vol = Config.get_int("volume_percent", -1)
+        if 0 <= vol <= 100:
+            set_volume_percent(vol)
+    except Exception as e:
+        logger.warning("Audio volume apply failed", error=str(e))
+
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 
