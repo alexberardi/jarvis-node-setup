@@ -334,6 +334,167 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
         logger.error("Failed to report tools", error=str(e))
 
 
+def handle_enroll_voice(details: Dict[str, Any]) -> None:
+    """Capture a voice sample via the node's mic and POST to CC for enrollment.
+
+    The phone-mic enrollment path produces embeddings tied to the phone's
+    acoustics — recognition on the node's mic then scores poorly. This
+    handler closes that gap: same mic at enrollment time as at runtime.
+
+    Expected ``details``::
+
+        {
+          "user_id": int,
+          "household_id": str,
+          "request_id": str,             # for result reply
+          "prompt_text": str,            # echoed to mobile UI
+          "duration_secs": float,        # default 8
+          "preroll_secs": float,         # default 1.5 (TTS cue + reaction)
+        }
+
+    On completion the handler POSTs to CC's mobile callback with the
+    verify score so the mobile UI can show success/score-too-low.
+    """
+    import os
+    import time as _time
+    import uuid as _uuid
+
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    user_id = details.get("user_id")
+    household_id = details.get("household_id")
+    request_id = details.get("request_id")
+    prompt_text = details.get("prompt_text") or ""
+    duration_secs: float = float(details.get("duration_secs") or 8.0)
+    preroll_secs: float = float(details.get("preroll_secs") or 1.5)
+
+    if user_id is None or not household_id or not request_id:
+        logger.warning(
+            "enroll_voice: missing required fields",
+            user_id=user_id,
+            household_id=bool(household_id),
+            request_id=bool(request_id),
+        )
+        return
+
+    base_url = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("enroll_voice: CC URL not resolved")
+        return
+
+    # Lazy import to avoid circular import at module load
+    from scripts.voice_listener import get_audio_bus, wake_paused
+    from scripts.speech_to_text import record_fixed_duration
+    from core.helpers import get_tts_provider
+
+    bus = get_audio_bus()
+    if bus is None:
+        logger.error("enroll_voice: no AudioBus available — voice_listener not running")
+        _post_enrollment_result(base_url, request_id, success=False,
+                                error="audio_bus_unavailable")
+        return
+
+    # Pause wake detection for the whole TTS-cue + record + upload window.
+    # Reading the enrollment prompt near the node mic would otherwise
+    # produce wake-like utterances that fire the wake loop and start a
+    # competing voice-command flow concurrent with the enrollment record.
+    with wake_paused():
+        # 1) Audible cue via TTS so the user knows when to start reading.
+        try:
+            tts = get_tts_provider()
+            tts.speak(False, "Read the prompt on your screen, starting now.")
+        except Exception as e:
+            logger.warning("enroll_voice: TTS cue failed (continuing)", error=str(e))
+
+        # 2) Brief preroll so the user has time to start speaking.
+        if preroll_secs > 0:
+            _time.sleep(preroll_secs)
+
+        # 3) Capture a fixed-length sample using the shared bus (no PyAudio
+        #    contention with the wake detector).
+        output_path = f"/tmp/enroll-{_uuid.uuid4().hex[:8]}.wav"
+        try:
+            recording = record_fixed_duration(
+                bus, seconds=duration_secs, output_path=output_path,
+                subscriber_name=f"enroll-{request_id[:8]}",
+            )
+        except Exception as e:
+            logger.error("enroll_voice: record failed", error=str(e))
+            _post_enrollment_result(base_url, request_id, success=False,
+                                    error=f"record_failed: {e}")
+            return
+
+    # 4) POST the WAV to CC's whisper proxy for enrollment.
+    enroll_url = (
+        f"{base_url.rstrip('/')}/api/v0/media/whisper/voice-profiles/enroll"
+        f"?user_id={user_id}"
+    )
+    try:
+        import requests
+        # RestClient doesn't ship a multipart helper, so build the request
+        # by hand but reuse its auth-header builder so node X-API-Key auth
+        # matches the rest of the node's traffic.
+        headers = RestClient._build_auth_header()
+        with open(recording.audio_file, "rb") as f:
+            r = requests.post(
+                enroll_url,
+                headers=headers,
+                files={"file": (
+                    os.path.basename(recording.audio_file),
+                    f,
+                    "audio/wav",
+                )},
+                timeout=20,
+            )
+        r.raise_for_status()
+        upload_resp = r.json() if r.content else {}
+
+        logger.info("enroll_voice: enrollment uploaded",
+                    user_id=user_id, request_id=request_id[:8],
+                    response=upload_resp)
+        _post_enrollment_result(
+            base_url, request_id,
+            success=True,
+            user_id=user_id,
+            response=upload_resp,
+            duration_secs=recording.duration,
+        )
+    except Exception as e:
+        logger.error("enroll_voice: upload failed", error=str(e))
+        _post_enrollment_result(base_url, request_id, success=False,
+                                error=f"upload_failed: {e}")
+    finally:
+        try:
+            os.unlink(recording.audio_file)
+        except OSError:
+            pass
+
+
+def _post_enrollment_result(
+    base_url: str,
+    request_id: str,
+    *,
+    success: bool,
+    **extra: Any,
+) -> None:
+    """POST the enrollment outcome to CC's mobile-callback endpoint.
+
+    Mirrors the report_tools pattern (file-based polling on the CC side).
+    Mobile app polls the matching GET endpoint to surface the result.
+    """
+    from clients.rest_client import RestClient
+    url = f"{base_url.rstrip('/')}/api/v0/mobile/voice-profile-results/{request_id}"
+    try:
+        RestClient.post(
+            url,
+            data={"success": success, **extra},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning("enroll_voice: failed to POST result to CC", error=str(e))
+
+
 def handle_tool_call(details: Dict[str, Any]) -> None:
     """Execute a tool call from CC's mobile chat and POST the result back.
 
@@ -544,6 +705,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tool_call": handle_tool_call,
     "toggle_command": handle_toggle_command,
     "update_node_config": handle_update_node_config,
+    "enroll_voice": handle_enroll_voice,
 }
 
 

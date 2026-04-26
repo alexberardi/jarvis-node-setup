@@ -219,6 +219,58 @@ class JarvisCommandCenterClient:
         except Exception:
             return None
 
+    def send_tool_results_stream(
+        self,
+        conversation_id: str,
+        tool_results: List[Dict[str, Any]],
+    ) -> tuple[Any, Dict[str, str]]:
+        """Streaming variant of send_tool_results.
+
+        Calls /voice/command/continue/stream which either streams PCM audio
+        back (200 audio/raw) when the post-tool LLM call produces a natural
+        text response, or returns 202 JSON to signal "fall back to blocking".
+
+        Returns:
+            (response, audio_meta) when streaming succeeded — caller plays
+            the PCM directly via response.iter_content().
+            (None, {}) when the server signaled fallback or the request
+            failed — caller should call send_tool_results() instead.
+        """
+        payload = {
+            "conversation_id": conversation_id,
+            "tool_results": tool_results,
+        }
+
+        try:
+            response = RestClient.post_stream(
+                f"{self.base_url}/api/v0/voice/command/continue/stream",
+                timeout=60,
+                data=payload,
+            )
+
+            if not response:
+                return (None, {})
+
+            if response.status_code == 200:
+                audio_meta = {
+                    "sample_rate": response.headers.get("X-Audio-Sample-Rate", "22050"),
+                    "channels": response.headers.get("X-Audio-Channels", "1"),
+                    "sample_width": response.headers.get("X-Audio-Sample-Width", "2"),
+                    "assistant_message": "",
+                }
+                return (response, audio_meta)
+
+            # 202 (or other non-200) — server signaled fallback
+            try:
+                response.close()
+            except Exception:
+                pass
+            return (None, {})
+
+        except Exception as e:
+            logger.error("Failed streaming tool results", error=str(e))
+            return (None, {})
+
     def send_tool_results(
         self,
         conversation_id: str,
@@ -226,12 +278,12 @@ class JarvisCommandCenterClient:
     ) -> Optional[ToolCallingResponse]:
         """
         Send tool execution results back to continue the conversation
-        
+
         Args:
             conversation_id: The conversation identifier
             tool_results: List of tool execution results in format:
                          [{"tool_call_id": "...", "output": {...}}]
-            
+
         Returns:
             ToolCallingResponse with next action
         """
