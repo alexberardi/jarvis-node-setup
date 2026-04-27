@@ -1068,6 +1068,29 @@ def _handle_device_state_notification(raw_payload: bytes) -> None:
     thread.start()
 
 
+def _handle_camera_credentials_notification(raw_payload: bytes) -> None:
+    """Handle camera credential request from CC — runs lookup in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in camera credentials notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    if not request_id:
+        logger.warning("Camera credentials notification missing request_id")
+        return
+
+    logger.info("Camera credentials requested", request_id=request_id[:8])
+
+    from services.camera_credentials_handler import run_credentials_lookup_and_upload
+
+    thread = threading.Thread(
+        target=run_credentials_lookup_and_upload, args=(request_id, notification), daemon=True
+    )
+    thread.start()
+
+
 def _handle_package_install_notification(raw_payload: bytes) -> None:
     """Handle package install request from CC — runs install in background thread."""
     try:
@@ -1126,12 +1149,98 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
     print("[UNINSTALL] thread started", flush=True)
 
 
-def _handle_factory_reset(raw_payload: bytes) -> None:
-    """Handle factory-reset request from CC after node deletion.
+def _post_factory_reset_status(
+    cc_url: str,
+    task_id: str,
+    token: str,
+    state: str,
+    error_message: str | None = None,
+) -> bool:
+    """PATCH the CC factory-reset task with current state.
 
-    Security: Before resetting, calls CC's verify-reset endpoint to confirm
-    the request_id was actually issued by CC. This prevents spoofed MQTT
-    messages from triggering a factory reset.
+    The token is sent in the X-Reset-Token header (the node's API key has
+    been wiped by the time the final "success" call goes out). A valid
+    token doubles as proof the request was legitimately issued by CC —
+    this replaces the old standalone /verify-reset call.
+
+    Returns True on a 2xx response, False otherwise. Failures here are
+    logged but never abort the reset itself: better to wipe the device
+    and let the mobile UI time out than leave a node in a half-state
+    because of a transient network error.
+    """
+    import requests
+
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/factory-reset/{task_id}/status"
+    body: Dict[str, Any] = {"state": state}
+    if error_message is not None:
+        body["error_message"] = error_message
+    try:
+        resp = requests.post(
+            url,
+            json=body,
+            headers={"X-Reset-Token": token},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        logger.warning(
+            "Factory-reset status post failed",
+            state=state,
+            error=str(e),
+        )
+        return False
+
+    if resp.status_code // 100 != 2:
+        logger.warning(
+            "Factory-reset status post returned non-2xx",
+            state=state,
+            status=resp.status_code,
+            body=resp.text[:200],
+        )
+        return False
+    return True
+
+
+def _reboot_after_factory_reset() -> None:
+    """Trigger a full OS reboot.
+
+    Falls back to a graceful exit (which systemd restarts) if reboot
+    isn't available — that still gets the node into provisioning mode,
+    just without clearing OS-level state.
+    """
+    try:
+        # Detached so this function returns and we don't block the MQTT
+        # callback while the system is going down.
+        subprocess.Popen(
+            ["sudo", "reboot"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+    except FileNotFoundError as e:
+        logger.warning("sudo reboot not available, falling back to graceful exit", error=str(e))
+
+    if _shutdown_event:
+        _shutdown_event.set()
+    else:
+        import sys
+        sys.exit(0)
+
+
+def _handle_factory_reset(raw_payload: bytes) -> None:
+    """Handle factory-reset request from CC.
+
+    Flow:
+      1. Parse {request_id, node_id, task_id} from MQTT payload.
+      2. PATCH state="in_progress" to CC (also serves as auth check —
+         a 401 here means the token is invalid, so abort).
+      3. Wipe node-local state via factory_reset().
+      4. PATCH state="success" using the cached cc_url + token + task_id.
+      5. Reboot.
+
+    All state needed for the post-wipe PATCH is held in local variables
+    (factory_reset() runs in-process and doesn't restart Python), so
+    nothing needs to be persisted to disk before the wipe.
     """
     try:
         data: Dict[str, Any] = json.loads(raw_payload.decode())
@@ -1141,6 +1250,7 @@ def _handle_factory_reset(raw_payload: bytes) -> None:
 
     request_id: str = data.get("request_id", "")
     node_id_from_msg: str = data.get("node_id", "")
+    task_id: str = data.get("task_id", "")
     my_node_id: str = Config.get_str("node_id", "") or ""
 
     if not request_id or not node_id_from_msg:
@@ -1155,40 +1265,49 @@ def _handle_factory_reset(raw_payload: bytes) -> None:
         )
         return
 
-    print(f"[FACTORY-RESET] received reset request, verifying with CC...", flush=True)
-
-    # Verify with CC that this reset was legitimately issued
     from utils.service_discovery import get_command_center_url
 
     cc_url: str = get_command_center_url() or ""
     if not cc_url:
-        logger.warning("Cannot verify factory-reset: CC URL not resolved")
+        logger.warning("Cannot run factory-reset: CC URL not resolved")
         return
 
-    import requests
-
-    verify_url: str = f"{cc_url.rstrip('/')}/api/v0/nodes/verify-reset"
-    try:
-        resp = requests.post(
-            verify_url,
-            json={"node_id": my_node_id, "request_id": request_id},
-            timeout=10,
-        )
-    except requests.RequestException as e:
-        logger.error("Factory-reset verification request failed", error=str(e))
-        return
-
-    if resp.status_code != 200:
+    if not task_id:
+        # Older CC versions still publish without task_id — fall back to
+        # the legacy verify-reset path so an in-flight upgrade doesn't
+        # leave a node un-resettable.
         logger.warning(
-            "Factory-reset verification REJECTED by CC — ignoring (possible spoof)",
-            status=resp.status_code,
+            "Factory-reset message has no task_id, using legacy verify-reset path"
         )
-        print("[FACTORY-RESET] REJECTED by CC — ignoring", flush=True)
-        return
+        import requests
+        verify_url = f"{cc_url.rstrip('/')}/api/v0/nodes/verify-reset"
+        try:
+            resp = requests.post(
+                verify_url,
+                json={"node_id": my_node_id, "request_id": request_id},
+                timeout=10,
+            )
+        except requests.RequestException as e:
+            logger.error("Legacy verify-reset failed", error=str(e))
+            return
+        if resp.status_code != 200:
+            logger.warning(
+                "Legacy verify-reset REJECTED",
+                status=resp.status_code,
+            )
+            return
+    else:
+        # New path: status PATCH validates the token AND surfaces progress.
+        print("[FACTORY-RESET] reporting in_progress to CC...", flush=True)
+        if not _post_factory_reset_status(cc_url, task_id, request_id, "in_progress"):
+            logger.warning(
+                "Factory-reset rejected at status endpoint — aborting (possible spoof or expired token)"
+            )
+            print("[FACTORY-RESET] REJECTED by CC — ignoring", flush=True)
+            return
 
-    # Verified — proceed with factory reset
-    print("[FACTORY-RESET] VERIFIED by CC — resetting node...", flush=True)
-    logger.info("Factory-reset verified by CC, resetting node")
+    print("[FACTORY-RESET] resetting node...", flush=True)
+    logger.info("Running factory_reset()", task_id=task_id[:8] if task_id else "(legacy)")
 
     try:
         from provisioning.factory_reset import factory_reset
@@ -1198,17 +1317,20 @@ def _handle_factory_reset(raw_payload: bytes) -> None:
     except Exception as e:
         logger.error("Factory reset failed", error=str(e))
         print(f"[FACTORY-RESET] error: {e}", flush=True)
+        if task_id:
+            _post_factory_reset_status(cc_url, task_id, request_id, "failed", error_message=str(e))
         return
 
-    # Restart into provisioning mode
-    print("[FACTORY-RESET] restarting into provisioning mode...", flush=True)
-    logger.info("Restarting node into provisioning mode after factory reset")
+    # Report success BEFORE rebooting — once reboot fires we lose the
+    # opportunity. The token + task_id were captured before the wipe and
+    # the wipe didn't touch them (cc_url field in config.json is also
+    # preserved, but we've kept everything in local vars anyway).
+    if task_id:
+        _post_factory_reset_status(cc_url, task_id, request_id, "success")
 
-    if _shutdown_event:
-        _shutdown_event.set()
-    else:
-        import sys
-        sys.exit(0)
+    print("[FACTORY-RESET] rebooting...", flush=True)
+    logger.info("Rebooting node after factory reset")
+    _reboot_after_factory_reset()
 
 
 def _handle_test_install_notification(raw_payload: bytes) -> None:
@@ -1287,6 +1409,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/device-state"):
         _handle_device_state_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/camera-credentials"):
+        _handle_camera_credentials_notification(msg.payload)
         return
 
     if msg.topic.endswith("/test-install"):
