@@ -154,6 +154,8 @@ class TokenRefreshAgent(IJarvisAgent):
             "refresh_token": refresh_tok,
             "client_id": auth.client_id,
         }
+        if auth.client_secret:
+            payload["client_secret"] = auth.client_secret
 
         try:
             req = Request(
