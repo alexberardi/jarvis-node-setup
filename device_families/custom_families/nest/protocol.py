@@ -297,12 +297,15 @@ class NestProtocol(IJarvisDeviceProtocol):
         return devices
 
     async def control(
-        self, device: DiscoveredDevice, action: str, params: dict[str, Any] | None = None
+        self, ip: str, action: str, data: dict[str, Any] | None = None, **kwargs: Any,
     ) -> DeviceControlResult:
+        entity_id: str = kwargs.get("entity_id", "")
+        cloud_id: str = kwargs.get("cloud_id", "")
+        params: dict[str, Any] | None = data
         access_token: str | None = self._get_access_token()
         if not access_token:
             return DeviceControlResult(
-                success=False, entity_id=device.entity_id, action=action,
+                success=False, entity_id=entity_id, action=action,
                 error="NEST_ACCESS_TOKEN not configured — complete OAuth setup",
             )
 
@@ -310,14 +313,13 @@ class NestProtocol(IJarvisDeviceProtocol):
             import httpx
         except ImportError:
             return DeviceControlResult(
-                success=False, entity_id=device.entity_id, action=action,
+                success=False, entity_id=entity_id, action=action,
                 error="httpx is not installed. Run: pip install httpx",
             )
 
         params = params or {}
-        cloud_id: str = device.cloud_id or ""
         if not cloud_id:
-            return DeviceControlResult(success=False, entity_id=device.entity_id, action=action, error="No cloud device ID available")
+            return DeviceControlResult(success=False, entity_id=entity_id, action=action, error="No cloud device ID available")
 
         headers: dict[str, str] = {
             "Authorization": f"Bearer {access_token}",
@@ -363,7 +365,7 @@ class NestProtocol(IJarvisDeviceProtocol):
             valid_modes: set[str] = {"HEAT", "COOL", "HEATCOOL", "OFF"}
             if nest_mode not in valid_modes:
                 return DeviceControlResult(
-                    success=False, entity_id=device.entity_id, action=action,
+                    success=False, entity_id=entity_id, action=action,
                     error=f"Invalid mode: {nest_mode}. Valid: {', '.join(sorted(valid_modes))}",
                 )
             command = "sdm.devices.commands.ThermostatMode.SetMode"
@@ -382,7 +384,7 @@ class NestProtocol(IJarvisDeviceProtocol):
             command_params = {}
 
         else:
-            return DeviceControlResult(success=False, entity_id=device.entity_id, action=action, error=f"Unsupported action: {action}")
+            return DeviceControlResult(success=False, entity_id=entity_id, action=action, error=f"Unsupported action: {action}")
 
         payload: dict[str, Any] = {
             "command": command,
@@ -398,7 +400,7 @@ class NestProtocol(IJarvisDeviceProtocol):
                 )
                 if resp.status_code == 401:
                     return DeviceControlResult(
-                        success=False, entity_id=device.entity_id, action=action, error="Nest access token expired — re-authenticate"
+                        success=False, entity_id=entity_id, action=action, error="Nest access token expired — re-authenticate"
                     )
                 if resp.status_code == 200:
                     result_data: dict[str, Any] = resp.json()
@@ -407,19 +409,20 @@ class NestProtocol(IJarvisDeviceProtocol):
                         results: dict[str, Any] = result_data.get("results", {})
                         stream_url: str = results.get("streamUrls", {}).get("rtspUrl", "")
                         return DeviceControlResult(
-                            success=True, entity_id=device.entity_id, action=action,
+                            success=True, entity_id=entity_id, action=action,
                         )
 
-                    return DeviceControlResult(success=True, entity_id=device.entity_id, action=action)
+                    return DeviceControlResult(success=True, entity_id=entity_id, action=action)
                 else:
                     return DeviceControlResult(
-                        success=False, entity_id=device.entity_id, action=action,
+                        success=False, entity_id=entity_id, action=action,
                         error=f"Nest API returned {resp.status_code}: {resp.text}",
                     )
         except Exception as e:
-            return DeviceControlResult(success=False, entity_id=device.entity_id, action=action, error=f"Control failed: {e}")
+            return DeviceControlResult(success=False, entity_id=entity_id, action=action, error=f"Control failed: {e}")
 
-    async def get_state(self, device: DiscoveredDevice) -> dict[str, Any]:
+    async def get_state(self, ip: str, **kwargs: Any) -> dict[str, Any] | None:
+        cloud_id: str = kwargs.get("cloud_id", "")
         access_token: str | None = self._get_access_token()
         if not access_token:
             return {"error": "NEST_ACCESS_TOKEN not configured"}
@@ -428,8 +431,6 @@ class NestProtocol(IJarvisDeviceProtocol):
             import httpx
         except ImportError:
             return {"error": "httpx is not installed"}
-
-        cloud_id: str = device.cloud_id or ""
         if not cloud_id:
             return {"error": "No cloud device ID available"}
 
