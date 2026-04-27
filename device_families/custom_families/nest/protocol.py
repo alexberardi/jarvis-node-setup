@@ -116,16 +116,32 @@ class NestProtocol(IJarvisDeviceProtocol):
         return _storage.get_secret("NEST_WEB_CLIENT_SECRET")
 
     def _has_camera_support(self) -> bool:
-        """Camera support requires Web Application OAuth credentials."""
-        return bool(self._get_web_client_id() and self._get_web_client_secret())
+        """Camera support requires the toggle + Web Application OAuth credentials."""
+        return (
+            _storage.get_secret("NEST_CAMERA_SUPPORT") == "on"
+            and bool(self._get_web_client_id() and self._get_web_client_secret())
+        )
 
     @property
     def required_secrets(self) -> list[JarvisSecret]:
-        return [
-            JarvisSecret("NEST_PROJECT_ID", "SDM Device Access project ID", "integration", "string", required=True, is_sensitive=False),
-            JarvisSecret("NEST_CLIENT_ID", "Override default Google OAuth client ID (optional)", "integration", "string", required=False, is_sensitive=False),
-            JarvisSecret("NEST_TEMP_UNIT", "Temperature unit: F or C (default F)", "integration", "string", required=False, is_sensitive=False),
+        base: list[JarvisSecret] = [
+            JarvisSecret("NEST_PROJECT_ID", "SDM Device Access project ID", "integration", "string", required=True, is_sensitive=False, friendly_name="Project ID"),
+            JarvisSecret("NEST_TEMP_UNIT", "Temperature unit: F or C (default F)", "integration", "string", required=False, is_sensitive=False, friendly_name="Temperature Unit"),
+            JarvisSecret(
+                "NEST_CAMERA_SUPPORT", "Enable live camera/doorbell streaming",
+                "integration", "string", required=False, is_sensitive=False,
+                friendly_name="Camera Support",
+                enum_values=["off", "on"],
+            ),
         ]
+
+        if _storage.get_secret("NEST_CAMERA_SUPPORT") == "on":
+            base.extend([
+                JarvisSecret("NEST_WEB_CLIENT_ID", "Web Application OAuth client ID", "integration", "string", required=True, is_sensitive=False, friendly_name="Web Client ID"),
+                JarvisSecret("NEST_WEB_CLIENT_SECRET", "Web Application OAuth client secret", "integration", "string", required=True, friendly_name="Web Client Secret"),
+            ])
+
+        return base
 
     @property
     def authentication(self) -> AuthenticationConfig:
@@ -138,11 +154,10 @@ class NestProtocol(IJarvisDeviceProtocol):
             web_client_secret: str = self._get_web_client_secret()  # type: ignore[assignment]
             project_id = self._get_project_id()
             if project_id:
-                authorize_url = (
-                    f"https://nestservices.google.com/partnerconnections/{project_id}/auth"
-                )
+                authorize_url = f"https://nestservices.google.com/partnerconnections/{project_id}/auth"
             else:
                 authorize_url = "https://nestservices.google.com/partnerconnections/auth"
+
             return AuthenticationConfig(
                 type="oauth",
                 provider="google_nest",
@@ -155,8 +170,8 @@ class NestProtocol(IJarvisDeviceProtocol):
                 scopes=["https://www.googleapis.com/auth/sdm.service"],
                 supports_pkce=False,
                 requires_background_refresh=True,
-                refresh_token_secret_key="NEST_REFRESH_TOKEN",
                 extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+                refresh_token_secret_key="NEST_REFRESH_TOKEN",
             )
 
         # Default: iOS/PKCE flow — thermostat only, no camera streaming
