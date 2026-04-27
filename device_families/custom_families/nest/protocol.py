@@ -121,28 +121,46 @@ class NestProtocol(IJarvisDeviceProtocol):
 
     @property
     def required_secrets(self) -> list[JarvisSecret]:
-        base: list[JarvisSecret] = [
-            JarvisSecret("NEST_PROJECT_ID", "SDM Device Access project ID", "integration", "string", required=True, is_sensitive=False, friendly_name="Project ID"),
-            JarvisSecret("NEST_TEMP_UNIT", "Temperature unit: F or C (default F)", "integration", "string", required=False, is_sensitive=False, friendly_name="Temperature Unit"),
-            JarvisSecret(
-                "NEST_CAMERA_SUPPORT", "Enable live camera/doorbell streaming",
-                "integration", "string", required=False, is_sensitive=False,
-                friendly_name="Camera Support",
-                enum_values=["off", "on"],
-            ),
+        return [
+            JarvisSecret("NEST_PROJECT_ID", "SDM Device Access project ID", "integration", "string", required=True, is_sensitive=False),
+            JarvisSecret("NEST_CLIENT_ID", "Override default Google OAuth client ID (optional)", "integration", "string", required=False, is_sensitive=False),
+            JarvisSecret("NEST_TEMP_UNIT", "Temperature unit: F or C (default F)", "integration", "string", required=False, is_sensitive=False),
         ]
-
-        if _storage.get_secret("NEST_CAMERA_SUPPORT") == "on":
-            base.extend([
-                JarvisSecret("NEST_WEB_CLIENT_ID", "Web Application OAuth client ID", "integration", "string", required=True, is_sensitive=False, friendly_name="Web Client ID"),
-                JarvisSecret("NEST_WEB_CLIENT_SECRET", "Web Application OAuth client secret", "integration", "string", required=True, friendly_name="Web Client Secret"),
-                JarvisSecret("NEST_REFRESH_TOKEN", "OAuth refresh token (auto-populated)", "integration", "string", required=False),
-            ])
-
-        return base
 
     @property
     def authentication(self) -> AuthenticationConfig:
+        if self._has_camera_support():
+            # Web Application OAuth — token works with go2rtc for camera streaming.
+            # Web clients require https:// redirect URIs, so we use the relay
+            # bounce flow (no native_redirect_uri). The relay URL must be added
+            # to the Web client's authorized redirect URIs in Google Cloud Console.
+            web_client_id: str = self._get_web_client_id()  # type: ignore[assignment]
+            web_client_secret: str = self._get_web_client_secret()  # type: ignore[assignment]
+            project_id = self._get_project_id()
+            if project_id:
+                authorize_url = (
+                    f"https://nestservices.google.com/partnerconnections/{project_id}/auth"
+                )
+            else:
+                authorize_url = "https://nestservices.google.com/partnerconnections/auth"
+            return AuthenticationConfig(
+                type="oauth",
+                provider="google_nest",
+                friendly_name="Google Nest",
+                client_id=web_client_id,
+                keys=["access_token", "refresh_token"],
+                authorize_url=authorize_url,
+                exchange_url="https://oauth2.googleapis.com/token",
+                client_secret=web_client_secret,
+                scopes=["https://www.googleapis.com/auth/sdm.service"],
+                supports_pkce=False,
+                requires_background_refresh=True,
+                refresh_token_secret_key="NEST_REFRESH_TOKEN",
+                extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+            )
+
+        # Default: iOS/PKCE flow — thermostat only, no camera streaming
+        client_id: str = self._get_client_id()
         project_id = self._get_project_id()
         if project_id:
             authorize_url = (
@@ -151,30 +169,6 @@ class NestProtocol(IJarvisDeviceProtocol):
         else:
             authorize_url = "https://nestservices.google.com/partnerconnections/auth"
 
-        if self._has_camera_support():
-            # Web Application OAuth — token works with go2rtc for camera streaming.
-            # Web clients require https:// redirect URIs, so we use the relay
-            # bounce flow (no native_redirect_uri).
-            web_client_id: str = self._get_web_client_id()  # type: ignore[assignment]
-            web_client_secret: str = self._get_web_client_secret()  # type: ignore[assignment]
-            return AuthenticationConfig(
-                type="oauth",
-                provider="google_nest",
-                friendly_name="Google Nest",
-                client_id=web_client_id,
-                client_secret=web_client_secret,
-                keys=["access_token", "refresh_token"],
-                authorize_url=authorize_url,
-                exchange_url="https://oauth2.googleapis.com/token",
-                scopes=["https://www.googleapis.com/auth/sdm.service"],
-                supports_pkce=False,
-                extra_authorize_params={"access_type": "offline", "prompt": "consent"},
-                requires_background_refresh=True,
-                refresh_token_secret_key="NEST_REFRESH_TOKEN",
-            )
-
-        # Default: iOS/PKCE flow — thermostat only, no camera streaming
-        client_id: str = self._get_client_id()
         return AuthenticationConfig(
             type="oauth",
             provider="google_nest",
@@ -192,31 +186,6 @@ class NestProtocol(IJarvisDeviceProtocol):
                 f"com.googleusercontent.apps."
                 f"{client_id.removesuffix('.apps.googleusercontent.com')}:/oauthredirect"
             ),
-        )
-
-    @property
-    def setup_guide(self) -> str | None:
-        return (
-            "## Basic Setup (Thermostat)\n\n"
-            "1. Go to [Google Device Access Console](https://console.nest.google.com/device-access)\n"
-            "2. Create a project (one-time $5 fee) and copy the **Project ID**\n"
-            "3. Paste it in the **NEST_PROJECT_ID** field above\n"
-            "4. Tap **Authenticate with Google Nest** and sign in\n\n"
-            "That's it — your thermostat will appear in device discovery.\n\n"
-            "## Camera Support (Optional)\n\n"
-            "To view live camera/doorbell streams, enable **Camera Support** above and provide "
-            "a **Web Application** OAuth client:\n\n"
-            "1. Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)\n"
-            "2. Click **Create Credentials → OAuth client ID**\n"
-            "3. Select **Web application** as the type\n"
-            "4. Under **Authorized redirect URIs**, add:\n"
-            "   `https://relay.jarvisautomation.io/oauth/bounce`\n"
-            "5. Click **Create** and copy the **Client ID** and **Client Secret**\n"
-            "6. Paste them in the fields above\n"
-            "7. **Important:** Update your Device Access project's OAuth client ID "
-            "to the new Web Application client ID\n"
-            "8. Re-authenticate with **Authenticate with Google Nest**\n\n"
-            "The new token works for both thermostat and camera control."
         )
 
     @property
@@ -290,8 +259,7 @@ class NestProtocol(IJarvisDeviceProtocol):
                     if not device_name:
                         device_name = model
 
-                    slug: str = _slugify(device_name) if device_name else _slugify(cloud_id)
-                    device_id: str = f"{domain}.{slug}"
+                    device_id: str = _slugify(device_name) if device_name else _slugify(cloud_id)
 
                     devices.append(
                         DiscoveredDevice(
@@ -312,24 +280,6 @@ class NestProtocol(IJarvisDeviceProtocol):
 
         logger.info(f"Nest discovery found {len(devices)} device(s)")
         return devices
-
-    async def _get_current_mode(self, access_token: str, cloud_id: str) -> str:
-        """Query the Nest API for the thermostat's current mode."""
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    f"{SDM_API_BASE}/{cloud_id}",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                )
-                if resp.status_code == 200:
-                    traits = resp.json().get("traits", {})
-                    mode_trait = traits.get("sdm.devices.traits.ThermostatMode", {})
-                    return mode_trait.get("mode", "HEAT").lower()
-        except Exception:
-            pass
-        return "heat"
 
     async def control(
         self, device: DiscoveredDevice, action: str, params: dict[str, Any] | None = None
@@ -371,32 +321,14 @@ class NestProtocol(IJarvisDeviceProtocol):
             else:
                 temp_celsius = temp_value
 
-            # Determine mode: explicit param, or query the device
-            mode: str = params.get("setpoint_mode", "").lower()
-            if not mode:
-                mode = await self._get_current_mode(access_token, cloud_id)
+            command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetHeat"
+            command_params = {"heatCelsius": round(temp_celsius, 1)}
 
-            if mode == "off":
-                # Can't set temp while OFF — switch to HEAT first
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=10) as pre_client:
-                        await pre_client.post(
-                            f"{SDM_API_BASE}/{cloud_id}:executeCommand",
-                            headers=headers,
-                            json={
-                                "command": "sdm.devices.commands.ThermostatMode.SetMode",
-                                "params": {"mode": "HEAT"},
-                            },
-                        )
-                    mode = "heat"
-                except Exception:
-                    pass
-
+            mode: str = params.get("setpoint_mode", "heat").lower()
             if mode == "cool":
                 command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetCool"
                 command_params = {"coolCelsius": round(temp_celsius, 1)}
-            elif mode == "heatcool":
+            elif mode == "range":
                 heat_temp: float = float(params.get("heat_temperature", temp_value - 2))
                 cool_temp: float = float(params.get("cool_temperature", temp_value + 2))
                 if temp_unit == "F":
@@ -410,10 +342,6 @@ class NestProtocol(IJarvisDeviceProtocol):
                     "heatCelsius": round(heat_celsius, 1),
                     "coolCelsius": round(cool_celsius, 1),
                 }
-            else:
-                # Default: HEAT mode
-                command = "sdm.devices.commands.ThermostatTemperatureSetpoint.SetHeat"
-                command_params = {"heatCelsius": round(temp_celsius, 1)}
 
         elif action == "set_mode":
             nest_mode: str = str(params.get("mode", "HEAT")).upper()
@@ -476,7 +404,7 @@ class NestProtocol(IJarvisDeviceProtocol):
         except Exception as e:
             return DeviceControlResult(success=False, entity_id=device.entity_id, action=action, error=f"Control failed: {e}")
 
-    async def get_state(self, ip: str, **kwargs: Any) -> dict[str, Any] | None:
+    async def get_state(self, device: DiscoveredDevice) -> dict[str, Any]:
         access_token: str | None = self._get_access_token()
         if not access_token:
             return {"error": "NEST_ACCESS_TOKEN not configured"}
@@ -486,12 +414,7 @@ class NestProtocol(IJarvisDeviceProtocol):
         except ImportError:
             return {"error": "httpx is not installed"}
 
-        # cloud_id passed directly as kwarg, or via a DiscoveredDevice object
-        cloud_id: str = kwargs.get("cloud_id", "")
-        if not cloud_id:
-            device = kwargs.get("device")
-            if device and hasattr(device, "cloud_id"):
-                cloud_id = device.cloud_id or ""
+        cloud_id: str = device.cloud_id or ""
         if not cloud_id:
             return {"error": "No cloud device ID available"}
 
@@ -534,10 +457,11 @@ class NestProtocol(IJarvisDeviceProtocol):
                 if temp_trait:
                     ambient_c: float = temp_trait.get("ambientTemperatureCelsius", 0)
                     if temp_unit == "F":
-                        state["current_temperature"] = round(_c_to_f(ambient_c), 1)
+                        state["temperature"] = round(_c_to_f(ambient_c), 1)
+                        state["temperature_unit"] = "F"
                     else:
-                        state["current_temperature"] = round(ambient_c, 1)
-                    state["temperature_unit"] = temp_unit
+                        state["temperature"] = round(ambient_c, 1)
+                        state["temperature_unit"] = "C"
 
                 setpoint_trait: dict[str, Any] = traits.get(
                     "sdm.devices.traits.ThermostatTemperatureSetpoint", {}
@@ -555,12 +479,6 @@ class NestProtocol(IJarvisDeviceProtocol):
                             state["cool_setpoint"] = round(_c_to_f(cool_c), 1)
                         else:
                             state["cool_setpoint"] = round(cool_c, 1)
-                    # Set target_temperature from the active setpoint
-                    current_mode_lower: str = state.get("mode", "").lower()
-                    if current_mode_lower == "cool" and "cool_setpoint" in state:
-                        state["target_temperature"] = state["cool_setpoint"]
-                    elif "heat_setpoint" in state:
-                        state["target_temperature"] = state["heat_setpoint"]
 
                 humidity_trait: dict[str, Any] = traits.get(
                     "sdm.devices.traits.Humidity", {}

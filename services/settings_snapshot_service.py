@@ -111,95 +111,110 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
             cmd_entry["parameters"] = [p.to_dict() for p in params]
         command_entries.append(cmd_entry)
 
-    # Build device family entries
+    # Build device family entries (per-family isolation so one bad protocol
+    # doesn't prevent all families from appearing in the snapshot)
     family_entries: list[dict[str, Any]] = []
     try:
         family_service = get_device_family_discovery_service()
         families = family_service.get_all_families_for_snapshot()
 
         for family in families.values():
-            secrets_list_f: list[dict[str, Any]] = []
-            for secret in family.required_secrets:
-                value_f: str | None = get_secret_value(secret.key, secret.scope)
-                entry_f: dict[str, Any] = {
-                    "key": secret.key,
-                    "scope": secret.scope,
-                    "description": secret.description,
-                    "value_type": secret.value_type,
-                    "required": secret.required,
-                    "is_sensitive": secret.is_sensitive,
-                    "is_set": bool(value_f),
+            try:
+                secrets_list_f: list[dict[str, Any]] = []
+                for secret in family.required_secrets:
+                    value_f: str | None = get_secret_value(secret.key, secret.scope)
+                    entry_f: dict[str, Any] = {
+                        "key": secret.key,
+                        "scope": secret.scope,
+                        "description": secret.description,
+                        "value_type": secret.value_type,
+                        "required": secret.required,
+                        "is_sensitive": secret.is_sensitive,
+                        "is_set": bool(value_f),
+                    }
+                    if secret.friendly_name:
+                        entry_f["friendly_name"] = secret.friendly_name
+                    if getattr(secret, "enum_values", None):
+                        entry_f["enum_values"] = secret.enum_values
+                    if getattr(secret, "presets", None):
+                        entry_f["presets"] = secret.presets
+                    if value_f and (not secret.is_sensitive or include_values):
+                        entry_f["value"] = value_f
+                    secrets_list_f.append(entry_f)
+
+                family_entry: dict[str, Any] = {
+                    "family_name": family.protocol_name,
+                    "friendly_name": family.friendly_name,
+                    "description": family.description,
+                    "connection_type": family.connection_type,
+                    "supported_domains": family.supported_domains,
+                    "supported_actions": [a.to_dict() for a in family.supported_actions],
+                    "secrets": secrets_list_f,
+                    "is_configured": len(family.validate_secrets()) == 0 if hasattr(family, 'validate_secrets') else True,
                 }
-                if secret.friendly_name:
-                    entry_f["friendly_name"] = secret.friendly_name
-                if getattr(secret, "enum_values", None):
-                    entry_f["enum_values"] = secret.enum_values
-                if getattr(secret, "presets", None):
-                    entry_f["presets"] = secret.presets
-                if value_f and (not secret.is_sensitive or include_values):
-                    entry_f["value"] = value_f
-                secrets_list_f.append(entry_f)
-
-            family_entry: dict[str, Any] = {
-                "family_name": family.protocol_name,
-                "friendly_name": family.friendly_name,
-                "description": family.description,
-                "connection_type": family.connection_type,
-                "supported_domains": family.supported_domains,
-                "supported_actions": [a.to_dict() for a in family.supported_actions],
-                "secrets": secrets_list_f,
-                "is_configured": len(family.validate_secrets()) == 0 if hasattr(family, 'validate_secrets') else True,
-            }
-            if family.authentication:
-                family_entry["authentication"] = family.authentication.to_dict()
-            if hasattr(family, "setup_guide") and family.setup_guide:
-                family_entry["setup_guide"] = family.setup_guide
-            family_entries.append(family_entry)
+                if family.authentication:
+                    family_entry["authentication"] = family.authentication.to_dict()
+                if hasattr(family, "setup_guide") and family.setup_guide:
+                    family_entry["setup_guide"] = family.setup_guide
+                family_entries.append(family_entry)
+            except Exception as e:
+                logger.warning(
+                    "Skipping device family in snapshot",
+                    family=family.protocol_name,
+                    error=str(e),
+                )
     except Exception as e:
-        logger.warning("Failed to build device family entries", error=str(e))
+        logger.warning("Failed to discover device families", error=str(e))
 
-    # Build device manager entries
+    # Build device manager entries (per-manager isolation)
     manager_entries: list[dict[str, Any]] = []
     try:
         manager_service = get_device_manager_discovery_service()
         managers = manager_service.get_all_managers_for_snapshot()
 
         for mgr in managers.values():
-            secrets_list_m: list[dict[str, Any]] = []
-            for secret in mgr.required_secrets:
-                value_m: str | None = get_secret_value(secret.key, secret.scope)
-                entry_m: dict[str, Any] = {
-                    "key": secret.key,
-                    "scope": secret.scope,
-                    "description": secret.description,
-                    "value_type": secret.value_type,
-                    "required": secret.required,
-                    "is_sensitive": secret.is_sensitive,
-                    "is_set": bool(value_m),
-                }
-                if secret.friendly_name:
-                    entry_m["friendly_name"] = secret.friendly_name
-                if getattr(secret, "enum_values", None):
-                    entry_m["enum_values"] = secret.enum_values
-                if getattr(secret, "presets", None):
-                    entry_m["presets"] = secret.presets
-                if not secret.is_sensitive and value_m:
-                    entry_m["value"] = value_m
-                secrets_list_m.append(entry_m)
+            try:
+                secrets_list_m: list[dict[str, Any]] = []
+                for secret in mgr.required_secrets:
+                    value_m: str | None = get_secret_value(secret.key, secret.scope)
+                    entry_m: dict[str, Any] = {
+                        "key": secret.key,
+                        "scope": secret.scope,
+                        "description": secret.description,
+                        "value_type": secret.value_type,
+                        "required": secret.required,
+                        "is_sensitive": secret.is_sensitive,
+                        "is_set": bool(value_m),
+                    }
+                    if secret.friendly_name:
+                        entry_m["friendly_name"] = secret.friendly_name
+                    if getattr(secret, "enum_values", None):
+                        entry_m["enum_values"] = secret.enum_values
+                    if getattr(secret, "presets", None):
+                        entry_m["presets"] = secret.presets
+                    if not secret.is_sensitive and value_m:
+                        entry_m["value"] = value_m
+                    secrets_list_m.append(entry_m)
 
-            mgr_entry: dict[str, Any] = {
-                "manager_name": mgr.name,
-                "friendly_name": mgr.friendly_name,
-                "description": mgr.description,
-                "can_edit_devices": mgr.can_edit_devices,
-                "is_available": mgr.is_available(),
-                "secrets": secrets_list_m,
-            }
-            if mgr.authentication:
-                mgr_entry["authentication"] = mgr.authentication.to_dict()
-            manager_entries.append(mgr_entry)
+                mgr_entry: dict[str, Any] = {
+                    "manager_name": mgr.name,
+                    "friendly_name": mgr.friendly_name,
+                    "description": mgr.description,
+                    "can_edit_devices": mgr.can_edit_devices,
+                    "is_available": mgr.is_available(),
+                    "secrets": secrets_list_m,
+                }
+                if mgr.authentication:
+                    mgr_entry["authentication"] = mgr.authentication.to_dict()
+                manager_entries.append(mgr_entry)
+            except Exception as e:
+                logger.warning(
+                    "Skipping device manager in snapshot",
+                    manager=mgr.name,
+                    error=str(e),
+                )
     except Exception as e:
-        logger.warning("Failed to build device manager entries", error=str(e))
+        logger.warning("Failed to discover device managers", error=str(e))
 
     set_current_user_id(None)  # reset context
 
@@ -318,6 +333,8 @@ def handle_snapshot_request(request_id: str, include_values: bool = False, user_
         "Snapshot built",
         request_id=request_id[:8],
         command_count=len(snapshot["commands"]),
+        family_count=len(snapshot.get("device_families", [])),
+        manager_count=len(snapshot.get("device_managers", [])),
         node_config_keys=len(snapshot.get("node_config", {})),
     )
 
