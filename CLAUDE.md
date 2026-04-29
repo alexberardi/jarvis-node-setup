@@ -221,29 +221,245 @@ python scripts/command_store.py validate /path/to/package
 
 Checks manifest, component paths, and import-tests commands/agents/protocols. Validates routine JSON structure for routine components. Skips platform checks.
 
-## Extending Commands
+## Creating Packages
 
-Implement `IJarvisCommand`:
+Packages are standalone repos that extend the node with commands, device protocols,
+agents, or device managers. The Pantry installs them by scattering components to
+type-specific directories.
+
+### Package Repo Structure
+
+Every package needs a `jarvis_package.yaml` manifest at the root. The directory
+layout determines component types:
+
+```
+my-package/
+├── jarvis_package.yaml          # Required manifest
+├── README.md
+├── LICENSE
+├── .gitignore
+├── commands/<name>/command.py   # IJarvisCommand implementation
+└── device_families/<name>/      # IJarvisDeviceProtocol implementation
+    ├── __init__.py
+    ├── protocol.py              # Protocol class
+    └── my_client.py             # REST/API client (optional)
+```
+
+### Manifest (jarvis_package.yaml)
+
+```yaml
+name: "my_package"
+display_name: "My Package"
+description: "What it does"
+version: "1.0.0"
+min_jarvis_version: "0.9.0"
+license: "MIT"
+author:
+  github: "username"
+categories: ["smart-home", "security"]
+platforms: ["darwin", "linux"]
+keywords: ["relevant", "search", "terms"]
+
+components:
+  - type: device_protocol      # or: command, agent, device_manager, routine
+    name: my_protocol
+    path: device_families/my_protocol/protocol.py
+
+packages:                       # pip dependencies
+  - name: httpx
+
+secrets:
+  - key: MY_API_KEY
+    scope: integration          # or: node, user
+    value_type: string
+    description: "API key for the service"
+    sensitive: true
+```
+
+### Reference Repos
+
+Use these as templates when creating new packages:
+
+| Type | Repo | Notes |
+|------|------|-------|
+| Command | `jarvis-cmd-meteo-weather` | Simple REST command with secrets |
+| Device protocol (cloud) | `jarvis-device-schlage` | Cloud API with custom auth client |
+| Device protocol (cloud+OAuth) | `jarvis-device-simplisafe` | OAuth2+PKCE, token rotation, AlarmControl UI |
+| Device protocol (LAN) | `jarvis-device-govee` | Hybrid cloud/LAN discovery |
+| Multi-component bundle | `jarvis-home-assistant-integration` | 2 commands + 1 agent + 1 device manager + shared code |
+
+### Writing a Command (IJarvisCommand)
+
+Commands handle voice intents. The LLM parses voice → selects command → extracts
+parameters → calls `run()`.
 
 ```python
-from jarvis_command_sdk import IJarvisCommand
-from core.command_response import CommandResponse
+from jarvis_command_sdk import IJarvisCommand, JarvisParameter, JarvisSecret, CommandResponse, RequestInformation, JarvisStorage
+
+try:
+    from jarvis_log_client import JarvisLogger
+except ImportError:
+    import logging
+    class JarvisLogger:
+        def __init__(self, **kw): self._log = logging.getLogger(kw.get("service", __name__))
+        def info(self, msg, **kw): self._log.info(msg)
+        def error(self, msg, **kw): self._log.error(msg)
+
+logger = JarvisLogger(service="cmd.my_command")
+_storage = JarvisStorage("my_command")
 
 class MyCommand(IJarvisCommand):
     @property
-    def name(self) -> str:
-        return "my_command"
+    def command_name(self) -> str: return "my_command"
 
     @property
-    def description(self) -> str:
-        return "Does something useful"
+    def keywords(self) -> list[str]: return ["my command", "do thing"]
 
-    def execute(self, params: dict) -> CommandResponse:
-        return CommandResponse(
-            success=True,
-            message="Done!",
-            data={"result": "value"}
-        )
+    @property
+    def description(self) -> str: return "Does something useful"
+
+    @property
+    def parameters(self) -> list[JarvisParameter]:
+        return [JarvisParameter("query", "string", "What to look up", required=True)]
+
+    @property
+    def required_secrets(self) -> list[JarvisSecret]:
+        return [JarvisSecret("MY_API_KEY", "API key", "integration", "string", is_sensitive=True, required=True)]
+
+    def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
+        query = kwargs.get("query", "")
+        api_key = _storage.get_secret("MY_API_KEY", scope="integration")
+        if not api_key:
+            return CommandResponse.error_response(error_details="API key not configured")
+        # ... do work ...
+        return CommandResponse.success_response(message="Done!", context_data={"result": "value"})
+```
+
+### Writing a Device Protocol (IJarvisDeviceProtocol)
+
+Device protocols handle discovery and control for a device manufacturer/API.
+They're used by the `control_device` command.
+
+```python
+from jarvis_command_sdk import (
+    IJarvisDeviceProtocol, DiscoveredDevice, DeviceControlResult,
+    IJarvisButton, JarvisSecret, JarvisStorage,
+)
+
+class MyProtocol(IJarvisDeviceProtocol):
+    protocol_name: str = "my_protocol"
+    friendly_name: str = "My Protocol"
+    supported_domains: list[str] = ["switch", "light"]  # HA-style domains
+    connection_type: str = "cloud"  # or: "lan", "hybrid"
+
+    @property
+    def required_secrets(self) -> list[IJarvisSecret]:
+        return [JarvisSecret("MY_API_KEY", "API key", "integration", "string", is_sensitive=True, required=True)]
+
+    @property
+    def supported_actions(self) -> list[IJarvisButton]:
+        return [
+            IJarvisButton("Turn On", "turn_on", "primary", "power"),
+            IJarvisButton("Turn Off", "turn_off", "secondary", "power-off"),
+        ]
+
+    async def discover(self, timeout: float = 5.0) -> list[DiscoveredDevice]:
+        # Query API/scan network, return found devices
+        return [DiscoveredDevice(
+            entity_id="living_room_light",
+            name="Living Room Light",
+            domain="light",
+            protocol=self.protocol_name,
+            model="Model X",
+            manufacturer="My Brand",
+            cloud_id="device-123",        # Cloud API identifier
+        )]
+
+    async def control(self, device: DiscoveredDevice, action: str, params: dict | None = None) -> DeviceControlResult:
+        # Send control command to device
+        return DeviceControlResult(success=True, entity_id=device.entity_id, action=action)
+
+    async def get_state(self, device: DiscoveredDevice) -> dict:
+        # Query current state
+        return {"is_on": True, "brightness": 80}
+```
+
+**Key patterns:**
+- Use `asyncio.to_thread()` to wrap sync API calls (see Schlage, SimpliSafe)
+- Cache authenticated clients at module level to avoid re-auth on every call
+- Return structured errors via `DeviceControlResult(success=False, error="...")`, never raise
+- Store/rotate tokens via `JarvisStorage`
+- Entity IDs must be unique — prefix with domain if names can collide (e.g., `sensor_front_door` vs `lock_front_door`)
+
+### OAuth Device Protocols
+
+For devices requiring OAuth (e.g., SimpliSafe), declare `AuthenticationConfig`:
+
+```python
+from jarvis_command_sdk.authentication import AuthenticationConfig
+
+@property
+def authentication(self) -> AuthenticationConfig:
+    return AuthenticationConfig(
+        type="oauth",
+        provider="my_provider",
+        friendly_name="My Service",
+        client_id="...",
+        keys=["refresh_token"],
+        authorize_url="https://auth.example.com/authorize",
+        exchange_url="https://auth.example.com/oauth/token",
+        supports_pkce=True,
+        native_redirect_uri="com.example.app://callback",
+        scopes=["openid", "offline_access", "https://api.example.com/scopes/user:platform"],
+    )
+```
+
+The mobile app reads this config from the settings snapshot and handles the
+OAuth flow natively. Implement `store_auth_values()` to persist tokens.
+
+### Mobile UI for Device Protocols
+
+When the mobile app discovers a device with a specific `domain`, it renders
+a domain-specific control component. Mapping in `DeviceControlPanel.tsx`:
+
+| Domain | Control | Actions |
+|--------|---------|---------|
+| `light` | LightControl | turn_on, turn_off, set_brightness, set_color |
+| `switch` | SwitchControl | turn_on, turn_off |
+| `lock` | LockControl | lock, unlock |
+| `climate` | ClimateControl | set_temperature, set_mode |
+| `cover` | CoverControl | open, close, set_position |
+| `security_system` | AlarmControl | arm_home, arm_away, disarm |
+| `camera` | CameraControl | (read-only) |
+| `kettle` | KettleControl | boil, keep_warm, turn_off |
+| _(unknown)_ | ActionButtons | Falls back to `supported_actions` buttons |
+
+To add a new domain-specific control: create a component in
+`jarvis-node-mobile/src/components/device-controls/`, add it to the
+`DOMAIN_TO_CONTROL_TYPE` map and switch statement in `DeviceControlPanel.tsx`.
+
+The control reads device state from `get_state()` on the protocol and sends
+actions via the CC → MQTT → node → protocol pipeline.
+
+### Cross-Node Package & Secret Sync
+
+**Installing on multiple nodes:**
+- Pantry store packages can be installed on any node via the Store tab
+- The install flow supports multi-node selection (NodePickerSheet)
+- Node handler (`package_install_handler.py`) is generic — handles all component types
+
+**Syncing secrets between nodes:**
+- Node settings → device family card → "Sync to other nodes"
+- Picks target nodes → picks which secrets → encrypts with target K2 → pushes
+- Both command and device protocol secrets are synced (extracts from `snapshot.commands` and `snapshot.device_families`)
+- Target node must have K2 imported (use "Export Encryption Key" on source node settings)
+
+**Installing on a Pi (production):**
+```bash
+# From dev machine:
+scp -r /path/to/package pi@jarvis-dev.local:/tmp/my-package
+ssh -t pi@jarvis-dev.local "sudo /opt/jarvis-node/.venv/bin/python /opt/jarvis-node/scripts/command_store.py install --local /tmp/my-package"
+ssh -t pi@jarvis-dev.local "sudo systemctl restart jarvis-node"
 ```
 
 ## Threading Model
