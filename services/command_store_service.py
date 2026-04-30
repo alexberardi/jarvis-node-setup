@@ -768,10 +768,11 @@ def _seed_secrets(manifest: CommandManifest) -> None:
 
 
 def _refresh_discovery_caches() -> None:
-    """Refresh command and agent discovery caches after install/remove.
+    """Refresh all discovery caches after install/remove.
 
     Without this, in-memory caches hold stale state and subsequent
-    installs may hit false name-conflict errors.
+    installs may hit false name-conflict errors, or newly installed
+    components won't be available until the container restarts.
     """
     try:
         from utils.command_discovery_service import get_command_discovery_service
@@ -783,40 +784,63 @@ def _refresh_discovery_caches() -> None:
         get_agent_discovery_service().refresh()
     except Exception as e:
         logger.warning("Agent discovery refresh failed (non-fatal)", error=str(e))
+    try:
+        from utils.device_family_discovery_service import get_device_family_discovery_service
+        get_device_family_discovery_service().refresh()
+    except Exception as e:
+        logger.warning("Device family discovery refresh failed (non-fatal)", error=str(e))
+    try:
+        from utils.device_manager_discovery_service import get_device_manager_discovery_service
+        get_device_manager_discovery_service().refresh()
+    except Exception as e:
+        logger.warning("Device manager discovery refresh failed (non-fatal)", error=str(e))
 
 
 def _cleanup_secrets_for_package(package_name: str) -> None:
-    """Delete secrets associated with a package's commands before removal.
+    """Delete secrets associated with a package's commands and device protocols before removal.
 
-    Loads commands from discovery to get their secret keys, then deletes
-    matching rows from the secrets table (all scopes and user_ids).
+    Loads commands and device protocols from discovery to get their secret keys,
+    then deletes matching rows from the secrets table (all scopes and user_ids).
     """
     try:
         from utils.command_discovery_service import get_command_discovery_service
+        from utils.device_family_discovery_service import get_device_family_discovery_service
         from db import SessionLocal
         from sqlalchemy import text
 
-        service = get_command_discovery_service()
-        commands = service.get_all_commands(include_disabled=True)
-
-        # Find commands that belong to this package
+        # Find component names from package metadata
         pkg_meta_path = PACKAGES_DIR / f"{package_name}.json"
         command_names: list[str] = []
+        protocol_names: list[str] = []
         if pkg_meta_path.exists():
             with open(pkg_meta_path) as f:
                 meta = json.load(f)
             for comp in meta.get("components", []):
                 if comp.get("type") == "command":
                     command_names.append(comp["name"])
-        if not command_names:
+                elif comp.get("type") == "device_protocol":
+                    protocol_names.append(comp["name"])
+        if not command_names and not protocol_names:
             command_names = [package_name]
+            protocol_names = [package_name]
 
         # Collect secret keys from matching commands
         secret_keys: set[str] = set()
+        service = get_command_discovery_service()
+        commands = service.get_all_commands(include_disabled=True)
         for name in command_names:
             cmd = commands.get(name)
             if cmd:
                 for secret in cmd.all_possible_secrets:
+                    secret_keys.add(secret.key)
+
+        # Collect secret keys from matching device protocols
+        family_service = get_device_family_discovery_service()
+        families = family_service.get_all_families()
+        for name in protocol_names:
+            family = families.get(name)
+            if family:
+                for secret in family.required_secrets:
                     secret_keys.add(secret.key)
 
         if secret_keys:
@@ -829,14 +853,16 @@ def _cleanup_secrets_for_package(package_name: str) -> None:
         logger.warning("Secret cleanup failed (non-fatal)", package=package_name, error=str(e))
 
 
-def remove(package_name: str) -> None:
+def remove(package_name: str, component_type: str | None = None) -> None:
     """Remove an installed package (command or bundle).
 
     Checks ~/.jarvis/packages/<name>.json for component directories.
-    Falls back to legacy custom_commands/ lookup for single commands.
+    Falls back to legacy component directory lookup.
 
     Args:
         package_name: The package/command name to remove.
+        component_type: Optional component type hint (e.g. "device_protocol")
+            to scope the legacy fallback to the correct directory.
 
     Raises:
         RemoveError: If the package is not found.
@@ -884,19 +910,30 @@ def remove(package_name: str) -> None:
         _refresh_discovery_caches()
         return
 
-    # Legacy fallback: single command in custom_commands/
-    install_dir = CUSTOM_COMMANDS_DIR / package_name
-    if not install_dir.exists():
-        raise RemoveError(f"Package '{package_name}' is not installed")
+    # Legacy fallback: check custom component directories.
+    # If component_type is provided, only check that specific directory;
+    # otherwise check all directories (but risk name collisions).
+    search_dirs = (
+        {component_type: COMPONENT_INSTALL_DIRS[component_type]}
+        if component_type and component_type in COMPONENT_INSTALL_DIRS
+        else COMPONENT_INSTALL_DIRS
+    )
+    for comp_type, rel_dir in search_dirs.items():
+        install_dir = _PROJECT_DIR / rel_dir / package_name
+        if install_dir.exists():
+            parent_dir = _PROJECT_DIR / rel_dir
+            if not str(install_dir.resolve()).startswith(str(parent_dir.resolve())):
+                raise RemoveError(f"Cannot remove: path escapes {rel_dir} directory")
 
-    if not str(install_dir.resolve()).startswith(str(CUSTOM_COMMANDS_DIR.resolve())):
-        raise RemoveError("Cannot remove: path escapes custom_commands directory")
+            logger.info("Removing custom component (legacy)", type=comp_type, name=package_name)
+            if comp_type == "command":
+                _disable_in_registry(package_name)
+            shutil.rmtree(install_dir)
+            logger.info("Custom component removed", type=comp_type, name=package_name)
+            _refresh_discovery_caches()
+            return
 
-    logger.info("Removing custom command (legacy)", command=package_name)
-    _disable_in_registry(package_name)
-    shutil.rmtree(install_dir)
-    logger.info("Custom command removed", command=package_name)
-    _refresh_discovery_caches()
+    raise RemoveError(f"Package '{package_name}' is not installed")
 
 
 def _enable_in_registry(command_name: str) -> None:
