@@ -473,6 +473,121 @@ def handle_enroll_voice(details: Dict[str, Any]) -> None:
             pass
 
 
+def handle_verify_voice(details: Dict[str, Any]) -> None:
+    """Capture a voice sample via the node's mic and POST to CC for verification.
+
+    Mirrors handle_enroll_voice but hits the verify endpoint instead. This
+    ensures the verification sample uses the same mic as enrollment and
+    runtime recognition.
+
+    Expected ``details``::
+
+        {
+          "user_id": int,
+          "household_id": str,
+          "request_id": str,
+          "prompt_text": str,
+          "duration_secs": float,   # default 5
+          "preroll_secs": float,    # default 1.5
+        }
+    """
+    import os
+    import time as _time
+    import uuid as _uuid
+
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    user_id = details.get("user_id")
+    household_id = details.get("household_id")
+    request_id = details.get("request_id")
+    duration_secs: float = float(details.get("duration_secs") or 5.0)
+    preroll_secs: float = float(details.get("preroll_secs") or 1.5)
+
+    if user_id is None or not household_id or not request_id:
+        logger.warning("verify_voice: missing required fields")
+        return
+
+    base_url = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("verify_voice: CC URL not resolved")
+        return
+
+    from scripts.voice_listener import get_audio_bus, wake_paused
+    from scripts.speech_to_text import record_fixed_duration
+    from core.helpers import get_tts_provider
+
+    bus = get_audio_bus()
+    if bus is None:
+        logger.error("verify_voice: no AudioBus available")
+        _post_enrollment_result(base_url, request_id, success=False,
+                                error="audio_bus_unavailable")
+        return
+
+    with wake_paused():
+        try:
+            tts = get_tts_provider()
+            tts.speak(False, "Read the prompt on your screen, starting now.")
+        except Exception as e:
+            logger.warning("verify_voice: TTS cue failed (continuing)", error=str(e))
+
+        if preroll_secs > 0:
+            _time.sleep(preroll_secs)
+
+        output_path = f"/tmp/verify-{_uuid.uuid4().hex[:8]}.wav"
+        try:
+            recording = record_fixed_duration(
+                bus, seconds=duration_secs, output_path=output_path,
+                subscriber_name=f"verify-{request_id[:8]}",
+            )
+        except Exception as e:
+            logger.error("verify_voice: record failed", error=str(e))
+            _post_enrollment_result(base_url, request_id, success=False,
+                                    error=f"record_failed: {e}")
+            return
+
+    # POST the WAV to CC's whisper proxy for verification
+    verify_url = (
+        f"{base_url.rstrip('/')}/api/v0/media/whisper/voice-profiles/verify"
+        f"?user_id={user_id}&household_id={household_id}"
+    )
+    try:
+        import requests
+        headers = RestClient._build_auth_header()
+        with open(recording.audio_file, "rb") as f:
+            r = requests.post(
+                verify_url,
+                headers=headers,
+                files={"file": (
+                    os.path.basename(recording.audio_file),
+                    f,
+                    "audio/wav",
+                )},
+                timeout=20,
+            )
+        r.raise_for_status()
+        verify_resp = r.json() if r.content else {}
+
+        logger.info("verify_voice: verification complete",
+                    user_id=user_id, request_id=request_id[:8],
+                    response=verify_resp)
+        _post_enrollment_result(
+            base_url, request_id,
+            success=True,
+            matched=verify_resp.get("matched", False),
+            confidence=verify_resp.get("confidence", 0.0),
+        )
+    except Exception as e:
+        logger.error("verify_voice: upload failed", error=str(e))
+        _post_enrollment_result(base_url, request_id, success=False,
+                                error=f"verify_failed: {e}")
+    finally:
+        try:
+            os.unlink(recording.audio_file)
+        except OSError:
+            pass
+
+
 def _post_enrollment_result(
     base_url: str,
     request_id: str,
@@ -734,6 +849,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "toggle_command": handle_toggle_command,
     "update_node_config": handle_update_node_config,
     "enroll_voice": handle_enroll_voice,
+    "verify_voice": handle_verify_voice,
     "invalidate_device_cache": handle_invalidate_device_cache,
 }
 
@@ -1491,9 +1607,13 @@ def _heartbeat_loop() -> None:
             if base_url:
                 url = f"{base_url.rstrip('/')}/api/v0/admin/nodes/heartbeat"
 
+                from utils.device_family_discovery_service import get_device_family_discovery_service
+                families = get_device_family_discovery_service().get_all_families()
+
                 data: Dict[str, Any] = {
                     "version_info": version_info().to_dict(),
                     "is_busy": is_busy(),
+                    "protocols": sorted(families.keys()),
                 }
                 if _tracked_threads is not None:
                     thread_status: Dict[str, bool] = {}
