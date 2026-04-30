@@ -91,6 +91,20 @@ def run_install_and_upload(
         except Exception as e:
             logger.warning("Device family refresh after install failed (non-fatal)", error=str(e))
 
+        # Re-discover device managers so a newly installed device_manager
+        # component is usable without a service restart.
+        try:
+            from utils.device_manager_discovery_service import get_device_manager_discovery_service
+
+            dmd = get_device_manager_discovery_service()
+            dmd.refresh()
+            logger.info(
+                "Device manager cache refreshed after install",
+                managers=sorted(dmd.get_all_managers().keys()),
+            )
+        except Exception as e:
+            logger.warning("Device manager refresh after install failed (non-fatal)", error=str(e))
+
         _upload_result(request_id, success=True, details={
             "package_name": manifest.name,
             "version": manifest.version,
@@ -112,13 +126,14 @@ def run_install_and_upload(
 def run_uninstall_and_upload(
     request_id: str,
     command_name: str,
+    component_type: str | None = None,
 ) -> None:
     """Run package uninstall and upload results to CC. Meant to run in a background thread."""
-    print(f"[UNINSTALL] starting uninstall: {command_name}", flush=True)
+    print(f"[UNINSTALL] starting uninstall: {command_name} (type={component_type})", flush=True)
     try:
         from services.command_store_service import remove
 
-        remove(command_name)
+        remove(command_name, component_type=component_type)
         print(f"[UNINSTALL] success: {command_name}", flush=True)
         logger.info(
             "Package uninstalled successfully",

@@ -317,6 +317,7 @@ class TestDeviceFamiliesInSnapshot:
         assert family["connection_type"] == "hybrid"
         assert family["supported_domains"] == ["switch", "light"]
         assert family["is_configured"] is False
+        assert family["is_custom"] is False  # MagicMock module != custom_families
         assert len(family["secrets"]) == 1
         assert family["secrets"][0]["key"] == "GOVEE_API_KEY"
         assert family["secrets"][0]["is_set"] is False

@@ -1247,18 +1247,19 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
 
     request_id: str = notification.get("request_id", "")
     command_name: str = notification.get("command_name", "")
+    component_type: str | None = notification.get("component_type")
 
     if not request_id or not command_name:
         print("[UNINSTALL] missing request_id or command_name, ignoring", flush=True)
         return
 
-    print(f"[UNINSTALL] received: {command_name}", flush=True)
+    print(f"[UNINSTALL] received: {command_name} (type={component_type})", flush=True)
 
     from services.package_install_handler import run_uninstall_and_upload
 
     thread = threading.Thread(
         target=run_uninstall_and_upload,
-        args=(request_id, command_name),
+        args=(request_id, command_name, component_type),
         daemon=True,
     )
     thread.start()
