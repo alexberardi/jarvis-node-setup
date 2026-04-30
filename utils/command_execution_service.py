@@ -2,8 +2,9 @@ import queue
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 
 from jarvis_log_client import JarvisLogger
 
@@ -64,6 +65,9 @@ class ParseResult:
     assistant_message: str | None = None
 
 
+_MAX_CONVERSATION_USERS = 100
+
+
 class CommandExecutionService:
     def __init__(self):
         self.command_center_url = get_command_center_url()
@@ -71,9 +75,15 @@ class CommandExecutionService:
         self.room = Config.get_str("room")
         self.command_discovery = get_command_discovery_service()
         self.client = JarvisCommandCenterClient(self.command_center_url)
-        self._conversation_users: Dict[str, int | None] = {}
+        self._conversation_users: OrderedDict[str, int | None] = OrderedDict()
         # Force initial discovery
         self.command_discovery.refresh_now()
+
+    def _track_conversation_user(self, conversation_id: str, user_id: int | None) -> None:
+        """Store speaker identity for a conversation, evicting oldest entries when full."""
+        self._conversation_users[conversation_id] = user_id
+        while len(self._conversation_users) > _MAX_CONVERSATION_USERS:
+            self._conversation_users.popitem(last=False)
 
     def register_tools_for_conversation(
         self,
@@ -96,7 +106,7 @@ class CommandExecutionService:
         Returns:
             True if successful, False otherwise
         """
-        self._conversation_users[conversation_id] = speaker_user_id
+        self._track_conversation_user(conversation_id, speaker_user_id)
 
         commands = self.command_discovery.get_all_commands()
 
@@ -382,7 +392,7 @@ class CommandExecutionService:
                 else:
                     # Warmup succeeded but used last_speaker_user_id — store
                     # the actual speaker for tool execution later
-                    self._conversation_users[conversation_id] = speaker_user_id
+                    self._track_conversation_user(conversation_id, speaker_user_id)
             elif register_tools:
                 self.register_tools_for_conversation(conversation_id, speaker_user_id=speaker_user_id)
 
