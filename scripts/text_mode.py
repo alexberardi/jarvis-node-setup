@@ -11,6 +11,7 @@ Exposes:
 """
 
 import os
+import signal
 import threading
 
 # Set config service URL from config.json before any library imports
@@ -61,15 +62,29 @@ class CommandResponseModel(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    from utils.encryption_utils import has_k2
     return {
         "status": "healthy",
         "service": "jarvis-node",
         "mode": "text",
         "node_id": Config.get_str("node_id", "unknown"),
+        "needs_k2": not has_k2(),
     }
 
 
 _mqtt_thread_ref: threading.Thread | None = None
+_shutdown_event = threading.Event()
+
+
+def _shutdown_watcher() -> None:
+    """Translate _shutdown_event.set() into a process-wide SIGTERM.
+
+    set() from the MQTT daemon thread alone won't stop uvicorn; SIGTERM does.
+    Used by the factory-reset flow so Docker can restart into setup mode.
+    """
+    _shutdown_event.wait()
+    logger.info("Shutdown event received, sending SIGTERM")
+    os.kill(os.getpid(), signal.SIGTERM)
 
 @app.get("/debug/mqtt")
 def debug_mqtt() -> dict:
@@ -233,6 +248,11 @@ async def startup() -> None:
 def main() -> None:
     port = int(os.getenv("JARVIS_NODE_PORT", "7771"))
     logger.info("Starting text-mode node", port=port)
+
+    from scripts.mqtt_tts_listener import set_shutdown_event as mqtt_set_shutdown
+    mqtt_set_shutdown(_shutdown_event)
+    threading.Thread(target=_shutdown_watcher, daemon=True).start()
+
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
