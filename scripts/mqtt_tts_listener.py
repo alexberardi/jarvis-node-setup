@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -25,6 +26,10 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 # Guard: only one training process at a time
 _training_lock = threading.Lock()
 _training_running = False
+
+# Bounded thread pool for MQTT message handlers. Caps concurrent threads
+# (and their ~128KB-1MB stacks on ARM) to avoid OOM on Pi Zero (512MB).
+_task_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mqtt-task")
 
 # Global MQTT client reference for publishing replies
 _mqtt_client: Optional[mqtt.Client] = None
@@ -163,9 +168,8 @@ def handle_train_adapter(details: Dict[str, Any]) -> None:
             _training_running = False
         return
 
-    thread = threading.Thread(target=_run_training, daemon=True)
-    thread.start()
-    logger.info("Adapter training thread started", request_id=request_id[:8])
+    _task_executor.submit(_run_training)
+    logger.info("Adapter training task submitted", request_id=request_id[:8])
 
 
 def handle_action(details: Dict[str, Any]) -> None:
@@ -886,8 +890,7 @@ def _handle_auth_ready(raw_payload: bytes) -> None:
         return
 
     logger.info("Auth ready notification received", provider=provider)
-    thread = threading.Thread(target=_pull_auth_credentials, args=(provider,), daemon=True)
-    thread.start()
+    _task_executor.submit(_pull_auth_credentials, provider)
 
 
 def _pull_auth_credentials(provider: str) -> None:
@@ -1084,8 +1087,7 @@ def _handle_config_push_notification(raw_payload: bytes) -> None:
     config_type: str = notification.get("config_type", "unknown")
     logger.info("Config push notification received", config_type=config_type)
 
-    thread = threading.Thread(target=_process_config_push, daemon=True)
-    thread.start()
+    _task_executor.submit(_process_config_push)
 
 
 def _process_config_push() -> None:
@@ -1113,8 +1115,7 @@ def _handle_settings_request_notification(raw_payload: bytes) -> None:
     include_values: bool = notification.get("include_values", False)
     user_id: int | None = notification.get("user_id")
     logger.info("Settings snapshot requested", request_id=request_id[:8], include_values=include_values, user_id=user_id)
-    thread = threading.Thread(target=_process_settings_request, args=(request_id, include_values, user_id), daemon=True)
-    thread.start()
+    _task_executor.submit(_process_settings_request, request_id, include_values, user_id)
 
 
 def _process_settings_request(request_id: str, include_values: bool = False, user_id: int | None = None) -> None:
@@ -1155,10 +1156,7 @@ def _handle_device_list_notification(raw_payload: bytes) -> None:
 
     from services.device_list_handler import run_collect_and_upload
 
-    thread = threading.Thread(
-        target=run_collect_and_upload, args=(request_id, manager_name), daemon=True
-    )
-    thread.start()
+    _task_executor.submit(run_collect_and_upload, request_id, manager_name)
 
 
 def _handle_device_state_notification(raw_payload: bytes) -> None:
@@ -1178,10 +1176,7 @@ def _handle_device_state_notification(raw_payload: bytes) -> None:
 
     from services.device_state_handler import run_state_query_and_upload
 
-    thread = threading.Thread(
-        target=run_state_query_and_upload, args=(request_id, notification), daemon=True
-    )
-    thread.start()
+    _task_executor.submit(run_state_query_and_upload, request_id, notification)
 
 
 def _handle_camera_credentials_notification(raw_payload: bytes) -> None:
@@ -1201,10 +1196,7 @@ def _handle_camera_credentials_notification(raw_payload: bytes) -> None:
 
     from services.camera_credentials_handler import run_credentials_lookup_and_upload
 
-    thread = threading.Thread(
-        target=run_credentials_lookup_and_upload, args=(request_id, notification), daemon=True
-    )
-    thread.start()
+    _task_executor.submit(run_credentials_lookup_and_upload, request_id, notification)
 
 
 def _handle_package_install_notification(raw_payload: bytes) -> None:
@@ -1228,13 +1220,8 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
 
     from services.package_install_handler import run_install_and_upload
 
-    thread = threading.Thread(
-        target=run_install_and_upload,
-        args=(request_id, command_name, github_repo_url, git_tag),
-        daemon=True,
-    )
-    thread.start()
-    print(f"[INSTALL] thread started", flush=True)
+    _task_executor.submit(run_install_and_upload, request_id, command_name, github_repo_url, git_tag)
+    print("[INSTALL] task submitted", flush=True)
 
 
 def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
@@ -1257,13 +1244,8 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
 
     from services.package_install_handler import run_uninstall_and_upload
 
-    thread = threading.Thread(
-        target=run_uninstall_and_upload,
-        args=(request_id, command_name, component_type),
-        daemon=True,
-    )
-    thread.start()
-    print("[UNINSTALL] thread started", flush=True)
+    _task_executor.submit(run_uninstall_and_upload, request_id, command_name, component_type)
+    print("[UNINSTALL] task submitted", flush=True)
 
 
 def _post_factory_reset_status(
@@ -1467,12 +1449,7 @@ def _handle_test_install_notification(raw_payload: bytes) -> None:
 
     from services.test_install_handler import run_test_install_and_upload
 
-    thread = threading.Thread(
-        target=run_test_install_and_upload,
-        args=(request_id,),
-        daemon=True,
-    )
-    thread.start()
+    _task_executor.submit(run_test_install_and_upload, request_id)
 
 
 def _handle_device_scan_notification(raw_payload: bytes) -> None:
@@ -1492,8 +1469,7 @@ def _handle_device_scan_notification(raw_payload: bytes) -> None:
 
     from services.device_scan_handler import run_scan_and_upload
 
-    thread = threading.Thread(target=run_scan_and_upload, args=(request_id,), daemon=True)
-    thread.start()
+    _task_executor.submit(run_scan_and_upload, request_id)
 
 
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
@@ -1581,6 +1557,39 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 _HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
 
 
+def _get_memory_stats() -> Dict[str, Any]:
+    """Collect lightweight memory stats for heartbeat reporting.
+
+    Always includes RSS and thread count (near-zero overhead).
+    When JARVIS_MEMORY_PROFILING=1, also logs tracemalloc top allocators.
+    """
+    import resource
+
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    stats: Dict[str, Any] = {
+        "rss_mb": round(rusage.ru_maxrss / (1024 * 1024), 1),  # maxrss is bytes on Linux, KB on macOS
+        "thread_count": threading.active_count(),
+        "pool_queue_size": _task_executor._work_queue.qsize(),
+    }
+
+    if os.environ.get("JARVIS_MEMORY_PROFILING") == "1":
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+        snapshot = tracemalloc.take_snapshot()
+        top = snapshot.statistics("lineno")[:10]
+        stats["tracemalloc_top"] = [
+            {"file": str(s.traceback), "size_kb": round(s.size / 1024, 1)}
+            for s in top
+        ]
+        current, peak = tracemalloc.get_traced_memory()
+        stats["traced_current_mb"] = round(current / (1024 * 1024), 1)
+        stats["traced_peak_mb"] = round(peak / (1024 * 1024), 1)
+        logger.info("Memory profile", **stats)
+
+    return stats
+
+
 def _heartbeat_loop() -> None:
     """Periodically POST heartbeat to command center to update last_seen.
 
@@ -1592,6 +1601,7 @@ def _heartbeat_loop() -> None:
     from core.runtime_state import is_busy
     from core.version import version_info
     from services.update_service import maybe_apply_update
+    from utils.encryption_utils import has_k2
     from utils.service_discovery import get_command_center_url
 
     # Initial delay: let service discovery initialize
@@ -1615,6 +1625,8 @@ def _heartbeat_loop() -> None:
                     "version_info": version_info().to_dict(),
                     "is_busy": is_busy(),
                     "protocols": sorted(families.keys()),
+                    "needs_k2": not has_k2(),
+                    "memory": _get_memory_stats(),
                 }
                 if _tracked_threads is not None:
                     thread_status: Dict[str, bool] = {}
