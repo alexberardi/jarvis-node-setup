@@ -268,6 +268,9 @@ components:
 packages:                       # pip dependencies
   - name: httpx
 
+jarvis_dependencies:             # depend on other Jarvis packages
+  - nest                         # must be installed first
+
 secrets:
   - key: MY_API_KEY
     scope: integration          # or: node, user
@@ -287,6 +290,45 @@ Use these as templates when creating new packages:
 | Device protocol (cloud+OAuth) | `jarvis-device-simplisafe` | OAuth2+PKCE, token rotation, AlarmControl UI |
 | Device protocol (LAN) | `jarvis-device-govee` | Hybrid cloud/LAN discovery |
 | Multi-component bundle | `jarvis-home-assistant-integration` | 2 commands + 1 agent + 1 device manager + shared code |
+
+### Extending Existing Packages (jarvis_dependencies)
+
+Packages can inherit from and extend other installed packages. Declare
+`jarvis_dependencies` in the manifest to import classes from a dependency:
+
+```yaml
+# jarvis_package.yaml
+name: "nest_pro"
+jarvis_dependencies:
+  - nest                  # must be installed first
+components:
+  - type: device_protocol
+    name: nest_pro
+    path: device_families/nest_pro/protocol.py
+```
+
+```python
+# device_families/nest_pro/protocol.py
+from nest import NestProtocol     # auto-generated namespace
+
+class NestProProtocol(NestProtocol):
+    """Extends Nest with energy monitoring."""
+
+    @property
+    def protocol_name(self) -> str:
+        return "nest_pro"
+
+    @property
+    def supported_domains(self) -> list[str]:
+        return [*super().supported_domains, "energy"]
+```
+
+**How it works:**
+- When a package is installed, an importable namespace is auto-generated at
+  `~/.jarvis/packages/<name>/__init__.py` that re-exports component classes
+- `~/.jarvis/packages/` is on `sys.path`, so `from nest import NestProtocol` works
+- `issubclass()` is transitive — runtime discovery handles inheritance chains
+- Uninstalling a dependency is blocked if other packages depend on it
 
 ### Writing a Command (IJarvisCommand)
 

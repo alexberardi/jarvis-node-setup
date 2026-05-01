@@ -114,6 +114,7 @@ class CommandManifest(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     secrets: list[ManifestSecret] = Field(default_factory=list)
     packages: list[ManifestPackage] = Field(default_factory=list)
+    jarvis_dependencies: list[str] = Field(default_factory=list)
     parameters: list[ManifestParameter] = Field(default_factory=list)
     authentication: ManifestAuthentication | None = None
 
