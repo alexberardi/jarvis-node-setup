@@ -7,6 +7,7 @@ Called from the provisioning API when a user wants to start fresh
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 from jarvis_log_client import JarvisLogger
@@ -16,6 +17,16 @@ from provisioning.wifi_credentials import clear_wifi_credentials
 from utils.encryption_utils import clear_k2, get_secret_dir
 
 logger = JarvisLogger(service="jarvis-node")
+
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+_CUSTOM_DIRS: list[str] = [
+    "commands/custom_commands",
+    "agents/custom_agents",
+    "device_families/custom_families",
+    "device_managers/custom_managers",
+    "routines/custom_routines",
+]
 
 
 def factory_reset() -> dict:
@@ -27,6 +38,8 @@ def factory_reset() -> dict:
     - WiFi credentials
     - Node database + DB encryption key
     - Config credentials (node_id, api_key reset to placeholders)
+    - All Pantry-installed packages (custom commands, agents, protocols, managers, routines)
+    - Pantry package metadata (~/.jarvis/packages/)
 
     Does NOT remove:
     - K1 master key (Fernet key — reused for encrypting new secrets)
@@ -94,5 +107,43 @@ def factory_reset() -> dict:
         except Exception as e:
             logger.warning("Failed to reset config credentials", error=str(e))
 
+    # 6. Remove all Pantry-installed packages
+    cleared.extend(_clear_pantry_packages())
+
     logger.info("Factory reset complete", cleared=cleared)
     return {"cleared": cleared}
+
+
+def _clear_pantry_packages() -> list[str]:
+    """Remove all Pantry-installed content from custom_* directories and metadata.
+
+    Returns:
+        List of cleared item labels.
+    """
+    cleared: list[str] = []
+
+    for rel_dir in _CUSTOM_DIRS:
+        custom_dir = _PROJECT_DIR / rel_dir
+        if not custom_dir.is_dir():
+            continue
+        for entry in custom_dir.iterdir():
+            if entry.name.startswith(("_", ".")) or not entry.is_dir():
+                continue
+            try:
+                shutil.rmtree(entry)
+                cleared.append(f"pantry:{rel_dir}/{entry.name}")
+                logger.info("Removed Pantry component", path=str(entry))
+            except Exception as e:
+                logger.warning("Failed to remove Pantry component", path=str(entry), error=str(e))
+
+    # Remove package metadata and shared libs
+    packages_dir = Path.home() / ".jarvis" / "packages"
+    if packages_dir.is_dir():
+        try:
+            shutil.rmtree(packages_dir)
+            cleared.append("pantry:packages_metadata")
+            logger.info("Removed Pantry package metadata")
+        except Exception as e:
+            logger.warning("Failed to remove Pantry metadata", error=str(e))
+
+    return cleared

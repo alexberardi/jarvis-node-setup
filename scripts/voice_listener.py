@@ -405,16 +405,38 @@ def _is_non_speech(text: str | None) -> bool:
     or (wind blowing) rather than an actual utterance. Whisper emits these
     for silence/noise, and treating them as commands keeps the follow-up
     loop alive forever when the node is near a fan or other constant noise.
+
+    Also catches common Whisper hallucinations on low-signal audio — short
+    phantom phrases the model produces when fed near-silence or ambient
+    noise (fan hum, HVAC, etc.).
     """
     if not text:
         return True
     stripped = text.strip()
     if not stripped:
         return True
-    return (
+    if (
         (stripped.startswith("[") and stripped.endswith("]"))
         or (stripped.startswith("(") and stripped.endswith(")"))
-    )
+    ):
+        return True
+    # Whisper hallucinates short stock phrases on low-energy audio.
+    # These are never real voice commands.
+    lowered = stripped.lower().rstrip(".!,")
+    if lowered in _WHISPER_HALLUCINATIONS:
+        return True
+    return False
+
+
+# Common Whisper hallucinations on near-silence / ambient noise.
+_WHISPER_HALLUCINATIONS: set[str] = {
+    "thank you", "thanks", "thanks for watching",
+    "thank you for watching", "thanks for listening",
+    "subscribe", "like and subscribe",
+    "you", "i", "the", "bye", "okay", "ok",
+    "hmm", "um", "uh", "ah", "oh",
+    "so", "yeah", "yes", "no",
+}
 
 
 _ABORT_PHRASES: set[str] = {
@@ -626,6 +648,7 @@ def _follow_up_loop(
             )
             barge_in.start()
 
+        should_break = False
         try:
             # Try pre-routing first (e.g., "stop", "pause")
             pre_result = command_service.try_pre_route(text, conversation_id or "")
@@ -640,6 +663,9 @@ def _follow_up_loop(
                 )
                 command_service.speak_result(result)
                 conversation_id = result.get("conversation_id", conversation_id)
+                if result.get("clear_history"):
+                    logger.info("Conversation complete (clear_history), ending follow-up")
+                    should_break = True
             else:
                 # No conversation context — start fresh
                 result = command_service.process_voice_command(
@@ -647,6 +673,9 @@ def _follow_up_loop(
                 )
                 command_service.speak_result(result)
                 conversation_id = result.get("conversation_id") if result.get("success") else None
+                if result.get("clear_history"):
+                    logger.info("Conversation complete (clear_history), ending follow-up")
+                    should_break = True
 
             # Capture TTS-end timestamp HERE (right after speak_result), not
             # after the finally block. barge_in.stop() routinely takes ~1.5s
@@ -663,6 +692,8 @@ def _follow_up_loop(
             if barge_in:
                 barge_in.stop()
 
+        if should_break:
+            break
         if barge_in and barge_in.was_interrupted:
             logger.info("Barge-in during follow-up, returning to wake word mode")
             platform_audio.reset_cancel()

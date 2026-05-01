@@ -5,13 +5,17 @@ against each chunk.  On detection it cancels the active playback
 subprocess so the voice listener can immediately start recording a new
 command.
 
-Detection strategy — energy-gated OWW:
+Detection strategy — dynamic-baseline energy-gated OWW:
   OWW alone cannot reliably score the wake word through heavy speaker-
   to-mic bleed (typical peak ~0.10 vs clean ~0.9).  Instead we combine
   two signals:
 
-  1. **Energy gate** — a sharp RMS rise above the running TTS-bleed
-     baseline means the user is speaking into the mic.
+  1. **Dynamic energy gate** — during the first ~1s of monitoring, we
+     sample the TTS-through-mic RMS level to establish a baseline. A
+     barge-in requires energy significantly above that baseline (2x),
+     meaning the user must be speaking *on top of* the TTS. This
+     prevents false triggers when TTS itself says the wake word —
+     the OWW score spikes but the energy stays at the TTS baseline.
   2. **OWW partial match** — even a low OWW score (~0.07) confirms the
      energy burst is the wake word, not a cough or clap.
 
@@ -38,9 +42,11 @@ logger = JarvisLogger(service="jarvis-node")
 _OWW_RATE = 16000
 _OWW_CHUNK = 1280
 
-# Energy-gate defaults.  TTS bleed through a desk mic typically reads
-# 100-300 RMS; a user speaking at normal volume 2-3 ft away reads
-# 1000-3000.  500 sits safely in between.
+# Energy-gate defaults.  The static threshold is a floor — the dynamic
+# baseline (computed from the first ~1s of TTS playback) overrides it
+# when TTS energy is higher.  A user speaking at normal volume 2-3 ft
+# away reads 1000-3000 RMS; this floor catches the case where TTS is
+# very quiet or silent during the baseline window.
 _DEFAULT_ENERGY_THRESHOLD = 500
 
 # OWW score threshold during barge-in.  Much lower than the normal 0.4
@@ -51,6 +57,13 @@ _DEFAULT_OWW_THRESHOLD = 0.07
 # How many consecutive chunks must satisfy BOTH energy + OWW gates
 # before we commit to a barge-in.  Prevents single-sample spikes.
 _DEFAULT_CONFIRM_CHUNKS = 2
+
+# Dynamic baseline: collect RMS samples during this window, then compute
+# an energy threshold relative to TTS playback level.  This prevents
+# false triggers when TTS itself says the wake word (OWW spikes, but
+# energy stays at the TTS baseline instead of jumping above it).
+_BASELINE_WINDOW_SECS = 1.0
+_BASELINE_MULTIPLIER = 2.0  # require 2x TTS baseline to trigger
 
 
 class BargeInMonitor:
@@ -76,6 +89,8 @@ class BargeInMonitor:
         energy_threshold: float = _DEFAULT_ENERGY_THRESHOLD,
         confirm_chunks: int = _DEFAULT_CONFIRM_CHUNKS,
         skip_seconds: float = 0.5,
+        baseline_window_secs: float = _BASELINE_WINDOW_SECS,
+        baseline_multiplier: float = _BASELINE_MULTIPLIER,
         subscriber_name: str = "barge_in",
     ):
         self._bus = bus
@@ -85,6 +100,8 @@ class BargeInMonitor:
         self._energy_threshold = energy_threshold
         self._confirm_chunks = confirm_chunks
         self._skip_seconds = skip_seconds
+        self._baseline_window_secs = baseline_window_secs
+        self._baseline_multiplier = baseline_multiplier
         self._subscriber_name = subscriber_name
 
         # Bus is at 48 kHz; OWW needs 16 kHz. Always resample.
@@ -137,6 +154,14 @@ class BargeInMonitor:
         energy_window_chunks = max(1, int(1.0 / chunk_secs))  # ~1 second
         recent_rms: list[int] = []
 
+        # Dynamic energy baseline — measure TTS-through-mic level during
+        # the first baseline window and require energy well above it.
+        # Prevents false triggers when TTS itself says the wake word:
+        # OWW spikes, but energy stays at the TTS floor.
+        baseline_window_chunks = max(1, int(self._baseline_window_secs / chunk_secs))
+        baseline_rms_samples: list[int] = []
+        effective_energy_threshold = self._energy_threshold
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -160,6 +185,30 @@ class BargeInMonitor:
                     recent_rms.pop(0)
                 recent_max_rms = max(recent_rms)
 
+                # --- Baseline collection phase ---
+                # Collect RMS during the first N chunks to learn TTS volume.
+                # Still run OWW (to prime its LSTM state) but don't trigger.
+                if len(baseline_rms_samples) < baseline_window_chunks:
+                    baseline_rms_samples.append(rms)
+                    if len(baseline_rms_samples) >= baseline_window_chunks:
+                        sorted_rms = sorted(baseline_rms_samples)
+                        tts_baseline = sorted_rms[int(len(sorted_rms) * 0.75)]
+                        dynamic_threshold = int(tts_baseline * self._baseline_multiplier)
+                        effective_energy_threshold = max(self._energy_threshold, dynamic_threshold)
+                        logger.info(
+                            "Barge-in baseline established",
+                            tts_p75_rms=tts_baseline,
+                            dynamic_threshold=dynamic_threshold,
+                            effective_threshold=effective_energy_threshold,
+                            static_threshold=self._energy_threshold,
+                        )
+                    # Resample + score OWW to keep LSTM primed, but skip trigger check
+                    if self._needs_resample:
+                        resampled = resample_poly(samples, up=1, down=self._resample_ratio)
+                        samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+                    self._oww.predict(samples)
+                    continue
+
                 # Periodic diagnostics
                 if chunk_count % 25 == 1:
                     logger.info(
@@ -167,6 +216,7 @@ class BargeInMonitor:
                         chunk=chunk_count,
                         rms=rms,
                         recent_max_rms=recent_max_rms,
+                        energy_threshold=effective_energy_threshold,
                         max_score=round(max_score, 3),
                     )
 
@@ -186,19 +236,19 @@ class BargeInMonitor:
                         score=round(float(score), 3),
                         rms=rms,
                         recent_max_rms=recent_max_rms,
+                        energy_threshold=effective_energy_threshold,
                     )
 
                 # --- Two-tier detection ---
-                # Tier 1: Strong OWW (>0.5) + recent energy spike.
-                #         OWW peaks after the voice energy fades, so
-                #         we check the trailing window, not this chunk.
-                # Tier 2: Weak OWW (>threshold) + current high energy.
-                #         For heavy TTS bleed where OWW can only score
-                #         ~0.07-0.12, require simultaneous energy.
+                # Tier 1: Strong OWW (>0.5) + recent energy spike above
+                #         the dynamic baseline. OWW peaks after the voice
+                #         energy fades, so we check the trailing window.
+                # Tier 2: Weak OWW (>threshold) + current high energy
+                #         above the dynamic baseline.
                 triggered = False
-                if score > 0.5 and recent_max_rms > self._energy_threshold:
+                if score > 0.5 and recent_max_rms > effective_energy_threshold:
                     triggered = True
-                elif score > self._threshold and rms > self._energy_threshold:
+                elif score > self._threshold and rms > effective_energy_threshold:
                     triggered = True
 
                 if triggered:
@@ -207,6 +257,7 @@ class BargeInMonitor:
                         score=round(float(score), 3),
                         rms=rms,
                         recent_max_rms=recent_max_rms,
+                        energy_threshold=effective_energy_threshold,
                     )
                     self._interrupted = True
                     platform_audio.cancel_playback()
@@ -219,6 +270,7 @@ class BargeInMonitor:
                 chunks_processed=chunk_count,
                 max_score=round(max_score, 3),
                 max_rms=max_rms,
+                effective_energy_threshold=effective_energy_threshold,
                 interrupted=self._interrupted,
             )
             self._bus.unsubscribe(self._subscriber_name)
