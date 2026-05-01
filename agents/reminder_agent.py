@@ -62,6 +62,9 @@ class ReminderAgent(IJarvisAgent):
 
             service = get_reminder_service()
 
+            # Clean up expired one-shot reminders first (in-memory, no DB hit)
+            service.cleanup_expired()
+
             # Update cached reminder count (in-memory check, no DB hit)
             all_reminders = service.get_all_reminders(include_announced=False)
             self._has_reminders = len(all_reminders) > 0
@@ -72,9 +75,6 @@ class ReminderAgent(IJarvisAgent):
                 return
 
             settings = UserSettings("reminder")
-
-            # Clean up expired one-shot reminders
-            service.cleanup_expired()
 
             # Check for due reminders
             due_reminders = service.get_due_reminders()
