@@ -1,0 +1,39 @@
+# Passwordless sudo for jarvis-node deployment by Claude / dev tooling.
+#
+# Restricted to:
+#   - copying staged files from /tmp into /opt/jarvis-node/<subdir>/
+#   - managing the jarvis-node systemd service (start/stop/restart/status)
+#   - tailing jarvis-node logs via journalctl
+#
+# Source files MUST be staged in /tmp first (e.g. via scp). This means a
+# regular user must already be able to upload to the pi — we're not
+# expanding the trust surface, just removing the password prompt for an
+# already-allowed action.
+#
+# Install with:
+#   sudo install -m 440 -o root -g root /tmp/jarvis-deploy.sudoers \
+#       /etc/sudoers.d/jarvis-deploy
+#
+# After installing, validate with:
+#   sudo visudo -c -f /etc/sudoers.d/jarvis-deploy
+
+# File deployment into the node tree (one rule per subdir we ever edit)
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/clients/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/clients/responses/jarvis_command_center/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/core/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/scripts/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/services/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/utils/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/wake_response_providers/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/tts_providers/*
+pi ALL=(ALL) NOPASSWD: /bin/cp /tmp/* /opt/jarvis-node/stt_providers/*
+
+# Service lifecycle
+pi ALL=(ALL) NOPASSWD: /bin/systemctl restart jarvis-node
+pi ALL=(ALL) NOPASSWD: /bin/systemctl start jarvis-node
+pi ALL=(ALL) NOPASSWD: /bin/systemctl stop jarvis-node
+pi ALL=(ALL) NOPASSWD: /bin/systemctl status jarvis-node
+pi ALL=(ALL) NOPASSWD: /bin/systemctl status jarvis-node --no-pager
+
+# Log tailing (any args after `journalctl -u jarvis-node`)
+pi ALL=(ALL) NOPASSWD: /bin/journalctl -u jarvis-node *
