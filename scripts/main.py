@@ -6,6 +6,11 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
+# Reduce default thread stack size from 8 MB to 1 MB.
+# 25 threads × 8 MB = 200 MB virtual address space — too much for Pi Zero
+# (512 MB RAM). 1 MB is more than enough for Python threads.
+threading.stack_size(1 * 1024 * 1024)
+
 # Set config service URL from config.json before any library imports,
 # so jarvis-config-client uses the right URL instead of localhost
 if not os.environ.get("JARVIS_CONFIG_URL"):
