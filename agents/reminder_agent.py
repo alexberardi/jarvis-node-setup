@@ -19,7 +19,8 @@ from core.ijarvis_secret import IJarvisSecret
 
 logger = JarvisLogger(service="jarvis-node")
 
-REFRESH_INTERVAL_SECONDS = 30
+REFRESH_INTERVAL_SECONDS = 60
+IDLE_INTERVAL_SECONDS = 300
 
 
 class ReminderAgent(IJarvisAgent):
@@ -27,6 +28,7 @@ class ReminderAgent(IJarvisAgent):
 
     def __init__(self) -> None:
         self._alerts: List[Alert] = []
+        self._has_reminders: bool = False  # tracks whether any reminders exist
 
     @property
     def name(self) -> str:
@@ -38,8 +40,9 @@ class ReminderAgent(IJarvisAgent):
 
     @property
     def schedule(self) -> AgentSchedule:
+        interval = REFRESH_INTERVAL_SECONDS if self._has_reminders else IDLE_INTERVAL_SECONDS
         return AgentSchedule(
-            interval_seconds=REFRESH_INTERVAL_SECONDS,
+            interval_seconds=interval,
             run_on_startup=True,
         )
 
@@ -58,6 +61,16 @@ class ReminderAgent(IJarvisAgent):
             from jarvis_command_sdk import UserSettings
 
             service = get_reminder_service()
+
+            # Update cached reminder count (in-memory check, no DB hit)
+            all_reminders = service.get_all_reminders(include_announced=False)
+            self._has_reminders = len(all_reminders) > 0
+
+            # If no reminders exist, skip everything (no DB queries)
+            if not self._has_reminders:
+                self._alerts = []
+                return
+
             settings = UserSettings("reminder")
 
             # Clean up expired one-shot reminders
