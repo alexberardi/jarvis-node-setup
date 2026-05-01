@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import paho.mqtt.client as mqtt
 
@@ -69,29 +70,24 @@ def get_mqtt_config() -> Dict[str, Any]:
        so Docker containers get host.docker.internal automatically
     2. config.json fallback
     3. Default: localhost:1884
+
+    Supported schemes: mqtt (raw TCP), mqtts (TLS TCP), ws (WebSocket),
+    wss (TLS WebSocket — used by external nodes via Cloudflare Tunnel).
     """
     from utils.service_discovery import get_mqtt_broker_url
 
     node_id: str = Config.get_str("node_id", "unknown") or "unknown"
 
-    broker_url = get_mqtt_broker_url()
-    broker = "localhost"
-    port = 1884
-    if broker_url:
-        url = broker_url
-        if url.startswith("mqtt://"):
-            url = url[7:]
-        if ":" in url:
-            broker, port_str = url.rsplit(":", 1)
-            try:
-                port = int(port_str)
-            except ValueError:
-                pass
-        else:
-            broker = url
+    broker_url = get_mqtt_broker_url() or "mqtt://localhost:1884"
+    parsed = urlparse(broker_url)
+    scheme = parsed.scheme or "mqtt"
+    broker = parsed.hostname or "localhost"
+    default_port = {"mqtt": 1883, "mqtts": 8883, "ws": 80, "wss": 443}.get(scheme, 1883)
+    port = parsed.port or default_port
 
     return {
         "topic": Config.get_str("mqtt_topic", f"jarvis/nodes/{node_id}/#") or f"jarvis/nodes/{node_id}/#",
+        "scheme": scheme,
         "broker": broker,
         "port": port,
         "username": Config.get_str("mqtt_username", "") or "",
@@ -1691,7 +1687,17 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     logger.info("Test command cleanup thread started")
 
     config = get_mqtt_config()
-    client: mqtt.Client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    scheme: str = config["scheme"]
+    transport: str = "websockets" if scheme in ("ws", "wss") else "tcp"
+
+    client: mqtt.Client = mqtt.Client(
+        mqtt.CallbackAPIVersion.VERSION1,
+        transport=transport,
+    )
+
+    # TLS for wss (Cloudflare cert) and mqtts. Default system CA bundle.
+    if scheme in ("wss", "mqtts"):
+        client.tls_set()
 
     if config["username"] and config["password"]:
         client.username_pw_set(config["username"], config["password"])
@@ -1703,7 +1709,13 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     # Enable paho-mqtt's built-in reconnect with exponential backoff
     client.reconnect_delay_set(min_delay=1, max_delay=60)
 
-    logger.info("MQTT listener starting", broker=config["broker"], port=config["port"])
+    logger.info(
+        "MQTT listener starting",
+        scheme=scheme,
+        broker=config["broker"],
+        port=config["port"],
+        transport=transport,
+    )
 
     # Retry initial connection with exponential backoff
     max_attempts: int = 5

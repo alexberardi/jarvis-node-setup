@@ -69,6 +69,9 @@ class DeviceFamilyDiscoveryService:
             if key.startswith("device_families.custom_families"):
                 del sys.modules[key]
 
+        from services.command_store_service import register_package_lib_paths
+        register_package_lib_paths()
+
         new_families: dict[str, IJarvisDeviceProtocol] = {}
 
         # Scan built-in families

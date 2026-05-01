@@ -9,6 +9,7 @@ Mirrors DeviceFamilyDiscoveryService:
 
 import importlib
 import pkgutil
+import sys
 import threading
 from pathlib import Path
 
@@ -57,6 +58,13 @@ class DeviceManagerDiscoveryService:
 
     def _do_discover_managers(self) -> dict[str, IJarvisDeviceManager]:
         """Internal discovery implementation.  Caller must hold _lock."""
+        # Invalidate Python's import caches so newly-installed or
+        # reinstalled Pantry packages are picked up without a restart.
+        importlib.invalidate_caches()
+        for key in list(sys.modules.keys()):
+            if key.startswith("device_managers.custom_managers"):
+                del sys.modules[key]
+
         from services.command_store_service import register_package_lib_paths
         register_package_lib_paths()
 
@@ -81,7 +89,6 @@ class DeviceManagerDiscoveryService:
                     for py_file in mgr_dir.glob("*.py"):
                         if py_file.name.startswith("_"):
                             continue
-                        import sys
                         if str(mgr_dir) not in sys.path:
                             sys.path.insert(0, str(mgr_dir))
                         self._try_load_manager(
