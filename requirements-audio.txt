@@ -4,7 +4,7 @@ pyaudio
 sounddevice
 vosk
 # openwakeword installed separately with --no-deps
-onnxruntime>=1.10.0,<2
+onnxruntime>=1.10.0,<2,!=1.25.1
 scikit-learn>=1,<2
 scipy
 numpy
