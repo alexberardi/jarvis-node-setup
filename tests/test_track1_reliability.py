@@ -293,6 +293,7 @@ class TestMQTTReconnect:
 
         with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client), \
              patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt",
                  "broker": "localhost", "port": 1883,
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
@@ -318,6 +319,7 @@ class TestMQTTReconnect:
 
         with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client), \
              patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt",
                  "broker": "localhost", "port": 1883,
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
@@ -338,6 +340,7 @@ class TestMQTTReconnect:
 
         with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client), \
              patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt",
                  "broker": "localhost", "port": 1883,
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",

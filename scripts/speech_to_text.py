@@ -232,13 +232,19 @@ def listen_for_follow_up(
     silence_threshold: Optional[int] = None,
     silence_duration: Optional[float] = None,
     max_record_secs: Optional[float] = None,
+    min_speech_secs: Optional[float] = None,
 ) -> str | None:
     """Listen for follow-up speech within a timeout window.
 
     Subscribes to the bus, waits up to ``timeout_seconds`` for speech
-    onset (3 consecutive frames with RMS >= silence_threshold). If
+    onset (consecutive frames with RMS >= silence_threshold). If
     detected, switches to normal recording mode until silence. If the
     timeout expires without speech, returns None.
+
+    Returns None if the recorded audio is shorter than ``min_speech_secs``
+    — brief noise bursts (door closing, cough, fan gust) produce sub-second
+    clips that Whisper hallucinates text from, causing infinite follow-up
+    loops when the hallucinated text is sent to the command center.
 
     Defaults ``history_secs=0`` — follow-up cares about NEW speech, not
     the tail of the preceding TTS.
@@ -247,12 +253,18 @@ def listen_for_follow_up(
     silence_threshold = silence_threshold if silence_threshold is not None else defaults["silence_threshold"]
     silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
     max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
+    if min_speech_secs is None:
+        min_speech_secs = Config.get_float("follow_up_min_speech_secs", 0.7)
 
     output_filename = str(_cache_dir / "follow_up.wav")
     chunk_secs = bus.chunk_samples / bus.rate
     silence_frames_threshold = max(1, int(silence_duration / chunk_secs))
     max_frames = max(1, int(max_record_secs / chunk_secs))
-    onset_required = 3
+    # Require 5 consecutive frames (~160ms at 48kHz/1536 chunk) above
+    # threshold to confirm speech onset. The previous value of 3 (~96ms)
+    # triggered on brief transients (door latch, spoon clink, fan gust)
+    # which are too short to be intentional speech.
+    onset_required = 5
 
     logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
 
@@ -307,6 +319,18 @@ def listen_for_follow_up(
         bus.unsubscribe(subscriber_name)
 
     actual_duration = len(frames) * chunk_secs
+
+    # Discard sub-threshold recordings. Brief noise bursts that slip past
+    # onset detection produce tiny WAVs that Whisper hallucinates text from
+    # ("Thank you", "You", etc.), keeping the follow-up loop alive.
+    if actual_duration < min_speech_secs:
+        logger.info(
+            "Follow-up recording too short, discarding as noise",
+            duration=f"{actual_duration:.2f}s",
+            min_required=f"{min_speech_secs:.1f}s",
+        )
+        return None
+
     logger.info("Follow-up recording complete", duration=f"{actual_duration:.2f}s")
     _write_wav(output_filename, frames, bus)
     return output_filename

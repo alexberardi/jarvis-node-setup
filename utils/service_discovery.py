@@ -139,9 +139,9 @@ def get_auth_url() -> str:
 def get_mqtt_broker_url() -> str:
     """Get MQTT broker URL from config-service or fallbacks.
 
-    Returns URL in format: mqtt://host:port
+    Supports schemes: mqtt, mqtts, ws, wss. External nodes use wss:// via
+    Cloudflare Tunnel (CF terminates TLS); LAN nodes typically use mqtt://.
     """
-    # Config-service stores it as jarvis-mqtt-broker (full URL like mqtt://host:port)
     if _initialized:
         try:
             from jarvis_config_client import get_service_url
@@ -154,13 +154,15 @@ def get_mqtt_broker_url() -> str:
     # Env var fallback
     host = os.environ.get("JARVIS_MQTT_BROKER")
     port = os.environ.get("JARVIS_MQTT_PORT", "1884")
+    scheme = os.environ.get("JARVIS_MQTT_SCHEME", "mqtt")
     if host:
-        return f"mqtt://{host}:{port}"
+        return f"{scheme}://{host}:{port}"
 
     # JSON config fallback
     config_host = _get_from_json_config("mqtt_broker")
     config_port = _get_from_json_config("mqtt_port") or "1884"
+    config_scheme = _get_from_json_config("mqtt_scheme") or "mqtt"
     if config_host:
-        return f"mqtt://{config_host}:{config_port}"
+        return f"{config_scheme}://{config_host}:{config_port}"
 
     return "mqtt://localhost:1884"
