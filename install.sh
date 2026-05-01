@@ -499,7 +499,7 @@ rebuild_venv() {
   # onnxruntime: arm64 has PyPI wheels, armv7l may not
   info "Installing onnxruntime (best-effort)..."
   "${INSTALL_DIR}/.venv/bin/python" -m pip install \
-    "onnxruntime>=1.16.0" \
+    "onnxruntime>=1.16.0,!=1.25.1" \
     $pip_args \
     --quiet 2>/dev/null \
     || warn "onnxruntime unavailable — wake word detection will be disabled"
