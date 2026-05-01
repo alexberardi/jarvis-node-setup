@@ -64,6 +64,17 @@ else
     fi
 fi
 
+# Step 0.5: Disable desktop GUI (headless voice node doesn't need it)
+CURRENT_TARGET=$(systemctl get-default 2>/dev/null || echo "unknown")
+if [ "$CURRENT_TARGET" = "graphical.target" ]; then
+    log_step "Disabling desktop GUI (saves ~20-30 MB RAM)"
+    sudo systemctl set-default multi-user.target
+    log_success "Boot target set to multi-user.target (headless)"
+    log_info "GUI will stop on next reboot (or run: sudo systemctl isolate multi-user.target)"
+else
+    log_step "Desktop GUI already disabled ($CURRENT_TARGET)"
+fi
+
 # Step 1: Install system dependencies
 log_step "Installing system dependencies"
 
