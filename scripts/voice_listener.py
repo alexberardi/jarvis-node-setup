@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator
@@ -30,6 +31,11 @@ from utils.service_discovery import get_command_center_url
 from clients.responses.jarvis_command_center import ValidationRequest
 
 logger = JarvisLogger(service="jarvis-node")
+
+# Bounded pool for fire-and-forget background tasks (wake response fetch,
+# processing ack generation, audio playback).  Prevents thread leaks — bare
+# threading.Thread() calls were leaving 1-2 orphan threads per voice command.
+_bg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-bg")
 
 CHIME_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "sounds", "chime.wav")
 _cache_dir = get_cache_dir()
@@ -231,7 +237,7 @@ def handle_keyword_detected():
         tts_provider.speak(False, wake_text)
 
     # Fetch the next wake response in the background if provider is configured
-    threading.Thread(target=fetch_next_wake_response, daemon=True).start()
+    _bg_executor.submit(fetch_next_wake_response)
 
 
 def _trim_wav_silence(wav_bytes: bytes, threshold: int = 200) -> bytes:
@@ -343,7 +349,7 @@ def _play_processing_ack() -> bool:
         finally:
             PROCESSING_ACK_FILE.unlink(missing_ok=True)
 
-    threading.Thread(target=_play_and_cleanup, daemon=True).start()
+    _bg_executor.submit(_play_and_cleanup)
     return True
 
 
@@ -827,7 +833,7 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
             _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, tts_end_ts=tts_end_ts)
 
             # Pre-generate the next processing ack in the background
-            threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
+            _bg_executor.submit(_fetch_next_processing_ack)
 
             logger.info("Press Enter to speak another command")
     except KeyboardInterrupt:
@@ -909,12 +915,8 @@ def start_voice_listener(ma_service):
     validation_handler = _make_validation_handler(bus, stt_provider)
 
     # Pre-warm the LLM's KV cache and processing ack on boot.
-    threading.Thread(
-        target=_run_warmup,
-        args=(command_service, str(uuid.uuid4()), None, {}),
-        daemon=True,
-    ).start()
-    threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
+    _bg_executor.submit(_run_warmup, command_service, str(uuid.uuid4()), None, {})
+    _bg_executor.submit(_fetch_next_processing_ack)
 
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
                 threshold=WAKE_WORD_THRESHOLD)
@@ -1075,7 +1077,7 @@ def start_voice_listener(ma_service):
                 except Exception as e:
                     logger.warning("Follow-up loop error, resuming wake word", error=str(e))
 
-            threading.Thread(target=_fetch_next_processing_ack, daemon=True).start()
+            _bg_executor.submit(_fetch_next_processing_ack)
             print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
 
     except KeyboardInterrupt:
