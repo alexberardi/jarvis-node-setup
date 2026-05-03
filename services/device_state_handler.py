@@ -64,8 +64,9 @@ async def _async_query_and_upload(request_id: str, details: dict[str, Any]) -> N
     handler = get_domain_handler(domain)
     if handler:
         normalized = handler.normalize_state(raw_state)
-        # Pass device-reported modes (e.g. Nest available_modes) to UI hints
-        available = [m.lower() for m in raw_state.get("available_modes", [])]
+        # Pass device-reported features/modes to UI hints.
+        # Protocols can report available_features (lights) or available_modes (climate).
+        available = [m.lower() for m in raw_state.get("available_features", raw_state.get("available_modes", []))]
         ui_hints = handler.get_ui_hints(features=available if available else None)
     else:
         normalized = raw_state
