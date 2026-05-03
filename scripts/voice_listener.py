@@ -62,6 +62,13 @@ BARGE_IN_ENABLED = Config.get_str("barge_in_enabled", "true").lower() in ("true"
 BARGE_IN_THRESHOLD = Config.get_float("barge_in_threshold", 0.07)
 BARGE_IN_ENERGY_THRESHOLD = Config.get_float("barge_in_energy_threshold", 500.0)
 
+# Follow-up loop safety limits — prevents ambient noise from keeping
+# the conversation alive indefinitely (the "perpetual follow-up" bug).
+MAX_FOLLOW_UP_ITERATIONS = 5    # Hard cap on follow-up iterations
+MAX_CONSECUTIVE_NOISE = 2       # Exit after N consecutive noise transcriptions
+FOLLOW_UP_TIMEOUT_DECAY = 2.0   # Shorten listen window by this per iteration (s)
+FOLLOW_UP_MIN_TIMEOUT = 3.0     # Floor for the decayed timeout (s)
+
 # openWakeWord needs 16 kHz audio in 1280-sample (80 ms) chunks
 OWW_RATE = 16000
 OWW_CHUNK = 1280
@@ -436,13 +443,62 @@ def _is_non_speech(text: str | None) -> bool:
 
 # Common Whisper hallucinations on near-silence / ambient noise.
 _WHISPER_HALLUCINATIONS: set[str] = {
+    # YouTube/podcast artifacts
     "thank you", "thanks", "thanks for watching",
     "thank you for watching", "thanks for listening",
-    "subscribe", "like and subscribe",
+    "thank you for listening", "please subscribe",
+    "like and subscribe", "subscribe",
+    "see you next time", "bye bye",
+    # Single-word filler / function words
     "you", "i", "the", "bye", "okay", "ok",
     "hmm", "um", "uh", "ah", "oh",
-    "so", "yeah", "yes", "no",
+    "so", "yeah", "yes", "no", "and", "but",
+    "right", "well", "huh", "it", "is",
+    "a", "an", "or", "that", "this",
+    # Silence/noise markers Whisper sometimes emits
+    "...",
 }
+
+
+# Words that are valid as standalone single-word follow-ups.
+# Other isolated words that slip past _WHISPER_HALLUCINATIONS are
+# treated as noise in the follow-up loop.
+_VALID_FOLLOW_UP_WORDS: set[str] = {
+    "stop", "pause", "resume", "help", "repeat",
+    "louder", "quieter", "cancel", "continue",
+}
+
+
+def _is_follow_up_noise(text: str, prev_text: str | None) -> bool:
+    """Detect ambient noise Whisper transcribed as speech during follow-up.
+
+    More conservative than ``_is_non_speech`` — this only runs in the
+    follow-up loop where we're skeptical about whether audio was directed
+    at the device.  Catches two patterns:
+
+    1. **Exact repeat** — Whisper hallucinating the same phrase from
+       similar ambient noise on consecutive iterations.
+    2. **Lone word** — Single generic words that aren't valid commands.
+       Real follow-ups are almost never one isolated word.
+    """
+    if not text:
+        return True
+
+    stripped = text.strip()
+    lowered = stripped.lower().rstrip(".!,?")
+    words = lowered.split()
+
+    # Exact repeat of previous transcription
+    if prev_text:
+        prev_lowered = prev_text.strip().lower().rstrip(".!,?")
+        if lowered == prev_lowered:
+            return True
+
+    # Single word not in the valid-command set
+    if len(words) == 1 and lowered not in _VALID_FOLLOW_UP_WORDS:
+        return True
+
+    return False
 
 
 _ABORT_PHRASES: set[str] = {
@@ -607,20 +663,41 @@ def _follow_up_loop(
     if tts_end_ts is None:
         tts_end_ts = time.monotonic()
     iteration = 0
+    max_iterations: int = Config.get_int("max_follow_up_iterations", MAX_FOLLOW_UP_ITERATIONS)
+    consecutive_noise: int = 0
+    prev_text: str | None = None
 
     while True:
         iteration += 1
+
+        # Layer 1: Hard cap — prevents infinite loops regardless of audio.
+        if iteration > max_iterations:
+            logger.info("Follow-up max iterations reached, returning to wake word mode",
+                        max_iterations=max_iterations)
+            break
+
+        # Layer 2: Decaying timeout — later iterations wait less for onset.
+        # Real follow-ups happen quickly; long silences with eventual noise
+        # are almost certainly ambient.
+        iter_timeout = max(
+            FOLLOW_UP_MIN_TIMEOUT,
+            follow_up_seconds - (iteration - 1) * FOLLOW_UP_TIMEOUT_DECAY,
+        )
+
         elapsed = time.monotonic() - tts_end_ts
         history_secs = max(0.0, min(2.0, elapsed))
         logger.info(
             "Follow-up iteration begin",
             iteration=iteration,
+            max_iterations=max_iterations,
             elapsed_since_tts=round(elapsed, 3),
             history_secs=round(history_secs, 3),
-            timeout=follow_up_seconds,
+            timeout=round(iter_timeout, 1),
+            consecutive_noise=consecutive_noise,
         )
         audio_file = listen_for_follow_up(
-            bus, timeout_seconds=follow_up_seconds, history_secs=history_secs,
+            bus, timeout_seconds=iter_timeout, history_secs=history_secs,
+            follow_up_iteration=iteration,
         )
         if audio_file is None:
             logger.info("Follow-up window expired, returning to wake word mode",
@@ -641,6 +718,32 @@ def _follow_up_loop(
             break
 
         text = transcription_result.text
+
+        # Layer 3: Follow-up noise detection — catches short/repeated
+        # transcriptions that slip past _is_non_speech.  Two consecutive
+        # noise-like results means the room is noisy, not that the user
+        # is talking to us.
+        if _is_follow_up_noise(text, prev_text):
+            consecutive_noise += 1
+            logger.info(
+                "Follow-up noise detected",
+                text=text, prev_text=prev_text,
+                consecutive_noise=consecutive_noise,
+                max_consecutive=MAX_CONSECUTIVE_NOISE,
+            )
+            if consecutive_noise >= MAX_CONSECUTIVE_NOISE:
+                logger.info("Too many consecutive noise transcriptions, ending follow-up")
+                break
+            prev_text = text
+            # Don't process noise as a command — immediately re-listen.
+            # Update tts_end_ts so next iteration doesn't replay stale audio.
+            tts_end_ts = time.monotonic()
+            continue
+
+        # Real speech — reset noise counter
+        consecutive_noise = 0
+        prev_text = text
+
         speaker_user_id = transcription_result.speaker_user_id
         logger.info("Follow-up speech received", text=text, conversation_id=conversation_id)
 
