@@ -233,6 +233,7 @@ def listen_for_follow_up(
     silence_duration: Optional[float] = None,
     max_record_secs: Optional[float] = None,
     min_speech_secs: Optional[float] = None,
+    follow_up_iteration: int = 1,
 ) -> str | None:
     """Listen for follow-up speech within a timeout window.
 
@@ -260,11 +261,12 @@ def listen_for_follow_up(
     chunk_secs = bus.chunk_samples / bus.rate
     silence_frames_threshold = max(1, int(silence_duration / chunk_secs))
     max_frames = max(1, int(max_record_secs / chunk_secs))
-    # Require 5 consecutive frames (~160ms at 48kHz/1536 chunk) above
-    # threshold to confirm speech onset. The previous value of 3 (~96ms)
-    # triggered on brief transients (door latch, spoon clink, fan gust)
-    # which are too short to be intentional speech.
-    onset_required = 5
+    # Require consecutive frames above threshold to confirm speech onset.
+    # Base of 5 (~160ms at 48kHz/1536) scaled up on later follow-up
+    # iterations: ambient noise is progressively less likely to be real
+    # speech the longer the conversation goes without clear engagement.
+    base_onset = 5
+    onset_required = min(15, base_onset + (follow_up_iteration - 1) * 3)
 
     logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
 
