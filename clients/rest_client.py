@@ -1,11 +1,14 @@
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from jarvis_log_client import JarvisLogger
 
 from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node")
+
+# Type alias for memory injection items
+MemoryItem = Dict[str, Any]
 
 
 class RestClient:
@@ -162,3 +165,61 @@ class RestClient:
         except requests.RequestException as e:
             logger.error("REST POST binary request failed", url=url, error=str(e))
             return None
+
+    @staticmethod
+    def inject_memories(
+        memories: List[MemoryItem],
+        household_id: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Inject memories into the command center's memory system.
+
+        Calls POST /api/v0/memories/inject with node auth (X-API-Key).
+        The endpoint auto-derives household_id from the node's credentials
+        when not provided.
+
+        Each memory item should have:
+            - content (str): The memory text
+            - key (str): Stable dedup key (e.g. "news:general:2026-05-02:abc123")
+            - category (str): Category like "news", "calendar", "weather"
+            - ttl_hours (float): Hours until expiry (default 24)
+            - source (str): Attribution (e.g. "news-agent", "calendar-agent")
+            - user_id (int|None): Specific user, or None for household-wide
+
+        Args:
+            memories: List of memory item dicts
+            household_id: Optional household override (auto-derived from node auth)
+
+        Returns:
+            Response dict with injected/updated/deduplicated counts, or None on error
+        """
+        if not memories:
+            return {"injected": 0, "updated": 0, "deduplicated": 0, "errors": []}
+
+        from utils.service_discovery import get_command_center_url
+
+        cc_url = get_command_center_url()
+        if not cc_url:
+            logger.warning("Cannot inject memories — command center URL not configured")
+            return None
+
+        payload: Dict[str, Any] = {"memories": memories}
+        if household_id:
+            payload["household_id"] = household_id
+
+        result = RestClient.post(
+            f"{cc_url}/api/v0/memories/inject",
+            data=payload,
+            timeout=15,
+        )
+
+        if result:
+            injected = result.get("injected", 0)
+            updated = result.get("updated", 0)
+            if injected or updated:
+                logger.info(
+                    "Injected memories into CC",
+                    injected=injected,
+                    updated=updated,
+                    deduplicated=result.get("deduplicated", 0),
+                )
+        return result
