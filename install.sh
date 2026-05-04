@@ -283,6 +283,31 @@ download_and_extract() {
         info "Restored $(basename "$f") from backup"
       fi
     done
+
+    # Pantry-installed custom components (commands, agents, device protocols,
+    # device managers, routines). These live inside the install dir and would
+    # otherwise be lost when the tarball overwrites it.
+    local custom_dirs=(
+      "commands/custom_commands"
+      "agents/custom_agents"
+      "device_families/custom_families"
+      "device_managers/custom_managers"
+      "routines/custom_routines"
+    )
+    for rel in "${custom_dirs[@]}"; do
+      if [ -d "${backup}/${rel}" ]; then
+        mkdir -p "${INSTALL_DIR}/${rel}"
+        # Copy each sub-directory (one per installed package component)
+        for pkg_dir in "${backup}/${rel}"/*/; do
+          if [ -d "$pkg_dir" ]; then
+            local pkg_name
+            pkg_name="$(basename "$pkg_dir")"
+            cp -a "$pkg_dir" "${INSTALL_DIR}/${rel}/${pkg_name}"
+            info "Restored custom ${rel}/${pkg_name} from backup"
+          fi
+        done
+      fi
+    done
   fi
 }
 
