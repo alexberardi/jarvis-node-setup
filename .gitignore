@@ -101,8 +101,12 @@ adapter_system_prompt.txt
 # User-specific HA device mappings (generated/customized per installation)
 additional_home_assistant_device_mappings.json
 
-# Installed custom commands (managed by command store)
+# Installed custom components (managed by command store / Pantry)
 commands/custom_commands/*/
+agents/custom_agents/*/
+device_families/custom_families/*/
+device_managers/custom_managers/*/
+routines/custom_routines/*/
 
 # Test commands (temporary, auto-cleaned after 20 minutes)
 commands/test_commands/*/
