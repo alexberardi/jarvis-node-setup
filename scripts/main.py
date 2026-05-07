@@ -136,6 +136,14 @@ def _run_db_migrations() -> None:
         logger.info("Database migrations complete")
     except Exception as e:
         logger.warning("Database migration failed (non-fatal)", error=str(e))
+    finally:
+        # Alembic's fileConfig sets sqlalchemy.engine to the level in
+        # alembic.ini and that level persists for the rest of the process.
+        # On a 416 MB Pi, INFO-level SQL logging floods journald and burns
+        # CPU formatting strings every secret read. Force WARNING regardless
+        # of what alembic.ini said.
+        import logging as _stdlib_logging
+        _stdlib_logging.getLogger("sqlalchemy.engine").setLevel(_stdlib_logging.WARNING)
 
 
 def _validate_config() -> None:
