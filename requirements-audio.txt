@@ -8,3 +8,8 @@ onnxruntime>=1.10.0,<2,!=1.25.1
 scikit-learn>=1,<2
 scipy
 numpy
+
+# ReSpeaker 2-mics Pi HAT v2 — RGB LEDs + user button
+spidev
+apa102-pi
+gpiozero

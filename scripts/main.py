@@ -239,6 +239,7 @@ def main():
 
     # Initialize alert queue + LED service for proactive notifications
     alert_queue = None
+    led_service = None
     try:
         from services.alert_queue_service import get_alert_queue_service
         from services.led_service import get_led_service
@@ -248,6 +249,21 @@ def main():
         alert_queue.on_change = lambda count: led_service.set_pattern("alert" if count > 0 else "normal")
     except Exception as e:
         logger.warning("Alert/LED service init failed (non-fatal)", error=str(e))
+
+    # Initialize ReSpeaker button (GPIO17) — short-press requests notification
+    # playback; long-hold (>=3s) powers the node off cleanly. No-op on hardware
+    # without the HAT or with gpiozero unavailable.
+    try:
+        from services.button_service import get_button_service
+
+        def _mqtt_client_provider():
+            from scripts.mqtt_tts_listener import _mqtt_client as client
+            return client
+
+        if led_service is not None:
+            get_button_service(led_service, _mqtt_client_provider)
+    except Exception as e:
+        logger.warning("Button service init failed (non-fatal)", error=str(e))
 
     # Initialize agent scheduler (Home Assistant, etc.)
     agent_scheduler = initialize_agent_scheduler()

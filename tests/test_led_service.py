@@ -65,8 +65,21 @@ class TestLEDServiceOnPi:
         with patch.object(LEDService, "_detect_pi", return_value=True):
             led = LEDService()
 
-        led._pattern = "alert"  # simulate previous state
+        led._stable = "alert"  # simulate previous state
         with patch.object(led, "_write_led") as mock_write:
             with patch.object(led, "_stop_blink_thread"):
                 led.set_pattern("normal")
                 mock_write.assert_called_once_with("default-on", None)
+
+    def test_transient_overlay_then_clear(self) -> None:
+        """Transient pattern overlays stable; clearing reverts."""
+        with patch.object(LEDService, "_detect_pi", return_value=False):
+            led = LEDService()
+
+        assert led.current_pattern == "normal"
+        led.set_transient_pattern("listening")
+        assert led.current_pattern == "listening"
+        led.set_pattern("alert")
+        assert led.current_pattern == "listening"  # transient still wins
+        led.set_transient_pattern(None)
+        assert led.current_pattern == "alert"  # back to stable
