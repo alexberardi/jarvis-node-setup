@@ -29,7 +29,8 @@ apt-get install -y --no-install-recommends \
   libopenblas-dev \
   libffi-dev \
   libssl-dev \
-  swig
+  swig \
+  liblgpio-dev
 
 # --- Create directory structure ---
 mkdir -p "${STAGE}"
