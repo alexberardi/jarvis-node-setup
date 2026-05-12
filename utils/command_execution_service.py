@@ -888,10 +888,22 @@ class CommandExecutionService:
         tts_provider = get_tts_provider()
         message = result.get("message", "An error occurred")
 
-        # Use streaming for long responses (briefings, stories, etc.)
-        if len(message) > 200 and hasattr(tts_provider, "speak_stream"):
-            if tts_provider.speak_stream(message):
-                return
-            # Fall through to blocking speak if streaming fails
+        try:
+            from services.led_service import get_led_service
+            get_led_service().set_transient_pattern("speaking")
+        except Exception:
+            pass
+        try:
+            # Use streaming for long responses (briefings, stories, etc.)
+            if len(message) > 200 and hasattr(tts_provider, "speak_stream"):
+                if tts_provider.speak_stream(message):
+                    return
+                # Fall through to blocking speak if streaming fails
 
-        tts_provider.speak(False, message)
+            tts_provider.speak(False, message)
+        finally:
+            try:
+                from services.led_service import get_led_service
+                get_led_service().set_transient_pattern(None)
+            except Exception:
+                pass
