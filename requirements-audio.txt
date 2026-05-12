@@ -9,7 +9,9 @@ scikit-learn>=1,<2
 scipy
 numpy
 
-# ReSpeaker 2-mics Pi HAT v2 — RGB LEDs + user button
+# ReSpeaker 2-mics Pi HAT v2 — RGB LEDs + user button.
+# Pin backend (lgpio) lives in apt's python3-lgpio; venv inherits it
+# via --system-site-packages. See requirements-pi.txt for details.
 spidev
 apa102-pi
 gpiozero
