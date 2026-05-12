@@ -28,7 +28,8 @@ apt-get install -y --no-install-recommends \
   libsqlcipher-dev \
   libopenblas-dev \
   libffi-dev \
-  libssl-dev
+  libssl-dev \
+  swig
 
 # --- Create directory structure ---
 mkdir -p "${STAGE}"
