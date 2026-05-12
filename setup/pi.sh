@@ -40,24 +40,52 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
     log_step "Skipping I2S DAC configuration (provisioning only)"
     log_info "Audio hardware config not needed for provisioning server"
 else
-    log_step "Configuring I2S DAC (speaker bonnet)"
+    log_step "Configuring audio for ReSpeaker 2-mics Pi HAT v2.0 (TLV320AIC3104)"
 
     CONFIG_FILE="/boot/firmware/config.txt"
-
     if [ ! -f "$CONFIG_FILE" ]; then
-        # Try legacy location
         CONFIG_FILE="/boot/config.txt"
     fi
 
-    if [ -f "$CONFIG_FILE" ]; then
-        if ! grep -q "dtoverlay=hifiberry-dac" "$CONFIG_FILE"; then
-            sudo sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_FILE"
-            echo "dtoverlay=hifiberry-dac" | sudo tee -a "$CONFIG_FILE"
-            log_success "I2S DAC overlay added to config.txt"
-            log_warn "Reboot required to activate DAC"
-        else
-            log_success "I2S DAC already configured"
+    OVERLAY_SRC="$SCRIPT_DIR/respeaker-2mic-v2_0-overlay.dts"
+    OVERLAY_DEST_DIR="/boot/firmware/overlays"
+    if [ ! -d "$OVERLAY_DEST_DIR" ] && [ -d "/boot/overlays" ]; then
+        OVERLAY_DEST_DIR="/boot/overlays"
+    fi
+
+    if [ -f "$OVERLAY_SRC" ]; then
+        log_info "Compiling respeaker-2mic-v2_0 overlay"
+        TMP_DTBO="$(mktemp --suffix=.dtbo)"
+        if ! command -v dtc >/dev/null 2>&1; then
+            sudo apt-get install -y device-tree-compiler >/dev/null
         fi
+        if dtc -W no-unit_address_vs_reg -I dts "$OVERLAY_SRC" -o "$TMP_DTBO" >/dev/null 2>&1; then
+            sudo cp "$TMP_DTBO" "$OVERLAY_DEST_DIR/respeaker-2mic-v2_0-overlay.dtbo"
+            log_success "Overlay installed to $OVERLAY_DEST_DIR"
+        else
+            log_error "Failed to compile $OVERLAY_SRC"
+        fi
+        rm -f "$TMP_DTBO"
+    else
+        log_warn "Overlay source missing at $OVERLAY_SRC"
+    fi
+
+    if [ -f "$CONFIG_FILE" ]; then
+        sudo sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$CONFIG_FILE"
+        for old in hifiberry-dac wm8960-soundcard; do
+            if grep -q "^dtoverlay=${old}\$" "$CONFIG_FILE"; then
+                sudo sed -i "s|^dtoverlay=${old}\$|#dtoverlay=${old} # replaced for ReSpeaker v2.0|" "$CONFIG_FILE"
+                log_info "Disabled previous overlay: ${old}"
+            fi
+        done
+        grep -q "^dtoverlay=respeaker-2mic-v2_0-overlay" "$CONFIG_FILE" || \
+            echo "dtoverlay=respeaker-2mic-v2_0-overlay" | sudo tee -a "$CONFIG_FILE" > /dev/null
+        grep -q "^dtparam=spi=on" "$CONFIG_FILE" || \
+            echo "dtparam=spi=on" | sudo tee -a "$CONFIG_FILE" > /dev/null
+        grep -q "^dtparam=i2c_arm=on" "$CONFIG_FILE" || \
+            echo "dtparam=i2c_arm=on" | sudo tee -a "$CONFIG_FILE" > /dev/null
+        log_success "Boot config updated"
+        log_warn "Reboot required for overlay to load"
     else
         log_error "Could not find config.txt - is this a Raspberry Pi?"
         exit 1
@@ -131,7 +159,9 @@ else
         avahi-utils \
         libopenblas-dev \
         hostapd \
-        dnsmasq
+        dnsmasq \
+        pulseaudio \
+        pulseaudio-module-bluetooth
 
     # Disable system services - we manage hostapd/dnsmasq ourselves
     log_info "Disabling system hostapd/dnsmasq services..."
@@ -165,44 +195,43 @@ if [ "$PROVISIONING_ONLY" = "1" ]; then
 else
     log_step "Configuring audio system"
 
-    # Lock HifiBerry DAC as card 0, USB mic as card 2
-    # (index=1 is taken by the HiFiBerry overlay — using index=2 avoids collision)
+    # TLV320AIC3104 (ReSpeaker v2.0) is the only audio card we need; pin via name.
     sudo tee /etc/modprobe.d/alsa-base.conf > /dev/null <<EOF
-options snd_soc_hifiberry_dac index=0
-options snd_usb_audio index=2
+options snd-soc-tlv320aic3x index=0
 EOF
 
-    # Set /etc/asound.conf with correct playback and capture config
-    # softvol gives us a software volume control since HifiBerry DAC has none
+    # Aliases `output` and `dsnoopmic` are referenced from the app code
+    # (config.example.json `mic_device_name="dsnoopmic"`, platform_abstraction
+    # uses `aplay -D output`). Keep these stable across hardware changes.
     sudo tee /etc/asound.conf > /dev/null <<EOF
-# Output (speaker) with software volume control
-defaults.pcm.card 0
-defaults.pcm.device 0
-defaults.ctl.card 0
-
 pcm.softvol {
   type softvol
-  slave.pcm "plughw:0,0"
+  slave.pcm "plughw:CARD=seeed2micvoicec,DEV=0"
   control {
     name "SoftMaster"
-    card 0
+    card seeed2micvoicec
   }
 }
 
-# Alias used by PiAudioProvider (aplay -D output)
 pcm.output {
   type plug
   slave.pcm "softvol"
 }
 
-# Input (microphone) via dsnoop
-pcm.dsnoopmic {
+pcm.dsnoopmic_hw {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:2,0"
-    channels 1
+    pcm "hw:CARD=seeed2micvoicec,DEV=0"
+    channels 2
+    rate 48000
+    format S16_LE
   }
+}
+
+pcm.dsnoopmic {
+  type plug
+  slave.pcm "dsnoopmic_hw"
 }
 
 pcm.!default {
@@ -214,24 +243,29 @@ EOF
 
     log_success "ALSA system config created"
 
-    # Detect USB microphone
-    log_info "Detecting USB microphone..."
-    USB_MIC_CARD=$(arecord -l 2>/dev/null | grep -i "usb" | sed -n 's/.*card \([0-9]*\):.*/\1/p' | head -n 1)
-
-    if [[ -n "$USB_MIC_CARD" && "$USB_MIC_CARD" =~ ^[0-9]+$ ]]; then
-        log_success "USB mic detected as card $USB_MIC_CARD"
-
-        cat > "$PI_HOME/.asoundrc" <<EOF
-# Input (mic) — auto-detected during setup
-defaults.capture.card $USB_MIC_CARD
-defaults.capture.device 0
-EOF
-
-        chown "$PI_USER:$PI_USER" "$PI_HOME/.asoundrc"
+    # Mixer baseline — JST speaker is wired to HP path; defaults leave it muted.
+    if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+        log_info "Applying TLV320AIC3104 mixer baseline..."
+        amixer -c seeed2micvoicec sset 'PCM' '100%'                  2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HP' '8' unmute               2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HP DAC' '70%' unmute         2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Left HP Mixer DACL1' on      2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Right HP Mixer DACR1' on     2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'PGA' '60%'                   2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on    2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on   2>/dev/null || true
+        sudo alsactl store 2>/dev/null || true
+        log_success "TLV320AIC3104 mixer baseline applied"
     else
-        log_warn "No USB mic found — plug in a USB mic and re-run setup, or set capture card manually in ~/.asoundrc"
-        # Don't create a broken .asoundrc with empty values
+        log_info "Card not present yet (overlay loads on reboot) — re-run setup after reboot to apply mixer baseline"
     fi
+
+    # Group memberships for SPI (APA102) / GPIO (button) / I2C (Grove)
+    for grp in spi gpio i2c; do
+        if getent group "$grp" >/dev/null 2>&1; then
+            sudo usermod -aG "$grp" "$PI_USER" 2>/dev/null || true
+        fi
+    done
 fi
 
 # Step 6: Create systemd service
@@ -245,13 +279,16 @@ if [ -f /etc/systemd/system/jarvis-provisioning.service ]; then
     sudo rm -f /etc/systemd/system/jarvis-provisioning.service
 fi
 
-# Single jarvis-node service that handles both provisioning and normal operation
-# Runs as root for:
-# - AP mode during provisioning (hostapd/dnsmasq)
-# - Future system-level commands (volume, shutdown, etc.)
+# Single jarvis-node service that handles both provisioning and normal
+# operation. Runs as $PI_USER (not root) so per-user PulseAudio works
+# for Bluetooth audio routing — see docs/migration-to-pi-service.md.
+# AP-mode provisioning (hostapd/dnsmasq) escalates via sudoers.d.
+PI_UID="$(id -u "$PI_USER")"
 sed -e "s|__VENV__|$PI_PROJECT_DIR/.venv|g" \
     -e "s|__PROJECT_DIR__|$PI_PROJECT_DIR|g" \
-    -e "s|__HOME__|$PI_HOME|g" \
+    -e "s|__SERVICE_USER__|$PI_USER|g" \
+    -e "s|__SERVICE_HOME__|$PI_HOME|g" \
+    -e "s|__SERVICE_UID__|$PI_UID|g" \
     "$SCRIPT_DIR/jarvis-node.service" | sudo tee /etc/systemd/system/jarvis-node.service > /dev/null
 
 sudo systemctl daemon-reload

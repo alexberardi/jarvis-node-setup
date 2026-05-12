@@ -54,13 +54,27 @@ _PROCESSING_ACK_POOL: list[str] = [
     "Give me a second.",
 ]
 
+# wake_word_model is baked into the openWakeWord instance loaded at startup,
+# so changing it still requires a service restart. Everything else below is
+# read fresh on each wake / follow-up cycle so mobile-app updates apply live.
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
-WAKE_WORD_THRESHOLD = Config.get_float("wake_word_threshold", 0.4)
 
-# Barge-in: allow interrupting TTS with wake word
-BARGE_IN_ENABLED = Config.get_str("barge_in_enabled", "true").lower() in ("true", "1", "yes")
-BARGE_IN_THRESHOLD = Config.get_float("barge_in_threshold", 0.07)
-BARGE_IN_ENERGY_THRESHOLD = Config.get_float("barge_in_energy_threshold", 500.0)
+
+def _wake_threshold() -> float:
+    return Config.get_float("wake_word_threshold", 0.4)
+
+
+def _barge_in_enabled() -> bool:
+    raw = Config.get_str("barge_in_enabled", "true") or "true"
+    return raw.lower() in ("true", "1", "yes")
+
+
+def _barge_in_threshold() -> float:
+    return Config.get_float("barge_in_threshold", 0.07)
+
+
+def _barge_in_energy_threshold() -> float:
+    return Config.get_float("barge_in_energy_threshold", 500.0)
 
 # Follow-up loop safety limits — prevents ambient noise from keeping
 # the conversation alive indefinitely (the "perpetual follow-up" bug).
@@ -170,10 +184,20 @@ def _bundled_wake_chimes() -> list[Path]:
     return sorted(_WAKE_CHIMES_DIR.glob("*.wav"))
 
 
+def _set_led_transient(pattern: str | None) -> None:
+    """Best-effort LED transient state change. Silent on any failure."""
+    try:
+        from services.led_service import get_led_service
+        get_led_service().set_transient_pattern(pattern)
+    except Exception:
+        pass
+
+
 def handle_keyword_detected():
     t_enter = time.perf_counter()
     logger.info("Wake word detected, listening for command")
     print("Wake word detected! Listening...")
+    _set_led_transient("listening")
 
     # Priority order:
     # 1. WAKE_AUDIO_FILE (LLM-generated variety, cached on prior wake)
@@ -541,6 +565,7 @@ _ERRORS_DIR = Path(__file__).resolve().parent.parent / "sounds" / "errors"
 
 def _speak_error(message: str) -> None:
     """Speak an error message, falling back to a bundled sound if TTS fails."""
+    _set_led_transient("speaking")
     try:
         tts = get_tts_provider()
         tts.speak(False, message)
@@ -548,6 +573,8 @@ def _speak_error(message: str) -> None:
         chime = _ERRORS_DIR / "error_generic.wav"
         if chime.exists():
             platform_audio.play_audio_file(str(chime))
+    finally:
+        _set_led_transient(None)
 
 
 def send_for_transcription(
@@ -563,6 +590,7 @@ def send_for_transcription(
     global _last_speaker_user_id
 
     logger.info("Sending audio to transcription server")
+    _set_led_transient("thinking")
 
     # STT with specific error handling
     try:
@@ -570,19 +598,23 @@ def send_for_transcription(
     except (ConnectionError, OSError, TimeoutError) as e:
         logger.error("STT connection failed", error=str(e))
         _speak_error("I'm having trouble connecting right now.")
+        _set_led_transient(None)
         return None
     except Exception as e:
         logger.error("STT failed", error=str(e))
         _speak_error("I couldn't understand that, sorry.")
+        _set_led_transient(None)
         return None
 
     if _is_non_speech(result.text):
         logger.info("Non-speech transcription, skipping", text=result.text)
+        _set_led_transient(None)
         return None
 
     if result.text and _is_false_wake(result.text, recording):
         logger.info("False wake detected, aborting silently", text=result.text[:80],
                      duration=recording.duration, hit_max=recording.hit_max_duration)
+        _set_led_transient(None)
         return None
 
     if result.text:
@@ -749,11 +781,11 @@ def _follow_up_loop(
 
         # Start barge-in monitor for TTS playback (if OWW available)
         barge_in: BargeInMonitor | None = None
-        if oww and BARGE_IN_ENABLED:
+        if oww and _barge_in_enabled():
             barge_in = BargeInMonitor(
                 bus, oww, WAKE_WORD_MODEL,
-                threshold=BARGE_IN_THRESHOLD,
-                energy_threshold=BARGE_IN_ENERGY_THRESHOLD,
+                threshold=_barge_in_threshold(),
+                energy_threshold=_barge_in_energy_threshold(),
             )
             barge_in.start()
 
@@ -1022,8 +1054,8 @@ def start_voice_listener(ma_service):
     _bg_executor.submit(_fetch_next_processing_ack)
 
     logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
-                threshold=WAKE_WORD_THRESHOLD)
-    print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={WAKE_WORD_THRESHOLD})")
+                threshold=_wake_threshold())
+    print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={_wake_threshold()})")
 
     resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
     alert_check_interval = 60             # ~every 5s at 80 ms chunks
@@ -1034,6 +1066,11 @@ def start_voice_listener(ma_service):
             # Safety net: ensure no stale cancel state from a prior
             # barge-in prevents wake-response or other audio.
             platform_audio.reset_cancel()
+
+            # Re-read the wake threshold each outer iteration so mobile-app
+            # updates apply without a service restart. Using a local also
+            # keeps the inner loop hot path off the disk.
+            wake_threshold = _wake_threshold()
 
             wake_q = bus.subscribe("wake")
             score = 0.0
@@ -1086,16 +1123,16 @@ def start_voice_listener(ma_service):
                         logger.debug(
                             "Wake word score",
                             score=round(float(score), 3),
-                            threshold=WAKE_WORD_THRESHOLD,
+                            threshold=wake_threshold,
                         )
-                    if score > WAKE_WORD_THRESHOLD:
+                    if score > wake_threshold:
                         break
             finally:
                 bus.unsubscribe("wake")
 
             # If we broke out without a wake (alert-drain case), handle
             # alerts and loop.
-            if score <= WAKE_WORD_THRESHOLD:
+            if score <= wake_threshold:
                 try:
                     _drain_alert_announcements(
                         bus, command_service, stt_provider, validation_handler,
@@ -1123,11 +1160,11 @@ def start_voice_listener(ma_service):
             warmup_thread.start()
 
             barge_in: BargeInMonitor | None = None
-            if BARGE_IN_ENABLED:
+            if _barge_in_enabled():
                 barge_in = BargeInMonitor(
                     bus, oww, WAKE_WORD_MODEL,
-                    threshold=BARGE_IN_THRESHOLD,
-                    energy_threshold=BARGE_IN_ENERGY_THRESHOLD,
+                    threshold=_barge_in_threshold(),
+                    energy_threshold=_barge_in_energy_threshold(),
                 )
 
             result = None

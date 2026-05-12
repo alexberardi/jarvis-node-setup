@@ -16,9 +16,45 @@ Client software for Jarvis voice nodes. Runs on Raspberry Pi Zero (or any Linux 
 ### Prerequisites
 
 - Python 3.9+
-- Pi Zero or compatible Linux device
-- Microphone and speaker
+- Pi Zero 2 W (or compatible Linux device)
+- **Seeed ReSpeaker 2-mics Pi HAT v2** for audio (mic + speaker + RGB LEDs + button) — see [Hardware](#hardware) below
 - Running [jarvis-command-center](../jarvis-command-center)
+
+## Hardware
+
+Production nodes use the **Seeed ReSpeaker 2-mics Pi HAT v2** stacked on a Raspberry Pi Zero 2 W. The HAT provides:
+
+| Component | Wiring | Driver |
+|-----------|--------|--------|
+| TLV320AIC3104 audio codec | I2C bus 1 @ 0x18 + I2S | Seeed's `respeaker-2mic-v2_0-overlay` (DTS vendored at `setup/respeaker-2mic-v2_0-overlay.dts`, compiled at install time) |
+| Stereo electret mics | analog → AIC3104 ADC (LINE1L/LINE1R) | exposed as ALSA card `seeed2micvoicec` |
+| Speaker output (JST 2.0) | analog ← AIC3104 HP path | same ALSA card, playback path |
+| 3× APA102 RGB LEDs | SPI (MOSI=GPIO10, SCLK=GPIO11) | `apa102-pi` via `services/respeaker_led_service.py` |
+| User button | GPIO17, active-low | `gpiozero` via `services/button_service.py` |
+| Grove I2C ports (×2) | I2C bus 1 | available for sensors |
+
+> **HAT version matters.** The original v1.0 HAT used a WM8960 codec; Seeed swapped to TLV320AIC3104 for v2.0 (no shipping kernel overlay covers v2.0 out-of-the-box, so we vendor the DTS and `dtc`-compile it during install). Visual cue: v2.0 has a black silkscreen "v2.0" near the user button.
+
+`install.sh` apt-installs `device-tree-compiler`, compiles `setup/respeaker-2mic-v2_0-overlay.dts` into `/boot/firmware/overlays/`, configures `/boot/firmware/config.txt` with `dtoverlay=respeaker-2mic-v2_0-overlay`, `dtparam=spi=on`, `dtparam=i2c_arm=on`, and rewrites `/etc/asound.conf` to expose the HAT to the app under the existing alias names (`dsnoopmic` for capture, `output` for playback) so app-level config doesn't change when hardware does.
+
+**Button behavior:**
+
+- **Short press (<3 s)** publishes MQTT topic `jarvis/nodes/<node_id>/button/notifications_request`. The command-center handles this by speaking any queued notifications through the node's TTS path.
+- **Long hold (≥3 s)** publishes `jarvis/nodes/<node_id>/button/shutdown` and runs `sudo systemctl poweroff` for a clean shutdown. The RGB LEDs flash red at the 1 s mark as a "you're holding for shutdown" warning.
+- **Power-on caveat:** the Pi Zero 2 W has no software wake-on-GPIO from a halted state. After a button-triggered shutdown, the node must be power-cycled (unplug/replug) to come back up. There's no software workaround for this — the Pi RUN pin can be soldered for a hardware fix, but we don't ship that.
+
+**LED state map** (`set_pattern` + `set_transient_pattern` in `LEDService` / `RespeakerLEDService`):
+
+| Pattern | When | Visual (RGB / ACT-LED fallback) |
+|---------|------|---------------------------------|
+| `normal` | Idle | dim white / kernel default |
+| `alert` | Alert queue ≥1 item | red 1 Hz blink / red 1 Hz blink |
+| `listening` | After wake word, capturing audio | blue chase / kernel default |
+| `thinking` | STT + LLM processing | purple pulse / kernel default |
+| `speaking` | TTS playing | cyan steady / kernel default |
+| `shutdown_warning` | Power button held ≥1 s | red 5 Hz blink / red 5 Hz blink |
+
+`get_led_service()` auto-detects the APA102 chain on `/dev/spidev0.0`; when absent (no HAT, or `apa102-pi` not installed), it falls back to driving the Pi's built-in ACT LED, which only renders `normal`, `alert`, and `shutdown_warning` distinctly.
 
 ### Installation
 

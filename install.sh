@@ -49,6 +49,12 @@ REPO="alexberardi/jarvis-node-setup"
 INSTALL_DIR="/opt/jarvis-node"
 SERVICE_NAME="jarvis-node"
 
+# Service runs as a non-root user so PulseAudio (per-user) and the
+# bluetooth stack work for audio routing. See
+# docs/migration-to-pi-service.md.
+SERVICE_USER="pi"
+SERVICE_HOME="/home/pi"
+
 # --- Defaults ---
 SKIP_AUDIO=0
 FORCE=0
@@ -190,7 +196,9 @@ install_apt_deps() {
     mosquitto-clients
   )
   if [ "$SKIP_AUDIO" -eq 0 ]; then
-    wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak)
+    wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak
+             pulseaudio pulseaudio-module-bluetooth
+             device-tree-compiler)
   fi
 
   # Filter to only packages that aren't already installed. On upgrades this
@@ -312,52 +320,122 @@ download_and_extract() {
 }
 
 # --- Configure audio ---
+# Target hardware: Seeed ReSpeaker 2-mics Pi HAT v2.0.
+# - TLV320AIC3104 codec on I2C bus 1 @ 0x18, I2S audio link
+#   (NOT WM8960 — Seeed swapped codecs between v1 and v2; the v2 needs
+#   Seeed's `respeaker-2mic-v2_0-overlay` which we vendor in `setup/`)
+# - JST speaker output via the codec's HP path
+# - 3x APA102 RGB LEDs on SPI (see services/respeaker_led_service.py)
+# - GPIO17 user button (see services/button_service.py)
 configure_audio() {
   if [ "$SKIP_AUDIO" -eq 1 ]; then
     info "Skipping audio configuration (--no-audio)"
     return
   fi
 
-  info "Configuring audio..."
+  info "Configuring audio for ReSpeaker 2-mics Pi HAT v2.0..."
 
-  # --- I2S DAC overlay (HifiBerry speaker bonnet) ---
+  # --- Install the Seeed-published v2.0 DT overlay ---
+  # Pi OS doesn't ship an overlay for the v2.0 hardware. We vendor Seeed's
+  # DTS at setup/respeaker-2mic-v2_0-overlay.dts and compile it on the Pi
+  # against the running kernel (dtc was installed by install_apt_deps).
+  local overlay_src="${INSTALL_DIR}/setup/respeaker-2mic-v2_0-overlay.dts"
+  local overlay_dest="/boot/firmware/overlays/respeaker-2mic-v2_0-overlay.dtbo"
+  if [ ! -d /boot/firmware/overlays ] && [ -d /boot/overlays ]; then
+    overlay_dest="/boot/overlays/respeaker-2mic-v2_0-overlay.dtbo"
+  fi
+  if [ -f "$overlay_src" ]; then
+    info "Compiling respeaker-2mic-v2_0 overlay from $(basename "$overlay_src")"
+    local overlay_tmp
+    overlay_tmp="$(mktemp --suffix=.dtbo)"
+    if dtc -W no-unit_address_vs_reg -I dts "$overlay_src" -o "$overlay_tmp" >/dev/null 2>&1; then
+      cp "$overlay_tmp" "$overlay_dest"
+      success "Overlay installed: $overlay_dest"
+    else
+      warn "dtc failed to compile overlay — audio will not work until fixed"
+    fi
+    rm -f "$overlay_tmp"
+  else
+    warn "Overlay source missing at $overlay_src — skipping"
+  fi
+
+  # --- /boot/firmware/config.txt — kernel overlay + bus enables ---
   local config_file="/boot/firmware/config.txt"
   if [ ! -f "$config_file" ]; then
     config_file="/boot/config.txt"
   fi
 
   if [ -f "$config_file" ]; then
-    if ! grep -q "dtoverlay=hifiberry-dac" "$config_file"; then
-      sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$config_file"
-      echo "dtoverlay=hifiberry-dac" >> "$config_file"
-      success "I2S DAC overlay added (reboot required to activate)"
+    # Disable BCM2835 audio — we use the HAT's TLV320AIC3104 via I2S
+    sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$config_file"
+
+    # Migration: comment out previous overlays from past installs (HifiBerry
+    # in the USB-mic era; mainline wm8960-soundcard from when we thought
+    # the HAT was v1.0). Audit trail stays in the file as commented lines.
+    if grep -q "^dtoverlay=hifiberry-dac" "$config_file"; then
+      sed -i 's/^dtoverlay=hifiberry-dac/#dtoverlay=hifiberry-dac # replaced for ReSpeaker v2.0/' "$config_file"
+      info "Disabled previous HifiBerry overlay"
       NEEDS_REBOOT=1
-    else
-      info "I2S DAC already configured"
     fi
+    if grep -q "^dtoverlay=wm8960-soundcard" "$config_file"; then
+      sed -i 's/^dtoverlay=wm8960-soundcard/#dtoverlay=wm8960-soundcard # replaced for ReSpeaker v2.0/' "$config_file"
+      info "Disabled previous wm8960-soundcard overlay"
+      NEEDS_REBOOT=1
+    fi
+
+    # Seeed ReSpeaker 2-mic HAT v2.0 — TLV320AIC3104
+    if ! grep -q "^dtoverlay=respeaker-2mic-v2_0-overlay" "$config_file"; then
+      echo "dtoverlay=respeaker-2mic-v2_0-overlay" >> "$config_file"
+      info "ReSpeaker v2.0 overlay added"
+      NEEDS_REBOOT=1
+    fi
+
+    # SPI for the HAT's 3x APA102 RGB LEDs
+    if ! grep -q "^dtparam=spi=on" "$config_file"; then
+      echo "dtparam=spi=on" >> "$config_file"
+      info "SPI enabled for APA102 LEDs"
+      NEEDS_REBOOT=1
+    fi
+
+    # I2C for the HAT's Grove ports (future-proofing — sensors, etc.)
+    if ! grep -q "^dtparam=i2c_arm=on" "$config_file"; then
+      echo "dtparam=i2c_arm=on" >> "$config_file"
+      info "I2C enabled"
+      NEEDS_REBOOT=1
+    fi
+
+    success "Boot config updated"
   else
     warn "Could not find config.txt — skipping I2S DAC setup"
   fi
 
-  # --- Lock card order: HifiBerry=0, USB mic=2 ---
-  # (index=1 is taken by the HiFiBerry overlay — using index=2 avoids collision)
+  # --- ALSA module ordering ---
+  # TLV320AIC3104 is the only audio card we care about. CARD= name matching
+  # in asound.conf is the authoritative pin; this is belt-and-suspenders.
+  # (The `index=N` option on the codec module is ignored by the kernel and
+  # logs "unknown parameter" — but harmless.)
   cat > /etc/modprobe.d/alsa-base.conf <<'ALSA_MOD'
-options snd_soc_hifiberry_dac index=0
-options snd_usb_audio index=2
+options snd-soc-tlv320aic3x index=0
 ALSA_MOD
 
   # --- ALSA system config ---
-  # Use stable card *names* (CARD=...) instead of numeric indexes. With the
-  # vc4-kms-v3d overlay enabled, vc4hdmi often grabs card 0 before the
-  # HiFiBerry module loads, so the modprobe `index=0` hint isn't reliable.
-  # Card names are stable across that race.
+  # Alias names `output` and `dsnoopmic` are referenced from the app code
+  # (config.example.json's `mic_device_name="dsnoopmic"` and
+  # platform_abstraction.py's `aplay -D output`). Keep these alias names
+  # stable so app-level config never needs to change when hardware does.
+  #
+  # The codec captures stereo over I2S; dsnoop opens hardware at 48kHz
+  # stereo S16_LE. The named `dsnoopmic` wraps that in a `plug` so apps
+  # opening it with channels=1 get automatic downmix (the USB mic was
+  # mono — without this plug, code that hard-codes `channels=1` would
+  # fail with "Channels count non available").
   cat > /etc/asound.conf <<'ASOUND'
 pcm.softvol {
   type softvol
-  slave.pcm "plughw:CARD=sndrpihifiberry,DEV=0"
+  slave.pcm "plughw:CARD=seeed2micvoicec,DEV=0"
   control {
     name "SoftMaster"
-    card sndrpihifiberry
+    card seeed2micvoicec
   }
 }
 
@@ -366,14 +444,20 @@ pcm.output {
   slave.pcm "softvol"
 }
 
-# Input (microphone) via dsnoop — "Device" is the C-Media USB mic's ALSA name
-pcm.dsnoopmic {
+pcm.dsnoopmic_hw {
   type dsnoop
   ipc_key 87654321
   slave {
-    pcm "hw:CARD=Device,DEV=0"
-    channels 1
+    pcm "hw:CARD=seeed2micvoicec,DEV=0"
+    channels 2
+    rate 48000
+    format S16_LE
   }
+}
+
+pcm.dsnoopmic {
+  type plug
+  slave.pcm "dsnoopmic_hw"
 }
 
 pcm.!default {
@@ -385,14 +469,50 @@ ASOUND
 
   success "ALSA configuration written"
 
-  # --- Detect USB microphone ---
-  local usb_mic_card
-  usb_mic_card="$(arecord -l 2>/dev/null | grep -i "usb" | sed -n 's/.*card \([0-9]*\):.*/\1/p' | head -n 1 || true)"
-
-  if [ -n "$usb_mic_card" ]; then
-    success "USB microphone detected as card ${usb_mic_card}"
+  # --- TLV320AIC3104 mixer baseline ---
+  # The codec defaults leave HP/speaker output muted (HP gain = 0) and PCM
+  # at -23.5 dB — playback technically works but is inaudible. Set sensible
+  # levels and store with alsactl so they persist across reboots. The
+  # JST speaker is wired to the HP path on this HAT, so the HP controls
+  # are what actually drive the user-visible speaker.
+  # Each amixer call is `|| true` so an unknown control name on a different
+  # kernel version doesn't abort the installer.
+  if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+    info "Applying TLV320AIC3104 mixer baseline..."
+    amixer -c seeed2micvoicec sset 'PCM' '100%'                  2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HP' '8' unmute               2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HP DAC' '70%' unmute         2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Left HP Mixer DACL1' on      2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Right HP Mixer DACR1' on     2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'PGA' '60%'                   2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on    2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on   2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'SoftMaster' '85%'            2>/dev/null || true
+    alsactl store 2>/dev/null || true
+    success "TLV320AIC3104 mixer baseline applied"
   else
-    warn "No USB microphone detected — plug one in and reboot"
+    info "seeed2micvoicec not detected yet (overlay loads on reboot) — mixer baseline applies on next install run"
+  fi
+
+  # --- Group membership for SPI / GPIO / I2C ---
+  # The jarvis-node service runs as ${SERVICE_USER}. /dev/spidev* (APA102
+  # LEDs), /dev/gpiomem (GPIO17 button), and /dev/i2c-* are owned by the
+  # `spi`, `gpio`, and `i2c` groups respectively. Without membership the
+  # service runs but fails to open these devices with EACCES.
+  for grp in spi gpio i2c; do
+    if getent group "$grp" >/dev/null 2>&1; then
+      usermod -aG "$grp" "$SERVICE_USER" 2>/dev/null || true
+    fi
+  done
+
+  # --- Sanity check ---
+  # On a fresh install this runs before the reboot that activates the
+  # dtoverlay, so the card legitimately won't be present yet. On a re-run
+  # after reboot, missing-here is a real problem.
+  if aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+    success "seeed2micvoicec audio card detected"
+  else
+    info "Card not present yet (will appear after the reboot below)"
   fi
 
   # --- Disable WiFi power management ---
@@ -552,7 +672,14 @@ setup_database() {
   info "Running database migrations..."
 
   cd "$INSTALL_DIR"
-  if ! "${INSTALL_DIR}/.venv/bin/python" -m alembic upgrade head 2>/dev/null; then
+  # Point at the service user's secret dir so db.key (created on
+  # first run) lands in ${SERVICE_HOME}/.jarvis, matching where the
+  # running service will look for it. Without this, root's
+  # Path.home()/.jarvis (= /root/.jarvis) would get the key and
+  # the service would create a fresh, mismatched key on first boot.
+  local secret_dir="${SERVICE_HOME}/.jarvis"
+  if ! JARVIS_SECRET_DIRECTORY="$secret_dir" \
+       "${INSTALL_DIR}/.venv/bin/python" -m alembic upgrade head 2>/dev/null; then
     # If migration fails (encrypted DB with lost key), back up and retry
     local db_file="${INSTALL_DIR}/jarvis_node.db"
     if [ -f "$db_file" ]; then
@@ -560,7 +687,8 @@ setup_database() {
       warn "Migration failed — backing up database to $(basename "$backup")"
       cp "$db_file" "$backup"
       rm -f "$db_file"
-      "${INSTALL_DIR}/.venv/bin/python" -m alembic upgrade head
+      JARVIS_SECRET_DIRECTORY="$secret_dir" \
+        "${INSTALL_DIR}/.venv/bin/python" -m alembic upgrade head
     fi
   fi
 
@@ -578,9 +706,104 @@ register_commands() {
   fi
 }
 
+# --- Service-user setup ---
+# Adds the service user to the bluetooth group, enables systemd
+# user lingering, and pre-creates ~/.jarvis with the right ownership
+# so subsequent install steps (alembic, secret writes) land in the
+# service user's home rather than /root/.jarvis.
+#
+# Lingering creates /run/user/<uid> at boot, before the user has
+# logged in — without it, jarvis-node starts before its
+# XDG_RUNTIME_DIR exists and PulseAudio routing fails.
+setup_service_user() {
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    error "Service user '$SERVICE_USER' does not exist. Pi Imager creates it during imaging — set up a user named '$SERVICE_USER' and re-run the installer."
+  fi
+
+  if getent group bluetooth >/dev/null 2>&1; then
+    usermod -aG bluetooth "$SERVICE_USER"
+  fi
+
+  loginctl enable-linger "$SERVICE_USER" 2>/dev/null || true
+
+  # Pre-create the secret dir so subsequent steps (alembic creating
+  # db.key, etc.) land here instead of /root/.jarvis. Idempotent.
+  install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "${SERVICE_HOME}/.jarvis"
+}
+
+# --- State migration (root → service user) ---
+# Pre-migration installs kept node state in /root/.jarvis. Copy it to
+# the service user's home so the service can read its keys after the
+# user switch. Always re-asserts ownership of ${SERVICE_HOME}/.jarvis
+# so any files created by previous steps as root (alembic's db.key
+# in particular) flip to the service user.
+#
+# /root/.jarvis is left in place as a manual rollback safety net.
+migrate_to_pi_home() {
+  if [ -f /root/.jarvis/.provisioned ] && [ ! -f "${SERVICE_HOME}/.jarvis/.provisioned" ]; then
+    info "Migrating /root/.jarvis → ${SERVICE_HOME}/.jarvis"
+    mkdir -p "${SERVICE_HOME}/.jarvis"
+    cp -a /root/.jarvis/. "${SERVICE_HOME}/.jarvis/"
+    success "State migrated (left /root/.jarvis as manual backup)"
+  fi
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${SERVICE_HOME}/.jarvis"
+}
+
+# --- Install dir ownership ---
+# Flips /opt/jarvis-node ownership to the service user. Runs at the
+# end of the install pipeline so the heavy steps (download/extract,
+# pip install, alembic migrations) still run as root.
+chown_install_dir() {
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR"
+}
+
+# --- Sudoers entry ---
+# Grants the service user NOPASSWD access to the privileged binaries
+# jarvis-node needs at runtime: reboot/shutdown (factory reset),
+# `systemctl restart jarvis-node` (config-update self-restart), and
+# the AP-mode toolkit (hostapd, dnsmasq, ip, pkill, systemctl
+# stop|start of NetworkManager/wpa_supplicant/dnsmasq). Validated
+# with visudo before installing — a malformed sudoers file would
+# lock everyone out of sudo.
+install_sudoers() {
+  local sudoers_path="/etc/sudoers.d/jarvis-node"
+  local tmp
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+# Generated by jarvis-node install.sh — do not edit by hand.
+# Grants ${SERVICE_USER} NOPASSWD access to the privileged binaries the
+# jarvis-node service needs at runtime (factory reset, self-restart,
+# AP-mode provisioning).
+${SERVICE_USER} ALL=(root) NOPASSWD: /sbin/reboot, /usr/sbin/reboot
+${SERVICE_USER} ALL=(root) NOPASSWD: /sbin/shutdown, /usr/sbin/shutdown
+${SERVICE_USER} ALL=(root) NOPASSWD: /sbin/poweroff, /usr/sbin/poweroff
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart jarvis-node, /usr/bin/systemctl restart jarvis-node.service
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop NetworkManager, /usr/bin/systemctl start NetworkManager
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop wpa_supplicant, /usr/bin/systemctl start wpa_supplicant
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop dnsmasq, /usr/bin/systemctl start dnsmasq
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/hostapd
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/dnsmasq
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/pkill, /usr/bin/killall, /usr/bin/pgrep
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
+EOF
+  chmod 0440 "$tmp"
+  if visudo -cf "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$sudoers_path"
+    success "Installed ${sudoers_path}"
+  else
+    rm -f "$tmp"
+    warn "sudoers.d/jarvis-node failed visudo validation — runtime privileged ops may fail"
+  fi
+}
+
 # --- Create systemd service ---
 create_service() {
   info "Creating systemd service..."
+
+  local unit_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  local upgrade_backup="${unit_path}.upgrade-backup"
 
   # Clean up old provisioning service from previous setup versions
   if [ -f /etc/systemd/system/jarvis-provisioning.service ]; then
@@ -589,22 +812,37 @@ create_service() {
     rm -f /etc/systemd/system/jarvis-provisioning.service
   fi
 
+  # Save the previous unit so start_service() can restore it on
+  # rollback. Without this, a failed upgrade on a pre-migration
+  # install would leave the new User=pi unit pointing at rolled-back
+  # code that still expects to run as root.
+  if [ -f "$unit_path" ]; then
+    cp "$unit_path" "$upgrade_backup"
+  fi
+
+  local service_uid
+  service_uid="$(id -u "${SERVICE_USER}")"
+
   # Use the service template shipped in the release
   if [ -f "${INSTALL_DIR}/setup/jarvis-node.service" ]; then
     sed -e "s|__VENV__|${INSTALL_DIR}/.venv|g" \
         -e "s|__PROJECT_DIR__|${INSTALL_DIR}|g" \
-        -e "s|__HOME__|/root|g" \
+        -e "s|__SERVICE_USER__|${SERVICE_USER}|g" \
+        -e "s|__SERVICE_HOME__|${SERVICE_HOME}|g" \
+        -e "s|__SERVICE_UID__|${service_uid}|g" \
         "${INSTALL_DIR}/setup/jarvis-node.service" \
-        > "/etc/systemd/system/${SERVICE_NAME}.service"
+        > "$unit_path"
   else
     # Fallback if template is missing (older releases)
-    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+    cat > "$unit_path" <<EOF
 [Unit]
 Description=Jarvis Node Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m scripts.main
 WorkingDirectory=${INSTALL_DIR}
 Restart=on-failure
@@ -613,7 +851,8 @@ StartLimitBurst=5
 StartLimitIntervalSec=300
 TimeoutStopSec=30
 KillSignal=SIGTERM
-Environment=HOME=/root
+Environment=HOME=${SERVICE_HOME}
+Environment=XDG_RUNTIME_DIR=/run/user/${service_uid}
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${INSTALL_DIR}
 Environment=CONFIG_PATH=${INSTALL_DIR}/config.json
@@ -641,6 +880,9 @@ start_service() {
   info "Starting ${SERVICE_NAME}..."
   systemctl restart "${SERVICE_NAME}.service"
 
+  local unit_path="/etc/systemd/system/${SERVICE_NAME}.service"
+  local upgrade_backup="${unit_path}.upgrade-backup"
+
   # Only run the health-check + rollback dance during upgrades (when
   # there's a .bak to rollback TO). Fresh installs on a Pi Zero can
   # take >60s to boot Python + run migrations — a strict timeout here
@@ -648,6 +890,7 @@ start_service() {
   local backup="${INSTALL_DIR}.bak"
   if [ ! -d "$backup" ]; then
     success "Service started (fresh install — skipping health check)"
+    rm -f "$upgrade_backup"
     return 0
   fi
 
@@ -656,6 +899,7 @@ start_service() {
   while [ "$waited" -lt "$health_timeout" ]; do
     if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
       success "Service started"
+      rm -f "$upgrade_backup"
       return 0
     fi
     sleep 3
@@ -668,6 +912,12 @@ start_service() {
   rm -rf "${INSTALL_DIR}.failed"
   mv "$INSTALL_DIR" "${INSTALL_DIR}.failed"
   mv "$backup" "$INSTALL_DIR"
+  # Restore the previous unit too — the new User=pi unit references
+  # a service user the rolled-back code may not be set up to run as.
+  if [ -f "$upgrade_backup" ]; then
+    mv "$upgrade_backup" "$unit_path"
+    systemctl daemon-reload
+  fi
   systemctl restart "${SERVICE_NAME}.service"
   waited=0
   while [ "$waited" -lt "$health_timeout" ]; do
@@ -707,8 +957,8 @@ print_success() {
   printf "\n"
 
   if [ "${NEEDS_REBOOT:-0}" -eq 1 ]; then
-    printf "  ${BOLD}Rebooting now${NC} to activate kernel overlays (HiFiBerry DAC,\n"
-    printf "  USB audio slot). The node will start automatically in\n"
+    printf "  ${BOLD}Rebooting now${NC} to activate kernel overlays (WM8960 audio\n"
+    printf "  codec, SPI, I2C). The node will start automatically in\n"
     printf "  provisioning mode after reboot. Connect with the Jarvis mobile\n"
     printf "  app to complete setup.\n"
   else
@@ -729,6 +979,12 @@ main() {
   preflight
   get_version
   install_apt_deps
+
+  # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
+  # heavy steps so alembic + any other key-writing code in the install
+  # pipeline writes into ${SERVICE_HOME}/.jarvis from the start, not
+  # into /root/.jarvis (which would orphan keys after the user switch).
+  setup_service_user
 
   # Stop jarvis-node before the heavy steps (download / extract / rebuild
   # venv / pip) to free RAM on 512 MB boards where the running service and
@@ -758,6 +1014,9 @@ main() {
   rebuild_venv
   setup_database
   register_commands
+  migrate_to_pi_home
+  chown_install_dir
+  install_sudoers
   create_service
 
   # Kernel overlays (e.g. hifiberry-dac) and modprobe options only take effect

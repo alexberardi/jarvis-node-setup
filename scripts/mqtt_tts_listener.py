@@ -98,10 +98,21 @@ def get_mqtt_config() -> Dict[str, Any]:
 def handle_tts(details: Dict[str, Any]) -> None:
     message: str = details.get("message", "")
     try:
+        from services.led_service import get_led_service
+        get_led_service().set_transient_pattern("speaking")
+    except Exception:
+        pass
+    try:
         tts_provider = get_tts_provider()
         tts_provider.speak(True, message)
     except (ValueError, Exception) as e:
         logger.debug("TTS skipped (no audio output)", message=message[:80], error=str(e))
+    finally:
+        try:
+            from services.led_service import get_led_service
+            get_led_service().set_transient_pattern(None)
+        except Exception:
+            pass
 
 
 def _verify_command(request_id: str) -> bool:
@@ -760,14 +771,24 @@ def handle_toggle_command(details: Dict[str, Any]) -> None:
         logger.error("toggle_command failed", command_name=command_name, error=str(e))
 
 
+# Settings still baked into a long-lived runtime object that re-reading
+# config.json can't refresh — for these the node must restart to pick
+# up changes. Everything else (volume, wake_word_threshold, barge_in_*)
+# is read fresh on demand and applies live.
+_KEYS_REQUIRING_RESTART: set[str] = {"wake_word_model"}
+
+
 def handle_update_node_config(details: Dict[str, Any]) -> None:
     """Update node config.json values from mobile app.
 
-    Writes key/value pairs to config.json. Changes to most settings
-    take effect immediately (Config re-reads on each access). Settings
-    captured at module level (wake_word_threshold, barge_in_threshold)
-    require a service restart — the caller can request one via the
-    ``restart`` flag.
+    Writes key/value pairs to config.json and applies them live where
+    possible. Volume goes through audio_volume.set_volume_percent (ALSA
+    + PulseAudio + any BT sinks) so a connected speaker tracks too.
+
+    A service restart only happens when the diff actually touches a key
+    in ``_KEYS_REQUIRING_RESTART`` AND the caller asked for it — we used
+    to restart on any non-volume change, which was the source of the
+    "settings need a restart" frustration.
 
     Expected details:
         settings: dict of key/value pairs to merge into config.json
@@ -778,9 +799,9 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.warning("update_node_config: no settings provided")
         return
 
-    # Volume is an OS-level setting (ALSA softvol). Apply via amixer
-    # immediately AND persist to config.json so it survives reboot
-    # (alsa-restore is unreliable — node startup re-applies from config).
+    # Volume is an OS-level setting. Apply immediately AND persist to
+    # config.json so it survives reboot (alsa-restore is unreliable —
+    # node startup re-applies from config).
     if "volume_percent" in settings:
         set_volume_percent(int(settings["volume_percent"]))
 
@@ -806,12 +827,9 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.info("Node config updated via MQTT", keys=list(settings.keys()))
         print(f"[MQTT] update_node_config: updated {list(settings.keys())}", flush=True)
 
-        # Restart only if the change touches a setting that needs it
-        # (module-level captures like wake_word_threshold). Volume-only
-        # changes apply live via amixer — no restart needed.
-        non_volume_keys = [k for k in settings if k != "volume_percent"]
-        if details.get("restart") and non_volume_keys:
-            logger.info("Restarting service after config update")
+        restart_keys = set(settings) & _KEYS_REQUIRING_RESTART
+        if details.get("restart") and restart_keys:
+            logger.info("Restarting service after config update", keys=list(restart_keys))
             import subprocess
             subprocess.Popen(
                 ["sudo", "systemctl", "restart", "jarvis-node"],
@@ -1448,6 +1466,136 @@ def _handle_test_install_notification(raw_payload: bytes) -> None:
     _task_executor.submit(run_test_install_and_upload, request_id)
 
 
+def _handle_bluetooth_scan_notification(raw_payload: bytes) -> None:
+    """Handle Bluetooth scan request from CC — runs scan in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth scan notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    if not request_id:
+        logger.warning("Bluetooth scan notification missing request_id")
+        return
+
+    role: str = notification.get("role", "source")
+    logger.info("Bluetooth scan requested", request_id=request_id[:8], role=role)
+
+    from services.bluetooth_scan_handler import run_bluetooth_scan_and_upload
+
+    _task_executor.submit(run_bluetooth_scan_and_upload, request_id, role)
+
+
+def _handle_bluetooth_pair_notification(raw_payload: bytes) -> None:
+    """Handle Bluetooth pair request from CC — runs pair in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth pair notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    mac_address: str = notification.get("mac_address", "")
+    role: str = notification.get("role", "source")
+
+    if not request_id or not mac_address:
+        logger.warning("Bluetooth pair notification missing request_id or mac_address")
+        return
+
+    logger.info("Bluetooth pair requested", request_id=request_id[:8], mac=mac_address)
+
+    from services.bluetooth_scan_handler import run_bluetooth_pair_and_upload
+
+    _task_executor.submit(run_bluetooth_pair_and_upload, request_id, mac_address, role)
+
+
+def _handle_bluetooth_disconnect_notification(raw_payload: bytes) -> None:
+    """Handle Bluetooth disconnect request from CC — fire-and-forget."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth disconnect notification")
+        return
+
+    mac_address: str = notification.get("mac_address", "")
+    if not mac_address:
+        logger.warning("Bluetooth disconnect notification missing mac_address")
+        return
+
+    logger.info("Bluetooth disconnect requested", mac=mac_address)
+
+    from services.bluetooth_scan_handler import run_bluetooth_disconnect
+
+    _task_executor.submit(run_bluetooth_disconnect, mac_address)
+
+
+def _handle_bluetooth_discoverable_notification(raw_payload: bytes) -> None:
+    """Handle Bluetooth discoverable request from CC — fire-and-forget."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth discoverable notification")
+        return
+
+    timeout: int = notification.get("timeout", 120)
+    logger.info("Bluetooth discoverable requested", timeout=timeout)
+
+    from services.bluetooth_scan_handler import run_bluetooth_discoverable
+
+    _task_executor.submit(run_bluetooth_discoverable, timeout)
+
+
+def _handle_bluetooth_release_notification(raw_payload: bytes) -> None:
+    """Handle Bluetooth release ("forget" or "release for phone") from CC.
+
+    Payload: {mac_address: str, forget?: bool}
+      - forget=False (default): disconnect + auto_connect=False (keeps pair).
+      - forget=True: disconnect + remove + delete storage record.
+    """
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth release notification")
+        return
+
+    mac_address: str = notification.get("mac_address", "")
+    if not mac_address:
+        logger.warning("Bluetooth release notification missing mac_address")
+        return
+
+    forget: bool = bool(notification.get("forget", False))
+    logger.info("Bluetooth release requested", mac=mac_address, forget=forget)
+
+    from services.bluetooth_scan_handler import run_bluetooth_release
+
+    _task_executor.submit(run_bluetooth_release, mac_address, forget)
+
+
+def _handle_bluetooth_auto_connect_notification(raw_payload: bytes) -> None:
+    """Handle auto-connect toggle from CC.
+
+    Payload: {mac_address: str, enabled: bool}
+    """
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in bluetooth auto-connect notification")
+        return
+
+    mac_address: str = notification.get("mac_address", "")
+    if not mac_address:
+        logger.warning("Bluetooth auto-connect notification missing mac_address")
+        return
+
+    enabled: bool = bool(notification.get("enabled", True))
+    logger.info("Bluetooth auto-connect toggle", mac=mac_address, enabled=enabled)
+
+    from services.bluetooth_scan_handler import run_bluetooth_set_auto_connect
+
+    _task_executor.submit(run_bluetooth_set_auto_connect, mac_address, enabled)
+
+
 def _handle_device_scan_notification(raw_payload: bytes) -> None:
     """Handle device scan request from CC — runs scan in background thread."""
     try:
@@ -1490,6 +1638,30 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/device-list"):
         _handle_device_list_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-scan"):
+        _handle_bluetooth_scan_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-pair"):
+        _handle_bluetooth_pair_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-disconnect"):
+        _handle_bluetooth_disconnect_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-discoverable"):
+        _handle_bluetooth_discoverable_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-release"):
+        _handle_bluetooth_release_notification(msg.payload)
+        return
+
+    if msg.topic.endswith("/bluetooth-auto-connect"):
+        _handle_bluetooth_auto_connect_notification(msg.payload)
         return
 
     if msg.topic.endswith("/device-scan"):
