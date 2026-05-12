@@ -28,9 +28,7 @@ apt-get install -y --no-install-recommends \
   libsqlcipher-dev \
   libopenblas-dev \
   libffi-dev \
-  libssl-dev \
-  swig \
-  liblgpio-dev
+  libssl-dev
 
 # --- Create directory structure ---
 mkdir -p "${STAGE}"
@@ -38,7 +36,12 @@ mkdir -p "${STAGE}"
 # --- Create venv at the final install path ---
 # We build in a chroot-like layout so shebangs and pyvenv.cfg have the
 # correct paths when extracted to /opt/jarvis-node on the target.
-python3 -m venv "${INSTALL_DIR}/.venv"
+#
+# --system-site-packages lets the venv read the Pi's apt-installed
+# python3 modules (notably python3-lgpio, the C-bound GPIO backend
+# gpiozero auto-detects on Pi OS Bookworm+ — it can't be pip-built in
+# this plain-Debian container because liblgpio-dev is Pi-OS-only).
+python3 -m venv --system-site-packages "${INSTALL_DIR}/.venv"
 
 echo "==> Upgrading pip"
 "${INSTALL_DIR}/.venv/bin/python" -m pip install --upgrade pip --quiet

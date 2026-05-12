@@ -199,7 +199,7 @@ install_apt_deps() {
     wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak
              pulseaudio pulseaudio-module-bluetooth
              device-tree-compiler
-             liblgpio1)
+             python3-lgpio)
   fi
 
   # Filter to only packages that aren't already installed. On upgrades this
@@ -611,7 +611,10 @@ rebuild_venv() {
   mkdir -p "$TMPDIR"
 
   rm -rf "${INSTALL_DIR}/.venv"
-  "${PY_BIN}" -m venv "${INSTALL_DIR}/.venv"
+  # --system-site-packages so the venv can read Pi OS's apt-installed
+  # python3-lgpio (gpiozero's pin backend; not pip-installable on plain
+  # Debian — see build/build-tarball.sh for the matching flag).
+  "${PY_BIN}" -m venv --system-site-packages "${INSTALL_DIR}/.venv"
   "${INSTALL_DIR}/.venv/bin/python" -m pip install --upgrade pip --quiet
 
   # Pick the right requirements file
