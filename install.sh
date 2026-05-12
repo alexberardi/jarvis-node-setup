@@ -198,7 +198,8 @@ install_apt_deps() {
   if [ "$SKIP_AUDIO" -eq 0 ]; then
     wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak
              pulseaudio pulseaudio-module-bluetooth
-             device-tree-compiler)
+             device-tree-compiler
+             liblgpio1)
   fi
 
   # Filter to only packages that aren't already installed. On upgrades this
