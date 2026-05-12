@@ -23,14 +23,15 @@ scipy
 requests
 
 # ReSpeaker 2-mics Pi HAT v2 — RGB LEDs (SPI) + user button (GPIO17).
-# spidev has armv7l wheels; gpiozero + apa102-pi are pure Python. lgpio
-# is the Pi-OS-Bookworm-blessed Pin backend for gpiozero; without it
-# gpiozero may fall back to RPi.GPIO (which doesn't work on Pi 5+ but is
-# still fine on Pi Zero 2 W) or fail to import a backend.
+# spidev has armv7l wheels; gpiozero + apa102-pi are pure Python.
+# Pin backend (lgpio) is provided by the Pi-OS-Bookworm/Trixie system
+# package `python3-lgpio` (apt-installed by install.sh) and visible to
+# the venv because we create it with --system-site-packages. The lgpio
+# PyPI package needs liblgpio-dev to compile, which isn't in plain
+# Debian (only Pi OS), so the build container can't produce a wheel.
 spidev
 apa102-pi
 gpiozero
-lgpio
 aiodiscover
 websockets
 aiohttp
