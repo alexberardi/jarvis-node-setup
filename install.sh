@@ -785,6 +785,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reboot
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart jarvis-node, /usr/bin/systemctl restart jarvis-node.service
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop NetworkManager, /usr/bin/systemctl start NetworkManager
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/nmcli
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop wpa_supplicant, /usr/bin/systemctl start wpa_supplicant
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl stop dnsmasq, /usr/bin/systemctl start dnsmasq
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/hostapd
