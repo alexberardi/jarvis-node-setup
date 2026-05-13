@@ -246,14 +246,21 @@ EOF
     # Mixer baseline — JST speaker is wired to HP path; defaults leave it muted.
     if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
         log_info "Applying TLV320AIC3104 mixer baseline..."
-        amixer -c seeed2micvoicec sset 'PCM' '100%'                  2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'HP' '8' unmute               2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'HP DAC' '70%' unmute         2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Left HP Mixer DACL1' on      2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Right HP Mixer DACR1' on     2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'PGA' '60%'                   2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on    2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on   2>/dev/null || true
+        # JST speaker on v2.0 is wired to LLOUT/RLOUT, not HP. Use Line
+        # path at conservative levels; HP paths kept muted. See
+        # install.sh's configure_audio() for the calibration notes.
+        amixer -c seeed2micvoicec sset 'PCM' '100%' unmute               2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Line' '0' unmute                 2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Line DAC' '78' unmute            2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Left Line Mixer DACL1' on        2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Right Line Mixer DACR1' on       2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HP' '0' mute                     2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HP DAC' '0' mute                 2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HPCOM' '0' mute                  2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'HPCOM DAC' '0' mute              2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
         sudo alsactl store 2>/dev/null || true
         log_success "TLV320AIC3104 mixer baseline applied"
     else

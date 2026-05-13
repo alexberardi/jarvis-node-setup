@@ -480,15 +480,31 @@ ASOUND
   # kernel version doesn't abort the installer.
   if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
     info "Applying TLV320AIC3104 mixer baseline..."
-    amixer -c seeed2micvoicec sset 'PCM' '100%'                  2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'HP' '8' unmute               2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'HP DAC' '70%' unmute         2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'Left HP Mixer DACL1' on      2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'Right HP Mixer DACR1' on     2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'PGA' '60%'                   2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on    2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on   2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'SoftMaster' '85%'            2>/dev/null || true
+    # On the ReSpeaker v2.0 the JST speaker is wired to the codec's
+    # LLOUT/RLOUT (Line Out) path — NOT HPLOUT/HPROUT. Driving the HP
+    # path can't power the speaker effectively (HP outs are ~25 mW into
+    # 16 ohm) AND driving Line at full amplification was dangerously loud
+    # in calibration ("had to yank Pi power" loud). Safe baseline:
+    #   - Line (analog gain) at 0 dB (no boost), enabled
+    #   - Line DAC (digital mixer level) at -20 dB
+    #   - PCM (DAC digital) at 0 dB (max — gives full headroom)
+    #   - HP / HPCOM paths kept muted (unused, conserves power and
+    #     prevents the slight crosstalk we observed during testing)
+    # Net path is ~-20 dB below full scale. SoftMaster (softvol) tops
+    # out at 0 dB so it can attenuate but not amplify.
+    amixer -c seeed2micvoicec sset 'PCM' '100%' unmute               2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Line' '0' unmute                 2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Line DAC' '78' unmute            2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Left Line Mixer DACL1' on        2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Right Line Mixer DACR1' on       2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HP' '0' mute                     2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HP DAC' '0' mute                 2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HPCOM' '0' mute                  2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'HPCOM DAC' '0' mute              2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'SoftMaster' '100%'               2>/dev/null || true
     alsactl store 2>/dev/null || true
     success "TLV320AIC3104 mixer baseline applied"
   else
