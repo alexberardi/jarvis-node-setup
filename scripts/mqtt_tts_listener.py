@@ -805,6 +805,37 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
     if "volume_percent" in settings:
         set_volume_percent(int(settings["volume_percent"]))
 
+    # Live-apply LED preferences so the user sees the effect without
+    # waiting for the next config reload. The Config (config.json) write
+    # happens below so the value persists across reboots.
+    if "led_enabled" in settings or "led_brightness_percent" in settings:
+        try:
+            from services.led_service import get_led_service
+            led = get_led_service()
+            if "led_enabled" in settings:
+                val = settings["led_enabled"]
+                enabled = bool(val) if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
+                if hasattr(led, "set_enabled"):
+                    led.set_enabled(enabled)
+            if "led_brightness_percent" in settings:
+                pct = int(settings["led_brightness_percent"])
+                if hasattr(led, "set_brightness_scale"):
+                    led.set_brightness_scale(pct)
+        except Exception as e:
+            logger.warning("LED live-apply failed", error=str(e))
+
+    # is_muted: mirror the mute switch into ALSA + PA right away (the
+    # persisted state is informational only — ALSA's softvol mute is the
+    # source of truth for runtime).
+    if "is_muted" in settings:
+        try:
+            from utils.audio_volume import set_muted
+            val = settings["is_muted"]
+            muted = bool(val) if isinstance(val, bool) else str(val).lower() in ("true", "1", "yes")
+            set_muted(muted)
+        except Exception as e:
+            logger.warning("Mute live-apply failed", error=str(e))
+
     try:
         config_path = os.path.expandvars(os.path.expanduser(
             os.environ.get("CONFIG_PATH", "config.json")
@@ -841,6 +872,35 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         logger.error("update_node_config failed", error=str(e))
 
 
+def handle_preview_led_pattern(details: Dict[str, Any]) -> None:
+    """Briefly show ``pattern`` on the LED chain, then auto-revert.
+
+    Lets the mobile "Test LEDs" picker preview a pattern without
+    permanently altering the stable state. Patterns not recognized by the
+    active LED service render as ``off``. Expected details:
+
+        pattern: str — one of off/normal/alert/listening/thinking/speaking/
+                       muted/shutdown_warning
+        duration_seconds: float (optional, default 3.0)
+    """
+    pattern = str(details.get("pattern", "")).strip()
+    if not pattern:
+        logger.warning("preview_led_pattern: no pattern provided")
+        return
+    duration = float(details.get("duration_seconds", 3.0))
+
+    try:
+        from services.led_service import get_led_service
+        led = get_led_service()
+        if hasattr(led, "preview_pattern"):
+            led.preview_pattern(pattern, duration_seconds=duration)
+            logger.info("LED preview", pattern=pattern, duration_seconds=duration)
+        else:
+            logger.warning("LED service has no preview_pattern method")
+    except Exception as e:
+        logger.error("preview_led_pattern failed", pattern=pattern, error=str(e))
+
+
 def handle_invalidate_device_cache(details: Dict[str, Any]) -> None:
     """Drop the DirectDeviceService cache so the next list/get refreshes from CC.
 
@@ -866,6 +926,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tool_call": handle_tool_call,
     "toggle_command": handle_toggle_command,
     "update_node_config": handle_update_node_config,
+    "preview_led_pattern": handle_preview_led_pattern,
     "enroll_voice": handle_enroll_voice,
     "verify_voice": handle_verify_voice,
     "invalidate_device_cache": handle_invalidate_device_cache,
