@@ -220,6 +220,17 @@ install_apt_deps() {
   systemctl disable hostapd dnsmasq 2>/dev/null || true
   systemctl mask hostapd dnsmasq 2>/dev/null || true
 
+  # Disable graphical desktop on Pi nodes. Pi OS Desktop's Wayland stack
+  # (labwc + wf-panel-pi + pcmanfm) wastes ~75-100 MB RAM on a node that
+  # has no display attached, and on a 416 MB Pi Zero 2W that pushes the
+  # system into SD-card swap during normal jarvis-node operation — which
+  # under combined audio + Wi-Fi + BT load causes hard kernel-level wedges
+  # (solid green LED, no SD activity, no journal entries).
+  if [ "$(systemctl get-default 2>/dev/null)" = "graphical.target" ]; then
+    info "Disabling graphical desktop (frees ~75-100 MB RAM on next boot)"
+    systemctl set-default multi-user.target >/dev/null
+  fi
+
   if [ ${#missing[@]} -eq 0 ]; then
     info "System dependencies already installed — skipping apt"
     return
@@ -877,6 +888,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/${service_uid}
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${INSTALL_DIR}
 Environment=CONFIG_PATH=${INSTALL_DIR}/config.json
+Environment=JARVIS_CONFIG_URL_STYLE=remote
 SyslogIdentifier=jarvis-node
 
 [Install]
