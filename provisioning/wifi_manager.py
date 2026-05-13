@@ -547,10 +547,15 @@ log-dhcp
             logger.info(f"Waiting for NetworkManager to find '{ssid}'...")
             time.sleep(3)
 
-        # Try simple connect first
+        # Try simple connect first.
+        # nmcli connection-modifying calls go through _priv (sudo -n) because
+        # NetworkManager's polkit on Trixie rejects "Insufficient privileges"
+        # for `nmcli connection add` when the caller is in `netdev` but not
+        # explicitly granted by polkit rules. install.sh adds the NOPASSWD
+        # sudo grant; this matches what _priv handles for hostapd/dnsmasq.
         try:
             result = subprocess.run(
-                ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
+                _priv(["nmcli", "dev", "wifi", "connect", ssid, "password", password]),
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -568,11 +573,11 @@ log-dhcp
         try:
             # Remove any stale profile with this name
             subprocess.run(
-                ["nmcli", "connection", "delete", conn_name],
+                _priv(["nmcli", "connection", "delete", conn_name]),
                 capture_output=True, timeout=10
             )
             result = subprocess.run(
-                [
+                _priv([
                     "nmcli", "connection", "add",
                     "type", "wifi",
                     "con-name", conn_name,
@@ -580,7 +585,7 @@ log-dhcp
                     "ssid", ssid,
                     "wifi-sec.key-mgmt", "wpa-psk",
                     "wifi-sec.psk", password,
-                ],
+                ]),
                 capture_output=True,
                 text=True,
                 timeout=15
@@ -590,7 +595,7 @@ log-dhcp
                 return False
 
             result = subprocess.run(
-                ["nmcli", "connection", "up", conn_name],
+                _priv(["nmcli", "connection", "up", conn_name]),
                 capture_output=True,
                 text=True,
                 timeout=30
