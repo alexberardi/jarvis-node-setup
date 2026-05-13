@@ -19,6 +19,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/__SERVICE_UID__
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=__PROJECT_DIR__
 Environment=CONFIG_PATH=__PROJECT_DIR__/config.json
+Environment=JARVIS_CONFIG_URL_STYLE=remote
 SyslogIdentifier=jarvis-node
 
 [Install]
