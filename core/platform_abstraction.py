@@ -714,40 +714,139 @@ class PiBluetoothProvider(BluetoothProvider):
             logger.warning("Bluetooth not available", error=str(e))
             return False
 
-    def scan(self, timeout: float = 10.0) -> list[BluetoothDevice]:
+    def scan(self, timeout: float = 30.0) -> list[BluetoothDevice]:
+        """Scan for nearby Bluetooth devices using a single bluetoothctl session.
+
+        Runs a BR/EDR pass followed by an LE pass within one bluetoothctl
+        process so most audio devices (classic) AND BLE-only devices both
+        show up. Each pass gets half of `timeout`. Stale (non-paired)
+        devices are pruned from BlueZ's cache before scanning so the
+        result reflects what's currently in range, not ghosts from days
+        ago.
+
+        Uses Popen to keep the process alive during discovery — killing
+        the process that started scan causes BlueZ to cancel discovery
+        via D-Bus.
+        """
+        import time
+
+        # Drop ghosts before scanning so we don't merge cached, never-paired
+        # devices with the live scan results.
+        self._prune_stale_cache()
+
+        # Each mode gets half the budget, with a 10s floor so neither pass
+        # is uselessly short on a tight timeout.
+        per_mode = max(timeout / 2, 10.0)
+
         try:
-            # Start scan, wait, then collect devices
-            subprocess.run(
-                ["bluetoothctl", "scan", "on"],
-                capture_output=True, text=True, timeout=3.0
-            )
-            import time
-            time.sleep(min(timeout, 15.0))
-            subprocess.run(
-                ["bluetoothctl", "scan", "off"],
-                capture_output=True, text=True, timeout=3.0
+            proc = subprocess.Popen(
+                ["bluetoothctl"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
 
-            result = self._run_bluetoothctl("devices")
-            if result.returncode != 0:
-                return []
+            for mode in ("bredr", "le"):
+                proc.stdin.write(f"scan {mode}\n")
+                proc.stdin.flush()
+                time.sleep(per_mode)
+                proc.stdin.write("scan off\n")
+                proc.stdin.flush()
+                time.sleep(0.5)
 
-            devices: list[BluetoothDevice] = []
-            for line in result.stdout.strip().split("\n"):
-                match = re.match(r"Device\s+([0-9A-Fa-f:]{17})\s+(.*)", line)
-                if match:
-                    mac = match.group(1)
-                    name = match.group(2).strip()
-                    device_type = self._classify_device(mac)
-                    devices.append(BluetoothDevice(
-                        name=name,
-                        mac_address=mac,
-                        device_type=device_type,
-                    ))
-            return devices
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            proc.stdin.write("devices\n")
+            proc.stdin.flush()
+            time.sleep(0.5)
+
+            proc.stdin.write("quit\n")
+            proc.stdin.flush()
+
+            stdout, _ = proc.communicate(timeout=5.0)
+
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.error("Bluetooth scan failed", error=str(e))
+            try:
+                proc.kill()
+            except Exception:
+                pass
             return []
+
+        # Parse the `devices` command listing — NOT the live discovery
+        # events. During scan, bluetoothctl prints `[NEW] Device …` for
+        # each find and `[CHG] Device <MAC> RSSI: -52` for property
+        # updates; matching those leaks "RSSI: …" or "ManufacturerData: …"
+        # into the name. The trailing `devices` listing emits clean
+        # `Device <MAC> <name>` lines without any tag prefix.
+        #
+        # bluetoothctl also emits ANSI color codes even with no TTY;
+        # strip them so trailing `\x1b[0m` doesn't end up in display
+        # strings.
+        ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+        # Hyphen- or colon-separated MAC string used by bluez as a
+        # fallback "name" when the device hasn't broadcast a real one —
+        # not useful in a UI, so we skip these.
+        mac_as_name_re = re.compile(r"^[0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5}$")
+
+        devices: list[BluetoothDevice] = []
+        seen: set[str] = set()
+        for raw in stdout.split("\n"):
+            line = ansi_re.sub("", raw).strip()
+            # Filter discovery-event chatter — only the post-scan
+            # `devices` listing has the authoritative name.
+            if any(tag in line for tag in ("[NEW]", "[CHG]", "[DEL]")):
+                continue
+            match = re.match(r"(?:\[bluetoothctl\]>\s*)?Device\s+([0-9A-Fa-f:]{17})\s*(.*)", line)
+            if not match:
+                continue
+            mac = match.group(1)
+            if mac in seen:
+                continue
+            name = match.group(2).strip()
+            # Drop devices that didn't broadcast a real name. Showing a
+            # list of MAC strings to a user is just noise — the named
+            # devices are what they actually want to pair with.
+            if not name or mac_as_name_re.match(name):
+                continue
+            seen.add(mac)
+            device_type = self._classify_device(mac)
+            devices.append(BluetoothDevice(
+                name=name,
+                mac_address=mac,
+                device_type=device_type,
+            ))
+        return devices
+
+    def _prune_stale_cache(self) -> None:
+        """Remove non-paired devices from BlueZ's cache.
+
+        Without this, ``bluetoothctl devices`` returns everything ever
+        seen — including devices long out of range — making it hard to
+        tell what's actually nearby. Paired devices are kept so users
+        can still see / reconnect to their saved pairings.
+        """
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", "devices"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.split("\n"):
+                m = re.match(r"Device\s+([0-9A-Fa-f:]{17})\s+", line)
+                if not m:
+                    continue
+                mac = m.group(1)
+                info = subprocess.run(
+                    ["bluetoothctl", "info", mac],
+                    capture_output=True, text=True, timeout=5
+                )
+                if "Paired: yes" in info.stdout:
+                    continue
+                subprocess.run(
+                    ["bluetoothctl", "remove", mac],
+                    capture_output=True, timeout=5
+                )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass  # best-effort cleanup; scan still proceeds
 
     def _classify_device(self, mac_address: str) -> str:
         """Classify a device by querying its BlueZ icon/class."""
@@ -768,9 +867,43 @@ class PiBluetoothProvider(BluetoothProvider):
 
     def pair(self, mac_address: str) -> bool:
         try:
-            # Set agent for headless pairing
+            # Set up pairing context up front. Idempotent — these stick
+            # for subsequent commands in the same bluez session.
             self._run_bluetoothctl("agent", "NoInputNoOutput", timeout=5.0)
             self._run_bluetoothctl("default-agent", timeout=5.0)
+            self._run_bluetoothctl("pairable", "on", timeout=5.0)
+
+            # Check device state: paired? known to bluez at all?
+            info = self._run_bluetoothctl("info", mac_address, timeout=5.0)
+            already_paired = "Paired: yes" in info.stdout
+            # `bluetoothctl info <mac>` returns "Device <mac> not available"
+            # when bluez has no record (e.g., right after `remove`).
+            device_known = "not available" not in info.stdout.lower()
+
+            if already_paired:
+                # Don't re-pair an already-bonded peer — most peripherals
+                # (Arctis included) reject a fresh pair handshake from an
+                # already-bonded peer with AuthenticationFailed. Treat as
+                # success so the caller chains into connect() normally.
+                logger.info("Bluetooth device already paired", mac=mac_address)
+                return True
+
+            if not device_known:
+                # Device isn't in bluez's cache — typically because the
+                # caller just called remove() to force a fresh pair, or
+                # the device was never scanned. Do a brief scan to
+                # repopulate the cache so `pair <MAC>` has a target.
+                logger.info(
+                    "Bluetooth device unknown to bluez, rescanning briefly",
+                    mac=mac_address,
+                )
+                if not self._scan_briefly(mac_address, timeout=12.0):
+                    logger.warning(
+                        "Bluetooth pair: device not discoverable; ensure "
+                        "it's powered on and in pairing mode",
+                        mac=mac_address,
+                    )
+                    return False
 
             result = self._run_bluetoothctl("pair", mac_address, timeout=30.0)
             success = result.returncode == 0 or "already" in result.stdout.lower()
@@ -783,18 +916,193 @@ class PiBluetoothProvider(BluetoothProvider):
             logger.error("Bluetooth pair error", mac=mac_address, error=str(e))
             return False
 
+    def _scan_briefly(self, mac_address: str, timeout: float = 12.0) -> bool:
+        """Run a short scan to (re)populate bluez's cache for one MAC.
+
+        Used when the device was just removed (or never seen) and the
+        next pair command needs a target. Returns True as soon as the
+        device is known to bluez, False if it doesn't appear within
+        the timeout.
+        """
+        import time
+        proc = subprocess.Popen(
+            ["bluetoothctl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            proc.stdin.write("scan bredr\n")
+            proc.stdin.flush()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                check = subprocess.run(
+                    ["bluetoothctl", "info", mac_address],
+                    capture_output=True, text=True, timeout=3
+                )
+                if "not available" not in check.stdout.lower():
+                    return True
+                time.sleep(1)
+            return False
+        finally:
+            # Best-effort cleanup of the scan session.
+            try:
+                proc.stdin.write("scan off\nquit\n")
+                proc.stdin.flush()
+                proc.communicate(timeout=3)
+            except (subprocess.TimeoutExpired, BrokenPipeError, ValueError, OSError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
     def connect(self, mac_address: str) -> bool:
         try:
-            result = self._run_bluetoothctl("connect", mac_address, timeout=15.0)
-            success = result.returncode == 0 or "successful" in result.stdout.lower()
-            if success:
-                logger.info("Bluetooth device connected", mac=mac_address)
-            else:
+            # Read state once and reuse — saves a bluetoothctl round-trip
+            # later when checking whether to verify the audio profile.
+            info = self._run_bluetoothctl("info", mac_address, timeout=5.0)
+            is_audio = self._is_audio_device(info.stdout)
+
+            # bluez 5.x does NOT auto-connect profiles after a pair
+            # handshake. "Connected: yes" right after pair only means
+            # the ACL link is up — the A2DP/HFP profile won't engage
+            # until something explicitly calls Device.Connect() to
+            # trigger profile setup. Skipping the connect call and
+            # waiting for an audio sink nothing has asked bluez to
+            # create is the silent-fail trap that broke pairing on Pi
+            # Zero 2W: btmon shows pair handshake → SDP → tear-down
+            # without any L2CAP PSM 0x0019 (AVDTP) connection.
+            # bluetoothctl connect is idempotent (safe when already
+            # fully connected), so we always issue it and let the
+            # regular path below handle the InProgress / A2DP-verify
+            # flow.
+
+            # 30s timeout (vs the previous 15s): first-attempt cold
+            # connects do service discovery + auth + L2CAP setup over
+            # BR/EDR, which can take 20s+ on a busy 2.4GHz band. A
+            # premature timeout here cancels bluez's in-flight link
+            # and bricks the next 5-10s of retry attempts with
+            # `br-connection-busy`.
+            result = self._run_bluetoothctl("connect", mac_address, timeout=30.0)
+            stdout_lc = result.stdout.lower()
+            connected = result.returncode == 0 or "successful" in stdout_lc
+
+            # If bluez says "InProgress", a previous connect is still
+            # negotiating. Poll the device's `Connected` flag for a
+            # few seconds — that earlier attempt may finish on its own.
+            if not connected and ("inprogress" in stdout_lc or "connection-busy" in stdout_lc):
+                import time
+                for _ in range(10):
+                    time.sleep(1.0)
+                    poll = self._run_bluetoothctl("info", mac_address, timeout=3.0)
+                    if "Connected: yes" in poll.stdout:
+                        connected = True
+                        break
+
+            if not connected:
                 logger.warning("Bluetooth connect failed", mac=mac_address, output=result.stdout)
-            return success
+                return False
+
+            # ACL link is up. For audio devices, verify the A2DP/HFP
+            # profile actually negotiated — otherwise bluez quietly
+            # retries AVDTP discovery every ~10s and produces audible
+            # "click" sounds on the headphones. The most common failure
+            # mode is the peer being bonded to another A2DP master
+            # (e.g., user's phone) — Arctis-class buds only support one.
+            #
+            # If no bluez sink/source appears (audio profile failed),
+            # disconnect explicitly so bluez stops the retry storm.
+            # Caller treats this as a connect failure.
+            if is_audio and not self._wait_for_audio_sink(mac_address, timeout=15.0):
+                logger.warning(
+                    "Bluetooth ACL connected but audio profile failed to negotiate "
+                    "— peer is likely bonded to another device. Disconnecting to "
+                    "prevent AVDTP retry storm.",
+                    mac=mac_address,
+                )
+                # Best-effort cleanup; don't let a failed disconnect mask the real error.
+                try:
+                    self._run_bluetoothctl("disconnect", mac_address, timeout=5.0)
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
+                return False
+
+            logger.info("Bluetooth device connected", mac=mac_address)
+            return True
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.error("Bluetooth connect error", mac=mac_address, error=str(e))
             return False
+
+    def _is_audio_device(self, info_output: str) -> bool:
+        """Detect whether a ``bluetoothctl info`` output describes an audio device.
+
+        Audio devices need post-connect A2DP/HFP profile verification;
+        non-audio devices (HID, etc.) do not.
+        """
+        out = info_output.lower()
+        return (
+            "icon: audio" in out
+            or "audio sink" in out
+            or "audio source" in out
+            or "handsfree" in out
+        )
+
+    def _wait_for_audio_sink(self, mac_address: str, timeout: float = 15.0) -> bool:
+        """Poll PulseAudio for a stable bluez audio sink/source.
+
+        Why sink and not card: bluez registers a card the moment the
+        ACL link comes up — that happens before AVDTP profile
+        negotiation. The sink/source only appears AFTER A2DP/HFP
+        successfully negotiates. Checking the card returns True too
+        early; checking the sink reflects the actual audio path.
+
+        Why "stable" (require 2s of continuous presence): bluez has
+        been observed to transiently register a sink during AVDTP
+        discovery, then tear it down when discovery times out. Holding
+        the assertion for 2s rules out that flap.
+
+        Covers both PipeWire-pulse names (``bluez_output.<MAC>``,
+        ``bluez_input.<MAC>``) and legacy PulseAudio names
+        (``bluez_sink.<MAC>``, ``bluez_source.<MAC>``), and both
+        roles (Pi-as-source for headphones, Pi-as-sink for phone
+        streaming in).
+        """
+        import time
+        mac_underscored = mac_address.replace(":", "_").upper()
+        markers = (
+            f"bluez_sink.{mac_underscored}",
+            f"bluez_output.{mac_underscored}",
+            f"bluez_source.{mac_underscored}",
+            f"bluez_input.{mac_underscored}",
+        )
+
+        deadline = time.monotonic() + timeout
+        first_seen = None
+        while time.monotonic() < deadline:
+            try:
+                sinks = subprocess.run(
+                    ["pactl", "list", "sinks", "short"],
+                    capture_output=True, text=True, timeout=3
+                )
+                sources = subprocess.run(
+                    ["pactl", "list", "sources", "short"],
+                    capture_output=True, text=True, timeout=3
+                )
+                combined = sinks.stdout + sources.stdout
+                present = any(m in combined for m in markers)
+                if present:
+                    if first_seen is None:
+                        first_seen = time.monotonic()
+                    elif time.monotonic() - first_seen >= 2.0:
+                        return True
+                else:
+                    # Marker disappeared — restart the stability timer.
+                    first_seen = None
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+            time.sleep(0.5)
+        return False
 
     def disconnect(self, mac_address: str) -> bool:
         try:
