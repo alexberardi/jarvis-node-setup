@@ -24,6 +24,22 @@ from provisioning.models import NetworkInfo
 logger = JarvisLogger(service="jarvis-node")
 
 
+def _priv(cmd: list[str]) -> list[str]:
+    """Prefix `cmd` with ``sudo -n`` unless we're already root.
+
+    AP-mode operations (systemctl stop|start, hostapd, dnsmasq, ip,
+    pkill/killall of root-owned processes) need elevated privileges.
+    Post-migration the service runs as ``pi``, so we go through sudo —
+    /etc/sudoers.d/jarvis-node (installed by install.sh) grants
+    NOPASSWD for the specific binaries this manager uses. ``-n`` makes
+    sudo fail fast if NOPASSWD isn't set, instead of stalling on a
+    password prompt that nobody can answer.
+    """
+    if os.geteuid() == 0:
+        return cmd
+    return ["sudo", "-n", *cmd]
+
+
 # Global network cache for sharing between manager instances
 _cached_networks: list[NetworkInfo] = []
 _cache_populated: bool = False
@@ -359,14 +375,14 @@ class HostapdWiFiManager:
 
         # Stop services
         if self._nm_was_running:
-            subprocess.run(["systemctl", "stop", "NetworkManager"], capture_output=True)
+            subprocess.run(_priv(["systemctl", "stop", "NetworkManager"]), capture_output=True)
         if self._wpa_was_running:
-            subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True)
+            subprocess.run(_priv(["systemctl", "stop", "wpa_supplicant"]), capture_output=True)
         if self._dnsmasq_was_running:
-            subprocess.run(["systemctl", "stop", "dnsmasq"], capture_output=True)
+            subprocess.run(_priv(["systemctl", "stop", "dnsmasq"]), capture_output=True)
 
         # Also kill any running wpa_supplicant processes
-        subprocess.run(["pkill", "-9", "wpa_supplicant"], capture_output=True)
+        subprocess.run(_priv(["pkill", "-9", "wpa_supplicant"]), capture_output=True)
 
         # Give services time to stop
         import time
@@ -377,20 +393,20 @@ class HostapdWiFiManager:
         logger.info(f"Restoring services: NM={self._nm_was_running}, wpa={self._wpa_was_running}")
 
         if self._wpa_was_running:
-            result = subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True)
+            result = subprocess.run(_priv(["systemctl", "start", "wpa_supplicant"]), capture_output=True)
             logger.info(f"Started wpa_supplicant: rc={result.returncode}")
 
         if self._nm_was_running:
-            result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+            result = subprocess.run(_priv(["systemctl", "start", "NetworkManager"]), capture_output=True)
             logger.info(f"Started NetworkManager: rc={result.returncode}")
         else:
             # Always try to start NetworkManager even if we didn't track it
             logger.warning("NM wasn't tracked as running, starting anyway...")
-            result = subprocess.run(["systemctl", "start", "NetworkManager"], capture_output=True)
+            result = subprocess.run(_priv(["systemctl", "start", "NetworkManager"]), capture_output=True)
             logger.info(f"Started NetworkManager (fallback): rc={result.returncode}")
 
         if self._dnsmasq_was_running:
-            result = subprocess.run(["systemctl", "start", "dnsmasq"], capture_output=True)
+            result = subprocess.run(_priv(["systemctl", "start", "dnsmasq"]), capture_output=True)
             logger.info(f"Started dnsmasq: rc={result.returncode}")
 
         # Give NetworkManager time to reconnect
@@ -648,17 +664,17 @@ log-dhcp
             # Flush existing IP and assign new one
             logger.info(f"Configuring interface {self._interface}...")
             subprocess.run(
-                ["ip", "addr", "flush", "dev", self._interface],
+                _priv(["ip", "addr", "flush", "dev", self._interface]),
                 capture_output=True,
                 timeout=10
             )
             subprocess.run(
-                ["ip", "addr", "add", f"{self.DEFAULT_AP_IP}/24", "dev", self._interface],
+                _priv(["ip", "addr", "add", f"{self.DEFAULT_AP_IP}/24", "dev", self._interface]),
                 capture_output=True,
                 timeout=10
             )
             subprocess.run(
-                ["ip", "link", "set", self._interface, "up"],
+                _priv(["ip", "link", "set", self._interface, "up"]),
                 capture_output=True,
                 timeout=10
             )
@@ -666,7 +682,7 @@ log-dhcp
             # Start hostapd
             logger.info(f"Starting hostapd with SSID: {ssid}")
             self._hostapd_process = subprocess.Popen(
-                ["hostapd", str(hostapd_conf)],
+                _priv(["hostapd", str(hostapd_conf)]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
@@ -685,12 +701,12 @@ log-dhcp
             # Start dnsmasq
             # Pre-clean any stale Jarvis AP dnsmasq from previous crashes.
             subprocess.run(
-                ["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"],
+                _priv(["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"]),
                 capture_output=True
             )
             logger.info("Starting dnsmasq for DHCP...")
             self._dnsmasq_process = subprocess.Popen(
-                ["dnsmasq", "-C", str(dnsmasq_conf), "-d"],
+                _priv(["dnsmasq", "-C", str(dnsmasq_conf), "-d"]),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
@@ -736,7 +752,7 @@ log-dhcp
                 self._hostapd_process = None
 
             # Also pkill any stray hostapd processes
-            subprocess.run(["pkill", "-9", "hostapd"], capture_output=True)
+            subprocess.run(_priv(["pkill", "-9", "hostapd"]), capture_output=True)
 
             # Terminate dnsmasq
             if self._dnsmasq_process:
@@ -751,29 +767,30 @@ log-dhcp
 
             # Also pkill any stray dnsmasq processes we started.
             subprocess.run(
-                ["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"],
+                _priv(["pkill", "-9", "-f", f"dnsmasq.*{self._config_dir}"]),
                 capture_output=True
             )
 
             # Remove IP from interface
             subprocess.run(
-                ["ip", "addr", "flush", "dev", self._interface],
+                _priv(["ip", "addr", "flush", "dev", self._interface]),
                 capture_output=True,
                 timeout=10
             )
 
             # Explicitly delete the AP route (flush doesn't always remove it)
             subprocess.run(
-                ["ip", "route", "del", "192.168.4.0/24"],
+                _priv(["ip", "route", "del", "192.168.4.0/24"]),
                 capture_output=True,
                 timeout=10
             )
 
-            # Verify hostapd is actually dead
+            # Verify hostapd is actually dead. pgrep is read-only and
+            # works without sudo; the killall fallback needs it.
             result = subprocess.run(["pgrep", "hostapd"], capture_output=True)
             if result.returncode == 0:
                 logger.warning("hostapd still running, force killing...")
-                subprocess.run(["killall", "-9", "hostapd"], capture_output=True)
+                subprocess.run(_priv(["killall", "-9", "hostapd"]), capture_output=True)
                 import time
                 time.sleep(1)
 

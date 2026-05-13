@@ -520,7 +520,8 @@ async def complete_setup(request: Request):
         _save_config(config)
 
         # Step 4: Mark as provisioned
-        secret_dir = os.environ.get("JARVIS_SECRET_DIRECTORY", "/root/.jarvis")
+        from utils.encryption_utils import get_secret_dir
+        secret_dir = str(get_secret_dir())
         os.makedirs(secret_dir, exist_ok=True)
         provisioned_path = os.path.join(secret_dir, ".provisioned")
         Path(provisioned_path).touch(mode=0o600)
