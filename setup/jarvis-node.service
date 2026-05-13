@@ -4,6 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=__SERVICE_USER__
+Group=__SERVICE_USER__
 ExecStart=__VENV__/bin/python -m scripts.main
 WorkingDirectory=__PROJECT_DIR__
 Restart=on-failure
@@ -12,7 +14,8 @@ StartLimitBurst=5
 StartLimitIntervalSec=300
 TimeoutStopSec=30
 KillSignal=SIGTERM
-Environment=HOME=__HOME__
+Environment=HOME=__SERVICE_HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__SERVICE_UID__
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=__PROJECT_DIR__
 Environment=CONFIG_PATH=__PROJECT_DIR__/config.json
