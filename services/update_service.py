@@ -23,6 +23,7 @@ in the heartbeat payload is the success signal.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -38,10 +39,20 @@ from core.version import version_info
 logger = JarvisLogger(service="jarvis-node")
 
 
-# State file lets the post-upgrade boot confirm what was attempted. Kept
-# outside /opt/jarvis-node because install.sh backs that directory up to
-# .bak during the upgrade — we'd lose the file.
-STATE_FILE = Path("/var/lib/jarvis-node/update-state.json")
+def _state_file() -> Path:
+    """Resolve the post-upgrade state file path.
+
+    Lives under the service user's secret dir (~/.jarvis/state/) rather
+    than /var/lib/jarvis-node — the latter is root-owned, and the
+    service runs as a non-root user post-migration. Honors
+    JARVIS_SECRET_DIRECTORY for parity with the rest of the secret
+    layout. Kept outside /opt/jarvis-node because install.sh moves
+    that directory aside during upgrades.
+    """
+    secret_dir = Path(os.environ.get("JARVIS_SECRET_DIRECTORY",
+                                     str(Path.home() / ".jarvis")))
+    return secret_dir / "state" / "update-state.json"
+
 
 # Once an upgrade is in flight we ignore further pending_update entries
 # until the process restarts. Prevents re-triggering if the heartbeat
@@ -50,9 +61,10 @@ _in_flight = threading.Event()
 
 
 def _write_state(payload: dict[str, Any]) -> None:
+    state_file = _state_file()
     try:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(payload), encoding="utf-8")
     except OSError as e:
         logger.error("Could not write update-state.json", error=str(e))
 
@@ -60,14 +72,14 @@ def _write_state(payload: dict[str, Any]) -> None:
 def read_state() -> dict[str, Any] | None:
     """Reads the state file if present. Used after restart."""
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(_state_file().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
 def clear_state() -> None:
     try:
-        STATE_FILE.unlink()
+        _state_file().unlink()
     except FileNotFoundError:
         pass
     except OSError as e:
@@ -99,7 +111,6 @@ def _spawn_upgrade(target_version: str) -> None:
     (very old systems) — loses the cgroup isolation but preserves the
     existing behavior.
     """
-    log_path = "/var/log/jarvis-node-update.log"
     # Pull install.sh from the TARGET version tag, not main. Curling from
     # main is dangerous — a broken push would brick every node that updates.
     cmd = (
@@ -107,22 +118,28 @@ def _spawn_upgrade(target_version: str) -> None:
         f"jarvis-node-setup/v{target_version}/install.sh "
         f"| bash -s -- --force --version v{target_version}"
     )
-    wrapped = f"({cmd}) >>{log_path} 2>&1"
 
     if shutil.which("systemd-run"):
+        # systemd-run's transient unit captures stdout/stderr to the
+        # journal automatically — no file redirect needed. Tail with
+        # `journalctl -u jarvis-node-update -f`.
         popen_args = [
+            "sudo", "-n",
             "systemd-run",
             "--unit=jarvis-node-update",
             "--collect",
             "--no-block",
             "--same-dir",
-            "bash", "-c", wrapped,
+            "bash", "-c", cmd,
         ]
     else:
         logger.warning(
             "systemd-run not found — falling back to setsid; installer will "
             "share jarvis-node's cgroup and may OOM on low-memory devices"
         )
+        # Pipe through `logger` so the setsid path also lands in the
+        # journal under the same identifier as the systemd-run path.
+        wrapped = f"({cmd}) 2>&1 | logger -t jarvis-node-update"
         popen_args = ["setsid", "bash", "-c", wrapped]
 
     subprocess.Popen(
