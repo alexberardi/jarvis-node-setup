@@ -109,6 +109,7 @@ SOURCE_DIRS=(
   repositories
   scripts
   services
+  setup
   sounds
   stt_providers
   tts_providers
