@@ -196,7 +196,12 @@ install_apt_deps() {
     mosquitto-clients
   )
   if [ "$SKIP_AUDIO" -eq 0 ]; then
-    wanted+=(alsa-utils portaudio19-dev sox ffmpeg espeak
+    # mpv is used by streaming commands (Pandora, etc.) because its --ao=alsa
+    # backend opens the asound.conf "output" PCM directly. ffplay's SDL2 ALSA
+    # path fails to open the device when spawned as a subprocess of the
+    # systemd-managed jarvis-node service (works fine from a login shell —
+    # the difference is opaque enough that we just prefer mpv).
+    wanted+=(alsa-utils portaudio19-dev sox ffmpeg mpv espeak
              pulseaudio pulseaudio-module-bluetooth
              device-tree-compiler
              python3-lgpio)
@@ -431,51 +436,34 @@ options snd-soc-tlv320aic3x index=0
 ALSA_MOD
 
   # --- ALSA system config ---
-  # Alias names `output` and `dsnoopmic` are referenced from the app code
-  # (config.example.json's `mic_device_name="dsnoopmic"` and
-  # platform_abstraction.py's `aplay -D output`). Keep these alias names
-  # stable so app-level config never needs to change when hardware does.
+  # Route everything through PulseAudio (PipeWire's pulse compat layer).
+  # PA mixes multiple playback streams natively, which softvol-direct
+  # didn't — two concurrent openers of softvol→plughw got "Device or
+  # resource busy" (the TLV320 codec exposes a single playback substream).
+  # We need concurrent playback for the wake-response + music case where
+  # jarvis plays a chime/TTS while a media player (mpv/ffplay) is mid-track.
+  # dmix doesn't work on this codec ("unable to initialize sum ring buffer")
+  # so the libasound2 pulse plugin is the working solution.
   #
-  # The codec captures stereo over I2S; dsnoop opens hardware at 48kHz
-  # stereo S16_LE. The named `dsnoopmic` wraps that in a `plug` so apps
-  # opening it with channels=1 get automatic downmix (the USB mic was
-  # mono — without this plug, code that hard-codes `channels=1` would
-  # fail with "Channels count non available").
+  # Alias names `output` and `dsnoopmic` are referenced from app code
+  # (config.example.json's `mic_device_name="dsnoopmic"` and
+  # platform_abstraction.py's `aplay -D output`). They stay as the public
+  # interface — only the internals changed.
   cat > /etc/asound.conf <<'ASOUND'
-pcm.softvol {
-  type softvol
-  slave.pcm "plughw:CARD=seeed2micvoicec,DEV=0"
-  control {
-    name "SoftMaster"
-    card seeed2micvoicec
-  }
-}
-
 pcm.output {
-  type plug
-  slave.pcm "softvol"
-}
-
-pcm.dsnoopmic_hw {
-  type dsnoop
-  ipc_key 87654321
-  slave {
-    pcm "hw:CARD=seeed2micvoicec,DEV=0"
-    channels 2
-    rate 48000
-    format S16_LE
-  }
+    type pulse
 }
 
 pcm.dsnoopmic {
-  type plug
-  slave.pcm "dsnoopmic_hw"
+    type pulse
 }
 
 pcm.!default {
-  type asym
-  playback.pcm "softvol"
-  capture.pcm "dsnoopmic"
+    type pulse
+}
+
+ctl.!default {
+    type pulse
 }
 ASOUND
 
