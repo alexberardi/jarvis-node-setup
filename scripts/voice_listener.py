@@ -1,6 +1,8 @@
 import os
 import queue
 import random
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -61,7 +63,94 @@ WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis
 
 
 def _wake_threshold() -> float:
+    """Wake-word detection threshold, lowered while music is playing.
+
+    Music coming out of the same speaker the mic is hearing reduces the
+    model's confidence in "hey jarvis" — without AEC, the user's voice is
+    competing with their own playback in the mic stream. Drop the threshold
+    in that case so detection succeeds (at the cost of more false positives,
+    which is acceptable because music context is short and explicit).
+    """
+    if _music_is_playing():
+        return Config.get_float("wake_word_threshold_music", 0.25)
     return Config.get_float("wake_word_threshold", 0.4)
+
+
+def _music_is_playing() -> bool:
+    """True if any tracked media-player subprocess exists (running OR STOPped).
+
+    pgrep matches by exact binary name. We check both running and SIGSTOP'd
+    processes because the stopped-during-conversation case still counts as
+    "music context" for wake detection (a SIGCONT is imminent).
+    """
+    for binary in _PLAYER_BINARIES:
+        try:
+            result = subprocess.run(
+                ["pgrep", "-x", binary],
+                capture_output=True, timeout=1.0,
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    return False
+
+
+# --- Music ducking ----------------------------------------------------------
+# When a wake word fires, pause any active media-player subprocesses for the
+# duration of the conversation so they don't compete with the user's voice
+# (and so we don't have to fight AEC). SIGSTOP halts the process at the
+# kernel level — the player's audio output stops immediately; SIGCONT resumes
+# from where it was paused. This is surgical: jarvis's own wake response and
+# TTS audio play at full volume because they're emitted from the jarvis-node
+# process, which is never the target of these signals.
+#
+# We pause by binary name (mpv / ffplay / cvlc / vlc) rather than by tracking
+# specific PIDs because commands can spawn and exit players asynchronously —
+# Pandora's _play_next() auto-advances, so the PID we'd track could be stale
+# by the time we resume. Name-based covers all in-flight players atomically.
+#
+# If a command explicitly stops playback (e.g. "stop the music"), the player
+# process terminates on its own — pkill -CONT against a missing process is
+# a harmless no-op.
+_PLAYER_BINARIES: tuple[str, ...] = ("mpv", "ffplay", "cvlc", "vlc")
+
+
+def _pause_active_playback() -> None:
+    """SIGSTOP any active media-player subprocesses.
+
+    No internal "is-paused" flag: a previous version of this module tracked
+    pause state in a global so overlapping wake events wouldn't double-pause,
+    but the flag drifted out of sync when wake events landed without any
+    player running, then stuck at True — preventing the actual pause on the
+    NEXT wake when music WAS playing. pkill against a non-running binary is
+    a cheap no-op (return code 1, no signal sent), so just always send.
+    """
+    for binary in _PLAYER_BINARIES:
+        try:
+            subprocess.run(
+                ["pkill", "-STOP", "-x", binary],
+                timeout=2.0, capture_output=True,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+
+def _resume_active_playback() -> None:
+    """SIGCONT any paused media-player subprocesses."""
+    for binary in _PLAYER_BINARIES:
+        try:
+            subprocess.run(
+                ["pkill", "-CONT", "-x", binary],
+                timeout=2.0, capture_output=True,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+
+# Kept for backwards-compat with older callers; aliases to the new pause flow.
+_duck_music = _pause_active_playback
+_restore_music = _resume_active_playback
 
 
 def _barge_in_enabled() -> bool:
@@ -727,6 +816,14 @@ def _follow_up_loop(
             timeout=round(iter_timeout, 1),
             consecutive_noise=consecutive_noise,
         )
+        # Re-pause any player processes before listening. The conversation's
+        # outer pause/restore wrapping (in start_voice_listener) only catches
+        # players that existed at wake time — but a previous turn may have
+        # *just spawned* a player (e.g. Pandora.play -> mpv) that needs to be
+        # silenced for the follow-up capture too. pkill is cheap; calling it
+        # every iteration just keeps the new player paused for the duration
+        # of the listen.
+        _pause_active_playback()
         audio_file = listen_for_follow_up(
             bus, timeout_seconds=iter_timeout, history_secs=history_secs,
             follow_up_iteration=iteration,
@@ -1145,77 +1242,87 @@ def start_voice_listener(ma_service):
 
             oww.reset()
 
+            # Drop music volume for the duration of the command exchange so
+            # the user's voice isn't competing with their own playback. Wraps
+            # the entire flow (wake response + listen + STT + LLM + TTS +
+            # follow-up loop) in a try/finally so the volume is always
+            # restored, even on exception. If the command stopped playback,
+            # there's nothing audible to restore — no-op in practice.
+            _duck_music()
             try:
-                handle_keyword_detected()
-            except Exception as e:
-                logger.warning("Wake response TTS failed, continuing", error=str(e))
-
-            conversation_id = str(uuid.uuid4())
-            warmup_result: dict = {"success": False}
-            warmup_thread = threading.Thread(
-                target=_run_warmup,
-                args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
-                daemon=True,
-            )
-            warmup_thread.start()
-
-            barge_in: BargeInMonitor | None = None
-            if _barge_in_enabled():
-                barge_in = BargeInMonitor(
-                    bus, oww, WAKE_WORD_MODEL,
-                    threshold=_barge_in_threshold(),
-                    energy_threshold=_barge_in_energy_threshold(),
-                )
-
-            result = None
-            try:
-                # history_secs=0 + skip_secs=0.3: do NOT replay the
-                # wake-response TTS tail (that bug made the node
-                # transcribe and respond to itself).
-                recording = listen(bus, history_secs=0.0, skip_secs=0.3)
-
-                ack_played = _play_processing_ack()
-
-                if barge_in:
-                    barge_in.start()
-
-                start = time.perf_counter()
-                result = send_for_transcription(
-                    recording, command_service, stt_provider, validation_handler,
-                    warmup_thread=warmup_thread,
-                    conversation_id=conversation_id,
-                    warmup_result=warmup_result,
-                    skip_ack=ack_played,
-                )
-                # Capture TTS-end time RIGHT after send_for_transcription
-                # returns (which is right after speak_result completes).
-                # The follow-up loop uses this to know how far back to look
-                # in the bus history for speech the user uttered before the
-                # listener subscribed. barge_in.stop() in the finally below
-                # routinely costs ~1.5s — that 1.5s is exactly the gap users
-                # speak into.
-                tts_end_ts = time.monotonic()
-                end = time.perf_counter()
-                logger.info("Transcription complete", duration_seconds=round(end - start, 2))
-            except Exception as e:
-                logger.warning("Command processing failed, resuming listener", error=str(e))
-                print(f"Command failed: {e}")
-                tts_end_ts = time.monotonic()
-            finally:
-                if barge_in:
-                    barge_in.stop()
-
-            if barge_in and barge_in.was_interrupted:
-                logger.info("Barge-in: TTS interrupted, returning to wake word")
-                platform_audio.reset_cancel()
-                # Don't try to capture a new command here — the user
-                # interrupted to STOP the response.  They'll say the
-                # wake word again when they're ready.
-            else:
                 try:
-                    _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww, tts_end_ts=tts_end_ts)
+                    handle_keyword_detected()
                 except Exception as e:
-                    logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+                    logger.warning("Wake response TTS failed, continuing", error=str(e))
+
+                conversation_id = str(uuid.uuid4())
+                warmup_result: dict = {"success": False}
+                warmup_thread = threading.Thread(
+                    target=_run_warmup,
+                    args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                    daemon=True,
+                )
+                warmup_thread.start()
+
+                barge_in: BargeInMonitor | None = None
+                if _barge_in_enabled():
+                    barge_in = BargeInMonitor(
+                        bus, oww, WAKE_WORD_MODEL,
+                        threshold=_barge_in_threshold(),
+                        energy_threshold=_barge_in_energy_threshold(),
+                    )
+
+                result = None
+                try:
+                    # history_secs=0 + skip_secs=0.3: do NOT replay the
+                    # wake-response TTS tail (that bug made the node
+                    # transcribe and respond to itself).
+                    recording = listen(bus, history_secs=0.0, skip_secs=0.3)
+
+                    ack_played = _play_processing_ack()
+
+                    if barge_in:
+                        barge_in.start()
+
+                    start = time.perf_counter()
+                    result = send_for_transcription(
+                        recording, command_service, stt_provider, validation_handler,
+                        warmup_thread=warmup_thread,
+                        conversation_id=conversation_id,
+                        warmup_result=warmup_result,
+                        skip_ack=ack_played,
+                    )
+                    # Capture TTS-end time RIGHT after send_for_transcription
+                    # returns (which is right after speak_result completes).
+                    # The follow-up loop uses this to know how far back to look
+                    # in the bus history for speech the user uttered before the
+                    # listener subscribed. barge_in.stop() in the finally below
+                    # routinely costs ~1.5s — that 1.5s is exactly the gap users
+                    # speak into.
+                    tts_end_ts = time.monotonic()
+                    end = time.perf_counter()
+                    logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+                except Exception as e:
+                    logger.warning("Command processing failed, resuming listener", error=str(e))
+                    print(f"Command failed: {e}")
+                    tts_end_ts = time.monotonic()
+                finally:
+                    if barge_in:
+                        barge_in.stop()
+
+                if barge_in and barge_in.was_interrupted:
+                    logger.info("Barge-in: TTS interrupted, returning to wake word")
+                    platform_audio.reset_cancel()
+                    # Don't try to capture a new command here — the user
+                    # interrupted to STOP the response.  They'll say the
+                    # wake word again when they're ready.
+                else:
+                    try:
+                        _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww, tts_end_ts=tts_end_ts)
+                    except Exception as e:
+                        logger.warning("Follow-up loop error, resuming wake word", error=str(e))
+            finally:
+                _restore_music()
 
             _bg_executor.submit(_fetch_next_processing_ack)
             print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
