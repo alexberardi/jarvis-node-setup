@@ -113,39 +113,119 @@ def _music_is_playing() -> bool:
 # If a command explicitly stops playback (e.g. "stop the music"), the player
 # process terminates on its own — pkill -CONT against a missing process is
 # a harmless no-op.
-_PLAYER_BINARIES: tuple[str, ...] = ("mpv", "ffplay", "cvlc", "vlc")
+_PLAYER_BINARIES: tuple[str, ...] = ("mpv", "ffplay", "cvlc", "vlc", "spotifyd")
+
+
+def _player_sink_input_ids() -> list[str]:
+    """Return PA sink-input ids belonging to known media-player processes.
+
+    SIGSTOP'ing the player only stops *new* audio production; up to several
+    seconds of audio may already be buffered in PA's sink-input. To silence
+    the speaker immediately we mute those sink-inputs directly. pactl reports
+    `application.process.binary` for each sink-input — we match by that.
+    """
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sink-inputs"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    import json as _json
+    try:
+        items = _json.loads(result.stdout or "[]")
+    except (ValueError, TypeError):
+        return []
+    ids: list[str] = []
+    for item in items:
+        props = item.get("properties") or {}
+        binary = props.get("application.process.binary") or ""
+        if binary in _PLAYER_BINARIES:
+            sid = item.get("index")
+            if sid is not None:
+                ids.append(str(sid))
+    return ids
 
 
 def _pause_active_playback() -> None:
-    """SIGSTOP any active media-player subprocesses.
+    """Silence any active media-player subprocesses immediately.
 
-    No internal "is-paused" flag: a previous version of this module tracked
-    pause state in a global so overlapping wake events wouldn't double-pause,
-    but the flag drifted out of sync when wake events landed without any
-    player running, then stuck at True — preventing the actual pause on the
-    NEXT wake when music WAS playing. pkill against a non-running binary is
-    a cheap no-op (return code 1, no signal sent), so just always send.
+    Two-pronged: SIGSTOP halts the process so it stops producing new audio,
+    AND we mute its PA sink-input so audio already buffered by PA doesn't
+    keep playing while the listener captures the user's command. Without
+    the sink-input mute, spotifyd's PA buffer (~1-5s of audio) bleeds into
+    the mic and Whisper transcribes the music instead of the user's speech
+    (returns markers like "(wind blowing)" / "(music)").
+
+    No internal "is-paused" flag: a previous version tracked state in a
+    global so overlapping wake events wouldn't double-pause, but the flag
+    drifted out of sync when wake events landed without any player running,
+    then stuck at True — preventing the actual pause on the NEXT wake when
+    music WAS playing. pkill/pactl against missing targets is harmless.
     """
+    stopped: list[str] = []
     for binary in _PLAYER_BINARIES:
         try:
-            subprocess.run(
+            r = subprocess.run(
                 ["pkill", "-STOP", "-x", binary],
                 timeout=2.0, capture_output=True,
             )
+            if r.returncode == 0:
+                stopped.append(binary)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    muted: list[str] = []
+    for sink_input_id in _player_sink_input_ids():
+        try:
+            r = subprocess.run(
+                ["pactl", "set-sink-input-mute", sink_input_id, "1"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                muted.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    logger.info(
+        "pause_active_playback",
+        sigstopped=stopped, muted_sink_inputs=muted,
+    )
 
 
 def _resume_active_playback() -> None:
-    """SIGCONT any paused media-player subprocesses."""
+    """Reverse the duck: unmute the player sink-inputs, then SIGCONT."""
+    # Unmute BEFORE SIGCONT — otherwise SIGCONT releases the process which
+    # immediately writes audio to a still-muted sink-input (silently
+    # discarded), then we unmute and the user hears resumed playback half
+    # a beat later than the response finished. Unmuting first means the
+    # buffered audio re-engages the moment we SIGCONT.
+    unmuted: list[str] = []
+    for sink_input_id in _player_sink_input_ids():
+        try:
+            r = subprocess.run(
+                ["pactl", "set-sink-input-mute", sink_input_id, "0"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                unmuted.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    resumed: list[str] = []
     for binary in _PLAYER_BINARIES:
         try:
-            subprocess.run(
+            r = subprocess.run(
                 ["pkill", "-CONT", "-x", binary],
                 timeout=2.0, capture_output=True,
             )
+            if r.returncode == 0:
+                resumed.append(binary)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    logger.info(
+        "resume_active_playback",
+        unmuted_sink_inputs=unmuted, sigcont=resumed,
+    )
 
 
 # Kept for backwards-compat with older callers; aliases to the new pause flow.
