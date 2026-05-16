@@ -5,10 +5,12 @@ Drives 3x APA102 LEDs over SPI for command-flow visual feedback.
 Patterns:
 - "off"              — all LEDs off
 - "normal"           — dim white (idle, default)
+- "wake_detected"    — purple steady (wake word fired, before recording starts)
+- "listening"        — blue steady (recording user's voice)
+- "thinking"         — amber pinwheel: 1 LED lit, then 2, then 3, then loops
+- "speaking"         — cyan steady (TTS response playing)
+- "error"            — red steady (command failed; auto-clears with TTS)
 - "alert"            — red blink (~1Hz, used when alerts queued)
-- "listening"        — blue chase (one LED at a time cycling left→middle→right)
-- "thinking"         — purple slow pulse
-- "speaking"         — cyan steady
 - "muted"            — solid red (reserved for future)
 - "shutdown_warning" — fast red blink (power button held)
 
@@ -26,7 +28,6 @@ returns False and the caller falls back to the ACT-LED service.
 from __future__ import annotations
 
 import atexit
-import math
 import threading
 import time
 from pathlib import Path
@@ -62,7 +63,7 @@ def _p_off(_t: float) -> list[tuple[int, int, int, int]]:
 
 
 def _p_normal(_t: float) -> list[tuple[int, int, int, int]]:
-    return [(255, 255, 255, 8)] * NUM_LEDS
+    return [(255, 255, 255, 15)] * NUM_LEDS
 
 
 def _p_alert(t: float) -> list[tuple[int, int, int, int]]:
@@ -71,21 +72,31 @@ def _p_alert(t: float) -> list[tuple[int, int, int, int]]:
     return [(0, 0, 0, 0)] * NUM_LEDS
 
 
-def _p_listening(t: float) -> list[tuple[int, int, int, int]]:
-    pos = int(t * 4) % NUM_LEDS
-    out: list[tuple[int, int, int, int]] = [(0, 0, 0, 0)] * NUM_LEDS
-    out[pos] = (0, 80, 255, 40)
-    return out
+def _p_wake_detected(_t: float) -> list[tuple[int, int, int, int]]:
+    return [(180, 0, 255, 45)] * NUM_LEDS
+
+
+def _p_listening(_t: float) -> list[tuple[int, int, int, int]]:
+    return [(0, 80, 255, 40)] * NUM_LEDS
 
 
 def _p_thinking(t: float) -> list[tuple[int, int, int, int]]:
-    pulse = 0.5 + 0.5 * math.sin(t * 2 * math.pi * 0.5)
-    brt = max(5, int(10 + 25 * pulse))
-    return [(180, 0, 255, brt)] * NUM_LEDS
+    # Pinwheel: count of lit LEDs cycles 1 → 2 → 3 → 1 → 2 → 3, ~1 cycle/sec.
+    # Phase advances every 1/3s so each step is clearly readable.
+    phase = int(t * 3) % NUM_LEDS  # 0, 1, 2 → 1, 2, 3 LEDs lit
+    leds_lit = phase + 1
+    out: list[tuple[int, int, int, int]] = [(0, 0, 0, 0)] * NUM_LEDS
+    for i in range(leds_lit):
+        out[i] = (255, 140, 0, 35)
+    return out
 
 
 def _p_speaking(_t: float) -> list[tuple[int, int, int, int]]:
     return [(0, 200, 220, 35)] * NUM_LEDS
+
+
+def _p_error(_t: float) -> list[tuple[int, int, int, int]]:
+    return [(255, 0, 0, 50)] * NUM_LEDS
 
 
 def _p_muted(_t: float) -> list[tuple[int, int, int, int]]:
@@ -102,9 +113,11 @@ _PATTERNS: dict[str, Callable[[float], list[tuple[int, int, int, int]]]] = {
     "off": _p_off,
     "normal": _p_normal,
     "alert": _p_alert,
+    "wake_detected": _p_wake_detected,
     "listening": _p_listening,
     "thinking": _p_thinking,
     "speaking": _p_speaking,
+    "error": _p_error,
     "muted": _p_muted,
     "shutdown_warning": _p_shutdown_warning,
 }
@@ -121,6 +134,11 @@ class RespeakerLEDService:
         self._thread: Optional[threading.Thread] = None
         self._strip = None
         self._available = respeaker_available()
+        self._enabled: bool = True
+        # Scales the per-pattern bright_percent values (0-100). 100 = patterns
+        # render as authored; 0 = fully dimmed (effectively off).
+        self._brightness_scale: int = 100
+        self._transient_timer: Optional[threading.Timer] = None
 
         if not self._available:
             logger.debug("ReSpeaker LED service: APA102 not available, running no-op")
@@ -156,7 +174,44 @@ class RespeakerLEDService:
                 return
             old = self._transient
             self._transient = pattern
+            # Manual override cancels any pending auto-clear from a previous
+            # preview call so the new pattern stays until explicitly cleared.
+            if self._transient_timer is not None:
+                self._transient_timer.cancel()
+                self._transient_timer = None
         logger.debug("LED transient pattern", old=old, new=pattern)
+
+    def preview_pattern(self, pattern: str, duration_seconds: float = 3.0) -> None:
+        """Show ``pattern`` as a transient overlay, then auto-revert.
+
+        Used by the mobile "Test LEDs" picker so users can see each pattern
+        without permanently overriding the stable state. Calling again
+        cancels the previous timer.
+        """
+        self.set_transient_pattern(pattern)
+        with self._lock:
+            self._transient_timer = threading.Timer(
+                duration_seconds, lambda: self.set_transient_pattern(None)
+            )
+            self._transient_timer.daemon = True
+            self._transient_timer.start()
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Globally enable or disable LED output.
+
+        When disabled, the render loop still runs (so re-enabling is
+        instantaneous), but every pixel is forced to (0, 0, 0).
+        """
+        with self._lock:
+            self._enabled = bool(enabled)
+        logger.debug("LED enabled", value=enabled)
+
+    def set_brightness_scale(self, percent: int) -> None:
+        """Scale per-pattern ``bright_percent`` values uniformly. 0-100."""
+        percent = max(0, min(100, int(percent)))
+        with self._lock:
+            self._brightness_scale = percent
+        logger.debug("LED brightness scale", percent=percent)
 
     @property
     def current_pattern(self) -> str:
@@ -191,17 +246,23 @@ class RespeakerLEDService:
             t = time.monotonic() - t0
             with self._lock:
                 pattern = self._transient or self._stable
+                enabled = self._enabled
+                scale = self._brightness_scale
             try:
-                self._render(pattern, t)
+                if enabled:
+                    self._render(pattern, t, scale)
+                else:
+                    self._render("off", t, 0)
             except Exception as e:
                 logger.warning("LED render error", error=str(e), pattern=pattern)
             self._stop_event.wait(period)
 
-    def _render(self, pattern: str, t: float) -> None:
+    def _render(self, pattern: str, t: float, scale: int = 100) -> None:
         if self._strip is None:
             return
         func = _PATTERNS.get(pattern, _p_off)
         pixels = func(t)
         for i, (r, g, b, brt) in enumerate(pixels):
-            self._strip.set_pixel(i, r, g, b, bright_percent=brt)
+            scaled_brt = max(0, min(100, int(brt * scale / 100)))
+            self._strip.set_pixel(i, r, g, b, bright_percent=scaled_brt)
         self._strip.show()
