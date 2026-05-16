@@ -5,12 +5,13 @@ Two-layer state model:
 - ``set_pattern(name)`` updates the *stable* pattern (idle/alert), driven
   by long-running state like the alert queue.
 - ``set_transient_pattern(name | None)`` overlays a transient command-flow
-  state (listening / thinking / speaking / shutdown_warning); ``None``
-  clears the overlay so the stable pattern resumes.
+  state (wake_detected / listening / thinking / speaking / error /
+  shutdown_warning); ``None`` clears the overlay so the stable pattern
+  resumes.
 
-On the monochrome ACT LED only ``off``, ``normal``, ``alert``, and
-``shutdown_warning`` have distinct visuals — other transients fall back
-to the stable pattern (the ReSpeaker RGB service in
+On the monochrome ACT LED only ``off``, ``normal``, ``alert``, ``error``,
+and ``shutdown_warning`` have distinct visuals — other transients fall
+back to the stable pattern (the ReSpeaker RGB service in
 ``respeaker_led_service.py`` renders the full set when available).
 
 ``get_led_service()`` returns the ReSpeaker RGB service when an APA102
@@ -41,6 +42,7 @@ class LEDService:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._blink_period: float = 0.5
+        self._enabled: bool = True
         self._is_pi = self._detect_pi()
 
         if not self._is_pi:
@@ -64,9 +66,10 @@ class LEDService:
     def set_transient_pattern(self, pattern: Optional[str]) -> None:
         """Overlay a transient pattern, or None to clear.
 
-        Most transient patterns (listening/thinking/speaking/muted) are
-        no-ops on the monochrome ACT LED — they fall through to the
-        stable pattern. ``shutdown_warning`` triggers a fast 5Hz blink
+        Most transient patterns (wake_detected/listening/thinking/
+        speaking/muted) are no-ops on the monochrome ACT LED — they
+        fall through to the stable pattern. ``error`` blinks at ~3Hz
+        for visibility; ``shutdown_warning`` triggers a fast 5Hz blink
         while held.
         """
         if pattern == self._transient:
@@ -75,6 +78,30 @@ class LEDService:
         self._transient = pattern
         logger.debug("LED transient pattern changed", old=old, new=pattern)
         self._reapply()
+
+    def preview_pattern(self, pattern: str, duration_seconds: float = 3.0) -> None:
+        """Show ``pattern`` briefly then revert. Monochrome fallback: best-effort.
+
+        On the ACT LED only off/alert/shutdown_warning have distinct
+        visuals, so previewing e.g. "thinking" looks the same as "normal".
+        We still drive the transient + auto-clear so the API is uniform
+        across hardware variants.
+        """
+        self.set_transient_pattern(pattern)
+        t = threading.Timer(
+            duration_seconds, lambda: self.set_transient_pattern(None)
+        )
+        t.daemon = True
+        t.start()
+
+    def set_enabled(self, enabled: bool) -> None:
+        """When disabled, force the ACT LED off regardless of pattern."""
+        self._enabled = bool(enabled)
+        self._reapply()
+
+    def set_brightness_scale(self, percent: int) -> None:
+        """No-op on the monochrome ACT LED — accepted for API parity."""
+        return None
 
     @property
     def current_pattern(self) -> str:
@@ -94,26 +121,38 @@ class LEDService:
         active = self._effective_pattern()
         self._stop_blink_thread()
 
+        if not self._enabled:
+            self._write_led("none", "0")
+            return
+
         if active == "off":
             self._write_led("none", "0")
         elif active == "alert":
             self._write_led("none", None)
             self._blink_period = 0.5
             self._start_blink_thread()
+        elif active == "error":
+            self._write_led("none", None)
+            self._blink_period = 0.15  # ~3Hz, distinct from alert (1Hz) + shutdown (5Hz)
+            self._start_blink_thread()
         elif active == "shutdown_warning":
             self._write_led("none", None)
             self._blink_period = 0.1
             self._start_blink_thread()
         else:
-            # normal + transient command-flow states (listening/thinking/
-            # speaking/muted) all map to kernel default on a monochrome LED
+            # normal + transient command-flow states (wake_detected/listening/
+            # thinking/speaking/muted) all map to kernel default on a
+            # monochrome LED — RGB visuals belong to respeaker_led_service.
             self._write_led("default-on", None)
 
     def _effective_pattern(self) -> str:
         # ACT LED can only meaningfully render a small subset; remap the
         # transient command-flow states to "normal" so they don't disrupt
-        # the visual when no RGB is present.
-        if self._transient in (None, "listening", "thinking", "speaking", "muted"):
+        # the visual when no RGB is present. error/shutdown_warning still
+        # render distinctly because they're safety-relevant signals.
+        if self._transient in (
+            None, "wake_detected", "listening", "thinking", "speaking", "muted",
+        ):
             return self._stable
         return self._transient
 
