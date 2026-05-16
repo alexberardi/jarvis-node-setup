@@ -879,8 +879,8 @@ def handle_preview_led_pattern(details: Dict[str, Any]) -> None:
     permanently altering the stable state. Patterns not recognized by the
     active LED service render as ``off``. Expected details:
 
-        pattern: str — one of off/normal/alert/listening/thinking/speaking/
-                       muted/shutdown_warning
+        pattern: str — one of off/normal/alert/wake_detected/listening/
+                       thinking/speaking/error/muted/shutdown_warning
         duration_seconds: float (optional, default 3.0)
     """
     pattern = str(details.get("pattern", "")).strip()
