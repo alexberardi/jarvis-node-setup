@@ -136,7 +136,12 @@ services:
       # fail; CC's /health doesn't require it.
       ADMIN_API_KEY: ci-admin-key
       JARVIS_APP_ID: command-center
-      JARVIS_APP_KEY: ci-app-key
+      # JARVIS_CC_APP_KEY is set by the workflow after compose/seed.sh
+      # registers command-center's app-client in auth (which generates the
+      # key). Falls back to ci-app-key for local-dev where you might not
+      # run seed.sh — calls that require app validation will fail in that
+      # case, but CC's /health still works.
+      JARVIS_APP_KEY: ${JARVIS_CC_APP_KEY:-ci-app-key}
       JARVIS_AUTH_SECRET_KEY: ci-secret-not-used-when-jwts-not-issued
       JARVIS_LOG_CONSOLE_LEVEL: INFO
       PYTHONUNBUFFERED: "1"
