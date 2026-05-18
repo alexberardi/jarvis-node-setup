@@ -591,7 +591,7 @@ curl -s http://localhost:7703/api/v0/health \
 
 `.github/workflows/integration-runner.yml` receives `repository_dispatch`
 events of type `pr-integration` from participating service repos (v1:
-`jarvis-command-center`). It runs `tests/integration/test_loop_smoke.py`
+`jarvis-command-center`). It runs `tests/test_loop_smoke.py`
 against the dispatched PR's HEAD SHA using `tests/fakes/` to stand in for
 `jarvis-llm-proxy-api` and `jarvis-whisper-api`, joins results to QA-plan
 case IDs via `tools/parse_junit.py`, and posts a
