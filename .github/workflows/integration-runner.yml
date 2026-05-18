@@ -40,7 +40,7 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202"
       linked_prs:
         description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
         required: false
@@ -89,7 +89,7 @@ jobs:
             LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202"
           fi
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
@@ -240,6 +240,12 @@ jobs:
           # auth's /internal/validate-app to confirm the seed worked.
           CC_APP_ID: command-center
           CC_APP_KEY: ${{ env.CC_APP_KEY }}
+          # v2.4 — seeded node credentials for the positive-path
+          # /internal/validate-node test (CASE-202). Both are set by
+          # compose/seed.sh via $GITHUB_ENV; empty when bring_up_cc=false,
+          # in which case CASE-202's skipif gate fires.
+          CC_NODE_ID: ${{ env.CC_NODE_ID }}
+          CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
         run: |
           pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
             --junit-xml=results.xml \
