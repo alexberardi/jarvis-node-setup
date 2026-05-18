@@ -1,0 +1,43 @@
+#!/bin/sh
+# jarvis-apt-install — minimal sudo-able shim around apt-get install.
+#
+# Installed to /usr/local/sbin/jarvis-apt-install (root-owned, 0755) by
+# install.sh, with /etc/sudoers.d/jarvis-node granting the service user
+# NOPASSWD access. Receives a list of debian package names from
+# command_store_service._install_apt_deps() and forwards them to
+# apt-get install after a regex shape check.
+#
+# The regex (^[a-z][a-z0-9.+-]*$) is a defensive shape guard against shell
+# injection and obviously-bogus input, NOT an allow-list. Allow-list
+# enforcement lives server-side (Pantry submission time, tracked as #16).
+# By the time a name reaches this wrapper it has already been vetted.
+
+set -eu
+
+# Zero args: short-circuit. apt-get install with no packages is a no-op
+# anyway; surface that as a successful no-op rather than running apt.
+if [ "$#" -eq 0 ]; then
+    exit 0
+fi
+
+# Validate each name before invoking apt-get. One bad name aborts the
+# whole call — no partial installs.
+for name in "$@"; do
+    case "$name" in
+        "")
+            echo "jarvis-apt-install: invalid package name (empty)" >&2
+            exit 2
+            ;;
+    esac
+    # POSIX sh has no regex matching; delegate to grep -E with -q.
+    if ! printf '%s' "$name" | grep -Eq '^[a-z][a-z0-9.+-]*$'; then
+        echo "jarvis-apt-install: invalid package name: $name" >&2
+        exit 2
+    fi
+done
+
+# nice -n 15: lower priority so the install doesn't starve the voice
+# pipeline, MQTT, SSH on the Pi's shared cores. DPkg::Lock::Timeout=60:
+# wait up to 60s if dpkg is locked (apt already running) instead of
+# failing immediately.
+exec nice -n 15 apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends "$@"
