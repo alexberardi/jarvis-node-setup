@@ -226,3 +226,83 @@ def test_cc_conversation_start_with_node_creds():
     assert body.get("conversation_id") == conv_id, (
         f"expected conversation_id={conv_id} echoed back, got body={body}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-204")
+def test_cc_voice_command_returns_tool_calls():
+    """First test that exercises CC's voice command pipeline through the
+    fake LLM and back.
+
+    Setup: open a conversation (`/conversation/start`) with empty
+    `client_tools` — required because `/voice/command/stream`'s line 882
+    check (`tools is None`) raises 400 "Conversation not initialized for
+    tool-based flow" if the cache entry's tools field is None.
+
+    Action: POST `/voice/command/stream` with `voice_command="set a 5
+    minute timer"`. The fake LLM regex-matches that prompt against
+    `canned_responses.yaml`'s timer entry, which returns
+    `stop_reason: tool_calls` with a `set_timer` function call.
+
+    Expected: 202 JSON. CC's main.py:974+ picks 200 audio only when
+    `stop_reason=="complete"` with non-empty `assistant_message`;
+    everything else (tool_calls, validation_required, error) falls
+    through to a 202 with the `VoiceCommandResponse` body. We assert:
+      - 202 status
+      - `stop_reason == "tool_calls"`
+      - exactly one tool call
+      - the tool call's function name is `set_timer`
+
+    What this proves end-to-end:
+      - CC's verify_api_key chain (auth + local DB) still works under
+        the voice path (same dependency as /conversation/start).
+      - CC reaches the fake LLM at host.docker.internal:7705 from
+        inside the container (extra_hosts mapping + LLM_PROXY_API_URL
+        env are both correct).
+      - LLM response shape is parsed correctly into VoiceCommandResponse.
+      - The 202 branch fires when tool_calls are present.
+    """
+    conv_id = "ci-conv-204"
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    response = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "set a 5 minute timer",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 202, (
+        f"expected 202 JSON tool-call branch, got {response.status_code} "
+        f"body={response.text[:400]}"
+    )
+    body = response.json()
+    assert body.get("stop_reason") == "tool_calls", (
+        f"expected stop_reason=tool_calls, got body={body}"
+    )
+    tool_calls = body.get("tool_calls") or []
+    assert len(tool_calls) == 1, (
+        f"expected exactly one tool call, got {len(tool_calls)}: {tool_calls}"
+    )
+    fn = tool_calls[0].get("function", {})
+    assert fn.get("name") == "set_timer", (
+        f"expected tool_calls[0].function.name=set_timer, got {fn}"
+    )
