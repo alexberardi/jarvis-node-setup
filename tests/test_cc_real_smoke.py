@@ -96,29 +96,40 @@ def test_auth_service_health_responds():
 @pytest.mark.qa_case("CASE-201")
 def test_cc_seeded_app_credentials_validate_against_auth():
     """The app-client seed.sh registered for `command-center` actually
-    works against auth's /internal/validate-app endpoint.
+    authenticates against auth.
 
-    Out-of-band cross-service exercise: bypasses CC entirely and calls
-    auth directly using the credentials the seed step generated and that
-    CC was started with. If this passes, CC's downstream calls to auth
-    (which use the same credentials) will succeed. v2.4 will add an
-    in-band test that goes through CC's own endpoints.
+    Auth has no dedicated `/internal/validate-app` endpoint — app
+    credentials are checked inline on every protected endpoint via
+    `_validate_app_client()`. So we exercise an endpoint that DOES
+    require app auth (`/internal/validate-node`) with a deliberately-
+    bogus node, and check that the response shape comes back. Two
+    distinct outcomes:
 
-    Catches: auth's /internal/validate-app contract drift, seed.sh
-    miswriting the captured key, or CC's env not picking up the seeded
-    value (in which case this case is the canary — its failure tells you
-    where to look).
+      - Our app credentials are valid → auth proceeds past app-auth,
+        validates the node, finds nothing, returns 200 with valid=false.
+      - Our app credentials are invalid → auth 401s at app-auth before
+        looking at the node, raise_for_status() throws.
+
+    A 200 response with `valid=false` for a nonexistent node is
+    therefore success for THIS test: it confirms the seeded app key
+    works. v2.4 will add a positive-path node test once the node-
+    registration chain lands.
     """
     response = httpx.post(
-        f"{AUTH_URL}/internal/validate-app",
+        f"{AUTH_URL}/internal/validate-node",
         headers={
             "X-Jarvis-App-Id": CC_APP_ID,
             "X-Jarvis-App-Key": CC_APP_KEY,
+        },
+        json={
+            "node_id": "ci-nonexistent-node",
+            "node_key": "ci-nonexistent-key",
+            "service_id": "command-center",
         },
         timeout=10.0,
     )
     response.raise_for_status()
     body = response.json()
-    assert body.get("valid") is True, (
-        f"expected valid=true, got body={body}"
+    assert body.get("valid") is False, (
+        f"expected valid=false for nonexistent node, got body={body}"
     )
