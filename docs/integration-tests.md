@@ -61,8 +61,9 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.1** | docker-compose.ci.yaml + CC built from PR source against Postgres + cross-repo checkout. | `CASE-101` (CC /health), `CASE-102` (CC / non-5xx) |
 | **v2.2** | Real `jarvis-auth` + `jarvis-config-service` from ghcr.io `:dev` + Docker Buildx GHA layer caching. | `CASE-103` (config-svc /health), `CASE-104` (auth /health) |
 | **v2.3** | Two-phase compose with `seed.sh` between: registers CC's app-client in auth (auth generates the key), passes the key into CC's compose env, verifies the seeded credentials work. | `CASE-201` (seeded creds authenticate against auth) |
-| **v2.4** *(next)* | User signup → household → node-registration chain in seed.sh + `CASE-202` POST CC `/conversation/start` with `X-API-Key`. Full real cross-service voice-flow exercise. | `CASE-202+` |
-| **v2.5** *(after that)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.4** | User-signup → household → node-registration chain added to `seed.sh` (captures `node_id` + `node_key` from `/admin/nodes` after `/auth/register` auto-creates the household). Closes the negative/positive split on `/internal/validate-node`. | `CASE-202` (real seeded node validates `valid=true` against auth) |
+| **v2.5** *(next)* | First node-authenticated CC endpoint: POST CC `/conversation/start` with `X-API-Key: <node_id>:<node_key>`, exercising the full CC → auth → config-service chain. | `CASE-203` (CC accepts seeded node creds end-to-end) |
+| **v2.6** *(after that)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -255,9 +256,12 @@ Writes:
 
 | Env name | Value | Used by |
 |---|---|---|
-| `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`) |
+| `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`, `CASE-202`) |
 | `JARVIS_CC_APP_KEY` | Same value | The compose `up jarvis-command-center` step (interpolated into CC's env) |
-| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.4+ use) |
+| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.5+ use) |
+| `CC_NODE_ID` | The node ID seed.sh registered via `/admin/nodes` (`ci-node-001`) | The pytest step (`CASE-202`) |
+| `CC_NODE_KEY` | The node-secret auth returned from `/admin/nodes` | The pytest step (`CASE-202`) |
+| `CC_HOUSEHOLD_ID` | The household auto-created by `/auth/register` for the CI user | (informational; not consumed by tests yet — useful when v2.5's CC tests assert household scoping) |
 
 Key design points:
 - `log()` writes to **stderr** (not stdout) so it doesn't pollute the
@@ -331,11 +335,12 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201, 202)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
-gates on `CC_APP_KEY` being set (the seed step writes it).
+gates on `CC_APP_KEY`; CASE-202 additionally gates on `CC_NODE_ID` +
+`CC_NODE_KEY` (all written by the seed step).
 
 | Case | Asserts |
 |---|---|
@@ -344,6 +349,7 @@ gates on `CC_APP_KEY` being set (the seed step writes it).
 | `CASE-103` | `GET config-service /health` returns 200 with `{status: ok}` |
 | `CASE-104` | `GET auth /health` returns 200 with `{status: ok}` |
 | `CASE-201` | `POST auth /internal/validate-node` with bogus node + CC's seeded app credentials → 200 with `valid: false`. (Auth has no `/internal/validate-app`; app credentials are checked inline on every protected endpoint. A 401 here means app-auth failed; `valid: false` for a nonexistent node means app-auth succeeded.) |
+| `CASE-202` | Positive-path counterpart to CASE-201. `POST auth /internal/validate-node` with the real seeded `node_id` + `node_key` + CC's app credentials → 200 with `valid: true`, returned `node_id` matches what we sent, and `household_id` is populated. Together with CASE-201 this nails down both branches of the validate-node contract. |
 
 ### `tools/parse_junit.py`
 
@@ -375,10 +381,10 @@ One marker per test. Only the first is captured by the conftest hook.
 | `service` | yes | Short slug — directory name of the service repo. |
 | `pr_number` | yes | Issue/PR number, as a string. |
 | `head_sha` | yes | Full SHA. Used for the commit status target and the cross-repo checkout. |
-| `head_ref` | no | Branch name. Currently unused; reserved for v2.4+. |
+| `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
-| `qa_plan_comment_id` | no | Reserved for v2.4 — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 8 known cases. |
+| `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 9 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -456,7 +462,7 @@ gh secret list --repo alexberardi/jarvis-node-setup
 3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** to include the new
    repo and re-store the secret.
 4. **Update the runner's `bring_up_cc` logic** if the new service needs
-   its own compose path. v2.5 plans a more generic
+   its own compose path. v2.6 plans a more generic
    `bring_up_service_under_test` so this is just a payload-driven
    selector.
 5. **Open a trivial PR** in the new repo to validate.
@@ -513,7 +519,7 @@ gh workflow run integration-runner.yml \
   -f pr_number=4 \
   -f head_sha=<full SHA from PR's tip> \
   -f originating_repo=alexberardi/jarvis-command-center \
-  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
+  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202"
 ```
 
 ### Force a re-run by pushing an empty commit
@@ -538,7 +544,7 @@ GITHUB_ENV=/tmp/seed.env \
   bash compose/seed.sh
 
 # 3. Export the seeded values
-source /tmp/seed.env  # exports CC_APP_KEY, JARVIS_CC_APP_KEY, CFG_APP_KEY
+source /tmp/seed.env  # exports CC_APP_KEY, JARVIS_CC_APP_KEY, CFG_APP_KEY, CC_NODE_ID, CC_NODE_KEY, CC_HOUSEHOLD_ID
 
 # 4. Bring up CC with the seeded key
 CC_SOURCE_PATH=../jarvis-command-center \
@@ -558,12 +564,14 @@ AUTH_URL=http://localhost:7701 \
 CONFIG_URL=http://localhost:7700 \
 CC_APP_ID=command-center \
 CC_APP_KEY=$CC_APP_KEY \
+CC_NODE_ID=$CC_NODE_ID \
+CC_NODE_KEY=$CC_NODE_KEY \
   pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
     --junit-xml=/tmp/results.xml -v
 
 # 7. Inspect parsed results
 python tools/parse_junit.py /tmp/results.xml \
-  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
+  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202"
 
 # 8. Cleanup
 docker compose -f docker-compose.ci.yaml --profile core down -v
@@ -594,18 +602,19 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.3)
+## Current limitations (v2.4)
 
 1. **Only `jarvis-command-center` is wired.** Other service repos can
-   open PRs but won't trigger this loop. **v2.5** fans out the trigger.
+   open PRs but won't trigger this loop. **v2.6** fans out the trigger.
 2. **No real LLM proxy or Whisper.** Fakes only. Real GPU services are
    v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
-3. **No node-authenticated CC endpoint exercised.** `CASE-201` confirms
-   the seeded app credentials work via an out-of-band call to auth, but
-   no test goes *through* CC with a valid node API key yet. **v2.4**
-   adds the user→household→node seeding chain and `CASE-202` POST CC
-   `/conversation/start`.
+3. **No node-authenticated CC endpoint exercised.** `CASE-201` + `CASE-202`
+   prove the seed chain produces credentials auth accepts (both negative
+   and positive paths against `/internal/validate-node`), but no test
+   goes *through* CC with a real node API key yet. **v2.5** adds
+   `CASE-203` POST CC `/conversation/start` with `X-API-Key: <node_id>:<node_key>`,
+   which exercises the full CC → auth → config-service chain.
 4. **Plan cases are hardcoded** in the workflow's default. The QA agent
    will eventually pass `plan_cases` in the trigger payload once we
    update the trigger.
@@ -617,7 +626,7 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    cancels earlier runs.
 8. **No manual-required workflow.** Hardware-needing test cases (real
    Pi mic, mobile UI) have no clean way to surface as
-   `action_required`. v2.5+ candidate.
+   `action_required`. v2.6+ candidate.
 9. **GHA `repository_dispatch` only fires workflows on the default
    branch.** Changes to `integration-runner.yml` only take effect *after*
    merging to `main`. Test runner changes via
@@ -629,7 +638,7 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 11. **No incremental test selection.** Every run executes every test.
 12. **Failure excerpt is truncated** to 240 chars in the comment. Full
     stack traces only in the CI run logs.
-13. **`linked_prs` plumbed through but not consumed.** When v2.4 lands
+13. **`linked_prs` plumbed through but not consumed.** When v2.5+ lands
     a multi-service-PR test scenario, build steps will read it.
 14. **`compose down -v` between runs** wipes all the seed data, so
     every PR run re-seeds. That's the right behavior for isolation but
@@ -728,24 +737,23 @@ status.
 
 ## Roadmap
 
-### v2.4 — real authenticated CC endpoint test
+### v2.5 — first node-authenticated CC endpoint
 
-- Extend `seed.sh` to:
-  1. POST `auth /auth/signup` (or equivalent) for a test user
-  2. POST as that user to create a household
-  3. POST `auth /admin/nodes` with `household_id` to register a test
-     node; capture `node_id` + `node_key`
-  4. Export `TEST_NODE_ID` / `TEST_NODE_KEY` to `$GITHUB_ENV`
-- Add `CASE-202`: POST CC `/conversation/start` with
-  `X-API-Key: <node_id>:<node_key>`, expect 200 with `conversation_id`.
-  Exercises the full chain — CC → auth (node + app validation) →
-  config-service (discovery) → CC's DB → response shape.
-- Add `CASE-203` (stretch): POST CC `/voice/command/stream` with a
+v2.4 landed the seed chain (user → household → node) and the
+positive-path `/internal/validate-node` test (CASE-202). The natural
+next step is the first test that goes *through* CC with a real node
+API key.
+
+- Add `CASE-203`: POST CC `/conversation/start` with
+  `X-API-Key: <CC_NODE_ID>:<CC_NODE_KEY>`, expect 200 with
+  `conversation_id`. Exercises the full chain — CC → auth (node + app
+  validation) → config-service (discovery) → CC's DB → response shape.
+- Add `CASE-204` (stretch): POST CC `/voice/command/stream` with a
   known prompt the fake LLM matches → verify the full tool-dispatch
   path. Needs CC's `client_tools` registration; might warrant its own
   PR.
 
-### v2.5 — fan-out
+### v2.6 — fan-out
 
 - Copy `integration-trigger.yml` to remaining service repos. Each gets
   its own `INTEGRATION_DISPATCH_TOKEN` secret; extend
@@ -791,14 +799,14 @@ Paths relative to `jarvis-node-setup` unless noted.
 | `.github/workflows/integration-runner.yml` | Receives dispatches, runs the two-phase compose + tests + posts results |
 | `docker-compose.ci.yaml` | CI stack definition: pgvector + mosquitto + auth + config-service + CC |
 | `compose/postgres-init.sh` | Creates jarvis_auth + jarvis_config DBs on first init |
-| `compose/seed.sh` | Phase-1.5 seed: registers app-clients in auth, captures keys, registers fakes in config-service |
+| `compose/seed.sh` | Phase-1.5 seed: registers app-clients in auth, captures keys, registers fakes in config-service, registers a CI user + node (v2.4) and exports `CC_NODE_ID` / `CC_NODE_KEY` |
 | `tests/fakes/__init__.py` | (empty — package marker) |
 | `tests/fakes/fake_llm_backend.py` | FastAPI shim for `jarvis-llm-proxy-api` |
 | `tests/fakes/fake_whisper.py` | FastAPI shim for `jarvis-whisper-api` |
 | `tests/fakes/canned_responses.yaml` | Canned data for both fakes |
 | `tests/conftest.py` | `qa_case` marker → JUnit user-property hook |
 | `tests/test_loop_smoke.py` | v1 fakes-only suite (CASE-001…003) |
-| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201) |
+| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201, 202) |
 | `tools/__init__.py` | (empty — package marker) |
 | `tools/parse_junit.py` | JUnit XML → case-status JSON |
 | `pyproject.toml` | Registers the `qa_case` pytest marker |
