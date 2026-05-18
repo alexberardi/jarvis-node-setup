@@ -11,7 +11,7 @@ suite runs here and posts results back on the PR.
 - `tests/fakes/` — FastAPI shims for `jarvis-llm-proxy-api` and
   `jarvis-whisper-api` so the default lane runs on free Linux runners
   without GPU.
-- `tests/integration/test_loop_smoke.py` — the v1 smoke test exercising
+- `tests/test_loop_smoke.py` — the v1 smoke test exercising
   the fakes. Each test has a `@pytest.mark.qa_case("CASE-NNN")` marker.
 - `tools/parse_junit.py` — joins pytest's JUnit XML output to QA-plan case
   IDs and emits JSON.
@@ -28,7 +28,7 @@ suite runs here and posts results back on the PR.
    - Checks out this repo.
    - Starts the fake LLM and Whisper backends as background processes
      (`tests/fakes/fake_llm_backend.py`, `tests/fakes/fake_whisper.py`).
-   - Runs `pytest tests/integration/test_loop_smoke.py --junit-xml=results.xml`.
+   - Runs `pytest tests/test_loop_smoke.py --junit-xml=results.xml`.
    - Runs `tools/parse_junit.py` to map QA-plan cases to pass/fail/skipped/
      not-implemented and produce `results.json`.
    - Renders a Markdown comment with the case-by-case breakdown.
@@ -114,7 +114,7 @@ python -m tests.fakes.fake_whisper --port 7706 &
 # Run the suite
 FAKE_LLM_URL=http://127.0.0.1:7705 \
 FAKE_WHISPER_URL=http://127.0.0.1:7706 \
-pytest tests/integration/test_loop_smoke.py --junit-xml=results.xml -v
+pytest tests/test_loop_smoke.py --junit-xml=results.xml -v
 
 # Inspect the parsed results
 python tools/parse_junit.py results.xml \
