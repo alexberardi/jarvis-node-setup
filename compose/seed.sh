@@ -96,15 +96,32 @@ register_ci_user() {
 # POST /admin/nodes — admin-token-gated. Returns {node_id, node_key, ...}.
 # node_key is the secret the node uses in `X-API-Key: node_id:node_key`
 # headers when talking to CC; it's also what /internal/validate-node checks
-# against. Capture it like we capture `key` for app clients.
+# against.
+#
+# IMPORTANT: the `services` field is what grants the node access to a given
+# service. /internal/validate-node returns `valid=false` with reason
+# "Node is not authorized to access service '<svc>'" when there's no
+# matching NodeServiceAccess row. Pass each service the node should
+# authenticate against (e.g. command-center).
+#
+# $4 is a comma-separated service list (e.g. "command-center" or
+# "command-center,jarvis-tts"); the function expands it to JSON.
 register_node() {
   local node_id="$1"
   local household_id="$2"
   local name="$3"
-  log "Registering node: $node_id under household $household_id"
+  local services_csv="$4"
+  # Convert CSV → JSON array. Empty CSV → []. Single item → ["x"].
+  local services_json
+  if [[ -z "$services_csv" ]]; then
+    services_json="[]"
+  else
+    services_json=$(echo "$services_csv" | python3 -c "import json,sys; print(json.dumps([s.strip() for s in sys.stdin.read().split(',') if s.strip()]))")
+  fi
+  log "Registering node: $node_id under household $household_id (services=$services_json)"
   http_post "$AUTH_URL/admin/nodes" \
     "X-Jarvis-Admin-Token" "$AUTH_ADMIN_TOKEN" \
-    "{\"node_id\":\"$node_id\",\"household_id\":\"$household_id\",\"name\":\"$name\"}"
+    "{\"node_id\":\"$node_id\",\"household_id\":\"$household_id\",\"name\":\"$name\",\"services\":$services_json}"
 }
 
 # Pre-flight: confirm both services are reachable. If /health fails here,
@@ -150,7 +167,7 @@ log "auth response (register): $USER_RESPONSE"
 CC_HOUSEHOLD_ID=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['household_id'])")
 log "household_id captured: $CC_HOUSEHOLD_ID"
 
-NODE_RESPONSE=$(register_node "$CI_NODE_ID" "$CC_HOUSEHOLD_ID" "CI Node")
+NODE_RESPONSE=$(register_node "$CI_NODE_ID" "$CC_HOUSEHOLD_ID" "CI Node" "command-center")
 log "auth response (register node): $NODE_RESPONSE"
 CC_NODE_KEY=$(echo "$NODE_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['node_key'])")
 log "node_key captured (length=${#CC_NODE_KEY})"
