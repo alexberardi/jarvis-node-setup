@@ -40,10 +40,14 @@ http_post() {
   local body="$4"
   local resp_file=/tmp/seed_resp.json
   local status
-  status=$(curl -sS -o "$resp_file" -w "%{http_code}" -X POST "$url" \
-    -H "$header_name: $header_value" \
-    -H "Content-Type: application/json" \
-    -d "$body")
+  local -a curl_args=(-sS -o "$resp_file" -w "%{http_code}" -X POST "$url"
+                       -H "Content-Type: application/json" -d "$body")
+  # Empty header_name → no auth header (used for POST /auth/register, which
+  # is the only endpoint here that takes no admin token).
+  if [[ -n "$header_name" ]]; then
+    curl_args+=(-H "$header_name: $header_value")
+  fi
+  status=$(curl "${curl_args[@]}")
   if [[ "$status" -lt 200 || "$status" -ge 300 ]]; then
     log "FAIL: POST $url → HTTP $status"
     log "Request body: $body"
@@ -76,6 +80,33 @@ register_service() {
     "{\"name\":\"$name\",\"host\":\"$host\",\"port\":$port,\"scheme\":\"http\",\"health_path\":\"/health\"}"
 }
 
+# POST /auth/register — auth's registration endpoint takes no admin token.
+# Returns {access_token, refresh_token, user, household_id}. We only need the
+# household_id; the endpoint auto-creates a default "My Home" household, which
+# is enough scaffolding for the admin-node registration below.
+register_ci_user() {
+  local email="$1"
+  local password="$2"
+  log "Registering CI user: $email (auto-creates household)"
+  http_post "$AUTH_URL/auth/register" \
+    "" "" \
+    "{\"email\":\"$email\",\"password\":\"$password\"}"
+}
+
+# POST /admin/nodes — admin-token-gated. Returns {node_id, node_key, ...}.
+# node_key is the secret the node uses in `X-API-Key: node_id:node_key`
+# headers when talking to CC; it's also what /internal/validate-node checks
+# against. Capture it like we capture `key` for app clients.
+register_node() {
+  local node_id="$1"
+  local household_id="$2"
+  local name="$3"
+  log "Registering node: $node_id under household $household_id"
+  http_post "$AUTH_URL/admin/nodes" \
+    "X-Jarvis-Admin-Token" "$AUTH_ADMIN_TOKEN" \
+    "{\"node_id\":\"$node_id\",\"household_id\":\"$household_id\",\"name\":\"$name\"}"
+}
+
 # Pre-flight: confirm both services are reachable. If /health fails here,
 # either the port mapping is wrong or the service crashed silently after
 # its healthcheck went green — both are real failure modes.
@@ -104,18 +135,41 @@ register_service "jarvis-llm-proxy-api" "host.docker.internal" 7705 || \
 register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
   log "WARN whisper registration failed (continuing — CC falls back to env)"
 
+# v2.4 — register a CI user + node for the positive-path validation test
+# (CASE-202). /auth/register auto-creates a household; /admin/nodes attaches
+# a node to it and returns the node_key.
+CI_USER_EMAIL="ci-node-test@jarvis.test"
+CI_USER_PASSWORD="ci-node-test-password"
+CI_NODE_ID="ci-node-001"
+
+USER_RESPONSE=$(register_ci_user "$CI_USER_EMAIL" "$CI_USER_PASSWORD")
+log "auth response (register): $USER_RESPONSE"
+CC_HOUSEHOLD_ID=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['household_id'])")
+log "household_id captured: $CC_HOUSEHOLD_ID"
+
+NODE_RESPONSE=$(register_node "$CI_NODE_ID" "$CC_HOUSEHOLD_ID" "CI Node")
+log "auth response (register node): $NODE_RESPONSE"
+CC_NODE_KEY=$(echo "$NODE_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['node_key'])")
+log "node_key captured (length=${#CC_NODE_KEY})"
+
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     echo "CC_APP_KEY=$CC_APP_KEY"
     echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
     echo "CFG_APP_KEY=$CFG_APP_KEY"
+    echo "CC_NODE_ID=$CI_NODE_ID"
+    echo "CC_NODE_KEY=$CC_NODE_KEY"
+    echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
   } >> "$GITHUB_ENV"
-  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY to GITHUB_ENV"
+  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY / CC_NODE_ID / CC_NODE_KEY / CC_HOUSEHOLD_ID to GITHUB_ENV"
 else
   log "GITHUB_ENV unset — printing to stdout instead"
   echo "CC_APP_KEY=$CC_APP_KEY"
   echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
   echo "CFG_APP_KEY=$CFG_APP_KEY"
+  echo "CC_NODE_ID=$CI_NODE_ID"
+  echo "CC_NODE_KEY=$CC_NODE_KEY"
+  echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
 fi
 
 log "Done"
