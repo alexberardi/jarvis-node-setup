@@ -27,8 +27,11 @@ AUTH_URL = os.environ.get("AUTH_URL", "http://localhost:7701")
 CONFIG_URL = os.environ.get("CONFIG_URL", "http://localhost:7700")
 CC_APP_ID = os.environ.get("CC_APP_ID", "command-center")
 CC_APP_KEY = os.environ.get("CC_APP_KEY", "")
+CC_NODE_ID = os.environ.get("CC_NODE_ID", "")
+CC_NODE_KEY = os.environ.get("CC_NODE_KEY", "")
 SKIP_REASON = "CC_URL unset — skipping real-stack smoke tests (v1 fakes-only mode)"
 SKIP_NO_KEY = "CC_APP_KEY unset — seed step did not run"
+SKIP_NO_NODE = "CC_NODE_ID / CC_NODE_KEY unset — v2.4 node seed did not run"
 
 
 @pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
@@ -112,8 +115,7 @@ def test_cc_seeded_app_credentials_validate_against_auth():
 
     A 200 response with `valid=false` for a nonexistent node is
     therefore success for THIS test: it confirms the seeded app key
-    works. v2.4 will add a positive-path node test once the node-
-    registration chain lands.
+    works. The positive-path counterpart is CASE-202.
     """
     response = httpx.post(
         f"{AUTH_URL}/internal/validate-node",
@@ -132,4 +134,50 @@ def test_cc_seeded_app_credentials_validate_against_auth():
     body = response.json()
     assert body.get("valid") is False, (
         f"expected valid=false for nonexistent node, got body={body}"
+    )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(not CC_APP_KEY, reason=SKIP_NO_KEY)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-202")
+def test_cc_seeded_node_validates_against_auth():
+    """Positive-path counterpart to CASE-201: a real seeded node + key
+    validates `valid=true` against auth's /internal/validate-node.
+
+    seed.sh has already (a) registered a CI user via /auth/register —
+    which auto-creates a household and returns the household_id, and
+    (b) POSTed /admin/nodes with that household_id, capturing the
+    returned node_key. Both are exported to the workflow env as
+    CC_NODE_ID + CC_NODE_KEY.
+
+    Together, CASE-201 + CASE-202 cover both branches of the
+    /internal/validate-node contract: bogus creds → valid=false, real
+    creds → valid=true. If both pass, the auth seed end-to-end works.
+    """
+    response = httpx.post(
+        f"{AUTH_URL}/internal/validate-node",
+        headers={
+            "X-Jarvis-App-Id": CC_APP_ID,
+            "X-Jarvis-App-Key": CC_APP_KEY,
+        },
+        json={
+            "node_id": CC_NODE_ID,
+            "node_key": CC_NODE_KEY,
+            "service_id": "command-center",
+        },
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    body = response.json()
+    assert body.get("valid") is True, (
+        f"expected valid=true for seeded node, got body={body}"
+    )
+    assert body.get("node_id") == CC_NODE_ID, (
+        f"expected node_id={CC_NODE_ID}, got {body.get('node_id')}"
+    )
+    assert body.get("household_id"), (
+        f"expected household_id to be populated, got body={body}"
     )
