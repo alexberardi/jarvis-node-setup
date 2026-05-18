@@ -181,3 +181,48 @@ def test_cc_seeded_node_validates_against_auth():
     assert body.get("household_id"), (
         f"expected household_id to be populated, got body={body}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-203")
+def test_cc_conversation_start_with_node_creds():
+    """First test that goes *through* CC with a real node X-API-Key.
+
+    POSTs CC's /api/v0/conversation/start with the seeded node
+    credentials. CC's verify_api_key dependency:
+      1. Parses X-API-Key into node_id + node_key.
+      2. POSTs auth's /internal/validate-node (with CC's own
+         X-Jarvis-App-Id + X-Jarvis-App-Key headers, set from the
+         JARVIS_APP_KEY env we seeded into CC's compose).
+      3. Looks up the node in CC's local Postgres `nodes` table
+         (created by the same /admin/nodes call that registered it
+         in auth — see the Phase 2.5 workflow step).
+
+    Both rows have to exist; if either is missing CC returns 401.
+    Success here proves the full chain works end-to-end.
+
+    Asserts a 200, that `status` is "success", and that the
+    `conversation_id` in the response echoes back what we sent.
+    """
+    conv_id = "ci-conv-203"
+    response = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={
+            "X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}",
+        },
+        json={"conversation_id": conv_id},
+        timeout=15.0,
+    )
+    assert response.status_code == 200, (
+        f"expected 200, got {response.status_code} body={response.text[:300]}"
+    )
+    body = response.json()
+    assert body.get("status") == "success", (
+        f"expected status=success, got body={body}"
+    )
+    assert body.get("conversation_id") == conv_id, (
+        f"expected conversation_id={conv_id} echoed back, got body={body}"
+    )
