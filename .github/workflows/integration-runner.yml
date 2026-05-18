@@ -136,7 +136,7 @@ jobs:
           FAKE_LLM_URL: http://127.0.0.1:7705
           FAKE_WHISPER_URL: http://127.0.0.1:7706
         run: |
-          pytest tests/integration/test_loop_smoke.py \
+          pytest tests/test_loop_smoke.py \
             --junit-xml=results.xml \
             --tb=short \
             -v
