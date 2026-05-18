@@ -40,7 +40,7 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
       linked_prs:
         description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
         required: false
@@ -89,7 +89,7 @@ jobs:
             LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201"
           fi
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
@@ -182,22 +182,46 @@ jobs:
           echo "=== fake_whisper.log ===" && cat /tmp/fake_whisper.log
           exit 1
 
-      - name: Bring up compose stack (core profile)
+      - name: Phase 1 — bring up deps (postgres + auth + config-service + mqtt)
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
         env:
-          # Override the compose default (`../jarvis-command-center`) so the
-          # build context points at where actions/checkout actually put the
-          # source. Path is relative to docker-compose.ci.yaml's location.
           CC_SOURCE_PATH: ./_src/jarvis-command-center
         run: |
-          docker compose -f docker-compose.ci.yaml --profile core up -d --wait
-          echo "=== compose ps ===" && docker compose -f docker-compose.ci.yaml ps
+          # Start everything CC depends on, but NOT CC itself. We need
+          # auth + config-service healthy first so seed.sh can register
+          # CC's app-client (auth generates the key, which we then pass
+          # into CC's env in phase 2).
+          docker compose -f docker-compose.ci.yaml --profile core up -d --wait \
+            postgres jarvis-auth jarvis-config-service mosquitto
+          echo "=== compose ps after phase 1 ==="
+          docker compose -f docker-compose.ci.yaml ps
+
+      - name: Seed auth + config-service
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        env:
+          AUTH_URL: http://localhost:7701
+          CONFIG_URL: http://localhost:7700
+          AUTH_ADMIN_TOKEN: ci-auth-admin-token
+          CONFIG_ADMIN_TOKEN: ci-auth-admin-token
+        run: |
+          bash compose/seed.sh
+
+      - name: Phase 2 — bring up CC with seeded app-key
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        env:
+          CC_SOURCE_PATH: ./_src/jarvis-command-center
+          # JARVIS_CC_APP_KEY is set by seed.sh via GITHUB_ENV and gets
+          # interpolated into docker-compose.ci.yaml's CC environment.
+          JARVIS_CC_APP_KEY: ${{ env.JARVIS_CC_APP_KEY }}
+        run: |
+          docker compose -f docker-compose.ci.yaml --profile core up -d --wait \
+            jarvis-command-center
+          echo "=== compose ps after phase 2 ==="
+          docker compose -f docker-compose.ci.yaml ps
 
       - name: Tail CC startup logs on success
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
         run: |
-          # Brief glimpse of CC's startup so the run log captures any warnings
-          # without flooding it with full logs.
           docker compose -f docker-compose.ci.yaml logs --tail=30 jarvis-command-center || true
 
       - name: Run integration tests
@@ -212,6 +236,10 @@ jobs:
           CC_URL: ${{ steps.payload.outputs.bring_up_cc == 'true' && 'http://localhost:7703' || '' }}
           AUTH_URL: http://localhost:7701
           CONFIG_URL: http://localhost:7700
+          # CC's seeded app credentials — CASE-201 validates them against
+          # auth's /internal/validate-app to confirm the seed worked.
+          CC_APP_ID: command-center
+          CC_APP_KEY: ${{ env.CC_APP_KEY }}
         run: |
           pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
             --junit-xml=results.xml \
