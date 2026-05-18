@@ -138,7 +138,10 @@ register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
 # v2.4 — register a CI user + node for the positive-path validation test
 # (CASE-202). /auth/register auto-creates a household; /admin/nodes attaches
 # a node to it and returns the node_key.
-CI_USER_EMAIL="ci-node-test@jarvis.test"
+# `.test` is RFC 2606 reserved and email-validator (pydantic EmailStr's
+# backend) rejects it as a non-resolvable special-use TLD. `example.com`
+# is the standard documentation domain and validates cleanly.
+CI_USER_EMAIL="ci-node-test@example.com"
 CI_USER_PASSWORD="ci-node-test-password"
 CI_NODE_ID="ci-node-001"
 
