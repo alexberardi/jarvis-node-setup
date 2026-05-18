@@ -19,7 +19,11 @@ CONFIG_URL="${CONFIG_URL:-http://localhost:7700}"
 AUTH_ADMIN_TOKEN="${AUTH_ADMIN_TOKEN:-ci-auth-admin-token}"
 CONFIG_ADMIN_TOKEN="${CONFIG_ADMIN_TOKEN:-ci-auth-admin-token}"
 
-log() { echo "[seed] $*"; }
+# Send all logging to stderr so it doesn't pollute the stdout capture
+# inside `$(register_app_client ...)`. The previous version sent these
+# to stdout and the captured string ended up "[seed] ...\n<json>", which
+# python's json.load couldn't parse.
+log() { echo "[seed] $*" >&2; }
 
 # POST to an admin endpoint. Writes the response body to /tmp/seed_resp.json,
 # echoes the body to stdout on 2xx, and on non-2xx prints HTTP status +
