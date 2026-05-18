@@ -539,7 +539,25 @@ class CommandExecutionService:
                         conversation_id, last_tool_result.api_results,
                     )
                     if audio_resp is not None:
-                        played = self._play_streaming_audio(audio_resp, audio_meta)
+                        # Streaming TTS bypasses speak_result() (which is where
+                        # the LED normally flips). Set it inline so the
+                        # pinwheel doesn't persist through the response. Use
+                        # red ("error") if every tool call failed — otherwise
+                        # cyan ("speaking") for a normal response.
+                        led_pattern = "error" if last_tool_result.all_failed else "speaking"
+                        try:
+                            from services.led_service import get_led_service
+                            get_led_service().set_transient_pattern(led_pattern)
+                        except Exception:
+                            pass
+                        try:
+                            played = self._play_streaming_audio(audio_resp, audio_meta)
+                        finally:
+                            try:
+                                from services.led_service import get_led_service
+                                get_led_service().set_transient_pattern(None)
+                            except Exception:
+                                pass
                         if played:
                             logger.info("Streaming continue played successfully")
                             return {
@@ -783,7 +801,20 @@ class CommandExecutionService:
                 message = pre.spoken_response
                 if not message:
                     ctx = command_response.context_data or {}
-                    message = ctx.get("message", "Done.")
+                    message = ctx.get("message")
+                if not message:
+                    # error_response() puts the user-facing string in
+                    # error_details (not context_data.message). Without
+                    # this fallback every error in a pre-routed command
+                    # spoke as "Done." and the actual reason was hidden.
+                    message = command_response.error_details or "Done."
+                if not command_response.success:
+                    logger.warning(
+                        "Pre-routed command returned an error",
+                        command=command.command_name,
+                        error_details=command_response.error_details,
+                        context_data=command_response.context_data,
+                    )
 
                 return {
                     "success": command_response.success,
@@ -888,9 +919,12 @@ class CommandExecutionService:
         tts_provider = get_tts_provider()
         message = result.get("message", "An error occurred")
 
+        # Show red (error) when the result is a failure; cyan (speaking) otherwise.
+        # Both patterns are transient overlays and get cleared in the finally.
+        led_pattern = "error" if result.get("success") is False else "speaking"
         try:
             from services.led_service import get_led_service
-            get_led_service().set_transient_pattern("speaking")
+            get_led_service().set_transient_pattern(led_pattern)
         except Exception:
             pass
         try:

@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from services.led_service import LEDService
+from services.respeaker_led_service import _PATTERNS, NUM_LEDS
 
 
 class TestLEDService:
@@ -83,3 +84,75 @@ class TestLEDServiceOnPi:
         assert led.current_pattern == "listening"  # transient still wins
         led.set_transient_pattern(None)
         assert led.current_pattern == "alert"  # back to stable
+
+    def test_error_blinks_distinctly(self) -> None:
+        """Error transient gets a distinct blink rate on the monochrome ACT LED."""
+        with patch.object(LEDService, "_detect_pi", return_value=True):
+            led = LEDService()
+
+        with patch.object(led, "_write_led"), patch.object(led, "_start_blink_thread"):
+            led.set_transient_pattern("error")
+            assert led._blink_period == 0.15  # ~3Hz — between alert (1Hz) and shutdown (5Hz)
+
+    def test_wake_detected_falls_through_on_act(self) -> None:
+        """wake_detected is RGB-only — on ACT LED it falls through to stable."""
+        with patch.object(LEDService, "_detect_pi", return_value=False):
+            led = LEDService()
+        led.set_transient_pattern("wake_detected")
+        assert led._effective_pattern() == "normal"
+
+
+class TestRespeakerPatterns:
+    """Test the pure pattern-rendering functions for the RGB ReSpeaker HAT."""
+
+    def test_new_patterns_registered(self) -> None:
+        assert "wake_detected" in _PATTERNS
+        assert "error" in _PATTERNS
+
+    def test_wake_detected_is_purple(self) -> None:
+        pixels = _PATTERNS["wake_detected"](0.0)
+        assert len(pixels) == NUM_LEDS
+        for r, g, b, brt in pixels:
+            assert (r, g, b) == (180, 0, 255)
+            assert brt > 0
+
+    def test_listening_is_steady_blue(self) -> None:
+        """Listening should be steady (same on every frame) and blue."""
+        frame_a = _PATTERNS["listening"](0.0)
+        frame_b = _PATTERNS["listening"](0.5)
+        frame_c = _PATTERNS["listening"](1.5)
+        assert frame_a == frame_b == frame_c  # steady
+        for r, g, b, _brt in frame_a:
+            assert b > r and b > g  # blue dominant
+
+    def test_error_is_steady_red(self) -> None:
+        pixels = _PATTERNS["error"](0.0)
+        for r, g, b, brt in pixels:
+            assert (r, g, b) == (255, 0, 0)
+            assert brt > 0
+
+    def test_thinking_pinwheels_one_two_three(self) -> None:
+        """Thinking cycles count of lit LEDs: 1 → 2 → 3 → 1 → 2 → 3 …
+
+        Phase advances every 1/3s (3Hz), so we sample within each phase
+        window and count how many LEDs have non-zero brightness.
+        """
+        def lit_count(t: float) -> int:
+            return sum(1 for (_r, _g, _b, brt) in _PATTERNS["thinking"](t) if brt > 0)
+
+        # Within the first second, phases 0/1/2 → 1/2/3 LEDs lit.
+        assert lit_count(0.05) == 1
+        assert lit_count(0.40) == 2
+        assert lit_count(0.70) == 3
+        # Loops back: second cycle, same pattern.
+        assert lit_count(1.05) == 1
+        assert lit_count(1.40) == 2
+        assert lit_count(1.70) == 3
+
+    def test_thinking_is_amber(self) -> None:
+        """Lit LEDs in the pinwheel use amber (R>G>B, no blue)."""
+        pixels = _PATTERNS["thinking"](0.70)  # all 3 lit
+        for r, g, b, brt in pixels:
+            if brt > 0:
+                assert r > g > b
+                assert b == 0

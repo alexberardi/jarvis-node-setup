@@ -77,22 +77,35 @@ def _wake_threshold() -> float:
 
 
 def _music_is_playing() -> bool:
-    """True if any tracked media-player subprocess exists (running OR STOPped).
+    """True if any tracked media-player has an UNCORKED PulseAudio sink-input.
 
-    pgrep matches by exact binary name. We check both running and SIGSTOP'd
-    processes because the stopped-during-conversation case still counts as
-    "music context" for wake detection (a SIGCONT is imminent).
+    Process existence alone is misleading: spotifyd runs as a daemon 24/7
+    listening for Spotify Connect commands, regardless of whether music is
+    actually playing. The reliable signal is PA's cork state — a sink-input
+    is uncorked iff the application is actively producing audio (including
+    when we've SIGSTOP'd the process; the cork stays in the same state
+    until SIGCONT). Falls back to False on any pactl failure rather than
+    raising the wake threshold unnecessarily.
     """
-    for binary in _PLAYER_BINARIES:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-x", binary],
-                capture_output=True, timeout=1.0,
-            )
-            if result.returncode == 0:
-                return True
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sink-inputs"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    import json as _json
+    try:
+        items = _json.loads(result.stdout or "[]")
+    except (ValueError, TypeError):
+        return False
+    for item in items:
+        props = item.get("properties") or {}
+        binary = props.get("application.process.binary") or ""
+        if binary in _PLAYER_BINARIES and not item.get("corked", True):
+            return True
     return False
 
 
@@ -366,7 +379,7 @@ def handle_keyword_detected():
     t_enter = time.perf_counter()
     logger.info("Wake word detected, listening for command")
     print("Wake word detected! Listening...")
-    _set_led_transient("listening")
+    _set_led_transient("wake_detected")
 
     # Priority order:
     # 1. WAKE_AUDIO_FILE (LLM-generated variety, cached on prior wake)
@@ -438,6 +451,10 @@ def handle_keyword_detected():
 
     # Fetch the next wake response in the background if provider is configured
     _bg_executor.submit(fetch_next_wake_response)
+
+    # Wake response audio is done — recording starts next. Flip from purple
+    # (wake acknowledgment) to blue (actively listening for the command).
+    _set_led_transient("listening")
 
 
 def _trim_wav_silence(wav_bytes: bytes, threshold: int = 200) -> bytes:
@@ -734,7 +751,7 @@ _ERRORS_DIR = Path(__file__).resolve().parent.parent / "sounds" / "errors"
 
 def _speak_error(message: str) -> None:
     """Speak an error message, falling back to a bundled sound if TTS fails."""
-    _set_led_transient("speaking")
+    _set_led_transient("error")
     try:
         tts = get_tts_provider()
         tts.speak(False, message)
@@ -1403,6 +1420,10 @@ def start_voice_listener(ma_service):
                         logger.warning("Follow-up loop error, resuming wake word", error=str(e))
             finally:
                 _restore_music()
+                # Safety net: always clear the transient LED state when
+                # returning to wake-word mode, so a half-finished path can't
+                # leave the pinwheel (or any other transient) stuck.
+                _set_led_transient(None)
 
             _bg_executor.submit(_fetch_next_processing_ack)
             print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
