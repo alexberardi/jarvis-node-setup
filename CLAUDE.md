@@ -587,6 +587,22 @@ curl -s http://localhost:7703/api/v0/health \
 
 ## E2E Testing
 
+### Integration Runner (CI)
+
+`.github/workflows/integration-runner.yml` receives `repository_dispatch`
+events of type `pr-integration` from participating service repos (v1:
+`jarvis-command-center`). It runs `tests/integration/test_loop_smoke.py`
+against the dispatched PR's HEAD SHA using `tests/fakes/` to stand in for
+`jarvis-llm-proxy-api` and `jarvis-whisper-api`, joins results to QA-plan
+case IDs via `tools/parse_junit.py`, and posts a
+`<!-- integration-test-results:v1 -->` comment + a `jarvis-integration`
+commit status back on the originating PR.
+
+QA-plan cases are bound to tests via `@pytest.mark.qa_case("CASE-NNN")` —
+the marker is exported to JUnit XML by the hook in `tests/conftest.py`.
+See [docs/integration-tests.md](docs/integration-tests.md) for the operator
+guide (canned-response YAML, local reproduction, manual re-trigger, secrets).
+
 ### Prerequisites
 
 1. **Register a dev node** (see [Node Authentication](#node-authentication-dev-setup) above)
