@@ -65,7 +65,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.3** | Two-phase compose with `seed.sh` between: registers CC's app-client in auth (auth generates the key), passes the key into CC's compose env, verifies the seeded credentials work. | `CASE-201` (seeded creds authenticate against auth) |
 | **v2.4** | User-signup → household chain added to `seed.sh`. Node registration originally went directly to auth's `/admin/nodes`; superseded in v2.5 by CC's `/admin/nodes` (which does both auth + local DB in one shot). | `CASE-202` (real seeded node validates `valid=true` against auth) |
 | **v2.5** | First node-authenticated CC endpoint: `POST /api/v0/conversation/start` with `X-API-Key: <node_id>:<node_key>`. Phase 2.5 step calls CC's `/admin/nodes` (CC registers in auth via `/internal/nodes/register` AND writes its own DB row — both rows required for `verify_api_key` to pass). | `CASE-203` (CC accepts seeded node creds end-to-end) |
-| **v2.6** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.6** | First end-to-end voice command exercise: `POST /api/v0/voice/command/stream` with a tool-eliciting prompt. Round-trip goes CC → fake LLM (canned tool_calls response) → back to CC → 202 JSON to the test. Proves the LLM-proxy URL fix from v2.5 actually unblocks real LLM traffic. | `CASE-204` (timer prompt → 202 with `set_timer` tool_call) |
+| **v2.7** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -287,7 +288,7 @@ Writes:
 |---|---|---|
 | `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`, `CASE-202`) |
 | `JARVIS_CC_APP_KEY` | Same value | The compose `up jarvis-command-center` step (interpolated into CC's env) |
-| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.6+ use) |
+| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.7+ use) |
 | `CC_HOUSEHOLD_ID` | The household auto-created by `/auth/register` for the CI user | The Phase 2.5 step (consumed by `POST CC /admin/nodes` to attach the node to a household) |
 
 `CC_NODE_ID` and `CC_NODE_KEY` are *not* written here — they're set by the **Phase 2.5 workflow step** (`Register node in CC`) that runs after CC is up. seed.sh runs before CC is up, so the node registration has to happen later.
@@ -364,13 +365,13 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201, 202, 203)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201, 202, 203, 204)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
-gates on `CC_APP_KEY`; CASE-202 and CASE-203 additionally gate on
-`CC_NODE_ID` + `CC_NODE_KEY` (set by the Phase 2.5 workflow step,
-not by seed.sh).
+gates on `CC_APP_KEY`; CASE-202, CASE-203, and CASE-204 additionally
+gate on `CC_NODE_ID` + `CC_NODE_KEY` (set by the Phase 2.5 workflow
+step, not by seed.sh).
 
 | Case | Asserts |
 |---|---|
@@ -381,6 +382,7 @@ not by seed.sh).
 | `CASE-201` | `POST auth /internal/validate-node` with bogus node + CC's seeded app credentials → 200 with `valid: false`. (Auth has no `/internal/validate-app`; app credentials are checked inline on every protected endpoint. A 401 here means app-auth failed; `valid: false` for a nonexistent node means app-auth succeeded.) |
 | `CASE-202` | Positive-path counterpart to CASE-201. `POST auth /internal/validate-node` with the real seeded `node_id` + `node_key` + CC's app credentials → 200 with `valid: true`, returned `node_id` matches what we sent, and `household_id` is populated. Together with CASE-201 this nails down both branches of the validate-node contract. |
 | `CASE-203` | First end-to-end test through CC. `POST CC /api/v0/conversation/start` with `X-API-Key: <node_id>:<node_key>` and `{conversation_id: "ci-conv-203"}` → 200 with `status: success` and the same `conversation_id` echoed back. Exercises CC's `verify_api_key` → auth's `/internal/validate-node` → CC's local-DB node lookup → CC issues the session. If any of those three steps drift, CASE-203 catches it. |
+| `CASE-204` | First voice-command exercise through the LLM. Setup: `POST /conversation/start` with `client_tools: []` (required — `/voice/command/stream` 400s if the conversation cache entry's `tools` field is None). Action: `POST /voice/command/stream` with `voice_command: "set a 5 minute timer"`. The fake LLM regex-matches "set …timer" → returns canned `stop_reason: tool_calls` with a `set_timer` function call. CC's main.py:974+ picks 202 JSON for any non-`complete` stop_reason. Asserts 202, `stop_reason == "tool_calls"`, exactly one tool call, function name is `set_timer`. Proves CC reaches the fake LLM at `host.docker.internal:7705` (the JARVIS_LLM_PROXY_API_URL fix from v2.5's hotfix) and parses the response into VoiceCommandResponse correctly. |
 
 ### `tools/parse_junit.py`
 
@@ -415,7 +417,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 10 known cases. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 11 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -493,7 +495,7 @@ gh secret list --repo alexberardi/jarvis-node-setup
 3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** to include the new
    repo and re-store the secret.
 4. **Update the runner's `bring_up_cc` logic** if the new service needs
-   its own compose path. v2.6 plans a more generic
+   its own compose path. v2.7 plans a more generic
    `bring_up_service_under_test` so this is just a payload-driven
    selector.
 5. **Open a trivial PR** in the new repo to validate.
@@ -550,7 +552,7 @@ gh workflow run integration-runner.yml \
   -f pr_number=4 \
   -f head_sha=<full SHA from PR's tip> \
   -f originating_repo=alexberardi/jarvis-command-center \
-  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203"
+  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204"
 ```
 
 ### Force a re-run by pushing an empty commit
@@ -611,7 +613,7 @@ CC_NODE_KEY=$CC_NODE_KEY \
 
 # 8. Inspect parsed results
 python tools/parse_junit.py /tmp/results.xml \
-  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203"
+  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204"
 
 # 9. Cleanup
 docker compose -f docker-compose.ci.yaml --profile core down -v
@@ -642,21 +644,30 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.5)
+## Current limitations (v2.6)
 
 1. **Only `jarvis-command-center` is wired.** Other service repos can
-   open PRs but won't trigger this loop. **v2.6** fans out the trigger.
+   open PRs but won't trigger this loop. **v2.7** fans out the trigger.
 2. **No real LLM proxy or Whisper.** Fakes only. Real GPU services are
    v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
-3. **CC's voice-flow endpoints aren't exercised yet.** `CASE-203`
-   covers `/conversation/start` end-to-end — node X-API-Key → CC →
-   auth → response — but the more involved endpoints (`/voice/command/stream`,
-   `/voice/acknowledge`, tool-execution loop with the fake LLM,
-   conversation-continue, etc.) are still untested. The fake LLM's
-   canned responses already include a tool-call sample (see
-   `canned_responses.yaml`); a `CASE-204`-class test would wire that
-   through CC's voice pipeline.
+3. **The tool-execution continuation loop isn't covered yet.** `CASE-204`
+   gets us to the point where CC returns 202 with `tool_calls`. The
+   real node then runs the tool locally and POSTs results to
+   `/voice/command/continue/stream`; the LLM produces a final assistant
+   message; CC returns 200 audio. None of that is exercised yet — the
+   202 boundary is where the test stops. A `CASE-205`-class test would
+   feed canned tool results back to CC and assert the final 200 audio
+   stream (which would also need a fake TTS service since CC calls TTS
+   inline on the 200 path).
+4. **No 200 audio path tested.** Voice-command requests that resolve
+   to a plain spoken response (LLM `stop_reason: complete` with text)
+   trigger CC's TTS synthesis call. We don't run a fake TTS in CI, so
+   tests that would hit this branch either need a fake TTS or have to
+   stay on the 202 path (which is what CASE-204 does).
+5. **`/voice/acknowledge` not covered.** Wake-acknowledge is a parallel
+   no-LLM keyword match in CC. Adding a `CASE-206`-class test against
+   it would prove the wake-word ack path stays cheap (no LLM call).
 4. **Plan cases are hardcoded** in the workflow's default. The QA agent
    will eventually pass `plan_cases` in the trigger payload once we
    update the trigger.
@@ -668,7 +679,7 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    cancels earlier runs.
 8. **No manual-required workflow.** Hardware-needing test cases (real
    Pi mic, mobile UI) have no clean way to surface as
-   `action_required`. v2.6+ candidate.
+   `action_required`. v2.7+ candidate.
 9. **GHA `repository_dispatch` only fires workflows on the default
    branch.** Changes to `integration-runner.yml` only take effect *after*
    merging to `main`. Test runner changes via
@@ -779,7 +790,7 @@ status.
 
 ## Roadmap
 
-### v2.6 — fan-out (next)
+### v2.7 — fan-out (next)
 
 - Copy `integration-trigger.yml` to remaining service repos. Each gets
   its own `INTEGRATION_DISPATCH_TOKEN` secret; extend
