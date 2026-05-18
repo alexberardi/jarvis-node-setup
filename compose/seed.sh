@@ -93,37 +93,6 @@ register_ci_user() {
     "{\"email\":\"$email\",\"password\":\"$password\"}"
 }
 
-# POST /admin/nodes — admin-token-gated. Returns {node_id, node_key, ...}.
-# node_key is the secret the node uses in `X-API-Key: node_id:node_key`
-# headers when talking to CC; it's also what /internal/validate-node checks
-# against.
-#
-# IMPORTANT: the `services` field is what grants the node access to a given
-# service. /internal/validate-node returns `valid=false` with reason
-# "Node is not authorized to access service '<svc>'" when there's no
-# matching NodeServiceAccess row. Pass each service the node should
-# authenticate against (e.g. command-center).
-#
-# $4 is a comma-separated service list (e.g. "command-center" or
-# "command-center,jarvis-tts"); the function expands it to JSON.
-register_node() {
-  local node_id="$1"
-  local household_id="$2"
-  local name="$3"
-  local services_csv="$4"
-  # Convert CSV → JSON array. Empty CSV → []. Single item → ["x"].
-  local services_json
-  if [[ -z "$services_csv" ]]; then
-    services_json="[]"
-  else
-    services_json=$(echo "$services_csv" | python3 -c "import json,sys; print(json.dumps([s.strip() for s in sys.stdin.read().split(',') if s.strip()]))")
-  fi
-  log "Registering node: $node_id under household $household_id (services=$services_json)"
-  http_post "$AUTH_URL/admin/nodes" \
-    "X-Jarvis-Admin-Token" "$AUTH_ADMIN_TOKEN" \
-    "{\"node_id\":\"$node_id\",\"household_id\":\"$household_id\",\"name\":\"$name\",\"services\":$services_json}"
-}
-
 # Pre-flight: confirm both services are reachable. If /health fails here,
 # either the port mapping is wrong or the service crashed silently after
 # its healthcheck went green — both are real failure modes.
@@ -152,43 +121,42 @@ register_service "jarvis-llm-proxy-api" "host.docker.internal" 7705 || \
 register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
   log "WARN whisper registration failed (continuing — CC falls back to env)"
 
-# v2.4 — register a CI user + node for the positive-path validation test
-# (CASE-202). /auth/register auto-creates a household; /admin/nodes attaches
-# a node to it and returns the node_key.
+# v2.4 — register a CI user via /auth/register. The endpoint auto-creates
+# a default household and returns its ID, which is enough scaffolding for
+# the subsequent node-registration step.
+#
+# v2.5 — node registration itself moved to a post-CC-up workflow step that
+# calls CC's POST /admin/nodes. CC's endpoint also writes the local DB
+# row needed by CC's verify_api_key (jarvis-command-center
+# `app/deps.py:verify_api_key` lines 145-148 — when auth says valid but
+# CC has no local row, verify_api_key 401s with "Node not configured
+# locally"). One endpoint, both registrations.
+#
 # `.test` is RFC 2606 reserved and email-validator (pydantic EmailStr's
 # backend) rejects it as a non-resolvable special-use TLD. `example.com`
 # is the standard documentation domain and validates cleanly.
 CI_USER_EMAIL="ci-node-test@example.com"
 CI_USER_PASSWORD="ci-node-test-password"
-CI_NODE_ID="ci-node-001"
 
 USER_RESPONSE=$(register_ci_user "$CI_USER_EMAIL" "$CI_USER_PASSWORD")
 log "auth response (register): $USER_RESPONSE"
 CC_HOUSEHOLD_ID=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['household_id'])")
 log "household_id captured: $CC_HOUSEHOLD_ID"
 
-NODE_RESPONSE=$(register_node "$CI_NODE_ID" "$CC_HOUSEHOLD_ID" "CI Node" "command-center")
-log "auth response (register node): $NODE_RESPONSE"
-CC_NODE_KEY=$(echo "$NODE_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['node_key'])")
-log "node_key captured (length=${#CC_NODE_KEY})"
-
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     echo "CC_APP_KEY=$CC_APP_KEY"
     echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
     echo "CFG_APP_KEY=$CFG_APP_KEY"
-    echo "CC_NODE_ID=$CI_NODE_ID"
-    echo "CC_NODE_KEY=$CC_NODE_KEY"
     echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
   } >> "$GITHUB_ENV"
-  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY / CC_NODE_ID / CC_NODE_KEY / CC_HOUSEHOLD_ID to GITHUB_ENV"
+  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY / CC_HOUSEHOLD_ID to GITHUB_ENV"
+  log "(CC_NODE_ID + CC_NODE_KEY are set by the post-CC-up workflow step)"
 else
   log "GITHUB_ENV unset — printing to stdout instead"
   echo "CC_APP_KEY=$CC_APP_KEY"
   echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
   echo "CFG_APP_KEY=$CFG_APP_KEY"
-  echo "CC_NODE_ID=$CI_NODE_ID"
-  echo "CC_NODE_KEY=$CC_NODE_KEY"
   echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
 fi
 
