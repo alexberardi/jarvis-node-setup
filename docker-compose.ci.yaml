@@ -16,7 +16,10 @@ name: jarvis-ci
 
 services:
   postgres:
-    image: postgres:15
+    # CC's alembic migrations issue `CREATE EXTENSION IF NOT EXISTS vector`
+    # (CC stores memory embeddings via pgvector). The stock postgres:15
+    # image doesn't ship the extension; pgvector/pgvector bundles it.
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_DB: jarvis_command_center
       POSTGRES_USER: postgres
