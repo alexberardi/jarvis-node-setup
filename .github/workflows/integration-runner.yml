@@ -40,7 +40,7 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104"
       linked_prs:
         description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
         required: false
@@ -49,6 +49,16 @@ on:
 concurrency:
   group: integration-${{ github.event.client_payload.originating_repo || inputs.originating_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
   cancel-in-progress: true
+
+# `packages: read` lets the workflow's GITHUB_TOKEN pull the ghcr.io :dev
+# images for jarvis-auth and jarvis-config-service. For private packages,
+# each package's "Manage Actions access" must include this repo
+# (jarvis-node-setup) at
+# https://github.com/users/alexberardi/packages/container/<pkg>/settings —
+# or the packages can be flipped to public to skip per-package setup.
+permissions:
+  contents: read
+  packages: read
 
 jobs:
   integration:
@@ -79,7 +89,7 @@ jobs:
             LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104"
           fi
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
@@ -137,6 +147,14 @@ jobs:
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
         uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GHCR
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Start fake LLM backend
         run: |
           nohup python -m tests.fakes.fake_llm_backend --port 7705 \
@@ -188,9 +206,12 @@ jobs:
         env:
           FAKE_LLM_URL: http://127.0.0.1:7705
           FAKE_WHISPER_URL: http://127.0.0.1:7706
-          # CC_URL is only set when the compose stack is up; the real-CC tests
-          # are skipped (not failed) otherwise.
+          # CC_URL is only set when the compose stack is up; the real-stack
+          # tests use its presence as the gate for skipif. AUTH_URL and
+          # CONFIG_URL point at the docker-compose.ci.yaml port mappings.
           CC_URL: ${{ steps.payload.outputs.bring_up_cc == 'true' && 'http://localhost:7703' || '' }}
+          AUTH_URL: http://localhost:7701
+          CONFIG_URL: http://localhost:7700
         run: |
           pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
             --junit-xml=results.xml \
