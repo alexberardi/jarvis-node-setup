@@ -784,6 +784,20 @@ chown_install_dir() {
 # stop|start of NetworkManager/wpa_supplicant/dnsmasq). Validated
 # with visudo before installing — a malformed sudoers file would
 # lock everyone out of sudo.
+install_apt_wrapper() {
+  # Copy scripts/jarvis-apt-install → /usr/local/sbin/, root-owned 0755.
+  # The service user invokes this via `sudo` (see install_sudoers below) to
+  # install Pantry-declared apt packages without holding broad apt privileges.
+  local src="${INSTALL_DIR}/scripts/jarvis-apt-install"
+  local dest="/usr/local/sbin/jarvis-apt-install"
+  if [ ! -f "$src" ]; then
+    warn "scripts/jarvis-apt-install missing — apt installs from Pantry will fail"
+    return
+  fi
+  install -o root -g root -m 0755 "$src" "$dest"
+  success "Installed ${dest}"
+}
+
 install_sudoers() {
   local sudoers_path="/etc/sudoers.d/jarvis-node"
   local tmp
@@ -807,6 +821,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/hostapd
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/dnsmasq
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/pkill, /usr/bin/killall, /usr/bin/pgrep
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
 EOF
   chmod 0440 "$tmp"
   if visudo -cf "$tmp" >/dev/null 2>&1; then
@@ -1037,6 +1052,7 @@ main() {
   register_commands
   migrate_to_pi_home
   chown_install_dir
+  install_apt_wrapper
   install_sudoers
   create_service
 
