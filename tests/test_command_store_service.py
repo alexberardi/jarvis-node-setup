@@ -19,6 +19,9 @@ from services.command_store_service import (
     _validate_repo_structure,
     _check_platform_compatibility,
     _write_store_metadata,
+    _install_apt_deps,
+    _APT_MIN_FREE_BYTES,
+    _APT_WRAPPER_PATH,
     InstallError,
     RemoveError,
     CUSTOM_COMMANDS_DIR,
@@ -316,3 +319,159 @@ class TestWriteStoreMetadata:
         assert data["danger_rating"] == 2
         assert data["author"] == "octocat"
         assert "installed_at" in data
+
+
+class TestInstallAptDeps:
+    def _manifest(self, apt_packages=None, has_attr=True):
+        m = CommandManifest(name="x", description="x")
+        if has_attr:
+            setattr(m, "apt_packages", apt_packages if apt_packages is not None else [])
+        return m
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_installs_apt_packages_when_declared(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=10 * 1024**3)
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        manifest = self._manifest(["mpv", "alsa-utils"])
+
+        _install_apt_deps(manifest)
+
+        assert mock_run.call_count == 1
+        argv = mock_run.call_args[0][0]
+        assert argv[:4] == ["sudo", str(_APT_WRAPPER_PATH), "mpv", "alsa-utils"]
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_empty_apt_packages_is_a_noop(self, mock_disk, mock_run):
+        manifest = self._manifest([])
+        _install_apt_deps(manifest)
+        mock_run.assert_not_called()
+        mock_disk.assert_not_called()
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_missing_apt_packages_attr_is_a_noop(self, mock_disk, mock_run):
+        manifest = self._manifest(has_attr=False)
+        _install_apt_deps(manifest)
+        mock_run.assert_not_called()
+        mock_disk.assert_not_called()
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_disk_space_below_threshold_raises_install_error(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=400 * 1024 * 1024)
+        manifest = self._manifest(["mpv"])
+        with pytest.raises(InstallError, match=r"[Ii]nsufficient disk|need.*500|500\s*MB"):
+            _install_apt_deps(manifest)
+        mock_run.assert_not_called()
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_disk_space_at_exact_threshold_proceeds(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=_APT_MIN_FREE_BYTES)
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        manifest = self._manifest(["mpv"])
+        _install_apt_deps(manifest)
+        mock_run.assert_called_once()
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_wrapper_nonzero_exit_raises_install_error(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=10 * 1024**3)
+        mock_run.return_value = MagicMock(
+            returncode=4, stderr="invalid name: mpv\n", stdout=""
+        )
+        manifest = self._manifest(["mpv"])
+        with pytest.raises(InstallError, match=r"apt.*invalid name: mpv|invalid name: mpv.*apt"):
+            _install_apt_deps(manifest)
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_wrapper_missing_raises_clear_install_error(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=10 * 1024**3)
+        mock_run.side_effect = FileNotFoundError("/usr/local/sbin/jarvis-apt-install")
+        manifest = self._manifest(["mpv"])
+        with pytest.raises(InstallError, match=r"install\.sh"):
+            _install_apt_deps(manifest)
+        # Hint at remediation
+        try:
+            _install_apt_deps(manifest)
+        except InstallError as e:
+            assert "re-run" in str(e).lower()
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_subprocess_timeout_raises_install_error(self, mock_disk, mock_run):
+        import subprocess as _sp
+        mock_disk.return_value = MagicMock(free=10 * 1024**3)
+        mock_run.side_effect = _sp.TimeoutExpired(cmd=["sudo"], timeout=300)
+        manifest = self._manifest(["mpv"])
+        with pytest.raises(InstallError, match=r"timeout|timed out"):
+            _install_apt_deps(manifest)
+
+    @patch("services.command_store_service.subprocess.run")
+    @patch("services.command_store_service.shutil.disk_usage")
+    def test_install_error_message_includes_failing_package_names(self, mock_disk, mock_run):
+        mock_disk.return_value = MagicMock(free=10 * 1024**3)
+        mock_run.return_value = MagicMock(
+            returncode=4, stderr="invalid name: mpv\n", stdout=""
+        )
+        manifest = self._manifest(["mpv", "alsa-utils"])
+        with pytest.raises(InstallError) as exc:
+            _install_apt_deps(manifest)
+        msg = str(exc.value)
+        assert "invalid name: mpv" in msg
+        assert "mpv" in msg and "alsa-utils" in msg
+
+
+class TestInstallAptBeforePipOrdering:
+    @patch("services.command_store_service._clone_repo")
+    @patch("services.command_store_service._check_name_conflict")
+    @patch("services.command_store_service._install_apt_deps")
+    @patch("services.command_store_service._install_pip_deps")
+    @patch("services.command_store_service._seed_secrets")
+    def test_apt_called_before_pip_in_do_install(
+        self, mock_seed, mock_pip, mock_apt, mock_conflict, mock_clone, tmp_path
+    ):
+        repo_parent = tmp_path / "clone"
+        repo_parent.mkdir()
+        repo = _create_fake_repo(repo_parent)
+        mock_clone.return_value = repo
+
+        parent = MagicMock()
+        parent.attach_mock(mock_apt, "_install_apt_deps")
+        parent.attach_mock(mock_pip, "_install_pip_deps")
+
+        test_custom_dir = tmp_path / "custom_commands"
+        test_custom_dir.mkdir()
+
+        with patch("services.command_store_service.CUSTOM_COMMANDS_DIR", test_custom_dir):
+            install_from_github("https://github.com/test/repo", skip_tests=True)
+
+        names = [c[0] for c in parent.mock_calls if c[0] in ("_install_apt_deps", "_install_pip_deps")]
+        assert "_install_apt_deps" in names and "_install_pip_deps" in names
+        assert names.index("_install_apt_deps") < names.index("_install_pip_deps")
+
+    @patch("services.command_store_service._clone_repo")
+    @patch("services.command_store_service._check_name_conflict")
+    @patch("services.command_store_service._install_apt_deps")
+    @patch("services.command_store_service._install_pip_deps")
+    @patch("services.command_store_service._seed_secrets")
+    def test_apt_failure_aborts_before_pip(
+        self, mock_seed, mock_pip, mock_apt, mock_conflict, mock_clone, tmp_path
+    ):
+        repo_parent = tmp_path / "clone"
+        repo_parent.mkdir()
+        repo = _create_fake_repo(repo_parent)
+        mock_clone.return_value = repo
+        mock_apt.side_effect = InstallError("apt failed")
+
+        test_custom_dir = tmp_path / "custom_commands"
+        test_custom_dir.mkdir()
+
+        with patch("services.command_store_service.CUSTOM_COMMANDS_DIR", test_custom_dir):
+            with pytest.raises(InstallError, match="apt failed"):
+                install_from_github("https://github.com/test/repo", skip_tests=True)
+
+        mock_pip.assert_not_called()
