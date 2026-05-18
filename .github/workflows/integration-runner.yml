@@ -1,0 +1,238 @@
+name: Integration Runner
+
+# Receives `repository_dispatch` events from service repos when a PR opens
+# (see <service>/.github/workflows/integration-trigger.yml). Runs the cross-
+# service integration suite, parses results via tools/parse_junit.py, and
+# posts a `<!-- integration-test-results:v1 -->` comment back on the
+# originating PR plus a check-run status.
+#
+# Also exposes `workflow_dispatch` so the loop can be re-triggered manually
+# while iterating on the runner itself.
+#
+# Required secrets (set in jarvis-node-setup repo settings):
+#   INTEGRATION_COMMENT_TOKEN — fine-grained PAT with `pull-requests:write`
+#                               and `commit-statuses:write` on each service
+#                               repo that can dispatch here. (The Checks API
+#                               is GitHub-App-only; commit statuses are the
+#                               PAT-accessible equivalent.)
+
+on:
+  repository_dispatch:
+    types: [pr-integration]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Originating service (e.g. jarvis-command-center)"
+        required: true
+      pr_number:
+        description: "PR number in the originating repo"
+        required: true
+      head_sha:
+        description: "HEAD SHA of the PR"
+        required: true
+      originating_repo:
+        description: "Full repo (owner/name) where the PR lives"
+        required: true
+      qa_plan_comment_id:
+        description: "Optional: roadmap issue comment ID for the QA plan"
+        required: false
+        default: ""
+      plan_cases:
+        description: "Comma-separated CASE-IDs from the QA plan"
+        required: false
+        default: "CASE-001,CASE-002,CASE-003"
+
+concurrency:
+  group: integration-${{ github.event.client_payload.originating_repo || inputs.originating_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve dispatch payload
+        id: payload
+        run: |
+          if [[ "${{ github.event_name }}" == "repository_dispatch" ]]; then
+            SERVICE="${{ github.event.client_payload.service }}"
+            PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+            HEAD_SHA="${{ github.event.client_payload.head_sha }}"
+            ORIGINATING_REPO="${{ github.event.client_payload.originating_repo }}"
+            QA_PLAN_COMMENT_ID="${{ github.event.client_payload.qa_plan_comment_id }}"
+            PLAN_CASES="${{ github.event.client_payload.plan_cases }}"
+          else
+            SERVICE="${{ inputs.service }}"
+            PR_NUMBER="${{ inputs.pr_number }}"
+            HEAD_SHA="${{ inputs.head_sha }}"
+            ORIGINATING_REPO="${{ inputs.originating_repo }}"
+            QA_PLAN_COMMENT_ID="${{ inputs.qa_plan_comment_id }}"
+            PLAN_CASES="${{ inputs.plan_cases }}"
+          fi
+          if [[ -z "$PLAN_CASES" ]]; then
+            PLAN_CASES="CASE-001,CASE-002,CASE-003"
+          fi
+          {
+            echo "service=$SERVICE"
+            echo "pr_number=$PR_NUMBER"
+            echo "head_sha=$HEAD_SHA"
+            echo "originating_repo=$ORIGINATING_REPO"
+            echo "qa_plan_comment_id=$QA_PLAN_COMMENT_ID"
+            echo "plan_cases=$PLAN_CASES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-integration-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-integration-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml
+
+      - name: Start fake LLM backend
+        run: |
+          nohup python -m tests.fakes.fake_llm_backend --port 7705 \
+            > /tmp/fake_llm.log 2>&1 &
+          echo "FAKE_LLM_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Start fake Whisper backend
+        run: |
+          nohup python -m tests.fakes.fake_whisper --port 7706 \
+            > /tmp/fake_whisper.log 2>&1 &
+          echo "FAKE_WHISPER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for fakes to become healthy
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:7705/health > /dev/null \
+               && curl -sf http://127.0.0.1:7706/health > /dev/null; then
+              echo "Fakes healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Fakes never became healthy"
+          echo "=== fake_llm.log ===" && cat /tmp/fake_llm.log
+          echo "=== fake_whisper.log ===" && cat /tmp/fake_whisper.log
+          exit 1
+
+      - name: Run integration tests
+        id: pytest
+        continue-on-error: true
+        env:
+          FAKE_LLM_URL: http://127.0.0.1:7705
+          FAKE_WHISPER_URL: http://127.0.0.1:7706
+        run: |
+          pytest tests/integration/test_loop_smoke.py \
+            --junit-xml=results.xml \
+            --tb=short \
+            -v
+
+      - name: Parse results into JSON
+        if: always()
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [[ ! -f results.xml ]]; then
+            # Pytest never produced XML — synthesize an empty file so parse_junit
+            # reports every planned case as not-implemented.
+            echo '<?xml version="1.0"?><testsuites/>' > results.xml
+          fi
+          python tools/parse_junit.py results.xml \
+            --plan-cases "${{ steps.payload.outputs.plan_cases }}" \
+            --run-url "$RUN_URL" \
+            --output results.json
+          cat results.json
+
+      - name: Render comment body
+        if: always()
+        run: |
+          python <<'PYEOF' > comment.md
+          import json
+
+          data = json.load(open("results.json"))
+          s = data["summary"]
+          print("<!-- integration-test-results:v1 -->")
+          print("## Integration test results")
+          print()
+          print(
+              f"**{s['pass']} pass | {s['fail']} fail | {s['skipped']} skipped"
+              f" | {s['not_implemented']} not-implemented** "
+              f"(of {s['total']} cases)"
+          )
+          print()
+          print("| Case | Status | Test |")
+          print("| --- | --- | --- |")
+          for case_id, info in sorted(data["cases"].items()):
+              name = info["test_name"] or "(no test bound)"
+              print(f"| `{case_id}` | {info['status']} | `{name}` |")
+          fails = [
+              (c, i) for c, i in data["cases"].items()
+              if i["status"] == "fail" and i["failure_excerpt"]
+          ]
+          if fails:
+              print()
+              print("### Failures")
+              for case_id, info in fails:
+                  print(f"- **{case_id}** `{info['test_name']}`")
+                  print(f"  ```")
+                  print(f"  {info['failure_excerpt']}")
+                  print(f"  ```")
+          print()
+          print(f"[CI run]({data['run_url']})")
+          PYEOF
+
+      - name: Post comment to originating PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_COMMENT_TOKEN }}
+          ORIGINATING_REPO: ${{ steps.payload.outputs.originating_repo }}
+          PR_NUMBER: ${{ steps.payload.outputs.pr_number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$ORIGINATING_REPO" --body-file comment.md
+
+      - name: Post commit status on PR head SHA
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_COMMENT_TOKEN }}
+          ORIGINATING_REPO: ${{ steps.payload.outputs.originating_repo }}
+          HEAD_SHA: ${{ steps.payload.outputs.head_sha }}
+        run: |
+          PASS=$(python -c "import json; print(json.load(open('results.json'))['summary']['pass'])")
+          FAIL=$(python -c "import json; print(json.load(open('results.json'))['summary']['fail'])")
+          NOT_IMPL=$(python -c "import json; print(json.load(open('results.json'))['summary']['not_implemented'])")
+          TOTAL=$(python -c "import json; print(json.load(open('results.json'))['summary']['total'])")
+          if [[ "$FAIL" -gt 0 || "$NOT_IMPL" -gt 0 ]]; then
+            STATE="failure"
+            DESC="$PASS/$TOTAL pass · $FAIL fail · $NOT_IMPL not-implemented"
+          else
+            STATE="success"
+            DESC="$PASS/$TOTAL pass"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh api \
+            --method POST \
+            "/repos/$ORIGINATING_REPO/statuses/$HEAD_SHA" \
+            -f "state=$STATE" \
+            -f "context=jarvis-integration" \
+            -f "description=$DESC" \
+            -f "target_url=$RUN_URL" || echo "::warning::status post failed"
+
+      - name: Cleanup fake processes
+        if: always()
+        run: |
+          kill "${FAKE_LLM_PID:-0}" "${FAKE_WHISPER_PID:-0}" 2>/dev/null || true
+          echo "=== fake_llm.log ===" && cat /tmp/fake_llm.log || true
+          echo "=== fake_whisper.log ===" && cat /tmp/fake_whisper.log || true
