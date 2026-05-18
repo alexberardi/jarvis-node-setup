@@ -16,3 +16,8 @@ include = ["commands*", "core*", "clients*", "services*", "utils*", "scripts*"]
 
 [tool.black]
 line-length = 79
+
+[tool.pytest.ini_options]
+markers = [
+    "qa_case(id): map this test to a QA plan case (e.g. CASE-001). The id is exported to JUnit XML for the integration-runner to join against the QA plan.",
+]
