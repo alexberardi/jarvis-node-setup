@@ -126,9 +126,12 @@ jobs:
         with:
           repository: ${{ steps.payload.outputs.originating_repo }}
           ref: ${{ steps.payload.outputs.head_sha }}
-          # Land it as a sibling directory so docker-compose.ci.yaml's
-          # build context (`../jarvis-command-center`) resolves correctly.
-          path: ../jarvis-command-center
+          # actions/checkout requires path: to be a subdirectory of the
+          # workspace. We land CC inside the workspace and tell compose
+          # where to find it via the CC_SOURCE_PATH env var (the compose
+          # default of `../jarvis-command-center` is for local-dev where
+          # this repo and CC sit as siblings on disk).
+          path: _src/jarvis-command-center
 
       - name: Set up Docker Buildx
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
@@ -163,10 +166,12 @@ jobs:
 
       - name: Bring up compose stack (core profile)
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        env:
+          # Override the compose default (`../jarvis-command-center`) so the
+          # build context points at where actions/checkout actually put the
+          # source. Path is relative to docker-compose.ci.yaml's location.
+          CC_SOURCE_PATH: ./_src/jarvis-command-center
         run: |
-          # CC's build context is `../jarvis-command-center` relative to this
-          # repo's docker-compose.ci.yaml, which matches where actions/checkout
-          # placed it.
           docker compose -f docker-compose.ci.yaml --profile core up -d --wait
           echo "=== compose ps ===" && docker compose -f docker-compose.ci.yaml ps
 
