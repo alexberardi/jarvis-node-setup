@@ -1,0 +1,44 @@
+# Canned responses for the integration-runner fakes.
+#
+# fake_llm_backend.py reads `responses` — entries match against the latest
+# user-role message body by regex (first match wins).
+# fake_whisper.py reads `transcripts` — entries match against the uploaded
+# audio filename by regex.
+#
+# If nothing matches, both fakes fall back to a generic stub. To add a new
+# canned interaction, append an entry — keep regexes anchored loosely so
+# small wording changes in the test don't break the match.
+
+responses:
+  - prompt_regex: "what'?s? \\d+ plus \\d+"
+    response:
+      role: assistant
+      content: "The result is 62."
+      stop_reason: complete
+
+  - prompt_regex: "(set|start) (a |the )?(\\d+ ?\\w+ )?timer"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_001
+          function:
+            name: set_timer
+            arguments: '{"duration_seconds": 300, "label": "test"}'
+
+  - prompt_regex: "\\b(hello|hi|hey)\\b"
+    response:
+      role: assistant
+      content: "Hello! How can I help?"
+      stop_reason: complete
+
+transcripts:
+  - filename_regex: "timer.*\\.wav$"
+    transcript: "Set a five minute timer"
+
+  - filename_regex: "weather.*\\.wav$"
+    transcript: "What's the weather today"
+
+  - filename_regex: "calc.*\\.wav$"
+    transcript: "What's 25 plus 37"
