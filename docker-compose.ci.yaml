@@ -1,0 +1,83 @@
+# docker-compose.ci.yaml — used by .github/workflows/integration-runner.yml
+# to bring up a real Jarvis service stack against which to run integration
+# tests. See docs/integration-tests.md for the full architecture.
+#
+# The fake LLM and Whisper backends run as background processes on the host
+# (the workflow starts them with `python -m tests.fakes.*` before
+# `docker compose up`). Containerized services reach them via
+# `host.docker.internal`.
+#
+# Profiles let the runner opt into different stacks per originating service:
+#   --profile core      → Postgres + the service-under-test
+# More profiles land in subsequent PRs as additional services join (auth,
+# config-service, full real-stack, etc.).
+
+name: jarvis-ci
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: jarvis_command_center
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    profiles: ["core"]
+    command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+
+  jarvis-command-center:
+    profiles: ["core"]
+    build:
+      context: ${CC_SOURCE_PATH:-../jarvis-command-center}
+    environment:
+      # Database — CC reads DATABASE_URL (docker-compose.dev.yaml maps
+      # DB_URL → DATABASE_URL; in CI we just set DATABASE_URL directly).
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/jarvis_command_center
+      # Skip jarvis-config-service for v2.1 — CC's _setup_service_config()
+      # logs a warning and falls back to legacy env vars below. (Real
+      # config-service lands in v2.2.)
+      # JARVIS_CONFIG_URL: (unset on purpose)
+      # Legacy env-var fallbacks for the services CC consults. v2.1 points
+      # LLM and Whisper at the host-side fakes (started before compose up).
+      JARVIS_LLM_PROXY_URL: http://host.docker.internal:7705
+      JARVIS_WHISPER_URL: http://host.docker.internal:7706
+      JARVIS_AUTH_BASE_URL: http://host.docker.internal:7701
+      JARVIS_MQTT_BROKER_URL: mqtt://mosquitto:1883
+      # Auth-adjacent (CC will start without app-key validation passing;
+      # the failed startup probe is logged but non-fatal).
+      ADMIN_API_KEY: ci-admin-key
+      JARVIS_APP_ID: command-center
+      JARVIS_APP_KEY: ci-app-key
+      JARVIS_AUTH_SECRET_KEY: ci-secret-not-used-when-jwts-not-issued
+      # Logging
+      JARVIS_LOG_CONSOLE_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "7703:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Override CMD so alembic migrations run before uvicorn (matches the
+    # dev compose pattern). The base Dockerfile only runs uvicorn.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8002"
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=2)\""
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
