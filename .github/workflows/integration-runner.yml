@@ -40,7 +40,11 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102"
+      linked_prs:
+        description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
+        required: false
+        default: "{}"
 
 concurrency:
   group: integration-${{ github.event.client_payload.originating_repo || inputs.originating_repo }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
@@ -64,6 +68,7 @@ jobs:
             ORIGINATING_REPO="${{ github.event.client_payload.originating_repo }}"
             QA_PLAN_COMMENT_ID="${{ github.event.client_payload.qa_plan_comment_id }}"
             PLAN_CASES="${{ github.event.client_payload.plan_cases }}"
+            LINKED_PRS='${{ github.event.client_payload.linked_prs }}'
           else
             SERVICE="${{ inputs.service }}"
             PR_NUMBER="${{ inputs.pr_number }}"
@@ -71,9 +76,20 @@ jobs:
             ORIGINATING_REPO="${{ inputs.originating_repo }}"
             QA_PLAN_COMMENT_ID="${{ inputs.qa_plan_comment_id }}"
             PLAN_CASES="${{ inputs.plan_cases }}"
+            LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102"
+          fi
+          if [[ -z "$LINKED_PRS" ]]; then
+            LINKED_PRS="{}"
+          fi
+          # bring_up_cc=true triggers the v2.1 compose path (Postgres + CC built
+          # from PR source). Today it only fires when the originating service is
+          # jarvis-command-center; v2.2 onwards branches on more services.
+          BRING_UP_CC="false"
+          if [[ "$SERVICE" == "jarvis-command-center" ]]; then
+            BRING_UP_CC="true"
           fi
           {
             echo "service=$SERVICE"
@@ -82,6 +98,8 @@ jobs:
             echo "originating_repo=$ORIGINATING_REPO"
             echo "qa_plan_comment_id=$QA_PLAN_COMMENT_ID"
             echo "plan_cases=$PLAN_CASES"
+            echo "linked_prs=$LINKED_PRS"
+            echo "bring_up_cc=$BRING_UP_CC"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -101,6 +119,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart
+
+      - name: Check out originating service repo at PR head
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.payload.outputs.originating_repo }}
+          ref: ${{ steps.payload.outputs.head_sha }}
+          # Land it as a sibling directory so docker-compose.ci.yaml's
+          # build context (`../jarvis-command-center`) resolves correctly.
+          path: ../jarvis-command-center
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        uses: docker/setup-buildx-action@v3
 
       - name: Start fake LLM backend
         run: |
@@ -129,14 +161,33 @@ jobs:
           echo "=== fake_whisper.log ===" && cat /tmp/fake_whisper.log
           exit 1
 
+      - name: Bring up compose stack (core profile)
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        run: |
+          # CC's build context is `../jarvis-command-center` relative to this
+          # repo's docker-compose.ci.yaml, which matches where actions/checkout
+          # placed it.
+          docker compose -f docker-compose.ci.yaml --profile core up -d --wait
+          echo "=== compose ps ===" && docker compose -f docker-compose.ci.yaml ps
+
+      - name: Tail CC startup logs on success
+        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        run: |
+          # Brief glimpse of CC's startup so the run log captures any warnings
+          # without flooding it with full logs.
+          docker compose -f docker-compose.ci.yaml logs --tail=30 jarvis-command-center || true
+
       - name: Run integration tests
         id: pytest
         continue-on-error: true
         env:
           FAKE_LLM_URL: http://127.0.0.1:7705
           FAKE_WHISPER_URL: http://127.0.0.1:7706
+          # CC_URL is only set when the compose stack is up; the real-CC tests
+          # are skipped (not failed) otherwise.
+          CC_URL: ${{ steps.payload.outputs.bring_up_cc == 'true' && 'http://localhost:7703' || '' }}
         run: |
-          pytest tests/test_loop_smoke.py \
+          pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
             --junit-xml=results.xml \
             --tb=short \
             -v
@@ -229,6 +280,19 @@ jobs:
             -f "context=jarvis-integration" \
             -f "description=$DESC" \
             -f "target_url=$RUN_URL" || echo "::warning::status post failed"
+
+      - name: Tail CC logs on failure
+        if: ${{ always() && steps.payload.outputs.bring_up_cc == 'true' }}
+        run: |
+          echo "=== CC compose logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml logs --tail=100 jarvis-command-center || true
+          echo "=== postgres logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml logs --tail=30 postgres || true
+
+      - name: Tear down compose stack
+        if: ${{ always() && steps.payload.outputs.bring_up_cc == 'true' }}
+        run: |
+          docker compose -f docker-compose.ci.yaml --profile core down -v --remove-orphans || true
 
       - name: Cleanup fake processes
         if: always()
