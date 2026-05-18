@@ -25,7 +25,10 @@ import pytest
 CC_URL = os.environ.get("CC_URL")
 AUTH_URL = os.environ.get("AUTH_URL", "http://localhost:7701")
 CONFIG_URL = os.environ.get("CONFIG_URL", "http://localhost:7700")
+CC_APP_ID = os.environ.get("CC_APP_ID", "command-center")
+CC_APP_KEY = os.environ.get("CC_APP_KEY", "")
 SKIP_REASON = "CC_URL unset — skipping real-stack smoke tests (v1 fakes-only mode)"
+SKIP_NO_KEY = "CC_APP_KEY unset — seed step did not run"
 
 
 @pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
@@ -85,4 +88,37 @@ def test_auth_service_health_responds():
     body = response.json()
     assert body.get("status") == "ok", (
         f"expected status=ok, got body={body}"
+    )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(not CC_APP_KEY, reason=SKIP_NO_KEY)
+@pytest.mark.qa_case("CASE-201")
+def test_cc_seeded_app_credentials_validate_against_auth():
+    """The app-client seed.sh registered for `command-center` actually
+    works against auth's /internal/validate-app endpoint.
+
+    Out-of-band cross-service exercise: bypasses CC entirely and calls
+    auth directly using the credentials the seed step generated and that
+    CC was started with. If this passes, CC's downstream calls to auth
+    (which use the same credentials) will succeed. v2.4 will add an
+    in-band test that goes through CC's own endpoints.
+
+    Catches: auth's /internal/validate-app contract drift, seed.sh
+    miswriting the captured key, or CC's env not picking up the seeded
+    value (in which case this case is the canary — its failure tells you
+    where to look).
+    """
+    response = httpx.post(
+        f"{AUTH_URL}/internal/validate-app",
+        headers={
+            "X-Jarvis-App-Id": CC_APP_ID,
+            "X-Jarvis-App-Key": CC_APP_KEY,
+        },
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    body = response.json()
+    assert body.get("valid") is True, (
+        f"expected valid=true, got body={body}"
     )
