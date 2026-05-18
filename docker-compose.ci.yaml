@@ -83,6 +83,14 @@ services:
       JARVIS_CONFIG_PORT: "7700"
       JARVIS_AUTH_URL: http://jarvis-auth:8000
       JARVIS_AUTH_ADMIN_TOKEN: ci-auth-admin-token
+      # Required for config-service to accept POST /services from seed.sh.
+      # Without it, every write returns 500 "Admin token not configured on
+      # server" and the fakes never end up in config-service's registry —
+      # which forces CC's service-discovery into the env-var fallback path
+      # (see JARVIS_LLM_PROXY_API_URL below). Setting this here means
+      # seed.sh's register_service() calls actually succeed and CC can
+      # discover the fakes the way it would in prod.
+      JARVIS_CONFIG_ADMIN_TOKEN: ci-auth-admin-token
       # config-service's own app credentials for calling other services.
       # Not used by anything in v2.2's foundation tests; placeholders are
       # fine.
@@ -128,7 +136,12 @@ services:
       # below still apply for LLM/Whisper.
       JARVIS_CONFIG_URL: http://jarvis-config-service:7700
       JARVIS_AUTH_BASE_URL: http://jarvis-auth:8000
-      JARVIS_LLM_PROXY_URL: http://host.docker.internal:7705
+      # Env var name MUST be JARVIS_LLM_PROXY_API_URL (not _URL alone).
+      # CC's service_config.py:30 maps `jarvis-llm-proxy-api` →
+      # `JARVIS_LLM_PROXY_API_URL`, and llm_proxy_client.py:42 falls back
+      # to the same name when config-service discovery doesn't return a
+      # URL. The wrong name was a silent dead-letter env that bit v2.5.
+      JARVIS_LLM_PROXY_API_URL: http://host.docker.internal:7705
       JARVIS_WHISPER_URL: http://host.docker.internal:7706
       JARVIS_MQTT_BROKER_URL: mqtt://mosquitto:1883
       # App-to-app credentials. Not registered with auth yet — v2.3 seeds
