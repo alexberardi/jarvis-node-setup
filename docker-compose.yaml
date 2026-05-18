@@ -15,6 +15,15 @@ services:
     volumes:
       - jarvis-node-config:/config
       - jarvis-node-data:/data
+      - jarvis-node-custom-commands:/app/commands/custom_commands
+      - jarvis-node-custom-agents:/app/agents/custom_agents
+      - jarvis-node-custom-families:/app/device_families/custom_families
+      - jarvis-node-custom-managers:/app/device_managers/custom_managers
+      - jarvis-node-custom-routines:/app/routines/custom_routines
+      # NOTE: /root/.jarvis/packages is coupled to the Dockerfile having no
+      # USER directive (so HOME=/root). If a future change adds a non-root
+      # USER, update this mount target to match the new home dir.
+      - jarvis-node-packages:/root/.jarvis/packages
     # Required on Linux so the container can reach host-mapped services
     # (MQTT broker, config-service, etc.). Not needed on macOS/Windows.
     extra_hosts:
@@ -24,3 +33,9 @@ services:
 volumes:
   jarvis-node-config:
   jarvis-node-data:
+  jarvis-node-custom-commands:
+  jarvis-node-custom-agents:
+  jarvis-node-custom-families:
+  jarvis-node-custom-managers:
+  jarvis-node-custom-routines:
+  jarvis-node-packages:
