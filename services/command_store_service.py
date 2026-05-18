@@ -291,6 +291,56 @@ def _is_custom_installed(obj: object, package_dir: str, custom_subdir: str) -> b
         return False
 
 
+# Minimum free disk space before invoking apt. Apt-get install often needs
+# 100-300 MB; 500 MB leaves headroom for the package + its postinst scripts
+# without filling /var on a Pi with a small SD card.
+_APT_MIN_FREE_BYTES = 500 * 1024 * 1024
+
+_APT_WRAPPER_PATH = Path("/usr/local/sbin/jarvis-apt-install")
+
+# Matches _install_pip_deps' 300s timeout. Apt can be slow on first run
+# (apt-get update + index rebuild on stale Pis), but anything over this is
+# almost certainly a stuck lock or DNS issue.
+_APT_TIMEOUT_SECONDS = 300
+
+
+def _install_apt_deps(manifest: CommandManifest) -> None:
+    """Install apt dependencies declared in the manifest via the sudoers wrapper."""
+    apt_packages = getattr(manifest, "apt_packages", None) or []
+    if not apt_packages:
+        return
+
+    free = shutil.disk_usage("/").free
+    if free < _APT_MIN_FREE_BYTES:
+        raise InstallError(
+            f"insufficient disk: need ≥500MB free, have {free // (1024 * 1024)}MB"
+        )
+
+    logger.info("Installing apt dependencies", packages=apt_packages)
+    try:
+        result = subprocess.run(
+            ["sudo", str(_APT_WRAPPER_PATH), *apt_packages],
+            capture_output=True,
+            text=True,
+            timeout=_APT_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as e:
+        raise InstallError(
+            f"apt wrapper missing at {_APT_WRAPPER_PATH} — re-run install.sh "
+            f"to deploy it (packages: {apt_packages}): {e}"
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise InstallError(
+            f"apt install timed out after {_APT_TIMEOUT_SECONDS}s "
+            f"(packages: {apt_packages})"
+        ) from e
+
+    if result.returncode != 0:
+        raise InstallError(
+            f"apt install failed: {result.stderr.strip()} (packages: {apt_packages})"
+        )
+
+
 def _install_pip_deps(manifest: CommandManifest) -> None:
     """Install pip dependencies declared in the manifest."""
     deps: list[str] = []
@@ -669,16 +719,19 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
         if first_cmd_dir.exists():
             _write_store_metadata(first_cmd_dir, manifest, source_label)
 
-    # 9. Install pip deps
+    # 9. Install apt deps (before pip so a fast apt failure aborts cleanly).
+    _install_apt_deps(manifest)
+
+    # 10. Install pip deps
     _install_pip_deps(manifest)
 
-    # 10. Generate package namespace for dependency imports
+    # 11. Generate package namespace for dependency imports
     _generate_package_namespace(manifest.name, manifest)
 
-    # 11. Seed secrets
+    # 12. Seed secrets
     _seed_secrets(manifest)
 
-    # 12. Enable commands in registry
+    # 13. Enable commands in registry
     for comp in manifest.components:
         if comp.type == "command":
             _enable_in_registry(comp.name)
