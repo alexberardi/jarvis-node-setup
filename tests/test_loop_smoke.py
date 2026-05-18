@@ -6,7 +6,11 @@ Verifies that the QA execution-layer plumbing works end-to-end:
 - pytest exit status flows back through the runner workflow
 
 These tests deliberately hit only the fakes — no Jarvis services required —
-so the runner workflow can prove the loop without standing up a stack.
+so the runner workflow can prove the loop without standing up a stack. They
+live here (and not under `tests/integration/`) on purpose: that subtree's
+`conftest.py` imports the production codebase (which depends on
+`jarvis_command_sdk`), and pulling that in just to run a smoke test would
+make the runner workflow brittle and slow.
 """
 
 from __future__ import annotations
