@@ -37,6 +37,11 @@ services:
     image: eclipse-mosquitto:2
     profiles: ["core"]
     command: ["mosquitto", "-c", "/mosquitto-no-auth.conf"]
+    # Expose port to the host so CASE-212 can subscribe from the test
+    # process (paho-mqtt at localhost:1883). CC inside the docker
+    # network still reaches mosquitto via its service name.
+    ports:
+      - "1883:1883"
 
   jarvis-auth:
     # `:dev` tag is published on every push to main from
