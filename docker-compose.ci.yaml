@@ -143,6 +143,10 @@ services:
       # URL. The wrong name was a silent dead-letter env that bit v2.5.
       JARVIS_LLM_PROXY_API_URL: http://host.docker.internal:7705
       JARVIS_WHISPER_URL: http://host.docker.internal:7706
+      # Fake TTS at 7707 — added in v2.8 so CASE-206 can exercise the
+      # streaming /voice/command/continue/stream audio path. CC's
+      # tts_client.py:65 fallback name is JARVIS_TTS_URL.
+      JARVIS_TTS_URL: http://host.docker.internal:7707
       JARVIS_MQTT_BROKER_URL: mqtt://mosquitto:1883
       # App-to-app credentials. Not registered with auth yet — v2.3 seeds
       # an app-client. Until then, calls that require app validation will
