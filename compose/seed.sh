@@ -120,6 +120,8 @@ register_service "jarvis-llm-proxy-api" "host.docker.internal" 7705 || \
   log "WARN llm-proxy registration failed (continuing — CC falls back to env)"
 register_service "jarvis-whisper-api" "host.docker.internal" 7706 || \
   log "WARN whisper registration failed (continuing — CC falls back to env)"
+register_service "jarvis-tts" "host.docker.internal" 7707 || \
+  log "WARN tts registration failed (continuing — CC falls back to env)"
 
 # v2.4 — register a CI user via /auth/register. The endpoint auto-creates
 # a default household and returns its ID, which is enough scaffolding for
