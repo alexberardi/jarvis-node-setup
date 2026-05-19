@@ -144,6 +144,12 @@ USER_RESPONSE=$(register_ci_user "$CI_USER_EMAIL" "$CI_USER_PASSWORD")
 log "auth response (register): $USER_RESPONSE"
 CC_HOUSEHOLD_ID=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['household_id'])")
 log "household_id captured: $CC_HOUSEHOLD_ID"
+# v2.13 — also capture the access_token. CASE-212 needs to call CC's
+# user-JWT-gated endpoints (e.g. /nodes/{id}/settings/requests, which
+# triggers an MQTT publish) and the registered user has admin/power_user
+# role on their auto-created household by default.
+CC_USER_JWT=$(echo "$USER_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+log "user access_token captured (length=${#CC_USER_JWT})"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
@@ -151,8 +157,9 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
     echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
     echo "CFG_APP_KEY=$CFG_APP_KEY"
     echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
+    echo "CC_USER_JWT=$CC_USER_JWT"
   } >> "$GITHUB_ENV"
-  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY / CC_HOUSEHOLD_ID to GITHUB_ENV"
+  log "Wrote CC_APP_KEY / JARVIS_CC_APP_KEY / CFG_APP_KEY / CC_HOUSEHOLD_ID / CC_USER_JWT to GITHUB_ENV"
   log "(CC_NODE_ID + CC_NODE_KEY are set by the post-CC-up workflow step)"
 else
   log "GITHUB_ENV unset — printing to stdout instead"
@@ -160,6 +167,7 @@ else
   echo "JARVIS_CC_APP_KEY=$CC_APP_KEY"
   echo "CFG_APP_KEY=$CFG_APP_KEY"
   echo "CC_HOUSEHOLD_ID=$CC_HOUSEHOLD_ID"
+  echo "CC_USER_JWT=$CC_USER_JWT"
 fi
 
 log "Done"

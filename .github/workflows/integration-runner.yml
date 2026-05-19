@@ -40,7 +40,7 @@ on:
       plan_cases:
         description: "Comma-separated CASE-IDs from the QA plan"
         required: false
-        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211"
+        default: "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212"
       linked_prs:
         description: "JSON map of {repo_name: branch_or_sha} for cross-service PR dependencies"
         required: false
@@ -89,7 +89,7 @@ jobs:
             LINKED_PRS='${{ inputs.linked_prs }}'
           fi
           if [[ -z "$PLAN_CASES" ]]; then
-            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211"
+            PLAN_CASES="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212"
           fi
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
@@ -128,7 +128,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart
+          pip install pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart paho-mqtt
 
       - name: Check out originating service repo at PR head
         if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
@@ -297,6 +297,12 @@ jobs:
           # in which case CASE-202's skipif gate fires.
           CC_NODE_ID: ${{ env.CC_NODE_ID }}
           CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
+          # v2.13 — user JWT + MQTT broker URL for CASE-212. CC's user-
+          # JWT-gated endpoints (e.g. /nodes/.../settings/requests) need
+          # the access_token captured from /auth/register. MQTT_BROKER_URL
+          # points at the compose-mapped mosquitto port on the runner host.
+          CC_USER_JWT: ${{ env.CC_USER_JWT }}
+          MQTT_BROKER_URL: tcp://127.0.0.1:1883
         run: |
           pytest tests/test_loop_smoke.py tests/test_cc_real_smoke.py \
             --junit-xml=results.xml \
