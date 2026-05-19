@@ -24,6 +24,7 @@ from pathlib import Path
 import uvicorn
 import yaml
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 DEFAULT_PORT = int(os.environ.get("FAKE_LLM_PORT", "7705"))
@@ -42,6 +43,7 @@ class ChatRequest(BaseModel):
     messages: list[dict]
     tools: list[dict] | None = None
     model: str | None = None
+    stream: bool | None = False
 
 
 def _load_responses(path: Path) -> list[dict]:
@@ -141,16 +143,59 @@ def _coerce_arguments(raw: object) -> dict:
     return {}
 
 
+def _sse_stream_for(canned: dict):
+    """SSE generator emitting `data: {"delta": "<chunk>"}\\n\\n` events
+    followed by `data: {"done": true, ...}\\n\\n`. Matches what
+    jarvis-command-center's `chat_completion_stream` parses (see
+    jarvis-command-center/app/core/llm_proxy_client.py:157-169).
+
+    We emit one delta per word so CC's sentence-boundary detector
+    (re-split on `[.!?]\\s+`) actually triggers — a single mega-delta
+    would never hit the boundary and TTS would never be called.
+
+    Only used for the plain-text path; tool-call streaming has its own
+    chunked format and we don't have a test covering it yet.
+    """
+    text = canned.get("content", "") or ""
+    if not text:
+        # No content to stream — just emit a done event so the consumer
+        # sees a clean termination.
+        yield b'data: {"done": true}\n\n'
+        return
+    for word in text.split(" "):
+        # The space after each word is what triggers the sentence
+        # boundary regex when the word ends with . / ! / ?.
+        chunk = word + " "
+        payload = json.dumps({"delta": chunk})
+        yield f"data: {payload}\n\n".encode("utf-8")
+    final = json.dumps({"done": True, "content": text})
+    yield f"data: {final}\n\n".encode("utf-8")
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest):
     """OpenAI-style endpoint matching what jarvis-llm-proxy-api exposes
-    and what CC's LLMProxyClient targets via JARVIS_LLM_PROXY_API_URL."""
+    and what CC's LLMProxyClient targets via JARVIS_LLM_PROXY_API_URL.
+
+    Branches on `stream` field in the request body:
+      - false/missing → returns the standard JSON shape (used by CC's
+        non-streaming `chat_completion` call — CASE-001/002/204/205).
+      - true          → returns SSE-formatted events (used by CC's
+        `chat_completion_stream` for the streaming voice paths —
+        CASE-206 and the future /voice/command/stream 200-audio branch).
+    """
     user_prompt = ""
     for msg in reversed(req.messages):
         if msg.get("role") == "user":
             user_prompt = msg.get("content", "") or ""
             break
     canned = _match(user_prompt)
+
+    if req.stream:
+        return StreamingResponse(
+            _sse_stream_for(canned),
+            media_type="text/event-stream",
+        )
     return _to_openai(canned, req.model or "fake-llm")
 
 
