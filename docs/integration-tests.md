@@ -73,7 +73,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.11** | `validation_required` branch — when the LLM emits the `request_validation` server tool because a parameter is ambiguous, CC translates that to a 202 with `stop_reason=validation_required` + a `validation_request` body. Exercises the server-tool execution path (previously only client tools were covered). | `CASE-210` ("play music" → 202 with question "Which artist?") |
 | **v2.12** | Multi-tool flow — LLM emits 2 tool_calls in one response. CC's tool exec engine returns both in a single 202 with their IDs/order intact. Catches drift in the `server_results` + `client_calls` split logic. | `CASE-211` ("test multi-tool flow" → 202 with two client tool_calls in order) |
 | **v2.13** | First test on the **server→node async channel** (MQTT). Expose mosquitto port 1883, add paho-mqtt to the runner, capture access_token from `/auth/register` in seed.sh, subscribe to a per-node topic from the test, POST a publishing endpoint, assert the message arrives with the right payload. | `CASE-212` (POST `/nodes/{id}/settings/requests` → CC publishes `jarvis/nodes/{id}/settings/request` with the matching `request_id`) |
-| **v2.14** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.14** | Mixed server+client tool branch — single LLM response with both a server tool (e.g. `remember`) and a client tool. CC's loop runs the server, appends the result, re-calls the LLM, returns the iter-2 client tool. Fake LLM gains `requires_tool_message` matcher hint to differentiate iterations. | `CASE-213` ("test mixed tools" → 202 with the iter-2 `client_tool_four` only — proves the loop ran twice) |
+| **v2.15** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -295,7 +296,7 @@ Writes:
 |---|---|---|
 | `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`, `CASE-202`) |
 | `JARVIS_CC_APP_KEY` | Same value | The compose `up jarvis-command-center` step (interpolated into CC's env) |
-| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.14+ use) |
+| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.15+ use) |
 | `CC_HOUSEHOLD_ID` | The household auto-created by `/auth/register` for the CI user | The Phase 2.5 step (consumed by `POST CC /admin/nodes` to attach the node to a household) |
 
 `CC_NODE_ID` and `CC_NODE_KEY` are *not* written here — they're set by the **Phase 2.5 workflow step** (`Register node in CC`) that runs after CC is up. seed.sh runs before CC is up, so the node registration has to happen later.
@@ -436,7 +437,7 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…212)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…213)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
@@ -463,6 +464,7 @@ seed.sh from `/auth/register`).
 | `CASE-210` | The `validation_required` branch. POSTs `/voice/command/stream` with `voice_command="play music"`. The fake LLM matches the new "play music" regex → returns a `request_validation` tool_call with arguments `{question: "Which artist would you like?", parameter_name: "artist", options: [...]}`. CC's tool exec engine recognizes `request_validation` as a *server* tool (not client), executes it locally (the tool returns `{_validation_request: True, question, parameter_name, options}`), detects the marker, and converts it to a 202 with `stop_reason: "validation_required"` + a `validation_request` body. Asserts 202, stop_reason, question contains "artist", parameter_name=="artist", options is a list. This is the first case that exercises the server-tool execution path — every other voice case fired client tool_calls only. |
 | `CASE-211` | Multi-tool flow. POSTs `/voice/command/stream` with `voice_command="test multi-tool flow"`. The fake LLM emits two tool_calls in one response (`client_tool_one` + `client_tool_two`, generic names that don't collide with CC's server-tool registry). CC's tool exec engine puts both in `client_calls` and returns a single 202 with both tool_calls in order. Asserts 202, stop_reason=tool_calls, exactly two tool_calls, names in order, distinct IDs. Catches drift in the `server_results` + `client_calls` split (the mixed branch — server-then-client — is a future case). |
 | `CASE-212` | The server→node MQTT push channel. Subscribes to `jarvis/nodes/{CC_NODE_ID}/settings/request` via paho-mqtt at `127.0.0.1:1883` (compose-mapped mosquitto port). POSTs `/api/v0/nodes/{CC_NODE_ID}/settings/requests` with `Authorization: Bearer <CC_USER_JWT>` — CC creates a SettingsRequest row and publishes the MQTT signal synchronously inside the handler. Test asserts a message arrives within 10s with `node_id == CC_NODE_ID` and `request_id` matching the 201 response. Plumbing landing with this case: mosquitto port mapping, paho-mqtt added to the runner, `CC_USER_JWT` captured from `/auth/register`'s access_token by seed.sh. This is the only case so far on the async channel — every other case is request/response. |
+| `CASE-213` | Mixed server+client tool branch. POSTs `/voice/command/stream` with `voice_command="test mixed tools"`. Iter 1 of CC's tool loop gets `[remember (server) + client_tool_three (client)]` — runs `remember` (returns no_speaker error; server_results still populated), continues the loop with the tool result appended to messages. Iter 2 the fake LLM matches the second canned entry (gated on `requires_tool_message: true`) → returns `[client_tool_four]` only. CC returns 202 with that single tool_call. Asserts the response is exactly `[client_tool_four]` — proves the loop iterated past the server tool (if it didn't, we'd see iter-1's response). The fake-LLM matcher gained a `requires_tool_message` hint to differentiate iterations. |
 
 ### `tools/parse_junit.py`
 
@@ -497,7 +499,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 19 known cases. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 20 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -575,7 +577,7 @@ gh secret list --repo alexberardi/jarvis-node-setup
 3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** to include the new
    repo and re-store the secret.
 4. **Update the runner's `bring_up_cc` logic** if the new service needs
-   its own compose path. v2.14 plans a more generic
+   its own compose path. v2.15 plans a more generic
    `bring_up_service_under_test` so this is just a payload-driven
    selector.
 5. **Open a trivial PR** in the new repo to validate.
@@ -632,7 +634,7 @@ gh workflow run integration-runner.yml \
   -f pr_number=4 \
   -f head_sha=<full SHA from PR's tip> \
   -f originating_repo=alexberardi/jarvis-command-center \
-  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212"
+  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213"
 ```
 
 ### Force a re-run by pushing an empty commit
@@ -693,7 +695,7 @@ CC_NODE_KEY=$CC_NODE_KEY \
 
 # 8. Inspect parsed results
 python tools/parse_junit.py /tmp/results.xml \
-  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212"
+  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210,CASE-211,CASE-212,CASE-213"
 
 # 9. Cleanup
 docker compose -f docker-compose.ci.yaml --profile core down -v
@@ -724,10 +726,10 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.13)
+## Current limitations (v2.14)
 
 1. **Only `jarvis-command-center` is wired.** Other service repos can
-   open PRs but won't trigger this loop. **v2.14** fans out the trigger.
+   open PRs but won't trigger this loop. **v2.15** fans out the trigger.
 2. **No real LLM proxy, Whisper, or TTS.** Fakes only. Real GPU services
    are v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
@@ -748,13 +750,6 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    k2/provision, device-scan, etc.) that aren't exercised. Most of
    them follow the same pattern (uuid `request_id` + per-node topic),
    so adding more is mechanical once needed.
-6. **Mixed server+client tool branch not covered.** `CASE-211` exercises
-   the all-client multi-tool branch. CC also has a mixed branch where
-   a single LLM response contains both a server tool (e.g.
-   `request_validation`) and a client tool — CC runs the server tool
-   first, then continues the loop so the LLM can see the server result
-   before the client tool fires. A future case would canned-respond
-   with a server+client mix and assert the two-iteration flow.
 4. **Plan cases are hardcoded** in the workflow's default. The QA agent
    will eventually pass `plan_cases` in the trigger payload once we
    update the trigger.
@@ -766,7 +761,7 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    cancels earlier runs.
 8. **No manual-required workflow.** Hardware-needing test cases (real
    Pi mic, mobile UI) have no clean way to surface as
-   `action_required`. v2.14+ candidate.
+   `action_required`. v2.15+ candidate.
 9. **GHA `repository_dispatch` only fires workflows on the default
    branch.** Changes to `integration-runner.yml` only take effect *after*
    merging to `main`. Test runner changes via
@@ -877,7 +872,7 @@ status.
 
 ## Roadmap
 
-### v2.14 — fan-out (next)
+### v2.15 — fan-out (next)
 
 - Copy `integration-trigger.yml` to remaining service repos. Each gets
   its own `INTEGRATION_DISPATCH_TOKEN` secret; extend
