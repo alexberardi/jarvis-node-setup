@@ -72,7 +72,10 @@ def main() -> None:
     args = parser.parse_args()
     global _canned
     _canned = _load_transcripts(args.responses)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    # Bind to 0.0.0.0 so CI containers can reach us via host.docker.internal.
+    # Loopback-only would only be reachable from the GHA runner host process,
+    # not from inside the CC container.
+    uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
