@@ -26,8 +26,13 @@ FAKE_WHISPER_URL = os.environ.get("FAKE_WHISPER_URL", "http://127.0.0.1:7706")
 
 @pytest.mark.qa_case("CASE-001")
 def test_fake_llm_returns_canned_completion():
+    """Fake LLM emits OpenAI-shaped response for the canned 'plus' prompt.
+
+    The fake mirrors jarvis-llm-proxy-api's /v1/chat/completions wire
+    format (see services/response_helpers.py:create_openai_response).
+    """
     response = httpx.post(
-        f"{FAKE_LLM_URL}/v1/chat",
+        f"{FAKE_LLM_URL}/v1/chat/completions",
         json={
             "messages": [{"role": "user", "content": "What's 25 plus 37?"}],
             "model": "fake-llm",
@@ -36,14 +41,20 @@ def test_fake_llm_returns_canned_completion():
     )
     response.raise_for_status()
     body = response.json()
-    assert body["message"]["content"] == "The result is 62."
-    assert body["message"]["stop_reason"] == "complete"
+    choice = body["choices"][0]
+    assert choice["message"]["content"] == "The result is 62."
+    assert choice["finish_reason"] == "stop"
 
 
 @pytest.mark.qa_case("CASE-002")
 def test_fake_llm_emits_tool_call_for_timer_prompt():
+    """Fake emits the tool_calls payload as a JSON string in content
+    (matching what LoRA-adapter-trained models do in prod and what CC's
+    text-based parser expects — see tool_call_parser.parse_response)."""
+    import json
+
     response = httpx.post(
-        f"{FAKE_LLM_URL}/v1/chat",
+        f"{FAKE_LLM_URL}/v1/chat/completions",
         json={
             "messages": [{"role": "user", "content": "Set a 5 minute timer"}],
             "model": "fake-llm",
@@ -52,8 +63,13 @@ def test_fake_llm_emits_tool_call_for_timer_prompt():
     )
     response.raise_for_status()
     body = response.json()
-    assert body["message"]["stop_reason"] == "tool_calls"
-    assert body["message"]["tool_calls"][0]["function"]["name"] == "set_timer"
+    choice = body["choices"][0]
+    # finish_reason is "stop" because CC parses tool_calls out of the
+    # content JSON itself; native finish_reason isn't the trigger.
+    assert choice["finish_reason"] == "stop"
+    parsed_content = json.loads(choice["message"]["content"])
+    assert parsed_content["tool_calls"][0]["name"] == "set_timer"
+    assert parsed_content["tool_calls"][0]["arguments"]["duration_seconds"] == 300
 
 
 @pytest.mark.qa_case("CASE-003")

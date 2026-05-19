@@ -16,6 +16,7 @@ Override at runtime via env: FAKE_LLM_PORT, FAKE_LLM_RESPONSES.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 from pathlib import Path
@@ -51,6 +52,8 @@ def _load_responses(path: Path) -> list[dict]:
 
 
 def _match(prompt: str) -> dict:
+    """Find canned response for a user prompt. Returns the simplified
+    canned-yaml shape (role/content/stop_reason/tool_calls)."""
     for entry in _canned:
         pattern = entry.get("prompt_regex")
         if pattern and re.search(pattern, prompt, re.IGNORECASE):
@@ -62,18 +65,93 @@ def _match(prompt: str) -> dict:
     }
 
 
-@app.post("/v1/chat")
-async def chat(req: ChatRequest):
+def _to_openai(canned: dict, model: str) -> dict:
+    """Translate the canned-yaml shape into OpenAI chat-completion shape,
+    which is what the real jarvis-llm-proxy-api emits.
+
+    Two paths, both real:
+
+    1. **Plain-text response.** Canned `content` is plain prose with
+       `stop_reason: complete` → emit as `choices[0].message.content`
+       with `finish_reason: "stop"`. CC's text-based parser
+       (tool_call_parser.parse_response) fails to JSON-decode it and
+       falls back to "stop" + the raw content as assistant_message.
+
+    2. **Tool-call response.** Canned `tool_calls` is present → emit
+       the tool calls as a JSON string in `message.content`:
+
+           {"message": "", "tool_calls": [{"name": ..., "arguments": {...}}]}
+
+       Plus `finish_reason: "stop"`. CC's parser JSON-decodes the
+       content, finds `tool_calls`, and returns
+       `("tool_calls", [...], message)`. This is the path the real
+       adapter-trained models use too — they emit JSON in content
+       (LoRA-trained on that exact shape) and the proxy returns it
+       verbatim. We're not using native OpenAI `message.tool_calls`
+       because CC's `use_native_tools` is False without a
+       JarvisAdapterModel prompt provider registered, which makes
+       CC ignore native tool_calls and only parse content as JSON.
+    """
+    role = canned.get("role", "assistant")
+    tool_calls = canned.get("tool_calls")
+
+    if tool_calls:
+        content = json.dumps({
+            "message": canned.get("content", "") or "",
+            "tool_calls": [
+                {
+                    "name": tc.get("function", {}).get("name"),
+                    "arguments": _coerce_arguments(
+                        tc.get("function", {}).get("arguments", {})
+                    ),
+                }
+                for tc in tool_calls
+            ],
+        })
+        finish_reason = "stop"
+    else:
+        content = canned.get("content", "") or ""
+        stop_reason = canned.get("stop_reason", "complete")
+        finish_reason = "stop" if stop_reason == "complete" else stop_reason
+
+    return {
+        "id": "fake-llm-001",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": role, "content": content},
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _coerce_arguments(raw: object) -> dict:
+    """Canned `arguments` may be a JSON string (as written in YAML for
+    readability) or already a dict. CC's parser expects a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatRequest):
+    """OpenAI-style endpoint matching what jarvis-llm-proxy-api exposes
+    and what CC's LLMProxyClient targets via JARVIS_LLM_PROXY_API_URL."""
     user_prompt = ""
     for msg in reversed(req.messages):
         if msg.get("role") == "user":
             user_prompt = msg.get("content", "") or ""
             break
-    return {
-        "id": "fake-llm-001",
-        "model": req.model or "fake-llm",
-        "message": _match(user_prompt),
-    }
+    canned = _match(user_prompt)
+    return _to_openai(canned, req.model or "fake-llm")
 
 
 @app.get("/health")
@@ -88,7 +166,10 @@ def main() -> None:
     args = parser.parse_args()
     global _canned
     _canned = _load_responses(args.responses)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    # Bind to 0.0.0.0 so CI containers can reach us via host.docker.internal.
+    # Loopback-only would only be reachable from the GHA runner host process,
+    # not from inside the CC container.
+    uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":
