@@ -308,10 +308,28 @@ Key design points:
 
 ### `tests/fakes/fake_llm_backend.py`
 
-FastAPI shim mimicking `jarvis-llm-proxy-api`. Endpoint: `POST /v1/chat`.
-Reads `canned_responses.yaml`, regex-matches the latest user-role message
-body (first match wins), returns the configured `response` object.
-Unmatched prompts return `{role: assistant, content: "OK", stop_reason: complete}`.
+FastAPI shim mimicking `jarvis-llm-proxy-api`. Endpoint:
+`POST /v1/chat/completions` (matches the real proxy's OpenAI-style
+route). Reads `canned_responses.yaml`, regex-matches the latest user-role
+message body (first match wins), and translates the canned entry to
+OpenAI shape:
+
+```
+canned {role, content, stop_reason, tool_calls}
+   → choices[0].message + choices[0].finish_reason
+
+stop_reason "complete"   → finish_reason "stop"
+stop_reason "tool_calls" → finish_reason "tool_calls"
+```
+
+CC's `tool_execution_engine.py:605-613` reads `choices[0].message` and
+`choices[0].finish_reason`, so this is the shape required for the
+voice-flow tests (CASE-204+).
+
+Unmatched prompts fall back to `content: "OK"`, `finish_reason: stop`.
+Bound to `0.0.0.0` so CC containers can reach the fake via
+`host.docker.internal` (loopback-only would only be reachable from the
+runner host process).
 
 ```bash
 python -m tests.fakes.fake_llm_backend --port 7705 \
