@@ -47,6 +47,23 @@ responses:
       content: "Hello! How can I help?"
       stop_reason: complete
 
+  # Validation-required path: LLM detects an ambiguous parameter and emits
+  # the `request_validation` server tool. CC executes it, sees the
+  # `_validation_request: True` marker in the result, and returns a 202
+  # with stop_reason=validation_required + a validation_request body.
+  # The voice node renders the question to the user and resends their
+  # answer as a continuation. CASE-210 asserts the 202 shape.
+  - prompt_regex: "play (a |some )?music|play (a |the )?song"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_validation_001
+          function:
+            name: request_validation
+            arguments: '{"question": "Which artist would you like?", "parameter_name": "artist", "options": ["Beatles", "Stones"]}'
+
 transcripts:
   - filename_regex: "timer.*\\.wav$"
     transcript: "Set a five minute timer"
