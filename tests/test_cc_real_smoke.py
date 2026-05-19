@@ -610,3 +610,93 @@ def test_cc_media_whisper_transcribe_proxies():
     assert body.get("text") == "Set a five minute timer", (
         f"expected canned timer transcript, got body={body}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-209")
+def test_cc_voice_command_returns_audio_for_complete_response():
+    """`/voice/command/stream`'s 200 audio path — the conversational
+    response branch (LLM returns a plain text answer, no tool_call).
+
+    Sequence:
+      1. /conversation/start (same setup as CASE-204).
+      2. POST /voice/command/stream with voice_command="hello jarvis".
+         The fake LLM regex-matches `\\b(hello|hi|hey)\\b` →
+         returns canned `complete` response with content
+         "Hello! How can I help?" (plain text, no tool_calls).
+      3. CC's tool_call_parser tries to JSON-decode the content,
+         fails, falls back to `("stop", [], "Hello! How can I help?")`.
+         The tool loop ends with `stop_reason: complete` +
+         `assistant_message: "Hello! How can I help?"`.
+      4. `handle_voice_stream` sees `stop_reason == "complete"` AND
+         a non-empty assistant_message → takes the 200 audio path:
+         instantiates a TTSClient, calls `get_audio_format()`, then
+         feeds the assistant message through `stream_text_as_audio`
+         which posts each sentence to the fake TTS's /speak/stream
+         and yields the returned PCM chunks.
+      5. The fake TTS returns 32 bytes of zero PCM + X-Audio-*
+         headers; CC forwards them in a StreamingResponse.
+
+    Asserts 200, content-type audio/raw, non-zero body, the
+    `X-Audio-Sample-Rate` header is set, and the `X-Assistant-Message`
+    header contains the canned response so we can verify CC actually
+    threaded the message (not just streamed empty bytes).
+
+    This closes the symmetric pair with CASE-204:
+      - CASE-204: tool_calls path → 202 JSON
+      - CASE-209: complete-with-text path → 200 audio
+
+    Combined with CASE-205 (blocking continue) and CASE-206 (streaming
+    continue), the full set of `/voice/command/*` branches is covered.
+    """
+    conv_id = "ci-conv-209"
+
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    with httpx.stream(
+        "POST",
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "hello jarvis",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    ) as response:
+        assert response.status_code == 200, (
+            f"expected 200 audio (complete path), got {response.status_code} "
+            f"body={response.read()[:400]!r}"
+        )
+        content_type = response.headers.get("content-type", "")
+        assert content_type.startswith("audio/raw"), (
+            f"expected content-type=audio/raw, got {content_type!r} — "
+            f"if this is application/json the LLM response landed in the "
+            f"202 tool_calls branch instead of the 200 audio branch."
+        )
+        assert response.headers.get("X-Audio-Sample-Rate"), (
+            "expected X-Audio-Sample-Rate header — CC didn't reach the fake "
+            "TTS, or fell through to a TTS-less path."
+        )
+        body = b""
+        for chunk in response.iter_bytes():
+            body += chunk
+        assert len(body) > 0, (
+            "expected non-zero audio body — same failure mode as CASE-206 "
+            "(SSE format mismatch or TTS unreachable from inside CC)."
+        )
