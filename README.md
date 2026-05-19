@@ -4,7 +4,7 @@ Client software for Jarvis voice nodes. Runs on Raspberry Pi Zero (or any Linux 
 
 ## Features
 
-- **Local wake word detection** using [Porcupine](https://picovoice.ai/platform/porcupine/)
+- **Local wake word detection** using [openWakeWord](https://github.com/dscripka/openWakeWord)
 - **Plugin architecture** - extend functionality by implementing `IJarvisCommand`
 - **20+ built-in commands** - weather, calculator, timers, reminders, music control, and more
 - **Encrypted local storage** - secrets stored securely with PySQLCipher
@@ -177,8 +177,7 @@ Key environment variables (see `.env.example`):
 |----------|-------------|
 | `COMMAND_CENTER_URL` | URL of jarvis-command-center |
 | `NODE_API_KEY` | API key for authentication |
-| `PORCUPINE_ACCESS_KEY` | Picovoice access key |
-| `WAKE_WORD` | Wake word to listen for |
+| `WAKE_WORD` | Wake word to listen for (default `hey_jarvis`; configured via `wake_word_model` setting) |
 | `MQTT_BROKER` | MQTT broker for TTS |
 
 ## Testing
@@ -248,7 +247,7 @@ python test_multi_turn_conversation.py -c validation
 ## Dependencies
 
 - **Audio**: PyAudio, SoundDevice
-- **Wake word**: pvporcupine
+- **Wake word**: openwakeword
 - **MQTT**: paho-mqtt
 - **HTTP**: httpx
 - **Database**: SQLAlchemy, pysqlcipher3
