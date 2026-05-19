@@ -783,3 +783,90 @@ def test_cc_voice_command_returns_validation_request():
     assert isinstance(options, list), (
         f"expected options to be a list, got {options!r}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-211")
+def test_cc_voice_command_returns_multi_tool_calls():
+    """Multi-tool flow — when the LLM emits 2+ tool_calls in one
+    response, CC returns them all in a single 202.
+
+    Why this matters: CC's tool execution engine
+    (tool_execution_engine.py:827+) splits tool_calls into
+    `server_results` (executed locally) + `client_calls` (returned
+    to the node). When all calls are client tools, CC returns 202
+    with the full client_calls list intact. When server + client
+    mix, CC continues the loop. CASE-211 exercises the all-client
+    branch; the mixed branch (server tool runs, then loop continues)
+    is a future case.
+
+    Setup: open conversation. Action: POST `/voice/command/stream`
+    with "test multi-tool flow" — the fake LLM emits two tool_calls
+    with names `client_tool_one` and `client_tool_two` (generic
+    names that don't collide with any registered server tool, so
+    both fall through to client_calls).
+
+    What this proves on top of CASE-204:
+      - CC's tool exec engine handles >1 tool_call per response
+        without losing or reordering them.
+      - The 202 response body's `tool_calls` field is a list, not
+        a single object, and consumers can iterate it.
+      - tool_call IDs are preserved so the node knows which result
+        to send back for which call.
+
+    Asserts 202, stop_reason==tool_calls, exactly two tool_calls,
+    names in order (client_tool_one then client_tool_two), and
+    both IDs come back intact.
+    """
+    conv_id = "ci-conv-211"
+
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    response = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "test multi-tool flow",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 202, (
+        f"expected 202 multi-tool branch, got {response.status_code} "
+        f"body={response.text[:400]}"
+    )
+    body = response.json()
+    assert body.get("stop_reason") == "tool_calls", (
+        f"expected stop_reason=tool_calls, got body={body}"
+    )
+    tool_calls = body.get("tool_calls") or []
+    assert len(tool_calls) == 2, (
+        f"expected exactly two tool_calls, got {len(tool_calls)}: "
+        f"{tool_calls}"
+    )
+    names = [tc.get("function", {}).get("name") for tc in tool_calls]
+    assert names == ["client_tool_one", "client_tool_two"], (
+        f"expected names in order [client_tool_one, client_tool_two], "
+        f"got {names}"
+    )
+    ids = [tc.get("id") for tc in tool_calls]
+    assert all(ids), f"expected all tool_calls to have ids, got {ids}"
+    assert len(set(ids)) == 2, (
+        f"expected distinct ids, got {ids}"
+    )
