@@ -1,6 +1,149 @@
 # jarvis-node-setup
 
-Client software for Pi Zero voice nodes. Captures audio, detects wake word, sends commands to command-center.
+Client software for **Pi Zero voice nodes**. Captures audio, detects wake word, ships voice to command-center, plays TTS audio back. Also hosts the **plugin runtime** for community packages (commands, agents, device protocols, device managers, routines) installed via Pantry.
+
+> **Identity rule:** the node is the *edge* — it owns mic/speaker hardware, wake-word detection, and the plugin runtime. The brain lives in command-center. If you find yourself building "smart" routing logic on the node, push it to CC.
+
+---
+
+## Topology
+
+```
+                       Wake word (openWakeWord, local)
+                              │
+                              ▼
+   ┌───────────────────────────────────────────────────┐
+   │  jarvis-node-setup (running on Pi Zero or Mac)     │
+   │                                                     │
+   │  ┌──────────────────┐    ┌─────────────────────┐  │
+   │  │  Voice loop      │    │  Plugin runtime     │  │
+   │  │  - mic capture   │    │  - commands/        │  │
+   │  │  - wake detect   │    │  - agents/          │  │
+   │  │  - audio out     │    │  - device_families/ │  │
+   │  └────────┬─────────┘    │  - routines/        │  │
+   │           │               └─────────────────────┘  │
+   │           │ HTTP (X-API-Key: node_id:api_key)      │
+   │           ▼                                         │
+   └───────────┬───────────────────────────────────────┘
+               │
+               ▼
+   ┌─────────────────────────────────────────────────────┐
+   │  jarvis-command-center :7703 (the brain)            │
+   │  /conversation/start → /voice/command/stream        │
+   │  → audio bytes streamed back to node speaker        │
+   └─────────────────────────────────────────────────────┘
+               ▲                                ▲
+   MQTT subscribe (server → node)         HTTP responses
+   - TTS messages                              ▲
+   - settings push                             │
+   - package install                           │
+   - bluetooth ops                             │
+   - node updates                              │
+   - reminders                                 │
+                                               │
+   ┌───────────────────────────────────────────┴─────────┐
+   │ Optional / on demand:                                │
+   │ - jarvis-whisper-api (STT via CC media proxy)       │
+   │ - jarvis-tts (audio synthesis via CC streaming)     │
+   │ - jarvis-pantry (package install via MQTT push)     │
+   └──────────────────────────────────────────────────────┘
+```
+
+---
+
+## Voice loop lifecycle (the hot path)
+
+```
+1. Node boots → main.py
+   ├─ if not provisioned: enter provisioning mode (AP WiFi + port 8080) — see "Provisioning"
+   └─ if provisioned: start voice loop + MQTT listener
+
+2. Wake word detection (main thread):
+   ├─ openWakeWord listens to mic continuously (`scripts/voice_listener.py`,
+   │  model defaults to `hey_jarvis` via the `wake_word_model` setting; the
+   │  Pi USB mic captures 48kHz audio and we resample to 16kHz before scoring)
+   └─ on wake → call `/voice/acknowledge` for instant ack ("Sure", "On it")
+       └─ also start recording the user's utterance
+
+3. STT path:
+   ├─ record audio chunk (silence-bounded)
+   ├─ POST to CC `/api/v0/media/whisper/transcribe` (CC proxies to jarvis-whisper-api)
+   └─ get text back
+
+4. Voice command path:
+   ├─ POST `/conversation/start` once per session
+   │   - sends client_tools[] (installed commands), available_commands[],
+   │     node_context { speaker_user_id, agents, timezone }
+   ├─ POST `/voice/command/stream` (the streaming hot path)
+   │   - 200 audio/raw PCM → write to speaker
+   │   - 202 JSON with tool_calls → execute locally, post back to
+   │     `/voice/command/continue/stream`
+   └─ loop until done
+
+5. MQTT background thread:
+   ├─ subscribes to per-node topics
+   └─ handles inbound: TTS-by-text, settings updates, package install,
+       bluetooth commands, node updates, reminders due
+```
+
+Multi-step workflows (tool calls):
+- Node receives 202 JSON listing `tool_calls`
+- Looks up each tool in its local command registry (`commands/`)
+- Runs the command(s)
+- POSTs results to `/voice/command/continue/stream`
+- CC issues the final assistant message; node plays it as audio
+
+---
+
+## Dependency graph
+
+**Upstream (node depends on):**
+- **jarvis-command-center** (required, port 7703) — all voice traffic
+- **jarvis-auth** indirectly via CC (node validation; node never calls auth directly)
+- **MQTT broker** (required, port 1883/1884) — for inbound server→node messages
+- **jarvis-tts**, **jarvis-whisper-api** — proxied through CC; node doesn't talk to them directly
+- **jarvis-pantry** (optional, for package install)
+- **Local Postgres / SQLite via SQLAlchemy + pysqlcipher3** — encrypted local DB for secrets, reminders, packages
+
+**Downstream (depends on node):**
+- **The user**, in the room with the node.
+
+**Impact if down (one node):**
+- That node loses voice; other nodes and backend services unaffected.
+
+---
+
+## Invariants & gotchas
+
+1. **Two install paths exist** — production (`install.sh` curl-piped from a GitHub release tag, installs to `/opt/jarvis-node`) and dev (`setup/*.sh`, into a local `.venv`). **Audio config drift between them has burned us before** (commit `08d2e1f`). If you change ALSA settings, update `install.sh` first.
+2. **`*_shared/` for cross-component code, not `services/`/`utils/`/`core/`.** Built-in node directories shadow community-package shared dirs because everything goes on `sys.path`. Pantry static analysis flags this as a warning. **Always use a package-specific name** (`ha_shared/`, `lifx_shared/`, etc.).
+3. **`jarvis_dependencies` in package manifest creates an importable namespace at install time.** A package can extend another via class inheritance (e.g. `nest_pro` extending `nest`). The dependency must be installed *first*; uninstalling a depended-on package is blocked.
+4. **The local DB uses SQLCipher.** It's an encrypted SQLite. Reading directly via `sqlite3` won't work without the key. Always go through SQLAlchemy + the storage backend.
+5. **K1 vs K2:** K1 is the node's master key (Fernet, generated on first run, never leaves the node). K2 is a shared AES-256 key with the mobile app for settings sync. K2 is generated at provisioning time (or manually for dev via `utils/generate_dev_k2.py`).
+6. **Wake-acknowledge and the main voice request run in parallel.** `/voice/acknowledge` is a fast no-LLM keyword match; `/voice/command/stream` is the real work. Don't refactor them into a single call — the user-perceived latency benefit of parallel ack is significant.
+7. **`/voice/command/stream` returns 200 (audio) OR 202 (JSON).** The node must branch on content-type — audio for "spoken response", JSON for "tool calls to run". Both are normal outcomes.
+8. **MQTT is the only server→node async channel.** No SSE-to-node, no WebSocket push. If you need to deliver a message to the node without it asking, use MQTT.
+9. **Node auth is `X-API-Key: node_id:api_key`**, not a JWT and not app-creds. This is the only auth pattern that uses that header format in the stack — match it carefully.
+10. **`authorize_node.py` is for dev only.** Production nodes get credentials via the provisioning flow (mobile app → AP WiFi → exchange tokens). Don't use the dev script in production.
+11. **Many results files (`*_results.json`, `round*_*.json`) at the repo root are experiment artifacts.** They're not tracked test data. Don't reorganize them without checking with the user — some experiments are still being referenced.
+12. **Don't talk to whisper/tts directly.** Always proxy through CC's `/api/v0/media/*`. Direct calls would bypass auth context headers (household_id, member_ids) that voice recognition + speaker resolution depend on.
+
+---
+
+## Failure modes
+
+| Failure | Behavior |
+|---|---|
+| Command-center unreachable | Voice hangs at first request; node retries on next wake |
+| MQTT broker down | Server→node messages are dropped; voice still works |
+| Whisper down (via CC proxy) | STT fails → no transcript → voice command fails |
+| TTS down | Streaming voice path fails; node falls back to text-only display (if available) |
+| Local DB corrupted | Node fails to start; restore from `~/.jarvis/` backup |
+| openWakeWord model missing | Wake word detection disabled; node falls back to keyboard listener (when running with a TTY) or starts mute |
+| Provisioning not yet done | Node starts in AP mode (jarvis-XXXX WiFi); user pairs via mobile |
+| Package install fails mid-way | Partial files left in `commands/custom_commands/`; remove via `command_store.py remove` |
+
+---
 
 ## Installers
 
@@ -511,14 +654,14 @@ ssh -t pi@jarvis-dev.local "sudo systemctl restart jarvis-node"
 
 ## Wake Word Detection
 
-Uses Porcupine for local wake word detection. Configured in settings.
+Uses [openWakeWord](https://github.com/dscripka/openWakeWord) for local, no-cloud wake-word detection. The model name is configured via the `wake_word_model` setting (defaults to `hey_jarvis`); models are downloaded on first run via `openwakeword.utils.download_models`. Audio captured from the mic at 48kHz is downsampled to 16kHz (the model's expected input rate) before scoring — see `scripts/voice_listener.py` for the loop, and `core/barge_in.py` for the parallel barge-in detector that listens during TTS playback.
 
 ## Dependencies
 
 **Python Libraries:**
 - PyAudio, SoundDevice (audio capture)
 - paho-mqtt (MQTT integration)
-- pvporcupine (wake word)
+- openwakeword (wake word; onnx inference, no cloud / no access key)
 - httpx (REST client to command-center)
 - SQLAlchemy, pysqlcipher3 (local encrypted DB)
 
@@ -538,7 +681,7 @@ Uses Porcupine for local wake word detection. Configured in settings.
 ## Key Features
 
 - **Plugin architecture**: Add commands via IJarvisCommand
-- **Wake word**: Local detection with Porcupine
+- **Wake word**: Local detection with openWakeWord
 - **Music Assistant**: Integration for music control
 - **Network discovery**: Find other jarvis services
 - **Encrypted storage**: PySQLCipher for local secrets
