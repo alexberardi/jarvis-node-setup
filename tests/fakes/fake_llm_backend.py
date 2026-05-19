@@ -51,6 +51,8 @@ def _load_responses(path: Path) -> list[dict]:
 
 
 def _match(prompt: str) -> dict:
+    """Find canned response for a user prompt. Returns the simplified
+    canned-yaml shape (role/content/stop_reason/tool_calls)."""
     for entry in _canned:
         pattern = entry.get("prompt_regex")
         if pattern and re.search(pattern, prompt, re.IGNORECASE):
@@ -62,18 +64,62 @@ def _match(prompt: str) -> dict:
     }
 
 
-@app.post("/v1/chat")
-async def chat(req: ChatRequest):
+def _to_openai(canned: dict, model: str) -> dict:
+    """Translate the canned-yaml shape into OpenAI chat-completion shape,
+    which is what the real jarvis-llm-proxy-api emits and what CC parses
+    (CC reads `choices[0].message` + `choices[0].finish_reason`; see
+    jarvis-command-center/app/core/tool_execution_engine.py:605-613).
+
+    Canned `stop_reason` values map to OpenAI `finish_reason`:
+      complete       → stop
+      tool_calls     → tool_calls
+      anything else  → passed through verbatim
+    """
+    stop_reason = canned.get("stop_reason", "complete")
+    finish_reason = "stop" if stop_reason == "complete" else stop_reason
+
+    message: dict = {
+        "role": canned.get("role", "assistant"),
+        "content": canned.get("content", "") or "",
+    }
+    tool_calls = canned.get("tool_calls")
+    if tool_calls:
+        # Real proxy emits each tool_call with a top-level `type: function`
+        # field; canned entries don't carry that, so add it here for parity.
+        message["tool_calls"] = [
+            {
+                "id": tc.get("id"),
+                "type": tc.get("type", "function"),
+                "function": tc.get("function", {}),
+            }
+            for tc in tool_calls
+        ]
+
+    return {
+        "id": "fake-llm-001",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatRequest):
+    """OpenAI-style endpoint matching what jarvis-llm-proxy-api exposes
+    and what CC's LLMProxyClient targets via JARVIS_LLM_PROXY_API_URL."""
     user_prompt = ""
     for msg in reversed(req.messages):
         if msg.get("role") == "user":
             user_prompt = msg.get("content", "") or ""
             break
-    return {
-        "id": "fake-llm-001",
-        "model": req.model or "fake-llm",
-        "message": _match(user_prompt),
-    }
+    canned = _match(user_prompt)
+    return _to_openai(canned, req.model or "fake-llm")
 
 
 @app.get("/health")
