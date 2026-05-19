@@ -16,6 +16,7 @@ Override at runtime via env: FAKE_LLM_PORT, FAKE_LLM_RESPONSES.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 from pathlib import Path
@@ -66,34 +67,52 @@ def _match(prompt: str) -> dict:
 
 def _to_openai(canned: dict, model: str) -> dict:
     """Translate the canned-yaml shape into OpenAI chat-completion shape,
-    which is what the real jarvis-llm-proxy-api emits and what CC parses
-    (CC reads `choices[0].message` + `choices[0].finish_reason`; see
-    jarvis-command-center/app/core/tool_execution_engine.py:605-613).
+    which is what the real jarvis-llm-proxy-api emits.
 
-    Canned `stop_reason` values map to OpenAI `finish_reason`:
-      complete       → stop
-      tool_calls     → tool_calls
-      anything else  → passed through verbatim
+    Two paths, both real:
+
+    1. **Plain-text response.** Canned `content` is plain prose with
+       `stop_reason: complete` → emit as `choices[0].message.content`
+       with `finish_reason: "stop"`. CC's text-based parser
+       (tool_call_parser.parse_response) fails to JSON-decode it and
+       falls back to "stop" + the raw content as assistant_message.
+
+    2. **Tool-call response.** Canned `tool_calls` is present → emit
+       the tool calls as a JSON string in `message.content`:
+
+           {"message": "", "tool_calls": [{"name": ..., "arguments": {...}}]}
+
+       Plus `finish_reason: "stop"`. CC's parser JSON-decodes the
+       content, finds `tool_calls`, and returns
+       `("tool_calls", [...], message)`. This is the path the real
+       adapter-trained models use too — they emit JSON in content
+       (LoRA-trained on that exact shape) and the proxy returns it
+       verbatim. We're not using native OpenAI `message.tool_calls`
+       because CC's `use_native_tools` is False without a
+       JarvisAdapterModel prompt provider registered, which makes
+       CC ignore native tool_calls and only parse content as JSON.
     """
-    stop_reason = canned.get("stop_reason", "complete")
-    finish_reason = "stop" if stop_reason == "complete" else stop_reason
-
-    message: dict = {
-        "role": canned.get("role", "assistant"),
-        "content": canned.get("content", "") or "",
-    }
+    role = canned.get("role", "assistant")
     tool_calls = canned.get("tool_calls")
+
     if tool_calls:
-        # Real proxy emits each tool_call with a top-level `type: function`
-        # field; canned entries don't carry that, so add it here for parity.
-        message["tool_calls"] = [
-            {
-                "id": tc.get("id"),
-                "type": tc.get("type", "function"),
-                "function": tc.get("function", {}),
-            }
-            for tc in tool_calls
-        ]
+        content = json.dumps({
+            "message": canned.get("content", "") or "",
+            "tool_calls": [
+                {
+                    "name": tc.get("function", {}).get("name"),
+                    "arguments": _coerce_arguments(
+                        tc.get("function", {}).get("arguments", {})
+                    ),
+                }
+                for tc in tool_calls
+            ],
+        })
+        finish_reason = "stop"
+    else:
+        content = canned.get("content", "") or ""
+        stop_reason = canned.get("stop_reason", "complete")
+        finish_reason = "stop" if stop_reason == "complete" else stop_reason
 
     return {
         "id": "fake-llm-001",
@@ -101,12 +120,25 @@ def _to_openai(canned: dict, model: str) -> dict:
         "choices": [
             {
                 "index": 0,
-                "message": message,
+                "message": {"role": role, "content": content},
                 "finish_reason": finish_reason,
             }
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
+
+
+def _coerce_arguments(raw: object) -> dict:
+    """Canned `arguments` may be a JSON string (as written in YAML for
+    readability) or already a dict. CC's parser expects a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 @app.post("/v1/chat/completions")
