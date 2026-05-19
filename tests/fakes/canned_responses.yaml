@@ -27,6 +27,20 @@ responses:
             name: set_timer
             arguments: '{"duration_seconds": 300, "label": "test"}'
 
+  # Continuation prompt that CC builds after a node POSTs tool results to
+  # /voice/command/continue: text-based path injects a user message starting
+  # with "Here are the tool results." (see
+  # jarvis-command-center/app/core/conversation_handler.py:1056-1062).
+  # Match on that substring so the fake produces a final assistant message
+  # the test can assert on. content is plain text — CC's tool_call_parser
+  # tries to JSON-decode it, fails, falls back to ("stop", [], content),
+  # which becomes the assistant_message in the VoiceCommandResponse body.
+  - prompt_regex: "Here are the tool results"
+    response:
+      role: assistant
+      content: "Timer set for 5 minutes."
+      stop_reason: complete
+
   - prompt_regex: "\\b(hello|hi|hey)\\b"
     response:
       role: assistant
