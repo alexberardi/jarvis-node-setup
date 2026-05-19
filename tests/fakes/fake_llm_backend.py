@@ -53,13 +53,25 @@ def _load_responses(path: Path) -> list[dict]:
     return data.get("responses", []) or []
 
 
-def _match(prompt: str) -> dict:
+def _match(prompt: str, messages: list[dict]) -> dict:
     """Find canned response for a user prompt. Returns the simplified
-    canned-yaml shape (role/content/stop_reason/tool_calls)."""
+    canned-yaml shape (role/content/stop_reason/tool_calls).
+
+    Honors optional `requires_tool_message` flag on entries: when True,
+    the entry only matches if `messages` already contains a tool-role
+    message. This lets a single test exercise multi-iteration tool
+    loops where CC re-calls the LLM after running a server tool —
+    the second-iteration response uses `requires_tool_message: True`
+    to differentiate from the first.
+    """
+    has_tool_message = any(m.get("role") == "tool" for m in messages)
     for entry in _canned:
         pattern = entry.get("prompt_regex")
-        if pattern and re.search(pattern, prompt, re.IGNORECASE):
-            return entry["response"]
+        if not pattern or not re.search(pattern, prompt, re.IGNORECASE):
+            continue
+        if entry.get("requires_tool_message") and not has_tool_message:
+            continue
+        return entry["response"]
     return {
         "role": "assistant",
         "content": "OK",
@@ -189,7 +201,7 @@ async def chat_completions(req: ChatRequest):
         if msg.get("role") == "user":
             user_prompt = msg.get("content", "") or ""
             break
-    canned = _match(user_prompt)
+    canned = _match(user_prompt, req.messages)
 
     if req.stream:
         return StreamingResponse(
