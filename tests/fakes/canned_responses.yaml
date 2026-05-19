@@ -64,6 +64,27 @@ responses:
             name: request_validation
             arguments: '{"question": "Which artist would you like?", "parameter_name": "artist", "options": ["Beatles", "Stones"]}'
 
+  # Multi-tool path: LLM emits 2 client tool_calls in one response (the
+  # "set a timer AND play music" type voice command). Tool names are
+  # generic (client_tool_one/two) so they don't collide with CC's
+  # server-tool registry — both end up in client_calls and CC returns
+  # them in a single 202 with both tool_calls preserved in order.
+  # CASE-211 asserts the 202 shape and both calls present.
+  - prompt_regex: "test multi.tool flow|fire (both|two) tools"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_multi_001
+          function:
+            name: client_tool_one
+            arguments: '{"x": 1}'
+        - id: call_multi_002
+          function:
+            name: client_tool_two
+            arguments: '{"y": 2}'
+
 transcripts:
   - filename_regex: "timer.*\\.wav$"
     transcript: "Set a five minute timer"
