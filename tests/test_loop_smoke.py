@@ -74,7 +74,10 @@ def test_fake_llm_emits_tool_call_for_timer_prompt():
 
 @pytest.mark.qa_case("CASE-003")
 def test_fake_whisper_returns_canned_transcript_for_known_filename():
-    files = {"audio": ("timer_test.wav", b"\x00" * 16, "audio/wav")}
+    # Field name `file` matches real jarvis-whisper-api (app/main.py:127).
+    # CC's WhisperClient.transcribe() also sends as `file`, so CASE-208
+    # uses the same shape end-to-end through CC's media proxy.
+    files = {"file": ("timer_test.wav", b"\x00" * 16, "audio/wav")}
     response = httpx.post(
         f"{FAKE_WHISPER_URL}/transcribe",
         files=files,
