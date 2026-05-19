@@ -694,7 +694,7 @@ while True:
 
     # Normal wake word detection
     raw_data = audio_stream.read(...)
-    # ... existing porcupine logic
+    # ... existing openwakeword logic
 ```
 
 This keeps the voice listener as the single owner of the mic. The agent queues announcements; the voice listener drains them at safe points in its loop.
