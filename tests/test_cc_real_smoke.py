@@ -29,9 +29,12 @@ CC_APP_ID = os.environ.get("CC_APP_ID", "command-center")
 CC_APP_KEY = os.environ.get("CC_APP_KEY", "")
 CC_NODE_ID = os.environ.get("CC_NODE_ID", "")
 CC_NODE_KEY = os.environ.get("CC_NODE_KEY", "")
+CC_USER_JWT = os.environ.get("CC_USER_JWT", "")
+MQTT_BROKER_URL = os.environ.get("MQTT_BROKER_URL", "tcp://127.0.0.1:1883")
 SKIP_REASON = "CC_URL unset — skipping real-stack smoke tests (v1 fakes-only mode)"
 SKIP_NO_KEY = "CC_APP_KEY unset — seed step did not run"
 SKIP_NO_NODE = "CC_NODE_ID / CC_NODE_KEY unset — v2.4 node seed did not run"
+SKIP_NO_JWT = "CC_USER_JWT unset — v2.13 user-JWT seed did not run"
 
 
 @pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
@@ -870,3 +873,117 @@ def test_cc_voice_command_returns_multi_tool_calls():
     assert len(set(ids)) == 2, (
         f"expected distinct ids, got {ids}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.skipif(not CC_USER_JWT, reason=SKIP_NO_JWT)
+@pytest.mark.qa_case("CASE-212")
+def test_cc_publishes_to_mqtt_on_settings_request():
+    """First test that exercises the server→node async channel (MQTT).
+
+    Background: jarvis-node-setup's CLAUDE.md is explicit — "MQTT is
+    the only server→node async channel". CC publishes to per-node
+    topics for settings updates, TTS-by-text, package installs, etc.;
+    the node's MQTT background thread subscribes and reacts.
+
+    Sequence:
+      1. Test subscribes to `jarvis/nodes/{CC_NODE_ID}/settings/request`
+         via paho-mqtt at the compose-mapped mosquitto port (127.0.0.1:1883).
+      2. Test POSTs `/api/v0/nodes/{CC_NODE_ID}/settings/requests` with
+         `Authorization: Bearer <CC_USER_JWT>` — CC creates a
+         SettingsRequest row and publishes the MQTT signal synchronously
+         inside the handler (see jarvis-command-center/app/node_settings.py:221).
+      3. Test waits up to 10s for the message and asserts:
+         - `node_id` field matches CC_NODE_ID
+         - `request_id` field matches the request_id in the 201 response
+           body (proves publish + response stayed consistent)
+
+    Why this matters: the entire server→node side of the voice loop
+    runs through MQTT (TTS, settings, package install, factory reset,
+    etc.). If the publish path drifts — wrong topic name, wrong
+    payload shape, broker URL mis-resolved — every node in the field
+    silently misses server messages. CASE-212 is the canary.
+
+    Plumbing notes:
+      - The mosquitto port mapping (1883:1883) was added in v2.13 —
+        previously the broker was reachable only inside the compose
+        network.
+      - paho-mqtt was added to the runner's pip install in v2.13.
+      - CC_USER_JWT comes from /auth/register's access_token, captured
+        by seed.sh (v2.13). The CI user has admin role on their
+        auto-created household so verify_household_role passes.
+    """
+    import json
+    import queue
+    from urllib.parse import urlparse
+
+    # paho-mqtt is only needed for this case; defer import so collection
+    # works on environments without it (locally without the optional dep).
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.enums import CallbackAPIVersion
+
+    parsed = urlparse(MQTT_BROKER_URL)
+    broker_host = parsed.hostname or "127.0.0.1"
+    broker_port = parsed.port or 1883
+
+    received: queue.Queue = queue.Queue()
+    topic = f"jarvis/nodes/{CC_NODE_ID}/settings/request"
+
+    def on_connect(client, _userdata, _flags, _rc, *_args):
+        client.subscribe(topic, qos=1)
+
+    def on_message(_client, _userdata, msg):
+        received.put((msg.topic, msg.payload))
+
+    client = mqtt.Client(
+        callback_api_version=CallbackAPIVersion.VERSION2,
+        client_id="ci-case-212-subscriber",
+    )
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(broker_host, broker_port, keepalive=30)
+    client.loop_start()
+    try:
+        # Trigger the publish.
+        response = httpx.post(
+            f"{CC_URL}/api/v0/nodes/{CC_NODE_ID}/settings/requests",
+            headers={"Authorization": f"Bearer {CC_USER_JWT}"},
+            timeout=15.0,
+        )
+        assert response.status_code == 201, (
+            f"expected 201 from settings/requests, got {response.status_code} "
+            f"body={response.text[:400]}"
+        )
+        expected_request_id = response.json().get("request_id")
+        assert expected_request_id, (
+            f"expected request_id in response, got {response.json()}"
+        )
+
+        try:
+            received_topic, raw_payload = received.get(timeout=10.0)
+        except queue.Empty:
+            raise AssertionError(
+                f"timed out waiting 10s for MQTT publish on {topic}. "
+                f"Check: mosquitto port 1883 mapped to host? "
+                f"CC's JARVIS_MQTT_BROKER_URL points at mosquitto? "
+                f"settings/requests handler still calls "
+                f"_publish_settings_request_mqtt?"
+            )
+
+        assert received_topic == topic, (
+            f"unexpected topic, got {received_topic}"
+        )
+        payload = json.loads(raw_payload.decode("utf-8"))
+        assert payload.get("node_id") == CC_NODE_ID, (
+            f"expected node_id={CC_NODE_ID}, got payload={payload}"
+        )
+        assert payload.get("request_id") == expected_request_id, (
+            f"expected request_id={expected_request_id} to match the 201 "
+            f"response, got payload={payload}"
+        )
+    finally:
+        client.loop_stop()
+        client.disconnect()
