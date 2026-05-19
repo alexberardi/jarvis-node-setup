@@ -700,3 +700,86 @@ def test_cc_voice_command_returns_audio_for_complete_response():
             "expected non-zero audio body — same failure mode as CASE-206 "
             "(SSE format mismatch or TTS unreachable from inside CC)."
         )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-210")
+def test_cc_voice_command_returns_validation_request():
+    """The validation_required branch — CC asks the user to clarify.
+
+    When the LLM emits the `request_validation` server tool (because
+    a parameter is ambiguous or missing), CC's tool execution engine
+    detects the `_validation_request: True` marker in the server-tool
+    result and returns a 202 with `stop_reason: "validation_required"`
+    + a `validation_request` body that the voice node renders to the
+    user. The user's answer is then sent back as a continuation.
+
+    Setup: open conversation. Action: POST `/voice/command/stream`
+    with "play music" — the fake LLM regex-matches that as ambiguous
+    ("which artist?") and returns a `request_validation` tool call
+    with arguments `{question, parameter_name, options}`.
+
+    What this proves on top of the other voice-flow tests:
+      - The server-tool execution path actually runs (CC's tool exec
+        engine handles `request_validation` differently from client
+        tool calls).
+      - The `_validation_request` marker is detected and translated
+        into the public `stop_reason: validation_required` shape.
+      - The validation_request body fields (`question`,
+        `parameter_name`, `options`) round-trip through CC unchanged.
+
+    Asserts 202 + stop_reason + the three validation_request fields.
+    Uses a fresh conversation_id so the test is independent of the
+    other CASE-2xx tests.
+    """
+    conv_id = "ci-conv-210"
+
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    response = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "play music",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 202, (
+        f"expected 202 JSON validation branch, got {response.status_code} "
+        f"body={response.text[:400]}"
+    )
+    body = response.json()
+    assert body.get("stop_reason") == "validation_required", (
+        f"expected stop_reason=validation_required, got body={body}"
+    )
+    validation_request = body.get("validation_request") or {}
+    question = validation_request.get("question") or ""
+    assert "artist" in question.lower(), (
+        f"expected validation question to mention 'artist', got "
+        f"validation_request={validation_request}"
+    )
+    assert validation_request.get("parameter_name") == "artist", (
+        f"expected parameter_name=artist, got "
+        f"validation_request={validation_request}"
+    )
+    options = validation_request.get("options")
+    assert isinstance(options, list), (
+        f"expected options to be a list, got {options!r}"
+    )
