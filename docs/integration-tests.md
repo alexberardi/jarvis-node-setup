@@ -312,19 +312,32 @@ FastAPI shim mimicking `jarvis-llm-proxy-api`. Endpoint:
 `POST /v1/chat/completions` (matches the real proxy's OpenAI-style
 route). Reads `canned_responses.yaml`, regex-matches the latest user-role
 message body (first match wins), and translates the canned entry to
-OpenAI shape:
+OpenAI shape.
 
-```
-canned {role, content, stop_reason, tool_calls}
-   → choices[0].message + choices[0].finish_reason
+**Two emission paths, both real:**
 
-stop_reason "complete"   → finish_reason "stop"
-stop_reason "tool_calls" → finish_reason "tool_calls"
-```
+- *Plain-text* — canned has `content: "..."` with no `tool_calls`. The
+  fake emits `choices[0].message.content = "..."` and `finish_reason
+  = "stop"`. CC's text-based parser tries to JSON-decode the content,
+  fails, falls back to a plain-string assistant message. Matches what
+  the real proxy does for non-tool replies.
+- *Tool-call* — canned has a `tool_calls: [...]` array. The fake
+  emits the tool calls as a JSON string in `message.content`:
+  `{"message": "<canned content>", "tool_calls": [{"name": ..., "arguments": {...}}]}`,
+  with `finish_reason = "stop"`. This matches what adapter-trained
+  models do in prod — they emit JSON in content (LoRA-trained on this
+  exact shape) and the proxy returns it verbatim. CC's
+  `tool_call_parser.parse_response` JSON-decodes the content and
+  pulls `tool_calls` from it.
 
-CC's `tool_execution_engine.py:605-613` reads `choices[0].message` and
-`choices[0].finish_reason`, so this is the shape required for the
-voice-flow tests (CASE-204+).
+**Why content-as-JSON and not native `message.tool_calls`?** CC's
+`use_native_tools` is False unless a prompt provider for the current
+model class is registered in `app/core/prompt_providers/`. The default
+`JarvisAdapterModel` doesn't have one in stock — CC logs
+`"PromptProviderFactory: 'JarvisAdapterModel' not found in prompt_providers"`
+and falls through to the text-based parser. The real adapter-trained
+models bypass native tool-calling entirely and emit JSON content; the
+fake matches that.
 
 Unmatched prompts fall back to `content: "OK"`, `finish_reason: stop`.
 Bound to `0.0.0.0` so CC containers can reach the fake via
