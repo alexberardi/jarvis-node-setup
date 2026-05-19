@@ -2,7 +2,7 @@
 """Text-based entry point for Jarvis — type instead of speak.
 
 Bypasses wake word detection and audio capture entirely.
-No audio dependencies required (no pyaudio, pvporcupine, numpy, scipy).
+No audio dependencies required (no pyaudio, openwakeword, numpy, scipy).
 
 Usage:
     python scripts/keyboard_listener.py
