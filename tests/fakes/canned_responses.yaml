@@ -85,6 +85,50 @@ responses:
             name: client_tool_two
             arguments: '{"y": 2}'
 
+  # Mixed server+client tool branch (CASE-213). CC's tool loop runs
+  # the server tool first, appends its result to messages, then
+  # re-calls the LLM. The fake differentiates the two iterations via
+  # `requires_tool_message`:
+  #
+  # - Iteration 1: no tool message yet → falls past the
+  #   `requires_tool_message: true` entry, matches the second entry,
+  #   returns server (`remember`) + client (`client_tool_three`).
+  #   CC runs remember (returns no_speaker error — still counts as
+  #   server_results populated), continues loop with tool message.
+  # - Iteration 2: tool message present → `requires_tool_message:
+  #   true` entry matches first, returns ONLY `client_tool_four`.
+  #   CC has no more server tools to run, returns 202 with that.
+  #
+  # The test asserts the response contains *only* client_tool_four,
+  # which proves the loop ran twice (if it didn't, we'd see the
+  # iteration-1 client_tool_three or both names).
+  - prompt_regex: "test mixed tools"
+    requires_tool_message: true
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_mixed_iter2
+          function:
+            name: client_tool_four
+            arguments: '{"after_server_tool": true}'
+
+  - prompt_regex: "test mixed tools"
+    response:
+      role: assistant
+      content: ""
+      stop_reason: tool_calls
+      tool_calls:
+        - id: call_mixed_server
+          function:
+            name: remember
+            arguments: '{"content": "ci test"}'
+        - id: call_mixed_client
+          function:
+            name: client_tool_three
+            arguments: '{"z": 3}'
+
 transcripts:
   - filename_regex: "timer.*\\.wav$"
     transcript: "Set a five minute timer"
