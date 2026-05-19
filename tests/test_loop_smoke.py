@@ -48,6 +48,11 @@ def test_fake_llm_returns_canned_completion():
 
 @pytest.mark.qa_case("CASE-002")
 def test_fake_llm_emits_tool_call_for_timer_prompt():
+    """Fake emits the tool_calls payload as a JSON string in content
+    (matching what LoRA-adapter-trained models do in prod and what CC's
+    text-based parser expects — see tool_call_parser.parse_response)."""
+    import json
+
     response = httpx.post(
         f"{FAKE_LLM_URL}/v1/chat/completions",
         json={
@@ -59,8 +64,12 @@ def test_fake_llm_emits_tool_call_for_timer_prompt():
     response.raise_for_status()
     body = response.json()
     choice = body["choices"][0]
-    assert choice["finish_reason"] == "tool_calls"
-    assert choice["message"]["tool_calls"][0]["function"]["name"] == "set_timer"
+    # finish_reason is "stop" because CC parses tool_calls out of the
+    # content JSON itself; native finish_reason isn't the trigger.
+    assert choice["finish_reason"] == "stop"
+    parsed_content = json.loads(choice["message"]["content"])
+    assert parsed_content["tool_calls"][0]["name"] == "set_timer"
+    assert parsed_content["tool_calls"][0]["arguments"]["duration_seconds"] == 300
 
 
 @pytest.mark.qa_case("CASE-003")
