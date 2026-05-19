@@ -67,8 +67,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.5** | First node-authenticated CC endpoint: `POST /api/v0/conversation/start` with `X-API-Key: <node_id>:<node_key>`. Phase 2.5 step calls CC's `/admin/nodes` (CC registers in auth via `/internal/nodes/register` AND writes its own DB row — both rows required for `verify_api_key` to pass). | `CASE-203` (CC accepts seeded node creds end-to-end) |
 | **v2.6** | First end-to-end voice command exercise: `POST /api/v0/voice/command/stream` with a tool-eliciting prompt. Round-trip goes CC → fake LLM (canned tool_calls response) → back to CC → 202 JSON to the test. Proves the LLM-proxy URL fix from v2.5 actually unblocks real LLM traffic. | `CASE-204` (timer prompt → 202 with `set_timer` tool_call) |
 | **v2.7** | Tool-execution continuation loop: after the CASE-204 tool call comes back, POST tool results to `/voice/command/continue` (blocking) and assert the final assistant message. Exercises CC's continuation prompt build ("Here are the tool results...") + a second LLM call + JSON response shape. | `CASE-205` (continue with `tool_results` → 200 with `stop_reason=complete`, `assistant_message` contains 'timer') |
-| **v2.8** *(next)* | Streaming-continuation audio path: `POST /voice/command/continue/stream` end-to-end with a fake TTS at port 7707. Asserts 200 audio/raw with non-zero bytes and the correct `X-Audio-*` headers. Requires SSE support in the fake LLM. | `CASE-206` (continue/stream → audio bytes) |
-| **v2.9** *(after that)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.8** | End-to-end audio path: `/voice/command/continue/stream` from tool result to PCM bytes. Adds `tests/fakes/fake_tts.py` at port 7707 (mirrors jarvis-tts's `/speak/stream` + `/audio/format`) and SSE support in `fake_llm_backend.py`. CC's pipeline streams SSE tokens → sentence boundary → fake TTS → audio bytes back to the test. | `CASE-206` (continue/stream → 200 audio/raw with non-zero bytes + X-Audio-* headers) |
+| **v2.9** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -341,6 +341,14 @@ and falls through to the text-based parser. The real adapter-trained
 models bypass native tool-calling entirely and emit JSON content; the
 fake matches that.
 
+**Streaming (v2.8+):** When the request body has `stream: true`, the
+fake emits an SSE response — one `data: {"delta": "<word> "}` event per
+space-delimited word in the canned content, followed by `data: {"done":
+true, "content": "<full text>"}`. The word-by-word chunking is what
+makes CC's sentence-boundary detector (`(?<=[.!?])\s+`) actually trigger
+for canned responses like `"Timer set for 5 minutes."` — a single
+mega-delta would never split, and TTS would never be invoked.
+
 Unmatched prompts fall back to `content: "OK"`, `finish_reason: stop`.
 Bound to `0.0.0.0` so CC containers can reach the fake via
 `host.docker.internal` (loopback-only would only be reachable from the
@@ -352,6 +360,31 @@ python -m tests.fakes.fake_llm_backend --port 7705 \
 ```
 
 Env overrides: `FAKE_LLM_PORT`, `FAKE_LLM_RESPONSES`.
+
+### `tests/fakes/fake_tts.py`
+
+FastAPI shim mimicking `jarvis-tts`. Endpoints:
+
+- `POST /speak/stream` — accepts `{"text": "..."}` and returns
+  `audio/raw` with 32 bytes of zero PCM plus the audio-format
+  headers (`X-Audio-Sample-Rate: 22050`, `X-Audio-Channels: 1`,
+  `X-Audio-Sample-Width: 2`). CC's `tts_client.speak_stream` reads
+  the chunks via `aiter_bytes`; one yielded chunk is enough to prove
+  the wire works.
+- `GET /audio/format` — returns the same format metadata as JSON;
+  CC calls this once before opening the audio stream.
+- `GET /health` — required by the workflow's fakes-health-check
+  loop.
+
+The real `jarvis-tts` requires app-to-app auth (`X-Jarvis-App-Id` +
+`X-Jarvis-App-Key`). The fake doesn't validate — auth is already
+covered by CASE-201/202. Bound to `0.0.0.0` like the other fakes.
+
+```bash
+python -m tests.fakes.fake_tts --port 7707
+```
+
+Env overrides: `FAKE_TTS_PORT`.
 
 ### `tests/fakes/fake_whisper.py`
 
@@ -398,11 +431,11 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201, 202, 203, 204, 205)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201, 202, 203, 204, 205, 206)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
-gates on `CC_APP_KEY`; CASE-202…205 additionally gate on `CC_NODE_ID` +
+gates on `CC_APP_KEY`; CASE-202…206 additionally gate on `CC_NODE_ID` +
 `CC_NODE_KEY` (set by the Phase 2.5 workflow step, not by seed.sh).
 
 | Case | Asserts |
@@ -416,6 +449,7 @@ gates on `CC_APP_KEY`; CASE-202…205 additionally gate on `CC_NODE_ID` +
 | `CASE-203` | First end-to-end test through CC. `POST CC /api/v0/conversation/start` with `X-API-Key: <node_id>:<node_key>` and `{conversation_id: "ci-conv-203"}` → 200 with `status: success` and the same `conversation_id` echoed back. Exercises CC's `verify_api_key` → auth's `/internal/validate-node` → CC's local-DB node lookup → CC issues the session. If any of those three steps drift, CASE-203 catches it. |
 | `CASE-204` | First voice-command exercise through the LLM. Setup: `POST /conversation/start` with `client_tools: []` (required — `/voice/command/stream` 400s if the conversation cache entry's `tools` field is None). Action: `POST /voice/command/stream` with `voice_command: "set a 5 minute timer"`. The fake LLM regex-matches "set …timer" → returns canned `stop_reason: tool_calls` with a `set_timer` function call. CC's main.py:974+ picks 202 JSON for any non-`complete` stop_reason. Asserts 202, `stop_reason == "tool_calls"`, exactly one tool call, function name is `set_timer`. Proves CC reaches the fake LLM at `host.docker.internal:7705` (the JARVIS_LLM_PROXY_API_URL fix from v2.5's hotfix) and parses the response into VoiceCommandResponse correctly. |
 | `CASE-205` | Tool-execution continuation. Two-step: (1) repeat CASE-204's `/voice/command/stream` to get back a 202 with `tool_calls[0].id`; (2) POST `/voice/command/continue` (the BLOCKING JSON endpoint, not the streaming twin) with `{conversation_id, tool_results: [{tool_call_id, output}]}`. CC builds a continuation prompt "Here are the tool results..." and re-calls the fake LLM. The fake matches that regex → returns canned `complete` content "Timer set for 5 minutes." CC's parser fails to JSON-decode the plain text and falls back to ("stop", [], content), producing a 200 JSON VoiceCommandResponse with `stop_reason: complete` and `assistant_message: "Timer set for 5 minutes."`. Asserts 200, `stop_reason == "complete"`, non-empty `assistant_message` containing "timer". Proves the conversation cache + continuation prompt + second LLM call + tool_results body shape all work end-to-end. |
+| `CASE-206` | End-to-end audio path. Same setup as CASE-205, but POSTs `/voice/command/continue/stream` instead. CC opens an SSE stream to the fake LLM (`stream=true` in the request body), accumulates tokens to sentence boundaries, and forwards each completed sentence to the fake TTS's `/speak/stream`. The fake TTS returns 32 bytes of zero PCM + `X-Audio-*` headers. CC concatenates the chunks into its own StreamingResponse and forwards them to us. Asserts 200, content-type `audio/raw`, non-zero body, `X-Audio-Sample-Rate` header present. Proves the full audio pipeline — SSE streaming, sentence detection, TTS roundtrip, audio forwarding — works end-to-end against the fakes. |
 
 ### `tools/parse_junit.py`
 
@@ -450,7 +484,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 12 known cases. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 13 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -585,7 +619,7 @@ gh workflow run integration-runner.yml \
   -f pr_number=4 \
   -f head_sha=<full SHA from PR's tip> \
   -f originating_repo=alexberardi/jarvis-command-center \
-  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205"
+  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206"
 ```
 
 ### Force a re-run by pushing an empty commit
@@ -646,7 +680,7 @@ CC_NODE_KEY=$CC_NODE_KEY \
 
 # 8. Inspect parsed results
 python tools/parse_junit.py /tmp/results.xml \
-  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205"
+  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206"
 
 # 9. Cleanup
 docker compose -f docker-compose.ci.yaml --profile core down -v
@@ -677,27 +711,28 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.7)
+## Current limitations (v2.8)
 
 1. **Only `jarvis-command-center` is wired.** Other service repos can
    open PRs but won't trigger this loop. **v2.9** fans out the trigger.
-2. **No real LLM proxy or Whisper.** Fakes only. Real GPU services are
-   v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
+2. **No real LLM proxy, Whisper, or TTS.** Fakes only. Real GPU services
+   are v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
-3. **No 200 audio path tested end-to-end.** `CASE-205` covers the
-   blocking `/voice/command/continue` (JSON response). The streaming
-   twin `/voice/command/continue/stream` returns 200 audio/raw via
-   inline TTS synthesis — we don't have a fake TTS yet, and the fake
-   LLM doesn't support SSE streaming. **v2.8** adds both (fake_tts.py
-   at port 7707 + SSE in fake_llm_backend) and adds `CASE-206` against
-   the streaming endpoint. Same goes for the streaming
-   `/voice/command/stream` 200 audio branch (when the LLM returns a
-   plain conversational answer with no tool_calls — currently we only
-   exercise the 202 tool_calls branch).
-4. **`/voice/acknowledge` not covered.** Wake-acknowledge is a parallel
-   no-LLM keyword match in CC. Adding a `CASE-207`-class test against
-   it would prove the wake-word ack path stays cheap (no LLM call).
-5. **STT proxy (`/api/v0/media/whisper/transcribe`) not covered.** Node
+3. **No assertion on audio *content*.** `CASE-206` proves bytes flow
+   end-to-end and headers come from the fake TTS, but the audio is 32
+   bytes of zero PCM — we don't verify any audible synthesis happened.
+   A real test would need a real TTS, which moves us into v3 territory.
+4. **`/voice/command/stream`'s 200 audio branch not covered.** When the
+   LLM returns a conversational `complete` response (no tool_calls) on
+   the initial `/voice/command/stream` call, CC takes the 200-audio
+   path (streaming LLM → TTS) — same plumbing as CASE-206 but a
+   different endpoint. A future case would add a canned response
+   matching e.g. "what time is it" → plain text reply, and assert
+   audio bytes flow from `/voice/command/stream` directly.
+5. **`/voice/acknowledge` not covered.** Wake-acknowledge is a
+   parallel no-LLM keyword match in CC. A `CASE-207`-class test would
+   prove the wake-word ack path stays cheap (no LLM call).
+6. **STT proxy (`/api/v0/media/whisper/transcribe`) not covered.** Node
    uploads audio to CC's media proxy, CC forwards to whisper, returns
    transcript. The fake whisper already exists; a `CASE-208`-class
    test would assert the end-to-end transcribe path through CC.
@@ -823,27 +858,6 @@ status.
 
 ## Roadmap
 
-### v2.8 — streaming continuation + fake TTS
-
-The blocking `/voice/command/continue` is covered in v2.7. The
-streaming twin `/voice/command/continue/stream` requires:
-
-- `tests/fakes/fake_tts.py` at port 7707 serving `POST /speak/stream`
-  (returns a small chunk of dummy PCM with the `X-Audio-Sample-Rate` /
-  `Channels` / `Sample-Width` headers) and `GET /audio/format`. Bound
-  to 0.0.0.0, same as the other fakes.
-- SSE streaming support in `fake_llm_backend.py` so CC's
-  `chat_completion_stream` actually yields tokens. The fake reads
-  the canned response and emits `data: {"delta": "..."}\n\n` lines for
-  each word, followed by `data: {"done": true}\n\n`.
-- Compose env: `JARVIS_TTS_URL: http://host.docker.internal:7707` on
-  the CC service.
-- `CASE-206` test: same setup as CASE-205, but POST to
-  `/voice/command/continue/stream` and assert 200 audio/raw with
-  non-zero body bytes plus the audio metadata headers.
-
-That'll fully exercise the prod audio pipeline against the fakes.
-
 ### v2.9 — fan-out (next)
 
 - Copy `integration-trigger.yml` to remaining service repos. Each gets
@@ -892,12 +906,13 @@ Paths relative to `jarvis-node-setup` unless noted.
 | `compose/postgres-init.sh` | Creates jarvis_auth + jarvis_config DBs on first init |
 | `compose/seed.sh` | Phase-1.5 seed: registers app-clients in auth, captures keys, registers fakes in config-service, registers a CI user via `/auth/register` and exports `CC_HOUSEHOLD_ID`. Node registration itself is in the Phase 2.5 workflow step (because it needs CC up). |
 | `tests/fakes/__init__.py` | (empty — package marker) |
-| `tests/fakes/fake_llm_backend.py` | FastAPI shim for `jarvis-llm-proxy-api` |
+| `tests/fakes/fake_llm_backend.py` | FastAPI shim for `jarvis-llm-proxy-api` (non-streaming + SSE) |
 | `tests/fakes/fake_whisper.py` | FastAPI shim for `jarvis-whisper-api` |
-| `tests/fakes/canned_responses.yaml` | Canned data for both fakes |
+| `tests/fakes/fake_tts.py` | FastAPI shim for `jarvis-tts` (added v2.8 for the audio path) |
+| `tests/fakes/canned_responses.yaml` | Canned data for the LLM + Whisper fakes |
 | `tests/conftest.py` | `qa_case` marker → JUnit user-property hook |
 | `tests/test_loop_smoke.py` | v1 fakes-only suite (CASE-001…003) |
-| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201, 202) |
+| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201…206) |
 | `tools/__init__.py` | (empty — package marker) |
 | `tools/parse_junit.py` | JUnit XML → case-status JSON |
 | `pyproject.toml` | Registers the `qa_case` pytest marker |
