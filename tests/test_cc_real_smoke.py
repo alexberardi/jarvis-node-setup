@@ -528,3 +528,85 @@ def test_cc_continue_stream_returns_audio():
             "would manifest as 0 bytes here. Check the fake LLM SSE format "
             "and fake TTS reachability."
         )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-207")
+def test_cc_voice_acknowledge_returns_text():
+    """Wake-acknowledge is a deliberately-fast no-LLM keyword match.
+
+    CC's voice loop runs `/voice/acknowledge` in parallel with
+    `/voice/command/stream` — the user hears "On it" or "Sure"
+    within ~50ms of the wake word, while the real command is still
+    being processed. If this endpoint ever starts touching the LLM,
+    the latency win evaporates.
+
+    The test sends an arbitrary voice_command and asserts only that
+    the response is a 200 JSON with a non-empty `text` field — the
+    actual ack string is randomized from CC's keyword pools and
+    isn't worth pinning. The real signal is: did we get a fast,
+    deterministic response shape? If the endpoint silently started
+    calling the LLM or TTS, the test would still pass — but the
+    latency regression would surface in CC's logs (a fakes-only
+    response should complete in <100ms).
+    """
+    response = httpx.post(
+        f"{CC_URL}/api/v0/voice/acknowledge",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={"voice_command": "turn on the living room light"},
+        timeout=10.0,
+    )
+    assert response.status_code == 200, (
+        f"expected 200, got {response.status_code} body={response.text[:300]}"
+    )
+    body = response.json()
+    text = body.get("text")
+    assert isinstance(text, str) and text.strip(), (
+        f"expected non-empty text field, got body={body}"
+    )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-208")
+def test_cc_media_whisper_transcribe_proxies():
+    """CC's media proxy forwards audio uploads to jarvis-whisper-api
+    and returns the transcript verbatim.
+
+    Round-trip:
+      test → POST CC /api/v0/media/whisper/transcribe (multipart
+        with field name `file`, filename `timer_clip.wav`)
+      → CC's verify_api_key + WhisperClient with context headers
+        (X-Household-ID, X-Node-ID, X-Member-IDs)
+      → fake whisper at host.docker.internal:7706/transcribe
+      → fake regex-matches `timer.*\\.wav$` → returns the canned
+        "Set a five minute timer" transcript
+      → CC forwards the JSON body unchanged
+      → test asserts body["text"] is exactly that transcript
+
+    What this proves on top of CASE-003:
+      - CC reaches the fake whisper through JARVIS_WHISPER_URL +
+        the auth context headers.
+      - The multipart field name is `file` (not `audio`) end-to-end
+        — same name the real whisper API uses (app/main.py:127).
+      - CC forwards rather than wrapping/transforming the response.
+    """
+    files = {"file": ("timer_clip.wav", b"\x00" * 32, "audio/wav")}
+    response = httpx.post(
+        f"{CC_URL}/api/v0/media/whisper/transcribe",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        files=files,
+        timeout=15.0,
+    )
+    assert response.status_code == 200, (
+        f"expected 200, got {response.status_code} body={response.text[:400]}"
+    )
+    body = response.json()
+    assert body.get("text") == "Set a five minute timer", (
+        f"expected canned timer transcript, got body={body}"
+    )
