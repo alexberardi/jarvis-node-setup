@@ -306,3 +306,119 @@ def test_cc_voice_command_returns_tool_calls():
     assert fn.get("name") == "set_timer", (
         f"expected tool_calls[0].function.name=set_timer, got {fn}"
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-205")
+def test_cc_continue_with_tool_results():
+    """First end-to-end coverage of the tool-execution continuation loop.
+
+    Sequence:
+      1. /conversation/start — initialize cache.
+      2. /voice/command/stream "set a 5 minute timer" — CC returns 202
+         JSON with `tool_calls[0]` (a `set_timer` call) and a
+         `tool_call_id`.
+      3. /voice/command/continue — node simulates having run the tool
+         and POSTs the result back. CC injects a user message
+         "Here are the tool results..." into the conversation and
+         calls the LLM again. The fake LLM matches that regex (see
+         canned_responses.yaml's continuation entry) and returns
+         "Timer set for 5 minutes." with stop_reason=complete. CC's
+         tool_call_parser fails to JSON-decode that plain text and
+         falls back to ("stop", [], content), producing a final
+         VoiceCommandResponse with stop_reason="complete" and
+         assistant_message="Timer set for 5 minutes.".
+
+    What this proves on top of CASE-204:
+      - The conversation cache is correctly carried across turns
+        (the LLM sees the continuation prompt, not the original).
+      - CC's continuation prompt-building logic ("Here are the tool
+        results...") still matches reality — if anyone changes the
+        wording, this test fails and the test_loop fakes need a new
+        regex.
+      - The tool_results body shape ({tool_call_id, output}) parses
+        and reaches the LLM iteration.
+      - The full request_id flows end-to-end with stop_reason=complete
+        landing in the response shape the node consumes.
+
+    Targets the BLOCKING /voice/command/continue endpoint (not
+    /continue/stream), which returns JSON not audio. The streaming
+    variant + fake TTS is CASE-206's job.
+    """
+    conv_id = "ci-conv-205"
+
+    # Setup: open conversation.
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    # Step 1: voice command → tool_calls.
+    voice = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "set a 5 minute timer",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    )
+    assert voice.status_code == 202, (
+        f"/voice/command/stream step failed: {voice.status_code} "
+        f"body={voice.text[:300]}"
+    )
+    voice_body = voice.json()
+    tool_calls = voice_body.get("tool_calls") or []
+    assert len(tool_calls) == 1, (
+        f"expected one tool call from voice/stream, got body={voice_body}"
+    )
+    tool_call_id = tool_calls[0].get("id")
+    assert tool_call_id, f"expected tool_call_id, got {tool_calls[0]}"
+
+    # Step 2: post the tool result back. Output mimics what the node
+    # would return after running set_timer locally.
+    result = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/continue",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "tool_results": [
+                {
+                    "tool_call_id": tool_call_id,
+                    "output": "Timer started: 5 minutes, label='test'",
+                }
+            ],
+        },
+        timeout=30.0,
+    )
+    assert result.status_code == 200, (
+        f"/voice/command/continue failed: {result.status_code} "
+        f"body={result.text[:400]}"
+    )
+    body = result.json()
+    assert body.get("stop_reason") == "complete", (
+        f"expected stop_reason=complete after continuation, got body={body}"
+    )
+    assistant_message = body.get("assistant_message") or ""
+    assert assistant_message.strip(), (
+        f"expected non-empty assistant_message, got body={body}"
+    )
+    # Loose check — the canned continuation response says "Timer set"
+    # but we don't want to brittleness-tie to exact wording. Just look
+    # for the keyword from the canned content.
+    assert "timer" in assistant_message.lower(), (
+        f"expected 'timer' in assistant_message, got: {assistant_message!r}"
+    )
