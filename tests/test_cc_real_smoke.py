@@ -987,3 +987,87 @@ def test_cc_publishes_to_mqtt_on_settings_request():
     finally:
         client.loop_stop()
         client.disconnect()
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-213")
+def test_cc_voice_command_mixed_tools_iterates():
+    """Mixed server+client tool branch — CC runs the server tool,
+    appends its result to the conversation, re-calls the LLM, then
+    returns the second-iteration result.
+
+    Code path in CC (`tool_execution_engine.py`):
+      ```
+      if server_results and client_calls:
+          continue  # run server first, then re-ask
+      ```
+
+    Sequence:
+      1. /voice/command/stream "test mixed tools"
+      2. Fake LLM iter 1 → returns [remember (server) + client_tool_three].
+         CC's tool exec engine:
+           - executes `remember` server tool (returns no_speaker error;
+             still counts as server_results populated)
+           - sees both server_results AND client_calls → continues loop
+           - appends the tool result message to the conversation
+      3. Fake LLM iter 2 → matches the second canned entry (gated on
+         `requires_tool_message: true`) → returns [client_tool_four]
+         only. No server tools this time → CC returns 202 with that.
+
+    Asserts: 202, stop_reason=tool_calls, exactly 1 tool_call, name
+    == "client_tool_four". The choice of "client_tool_four" (not
+    "client_tool_three") is the proof — if the loop didn't iterate,
+    we'd see iter-1's response (which has client_tool_three +
+    remember). Getting client_tool_four end-to-end means the
+    server-then-loop-continue path actually fired.
+
+    This is the second multi-tool case (CASE-211 was all-client);
+    the mixed branch is what CC follows when the LLM wants the
+    user/conversation to know a memory/recall happened before the
+    client takes an action.
+    """
+    conv_id = "ci-conv-213"
+
+    start = httpx.post(
+        f"{CC_URL}/api/v0/conversation/start",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "conversation_id": conv_id,
+            "client_tools": [],
+            "available_commands": [],
+        },
+        timeout=15.0,
+    )
+    assert start.status_code == 200, (
+        f"/conversation/start setup failed: {start.status_code} "
+        f"body={start.text[:300]}"
+    )
+
+    response = httpx.post(
+        f"{CC_URL}/api/v0/voice/command/stream",
+        headers={"X-API-Key": f"{CC_NODE_ID}:{CC_NODE_KEY}"},
+        json={
+            "voice_command": "test mixed tools",
+            "conversation_id": conv_id,
+        },
+        timeout=30.0,
+    )
+    assert response.status_code == 202, (
+        f"expected 202, got {response.status_code} body={response.text[:400]}"
+    )
+    body = response.json()
+    assert body.get("stop_reason") == "tool_calls", (
+        f"expected stop_reason=tool_calls, got body={body}"
+    )
+    tool_calls = body.get("tool_calls") or []
+    names = [tc.get("function", {}).get("name") for tc in tool_calls]
+    assert names == ["client_tool_four"], (
+        f"expected exactly [client_tool_four] (the iteration-2 response, "
+        f"proving CC's mixed-tool loop ran the server tool then re-called "
+        f"the LLM), got {names}. If you see ['remember', 'client_tool_three'] "
+        f"the loop didn't continue past iter 1; if you see [] CC dropped "
+        f"the client_calls when continuing the loop."
+    )
