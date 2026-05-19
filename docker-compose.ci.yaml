@@ -164,7 +164,12 @@ services:
       # run seed.sh — calls that require app validation will fail in that
       # case, but CC's /health still works.
       JARVIS_APP_KEY: ${JARVIS_CC_APP_KEY:-ci-app-key}
-      JARVIS_AUTH_SECRET_KEY: ci-secret-not-used-when-jwts-not-issued
+      # CC validates user JWTs locally using this shared secret — must
+      # match auth's SECRET_KEY / AUTH_SECRET_KEY above. The placeholder
+      # value here was fine through v2.12 because no test sent a JWT;
+      # CASE-212 (v2.13) is the first case where CC actually validates
+      # one, and the mismatch surfaced as 401 "Invalid token".
+      JARVIS_AUTH_SECRET_KEY: ci-auth-secret
       JARVIS_LOG_CONSOLE_LEVEL: INFO
       PYTHONUNBUFFERED: "1"
     ports:
