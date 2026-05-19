@@ -70,7 +70,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.8** | End-to-end audio path: `/voice/command/continue/stream` from tool result to PCM bytes. Adds `tests/fakes/fake_tts.py` at port 7707 (mirrors jarvis-tts's `/speak/stream` + `/audio/format`) and SSE support in `fake_llm_backend.py`. CC's pipeline streams SSE tokens → sentence boundary → fake TTS → audio bytes back to the test. | `CASE-206` (continue/stream → 200 audio/raw with non-zero bytes + X-Audio-* headers) |
 | **v2.9** | Upstream voice-loop edges: wake-acknowledge + STT media proxy. Also fixes a latent fake_whisper field-name bug (`audio` → `file`, matching the real jarvis-whisper-api). | `CASE-207` (acknowledge → 200 JSON `{text}`), `CASE-208` (media/whisper/transcribe → canned timer transcript) |
 | **v2.10** | Symmetric pair to CASE-204: `/voice/command/stream`'s 200 audio branch when the LLM returns a plain conversational reply (no tool_calls). Closes the last `/voice/command/*` branch — combined with 204/205/206, every voice endpoint has end-to-end coverage. | `CASE-209` ("hello jarvis" → 200 audio/raw with PCM bytes from the TTS roundtrip) |
-| **v2.11** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.11** | `validation_required` branch — when the LLM emits the `request_validation` server tool because a parameter is ambiguous, CC translates that to a 202 with `stop_reason=validation_required` + a `validation_request` body. Exercises the server-tool execution path (previously only client tools were covered). | `CASE-210` ("play music" → 202 with question "Which artist?") |
+| **v2.12** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -292,7 +293,7 @@ Writes:
 |---|---|---|
 | `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`, `CASE-202`) |
 | `JARVIS_CC_APP_KEY` | Same value | The compose `up jarvis-command-center` step (interpolated into CC's env) |
-| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.11+ use) |
+| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.12+ use) |
 | `CC_HOUSEHOLD_ID` | The household auto-created by `/auth/register` for the CI user | The Phase 2.5 step (consumed by `POST CC /admin/nodes` to attach the node to a household) |
 
 `CC_NODE_ID` and `CC_NODE_KEY` are *not* written here — they're set by the **Phase 2.5 workflow step** (`Register node in CC`) that runs after CC is up. seed.sh runs before CC is up, so the node registration has to happen later.
@@ -433,11 +434,11 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…209)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…210)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
-gates on `CC_APP_KEY`; CASE-202…209 additionally gate on `CC_NODE_ID` +
+gates on `CC_APP_KEY`; CASE-202…210 additionally gate on `CC_NODE_ID` +
 `CC_NODE_KEY` (set by the Phase 2.5 workflow step, not by seed.sh).
 
 | Case | Asserts |
@@ -455,6 +456,7 @@ gates on `CC_APP_KEY`; CASE-202…209 additionally gate on `CC_NODE_ID` +
 | `CASE-207` | Wake-acknowledge path. POSTs `/voice/acknowledge` with `{voice_command: "..."}`. CC's `generate_acknowledgment` uses pure regex + curated phrase pools — no LLM, no TTS. Asserts 200 + non-empty `text` field. The keyword pools are randomized so the exact string isn't pinned; the test catches anyone accidentally wiring an LLM call into this hot path (a fakes-only response should complete in well under 100ms — CC's `voice/command/stream` ack runs in parallel with the LLM path and bakes ~50ms of perceived latency into the loop). |
 | `CASE-208` | STT media proxy. POSTs `/api/v0/media/whisper/transcribe` as multipart with field `file` and a `timer_clip.wav` filename. CC forwards to the fake whisper at port 7706 (which regex-matches the filename → returns the canned "Set a five minute timer" transcript). Asserts 200 + `text == "Set a five minute timer"`. Proves CC's media proxy plumbing: WhisperClient setup with context headers (X-Household-ID + X-Node-ID + X-Member-IDs), the multipart `file` field name end-to-end (both ends MUST agree — the fix in v2.9 also corrected a latent bug where CASE-003 worked only because the fake and CASE-003 were both wrong with `audio`), and that CC forwards the whisper response unchanged. |
 | `CASE-209` | Symmetric pair to CASE-204. POSTs `/voice/command/stream` with `voice_command="hello jarvis"`. The fake LLM regex-matches `\b(hello\|hi\|hey)\b` → returns plain-text content "Hello! How can I help?" with `stop_reason: complete`. CC's `tool_call_parser` fails to JSON-decode the content, falls back to `("stop", [], content)`. `handle_voice_stream` sees `stop_reason == "complete"` + a non-empty assistant_message → takes the 200 audio path: TTSClient → `stream_text_as_audio` → fake TTS roundtrip → PCM bytes back. Asserts 200, content-type audio/raw, non-zero body, X-Audio-Sample-Rate header. With CASE-204/205/206/207/208/209, every `/voice/*` branch is covered. |
+| `CASE-210` | The `validation_required` branch. POSTs `/voice/command/stream` with `voice_command="play music"`. The fake LLM matches the new "play music" regex → returns a `request_validation` tool_call with arguments `{question: "Which artist would you like?", parameter_name: "artist", options: [...]}`. CC's tool exec engine recognizes `request_validation` as a *server* tool (not client), executes it locally (the tool returns `{_validation_request: True, question, parameter_name, options}`), detects the marker, and converts it to a 202 with `stop_reason: "validation_required"` + a `validation_request` body. Asserts 202, stop_reason, question contains "artist", parameter_name=="artist", options is a list. This is the first case that exercises the server-tool execution path — every other voice case fired client tool_calls only. |
 
 ### `tools/parse_junit.py`
 
@@ -489,7 +491,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 16 known cases. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 17 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -567,7 +569,7 @@ gh secret list --repo alexberardi/jarvis-node-setup
 3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** to include the new
    repo and re-store the secret.
 4. **Update the runner's `bring_up_cc` logic** if the new service needs
-   its own compose path. v2.11 plans a more generic
+   its own compose path. v2.12 plans a more generic
    `bring_up_service_under_test` so this is just a payload-driven
    selector.
 5. **Open a trivial PR** in the new repo to validate.
@@ -624,7 +626,7 @@ gh workflow run integration-runner.yml \
   -f pr_number=4 \
   -f head_sha=<full SHA from PR's tip> \
   -f originating_repo=alexberardi/jarvis-command-center \
-  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209"
+  -f plan_cases="CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210"
 ```
 
 ### Force a re-run by pushing an empty commit
@@ -685,7 +687,7 @@ CC_NODE_KEY=$CC_NODE_KEY \
 
 # 8. Inspect parsed results
 python tools/parse_junit.py /tmp/results.xml \
-  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209"
+  --plan-cases "CASE-001,CASE-002,CASE-003,CASE-101,CASE-102,CASE-103,CASE-104,CASE-201,CASE-202,CASE-203,CASE-204,CASE-205,CASE-206,CASE-207,CASE-208,CASE-209,CASE-210"
 
 # 9. Cleanup
 docker compose -f docker-compose.ci.yaml --profile core down -v
@@ -716,10 +718,10 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.10)
+## Current limitations (v2.11)
 
 1. **Only `jarvis-command-center` is wired.** Other service repos can
-   open PRs but won't trigger this loop. **v2.11** fans out the trigger.
+   open PRs but won't trigger this loop. **v2.12** fans out the trigger.
 2. **No real LLM proxy, Whisper, or TTS.** Fakes only. Real GPU services
    are v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
@@ -741,6 +743,12 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    stack but no test posts to or subscribes from it. A future case
    would publish a known message and assert CC's MQTT-driven handler
    processed it.
+6. **Multi-tool scenarios not covered.** CASE-204/210 each exercise
+   a single tool call. Real LLMs can emit 2+ tool_calls in one
+   response (e.g. "set a timer AND tell me the weather"); CC's tool
+   exec engine has explicit branches for that case (`server_results`
+   + `client_calls` split). A future case would canned-respond with
+   multiple tool_calls and assert both paths fire.
 4. **Plan cases are hardcoded** in the workflow's default. The QA agent
    will eventually pass `plan_cases` in the trigger payload once we
    update the trigger.
@@ -752,7 +760,7 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    cancels earlier runs.
 8. **No manual-required workflow.** Hardware-needing test cases (real
    Pi mic, mobile UI) have no clean way to surface as
-   `action_required`. v2.11+ candidate.
+   `action_required`. v2.12+ candidate.
 9. **GHA `repository_dispatch` only fires workflows on the default
    branch.** Changes to `integration-runner.yml` only take effect *after*
    merging to `main`. Test runner changes via
@@ -863,7 +871,7 @@ status.
 
 ## Roadmap
 
-### v2.11 — fan-out (next)
+### v2.12 — fan-out (next)
 
 - Copy `integration-trigger.yml` to remaining service repos. Each gets
   its own `INTEGRATION_DISPATCH_TOKEN` secret; extend
