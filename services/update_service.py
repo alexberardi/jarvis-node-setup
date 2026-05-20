@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -86,70 +85,70 @@ def clear_state() -> None:
         logger.warning("Could not clear update-state.json", error=str(e))
 
 
-def _spawn_upgrade(target_version: str) -> None:
-    """Fork a detached installer as its own systemd unit.
+_SELF_UPDATE_WRAPPER = "/usr/local/sbin/jarvis-self-update"
 
-    Running the installer via `systemd-run --unit=jarvis-node-update` places
-    it in a separate cgroup from jarvis-node.service. Under cgroups v2 (Pi OS
-    Bookworm and later) child processes inherit their parent's cgroup — so
-    the previous `setsid` approach wasn't enough:
-      - install.sh was subject to jarvis-node's memory pressure, so the OOM
-        killer could (and did, on a 512 MB Pi Zero 2W) take out the installer
-        mid-run.
-      - install.sh couldn't safely `systemctl stop jarvis-node` to free RAM
-        because that would tear down its own cgroup.
 
-    With a dedicated transient unit both problems go away: the installer owns
-    its own memory accounting and can stop/start jarvis-node freely. Output
-    is appended to a log the Pi owner can tail if an upgrade gets stuck.
+class UpgradeSpawnError(Exception):
+    """Spawning the upgrade installer failed (sudo, missing wrapper, ...).
 
-    `--collect` GCs the unit once the command exits. `--no-block` returns
-    immediately so the caller (this Python service) can exit without waiting.
-    `--same-dir` preserves CWD so relative paths in install.sh keep working.
-
-    Falls back to the legacy `setsid` launch if `systemd-run` isn't on PATH
-    (very old systems) — loses the cgroup isolation but preserves the
-    existing behavior.
+    Raised so the caller can clear ``_in_flight`` and surface the failure
+    instead of leaving CC's task ``in_progress`` for 30 min until the
+    server-side sweeper gives up.
     """
-    # Pull install.sh from the TARGET version tag, not main. Curling from
-    # main is dangerous — a broken push would brick every node that updates.
-    cmd = (
-        "curl -fsSL https://raw.githubusercontent.com/alexberardi/"
-        f"jarvis-node-setup/v{target_version}/install.sh "
-        f"| bash -s -- --force --version v{target_version}"
-    )
 
-    if shutil.which("systemd-run"):
-        # systemd-run's transient unit captures stdout/stderr to the
-        # journal automatically — no file redirect needed. Tail with
-        # `journalctl -u jarvis-node-update -f`.
-        popen_args = [
-            "sudo", "-n",
-            "systemd-run",
-            "--unit=jarvis-node-update",
-            "--collect",
-            "--no-block",
-            "--same-dir",
-            "bash", "-c", cmd,
-        ]
-    else:
-        logger.warning(
-            "systemd-run not found — falling back to setsid; installer will "
-            "share jarvis-node's cgroup and may OOM on low-memory devices"
+
+def _spawn_upgrade(target_version: str) -> None:
+    """Hand off to the privileged self-update wrapper.
+
+    ``/usr/local/sbin/jarvis-self-update`` is a tiny shell shim installed by
+    install.sh with a NOPASSWD sudoers grant. It validates the version
+    tag and runs install.sh inside a transient systemd unit, which:
+
+      - owns its own cgroup (escapes jarvis-node.service's memory limit,
+        avoiding OOM on 512 MB Pi Zero 2W)
+      - can stop/start jarvis-node freely without tearing down its own
+        cgroup
+      - sends output to ``journalctl -u jarvis-node-update`` for tailing
+
+    History: this used to call ``sudo systemd-run bash -c 'curl | bash'``
+    directly. That command isn't in the NOPASSWD allow-list, so sudo
+    prompted for a password — and since jarvis-node has no TTY, sudo
+    failed silently with ``a password is required`` while the daemon
+    fire-and-forgot the Popen. Result: prod kitchen node sat
+    ``in_progress`` for 30 min on every update attempt before the
+    server-side sweeper marked it failed. The wrapper + NOPASSWD grant
+    fixes that, and ``subprocess.run`` (with a short timeout against
+    the wrapper's ``systemd-run --no-block``, which returns in <1s)
+    actually surfaces spawn failures instead of swallowing them.
+
+    Raises:
+        UpgradeSpawnError if sudo/the wrapper exits non-zero. Caller is
+        responsible for clearing ``_in_flight`` and the state file.
+    """
+    version_tag = f"v{target_version}"
+    cmd = ["sudo", "-n", _SELF_UPDATE_WRAPPER, version_tag]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,  # wrapper's systemd-run --no-block returns in <1s
+            check=False,
         )
-        # Pipe through `logger` so the setsid path also lands in the
-        # journal under the same identifier as the systemd-run path.
-        wrapped = f"({cmd}) 2>&1 | logger -t jarvis-node-update"
-        popen_args = ["setsid", "bash", "-c", wrapped]
+    except FileNotFoundError as e:
+        raise UpgradeSpawnError(f"sudo not found: {e}") from e
+    except subprocess.TimeoutExpired as e:
+        raise UpgradeSpawnError(
+            "jarvis-self-update did not return within 15s — wrapper hung?"
+        ) from e
 
-    subprocess.Popen(
-        popen_args,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
-    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise UpgradeSpawnError(
+            f"jarvis-self-update exited {result.returncode}: {stderr or '<no stderr>'}"
+        )
 
 
 def maybe_apply_update(pending: dict[str, Any]) -> None:
@@ -199,4 +198,20 @@ def maybe_apply_update(pending: dict[str, Any]) -> None:
         "target_version": target_version,
         "previous_version": current.version,
     })
-    _spawn_upgrade(target_version)
+    try:
+        _spawn_upgrade(target_version)
+    except UpgradeSpawnError as e:
+        # Spawn failed before the installer ever started (sudo prompt,
+        # missing wrapper, etc.). Roll back state immediately so the next
+        # heartbeat from CC re-dispatches and so we can surface the real
+        # error to the operator instead of a silent 30-min "in_progress"
+        # window while the server-side sweeper notices the task is dead.
+        logger.error(
+            "Update spawn failed — rolling back in_flight state",
+            task_id=task_id,
+            target_version=target_version,
+            error=str(e),
+        )
+        clear_state()
+        _in_flight.clear()
+        raise
