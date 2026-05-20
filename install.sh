@@ -852,6 +852,23 @@ install_post_install_wrapper() {
   success "Installed ${dest}"
 }
 
+install_self_update_wrapper() {
+  # Copy scripts/jarvis-self-update → /usr/local/sbin/, root-owned 0755.
+  # services/update_service.py invokes this via `sudo -n` to launch the
+  # upgrade installer in a transient systemd unit. Without this wrapper +
+  # its NOPASSWD sudoers grant, the update path hits a sudo password
+  # prompt with no TTY to answer it and silently fails — see prod kitchen
+  # node v0.1.49 → v0.1.50 incident, May 2026.
+  local src="${INSTALL_DIR}/scripts/jarvis-self-update"
+  local dest="/usr/local/sbin/jarvis-self-update"
+  if [ ! -f "$src" ]; then
+    warn "scripts/jarvis-self-update missing — mobile-triggered updates will fail with sudo password prompt"
+    return
+  fi
+  install -o root -g root -m 0755 "$src" "$dest"
+  success "Installed ${dest}"
+}
+
 install_sudoers() {
   local sudoers_path="/etc/sudoers.d/jarvis-node"
   local tmp
@@ -877,6 +894,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/pkill, /usr/bin/killall, /usr/bin/
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-post-install *
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-self-update *
 EOF
   chmod 0440 "$tmp"
   if visudo -cf "$tmp" >/dev/null 2>&1; then
@@ -1112,6 +1130,7 @@ main() {
   chown_install_dir
   install_apt_wrapper
   install_post_install_wrapper
+  install_self_update_wrapper
   install_sudoers
   create_service
 

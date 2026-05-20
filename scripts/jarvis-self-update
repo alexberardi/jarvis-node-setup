@@ -1,0 +1,56 @@
+#!/bin/sh
+# jarvis-self-update — sudo-able shim that launches the upgrade installer.
+#
+# Installed to /usr/local/sbin/jarvis-self-update (root-owned, 0755) by
+# install.sh, with /etc/sudoers.d/jarvis-node granting the service user
+# NOPASSWD access. Called by services/update_service.py with one argument:
+# the target version tag (e.g., "v0.1.50").
+#
+# Why a wrapper exists: update_service used to invoke `sudo systemd-run
+# bash -c 'curl ... | bash'` directly. That command isn't in the sudoers
+# NOPASSWD allow-list, so sudo prompted for a password — and since the
+# jarvis-node daemon has no TTY, sudo just failed with "a password is
+# required" and the update silently died, leaving CC's task `in_progress`
+# until the 30-min sweeper. This wrapper sits in the same NOPASSWD
+# allow-list pattern as jarvis-apt-install so the escalation just works.
+#
+# Defensive: the version arg is curl'd into a URL and embedded in a bash
+# -c string. We enforce a strict `vN.N.N` shape so neither input path
+# can be hijacked. Allow-list enforcement of which versions are
+# legitimate lives upstream (CC dispatches only versions it trusts);
+# this script is the last line of defense against malformed input.
+
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <version-tag>" >&2
+    echo "Example: $0 v0.1.50" >&2
+    exit 2
+fi
+
+VERSION="$1"
+
+# Strict shape: leading 'v' + three dot-separated integers. No pre-release,
+# no build metadata, no extra suffixes. Keeps the shell-quoted surface
+# inside the bash -c string trivially safe.
+if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "$0: invalid version tag (expected vN.N.N): $VERSION" >&2
+    exit 2
+fi
+
+# Run install.sh inside a transient systemd unit so:
+#  - it owns its own cgroup (escapes jarvis-node.service's memory limit,
+#    which would OOM-kill the installer on a 512 MB Pi Zero 2W)
+#  - it can stop/start jarvis-node freely without tearing down its own
+#    cgroup
+#  - its output lands in the journal under `jarvis-node-update` for easy
+#    `journalctl -u jarvis-node-update -f` tailing
+#
+# --no-block lets us exec away immediately; the installer runs to
+# completion in the background.
+exec systemd-run \
+    --unit=jarvis-node-update \
+    --collect \
+    --no-block \
+    --same-dir \
+    bash -c "curl -fsSL https://raw.githubusercontent.com/alexberardi/jarvis-node-setup/${VERSION}/install.sh | bash -s -- --force --version ${VERSION}"

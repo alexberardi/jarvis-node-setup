@@ -81,3 +81,16 @@ class TestSudoersHeredoc:
                 f"Binary path must be the exact wrapper, not a glob — got {binary_path!r}"
             )
             assert "*" not in binary_path
+
+    def test_sudoers_template_includes_self_update_wrapper_line(self):
+        """Mobile-triggered updates use /usr/local/sbin/jarvis-self-update.
+
+        Without this NOPASSWD entry the update path hits a sudo password
+        prompt with no TTY and silently dies (prod kitchen v0.1.49→0.1.50,
+        May 2026). Pin the grant so it can't be quietly removed.
+        """
+        body = _render_sudoers_heredoc()
+        assert "/usr/local/sbin/jarvis-self-update" in body
+        assert re.search(
+            r"NOPASSWD:\s*/usr/local/sbin/jarvis-self-update\s+\*", body
+        ), f"Expected jarvis-self-update sudoers line not found. Body:\n{body}"
