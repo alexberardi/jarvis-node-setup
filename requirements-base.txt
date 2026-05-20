@@ -16,5 +16,5 @@ packaging>=21.0
 pytz
 tqdm
 pyyaml
-jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@0524a93
-jarvis-config-client @ git+https://github.com/alexberardi/jarvis-config-client.git@ea1c63a
+jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@3c7da7e
+jarvis-config-client @ git+https://github.com/alexberardi/jarvis-config-client.git@c1c8903
