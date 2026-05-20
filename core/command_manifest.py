@@ -135,6 +135,16 @@ class CommandManifest(BaseModel):
     # node runtime installs declared packages at command-install time.
     apt_packages: list[str] = Field(default_factory=list)
 
+    # Declarative post-install ops (named op + parameters). Run after apt+pip
+    # via the sudoers-gated `jarvis-post-install` wrapper. Pantry validates
+    # each op's target against post-install-allowlist.yaml. Schema for op
+    # types lives in jarvis-command-sdk forge.MANIFEST_SCHEMA; we keep the
+    # node-side model as list[dict] because the per-op parameter set varies
+    # by `type` and a discriminated union would force authors of new op
+    # types to also update this model in lockstep. The dispatcher validates
+    # each op's shape at execution time.
+    post_install: list[dict[str, Any]] = Field(default_factory=list)
+
     @property
     def is_bundle(self) -> bool:
         """True if this package has multiple components or non-command types."""
