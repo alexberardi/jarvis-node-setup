@@ -331,6 +331,7 @@ class CommandExecutionService:
         warmup_thread: Optional[threading.Thread] = None,
         warmup_result: Optional[Dict[str, Any]] = None,
         skip_ack: bool = False,
+        pre_wake_speech_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -399,6 +400,7 @@ class CommandExecutionService:
             # Single unified request — handles audio, tool calls, and validation
             tag, payload = self.client.send_command_unified(
                 voice_command, conversation_id, speaker_user_id=speaker_user_id,
+                pre_wake_speech_seconds=pre_wake_speech_seconds,
             )
 
             # Signal the ack thread: the main response is here. If the ack
@@ -500,6 +502,32 @@ class CommandExecutionService:
         Returns:
             Execution result dictionary
         """
+        # Server detected the LLM's <not_for_me/> sentinel — the wake word
+        # fired on ambient speech (TV, separate conversation, etc.). Skip
+        # TTS, briefly flash the orange not_for_me LED so the user knows
+        # the wake fired and was dismissed, and signal the follow-up loop
+        # to exit immediately via the dedicated ``not_for_me`` flag.
+        # Note: we deliberately do NOT set clear_history here, because
+        # many normal one-shot commands (timers, lamp toggles) set it and
+        # the follow-up loop must still run after those.
+        if response.is_not_for_me():
+            logger.info("Server signaled not-for-me — silent abort",
+                        conversation_id=conversation_id)
+            try:
+                from services.led_service import get_led_service
+                get_led_service().preview_pattern("not_for_me", duration_seconds=1.2)
+            except Exception:
+                pass
+            return {
+                "success": True,
+                "message": "",
+                "conversation_id": conversation_id,
+                "wait_for_input": False,
+                "clear_history": False,
+                "audio_played": True,
+                "not_for_me": True,
+            }
+
         max_iterations = 10
         iteration = 0
         last_tool_result: Optional[ToolExecutionResult] = None

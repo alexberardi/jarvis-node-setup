@@ -879,7 +879,7 @@ def handle_preview_led_pattern(details: Dict[str, Any]) -> None:
     active LED service render as ``off``. Expected details:
 
         pattern: str — one of off/normal/alert/wake_detected/listening/
-                       thinking/speaking/error/muted/shutdown_warning
+                       thinking/speaking/error/not_for_me/muted/shutdown_warning
         duration_seconds: float (optional, default 3.0)
     """
     pattern = str(details.get("pattern", "")).strip()

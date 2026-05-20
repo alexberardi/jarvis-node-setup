@@ -282,12 +282,13 @@ def main():
         agent_scheduler.set_alert_queue(alert_queue)
     logger.info("Agent scheduler initialized")
 
-    # Music Assistant: enabled when URL secret is configured
-    from services.secret_service import get_secret_value
-    if get_secret_value("MUSIC_ASSISTANT_URL", "integration"):
-        ma_service = MusicAssistantService()
-    else:
-        ma_service = DummyMusicAssistantService()
+    # MusicAssistantService (utils/music_assistant_service.py) is currently broken
+    # against websockets >= 14 (uses removed `ws.closed` attr) and recursively
+    # retries forever, pegging CPU on Pi Zeros. Nothing actually calls its
+    # methods today — voice_listener handles pause/resume via PulseAudio, and
+    # the jarvis-cmd-music-assistant Pantry package is the real music control
+    # path. Always use the no-op stub until the shim is rewritten.
+    ma_service = DummyMusicAssistantService()
 
     # Pass shutdown event to MQTT module for graceful shutdown of loops
     from scripts.mqtt_tts_listener import set_shutdown_event as mqtt_set_shutdown
