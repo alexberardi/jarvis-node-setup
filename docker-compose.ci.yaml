@@ -122,14 +122,12 @@ services:
 
   jarvis-command-center:
     profiles: ["core"]
-    build:
-      context: ${CC_SOURCE_PATH:-../jarvis-command-center}
-      # Buildx GHA cache: cuts cold ~3 min cold build to ~30s on warm runs
-      # when nothing in CC's Dockerfile-relevant files changed.
-      cache_from:
-        - type=gha
-      cache_to:
-        - type=gha,mode=max
+    # Default: pull the :dev image (matches what auth + config-service do).
+    # The runner workflow swaps this for `build:` via
+    # compose/ci-overlays/jarvis-command-center-from-source.yaml when CC
+    # is the originating service of the PR being tested. Same pattern
+    # applies to auth + config-service overlays — v2.15 fan-out.
+    image: ghcr.io/alexberardi/jarvis-command-center:dev
     environment:
       # Database
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/jarvis_command_center
