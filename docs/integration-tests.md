@@ -74,7 +74,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.12** | Multi-tool flow — LLM emits 2 tool_calls in one response. CC's tool exec engine returns both in a single 202 with their IDs/order intact. Catches drift in the `server_results` + `client_calls` split logic. | `CASE-211` ("test multi-tool flow" → 202 with two client tool_calls in order) |
 | **v2.13** | First test on the **server→node async channel** (MQTT). Expose mosquitto port 1883, add paho-mqtt to the runner, capture access_token from `/auth/register` in seed.sh, subscribe to a per-node topic from the test, POST a publishing endpoint, assert the message arrives with the right payload. | `CASE-212` (POST `/nodes/{id}/settings/requests` → CC publishes `jarvis/nodes/{id}/settings/request` with the matching `request_id`) |
 | **v2.14** | Mixed server+client tool branch — single LLM response with both a server tool (e.g. `remember`) and a client tool. CC's loop runs the server, appends the result, re-calls the LLM, returns the iter-2 client tool. Fake LLM gains `requires_tool_message` matcher hint to differentiate iterations. | `CASE-213` ("test mixed tools" → 202 with the iter-2 `client_tool_four` only — proves the loop ran twice) |
-| **v2.15** *(next)* | Fan `integration-trigger.yml` out to remaining ~15 service repos. | (per-service cases) |
+| **v2.15** | Fan-out — runner generalization. `bring_up_cc` becomes `bring_up_stack`; per-service compose overlays under `compose/ci-overlays/` swap each supported service from `:dev` to `build:` when it's the originator. `jarvis-auth` and `jarvis-config-service` join `jarvis-command-center` as services whose PRs get tested against source. CC also switches to `:dev` by default (was inline build). Trigger workflows in each fanned-out repo are a separate follow-up (one PR per repo). | (no new cases — existing 20 now run against auth/config-service PRs from source) |
+| **v2.16** *(next)* | Extend MQTT publish coverage to `jarvis/nodes/{id}/factory-reset` (destructive path; high blast radius). | `CASE-214` |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -111,15 +112,17 @@ For one PR in `jarvis-command-center`:
    be on `main` before anything routes to it).
 4. **Resolve the payload** into step outputs (`service`, `pr_number`,
    `head_sha`, `originating_repo`, `plan_cases`, `linked_prs`,
-   `bring_up_cc`). `bring_up_cc=true` iff
-   `service == "jarvis-command-center"`.
+   `bring_up_stack`, `compose_overlay`). `bring_up_stack=true` iff
+   `service` is in the source-build set
+   (`jarvis-command-center`, `jarvis-auth`, `jarvis-config-service`);
+   `compose_overlay` resolves to the matching file under
+   `compose/ci-overlays/`.
 5. **Set up Python 3.11** + cache pip + install deps:
-   `pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart`.
+   `pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart paho-mqtt`.
 6. **Check out originating service repo at PR head**
-   (`actions/checkout@v4`) into `_src/jarvis-command-center` *inside* the
-   workspace. (Paths outside the workspace are rejected by
-   actions/checkout — that's why the local-dev default in compose is
-   `../jarvis-command-center` but CI overrides via `CC_SOURCE_PATH`.)
+   (`actions/checkout@v4`) into `_src/{service}` *inside* the workspace.
+   Each overlay's `build.context` default points at that path
+   (e.g. `./_src/jarvis-auth`).
 7. **Set up Docker Buildx** + **log in to GHCR** using the workflow's
    `GITHUB_TOKEN` with `permissions: packages: read`. The login is what
    lets the runner pull the private `ghcr.io/alexberardi/jarvis-auth:dev`
@@ -296,7 +299,7 @@ Writes:
 |---|---|---|
 | `CC_APP_KEY` | The key auth generated for `command-center` | The pytest step (`CASE-201`, `CASE-202`) |
 | `JARVIS_CC_APP_KEY` | Same value | The compose `up jarvis-command-center` step (interpolated into CC's env) |
-| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.15+ use) |
+| `CFG_APP_KEY` | The key auth generated for `jarvis-config-service` | (currently unused, captured for future v2.17+ use) |
 | `CC_HOUSEHOLD_ID` | The household auto-created by `/auth/register` for the CI user | The Phase 2.5 step (consumed by `POST CC /admin/nodes` to attach the node to a household) |
 
 `CC_NODE_ID` and `CC_NODE_KEY` are *not* written here — they're set by the **Phase 2.5 workflow step** (`Register node in CC`) that runs after CC is up. seed.sh runs before CC is up, so the node registration has to happen later.
@@ -568,19 +571,58 @@ gh secret list --repo alexberardi/jarvis-node-setup
 
 ---
 
-## Onboarding a new participating service repo
+## Onboarding a service for source-build (runner-side)
 
-1. **Copy the trigger workflow.** Drop a copy of `integration-trigger.yml`
+This step is the *runner's* job. It teaches the runner how to swap a
+service's `:dev` image for a `build:` block when that service is the
+originator of a PR. Done once per service.
+
+1. **Confirm the service has a Dockerfile** at its repo root and
+   publishes a `:dev` image to GHCR (matches the `image:` line in
+   `docker-compose.ci.yaml`). All current services do.
+2. **Add a compose overlay** at
+   `compose/ci-overlays/<service>-from-source.yaml`. Use the existing
+   `jarvis-auth-from-source.yaml` as a template — it's 12 lines:
+   ```yaml
+   name: jarvis-ci
+   services:
+     <service>:
+       build:
+         context: ${<SERVICE>_SOURCE_PATH:-./_src/<service>}
+         cache_from: [type=gha]
+         cache_to:   [type=gha,mode=max]
+   ```
+3. **Add the service to the runner's resolution table** in
+   `.github/workflows/integration-runner.yml`. The case block in the
+   "Resolve dispatch payload" step:
+   ```bash
+   case "$SERVICE" in
+     jarvis-command-center|jarvis-auth|jarvis-config-service|<new>)
+       BRING_UP_STACK="true"
+       COMPOSE_OVERLAY="compose/ci-overlays/${SERVICE}-from-source.yaml"
+       ;;
+   esac
+   ```
+4. **Fire a `workflow_dispatch`** against the service's `main` HEAD
+   to confirm bring-up works before any service-repo PR depends on it.
+
+## Onboarding a participating service repo (trigger-side)
+
+This step lives in the *service repo*, not here. Done once per repo.
+
+1. **Copy the trigger workflow.** Drop a copy of
+   `jarvis-command-center/.github/workflows/integration-trigger.yml`
    into the target repo's `.github/workflows/`. Change
-   `client_payload[service]` to the target repo's directory name.
-2. **Add `INTEGRATION_DISPATCH_TOKEN` to the new repo.**
-3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** to include the new
-   repo and re-store the secret.
-4. **Update the runner's `bring_up_cc` logic** if the new service needs
-   its own compose path. v2.15 plans a more generic
-   `bring_up_service_under_test` so this is just a payload-driven
-   selector.
-5. **Open a trivial PR** in the new repo to validate.
+   `client_payload[service]` to the target repo's directory name
+   (e.g. `jarvis-auth`).
+2. **Add `INTEGRATION_DISPATCH_TOKEN`** as a secret in the target
+   repo (fine-grained PAT with `Contents: Read and write` on
+   `jarvis-node-setup`).
+3. **Extend `INTEGRATION_COMMENT_TOKEN`'s scope** in
+   `jarvis-node-setup`'s secrets to include the new repo
+   (regenerate the PAT or edit its repository list, then re-store).
+4. **Open a trivial PR** in the new repo to validate the round-trip
+   (trigger fires → runner runs → result comment lands on the PR).
 
 ---
 
@@ -726,10 +768,15 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
 
 ---
 
-## Current limitations (v2.14)
+## Current limitations (v2.15)
 
-1. **Only `jarvis-command-center` is wired.** Other service repos can
-   open PRs but won't trigger this loop. **v2.15** fans out the trigger.
+1. **Only `jarvis-command-center` has a trigger workflow.** The
+   *runner* now supports source-builds for `jarvis-command-center`,
+   `jarvis-auth`, and `jarvis-config-service` (overlays under
+   `compose/ci-overlays/`), but each service still needs its own
+   `.github/workflows/integration-trigger.yml` to fan PR events into
+   this loop. Adding the trigger to auth + config-service is the next
+   operational step (see "Onboarding a service for source-build" below).
 2. **No real LLM proxy, Whisper, or TTS.** Fakes only. Real GPU services
    are v3 territory (self-hosted Ubuntu CUDA runner + macOS-15 MLX, both
    path-gated).
@@ -872,16 +919,33 @@ status.
 
 ## Roadmap
 
-### v2.15 — fan-out (next)
+### v2.16 — extend MQTT publish coverage (next)
 
-- Copy `integration-trigger.yml` to remaining service repos. Each gets
-  its own `INTEGRATION_DISPATCH_TOKEN` secret; extend
-  `INTEGRATION_COMMENT_TOKEN` scope accordingly.
-- Generalize `bring_up_cc` to `bring_up_service_under_test` — branch on
-  `service` in the payload, build the corresponding service from its
-  PR source.
+CASE-212 proves the publish channel works at all. Each subsequent
+topic case adds a regression catcher for one specific server→node
+message. We're being selective rather than mechanical — adding all
+~13 topics would be wasted effort once the pattern is proven.
+
+Next targets, in blast-radius order:
+- **CASE-214** `jarvis/nodes/{id}/factory-reset` — destructive, runs
+  on DELETE `/nodes/{id}` and on POST `/nodes/{id}/factory-reset`.
+- **CASE-215** `jarvis/nodes/{id}/package-install` — Pantry
+  integration, every dynamic install touches it.
+- **CASE-216** `jarvis/nodes/{id}/k2/provision` — pairing flow.
+
+After those three, declare v2 done and pivot to v3.
+
+### v3 — real GPU testing
+
+- Register the Ubuntu desktop (`10.0.0.122`) as a GHA self-hosted
+  runner with `[self-hosted, linux, cuda]` labels.
+- Add `gpu-llm-cuda` job in the runner with `--gpus all`, path-gated
+  to `jarvis-llm-proxy-api/**`.
+- Add `gpu-llm-mlx` on `macos-15-xlarge` (10× minute multiplier — keep
+  the path filter strict).
 - Add the `manual-required` check-run flow for hardware-dependent
-  cases.
+  cases (mobile UI, real Pi mic). v2's fakes-only loop has no clean
+  way to surface these.
 
 ### v3 — real GPU testing
 
@@ -916,9 +980,12 @@ Paths relative to `jarvis-node-setup` unless noted.
 | Path | Purpose |
 |---|---|
 | `.github/workflows/integration-runner.yml` | Receives dispatches, runs the two-phase compose + tests + posts results |
-| `docker-compose.ci.yaml` | CI stack definition: pgvector + mosquitto + auth + config-service + CC |
+| `docker-compose.ci.yaml` | CI stack definition: pgvector + mosquitto + auth + config-service + CC. All services default to `:dev` images; overlays swap individual services to source builds. |
+| `compose/ci-overlays/jarvis-command-center-from-source.yaml` | Overlay: build CC from PR source (applied when service=jarvis-command-center) |
+| `compose/ci-overlays/jarvis-auth-from-source.yaml` | Overlay: build auth from PR source (applied when service=jarvis-auth) |
+| `compose/ci-overlays/jarvis-config-service-from-source.yaml` | Overlay: build config-service from PR source (applied when service=jarvis-config-service) |
 | `compose/postgres-init.sh` | Creates jarvis_auth + jarvis_config DBs on first init |
-| `compose/seed.sh` | Phase-1.5 seed: registers app-clients in auth, captures keys, registers fakes in config-service, registers a CI user via `/auth/register` and exports `CC_HOUSEHOLD_ID`. Node registration itself is in the Phase 2.5 workflow step (because it needs CC up). |
+| `compose/seed.sh` | Phase-1.5 seed: registers app-clients in auth, captures keys, registers fakes in config-service, registers a CI user via `/auth/register`, captures the access_token. Node registration is in the Phase 2.5 workflow step (needs CC up). |
 | `tests/fakes/__init__.py` | (empty — package marker) |
 | `tests/fakes/fake_llm_backend.py` | FastAPI shim for `jarvis-llm-proxy-api` (non-streaming + SSE) |
 | `tests/fakes/fake_whisper.py` | FastAPI shim for `jarvis-whisper-api` |
@@ -926,7 +993,7 @@ Paths relative to `jarvis-node-setup` unless noted.
 | `tests/fakes/canned_responses.yaml` | Canned data for the LLM + Whisper fakes |
 | `tests/conftest.py` | `qa_case` marker → JUnit user-property hook |
 | `tests/test_loop_smoke.py` | v1 fakes-only suite (CASE-001…003) |
-| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201…206) |
+| `tests/test_cc_real_smoke.py` | v2.1+ real-stack suite (CASE-101…104, 201…213) |
 | `tools/__init__.py` | (empty — package marker) |
 | `tools/parse_junit.py` | JUnit XML → case-status JSON |
 | `pyproject.toml` | Registers the `qa_case` pytest marker |
