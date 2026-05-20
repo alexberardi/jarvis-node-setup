@@ -1,0 +1,34 @@
+#!/bin/sh
+# jarvis-alsa-store — sudo-able shim around `alsactl store`.
+#
+# Installed to /usr/local/sbin/jarvis-alsa-store (root-owned, 0755) by
+# install.sh, with /etc/sudoers.d/jarvis-node granting the service user
+# NOPASSWD access. Lets jarvis-node persist amixer changes to
+# /var/lib/alsa/asound.state so the alsa-restore systemd unit reloads
+# them on the next boot.
+#
+# Why a wrapper: `alsactl store` writes to /var/lib/alsa/, which is
+# root-owned. The service user can't write there directly, and we don't
+# want to grant blanket NOPASSWD on /usr/sbin/alsactl (which can also
+# `kill` running PAs, monitor, etc.). This wrapper accepts no arguments
+# and only ever invokes the `store` subcommand — narrowest possible
+# privilege grant.
+#
+# Use case 1: install.sh calls `alsactl store` directly as root after
+# setting the codec mixer baseline. This wrapper doesn't replace that;
+# install-time persistence is already covered.
+#
+# Use case 2: the running jarvis-node process detects mixer drift (or
+# a user-triggered re-tune) and wants to persist the new values without
+# any human in the loop. Without this wrapper, those changes evaporate
+# on reboot and the user has to interactively `sudo alsactl store`.
+
+set -eu
+
+if [ "$#" -ne 0 ]; then
+    echo "Usage: $0    (no arguments)" >&2
+    echo "       persists current ALSA mixer state to /var/lib/alsa/asound.state" >&2
+    exit 2
+fi
+
+exec alsactl store
