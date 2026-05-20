@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""jarvis-post-install — sudoers-gated dispatcher for declarative post-install ops.
+
+Installed to /usr/local/sbin/jarvis-post-install (root-owned, 0755) by
+install.sh, with /etc/sudoers.d/jarvis-node granting the service user
+NOPASSWD access. Invoked once per op by
+command_store_service._run_post_install().
+
+Two ops are supported (the SDK schema in jarvis-command-sdk
+forge.MANIFEST_SCHEMA["post_install"] mirrors these names):
+
+  configure-systemd-service   — write a systemd drop-in for the named service
+  set-config-file-value       — idempotent key=value in a structured config
+
+Both ops are bounded by a Pantry-side allow-list checked at submission
+time (jarvis-pantry/config/post-install-allowlist.yaml), so by the time
+input reaches this wrapper the (op_type, target) pair has been vetted.
+This wrapper still performs defensive shape checks — path traversal,
+unit-name regex, atomic file writes — as defense in depth.
+
+The op's JSON payload is read from stdin. Stdout is informational;
+non-zero exit code signals failure.
+
+Idempotency:
+  - configure-systemd-service writes the same drop-in deterministically;
+    re-running on an already-configured service is a no-op (after the
+    file compare).
+  - set-config-file-value upserts the key inside the named section. If
+    the key already has the requested value, the file is left untouched.
+
+Uninstall:
+  - drop-ins carry a `# managed-by: jarvis-package <name>` marker line.
+    command_store_service's uninstall path scans for this marker and
+    removes drop-ins owned by the package being uninstalled.
+  - config-file edits do NOT auto-revert today (POC limitation). The
+    edit is logged so an operator can audit / hand-revert if needed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+# ── Shape guards ────────────────────────────────────────────────────────
+
+# Real systemd unit naming is permissive but a community package should
+# only ever name a *short* unit (no template-instance @, no path-escaped).
+# Allow letters, digits, dot/dash/underscore. Reject everything else.
+_UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+# Drop-in file we own. ONE per service. install.sh / uninstall scan for
+# this exact name so re-running the wrapper for the same service+package
+# overwrites cleanly.
+_DROPIN_FILENAME = "jarvis.conf"
+
+# Marker line that lets the uninstall path identify drop-ins this wrapper
+# wrote, scoped to a specific package.
+_MANAGED_BY_PREFIX = "# managed-by: jarvis-package "
+
+
+def _die(msg: str, code: int = 2) -> "None":
+    print(f"jarvis-post-install: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def _read_payload() -> dict:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        _die("empty payload on stdin")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        _die(f"payload is not valid JSON: {e}")
+        return {}  # unreachable, for type checkers
+    if not isinstance(data, dict):
+        _die(f"payload must be an object, got {type(data).__name__}")
+    return data
+
+
+def _validate_package_name(name: str) -> str:
+    """Package name carries into the managed-by marker; constrain to safe chars."""
+    if not isinstance(name, str) or not _UNIT_NAME_RE.match(name or ""):
+        _die(f"invalid --package: {name!r}")
+    return name
+
+
+def _validate_service_name(name: object) -> str:
+    if not isinstance(name, str) or not name or not _UNIT_NAME_RE.match(name):
+        _die(f"invalid service name: {name!r}")
+    return name  # type: ignore[return-value]
+
+
+def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    """Write `content` to `path` atomically — write to tmp in the same dir, fsync, rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+# ── op: configure-systemd-service ───────────────────────────────────────
+
+
+def _render_dropin(payload: dict, package: str) -> str:
+    """Render a systemd drop-in (.conf in *.service.d/) from a payload dict.
+
+    Supported keys (all optional except `service`, which is validated by the
+    caller):
+      run_as      — User=
+      group       — Group=
+      environment — dict[str,str], rendered as Environment="K=V" lines
+      wants       — list[str], rendered as Wants= in [Unit]
+      after       — list[str], rendered as After= in [Unit]
+      restart     — Restart= value (e.g. "on-failure")
+      restart_sec — RestartSec= seconds
+    """
+    unit_lines: list[str] = []
+    service_lines: list[str] = []
+
+    wants = payload.get("wants")
+    if isinstance(wants, list) and wants:
+        for w in wants:
+            if not isinstance(w, str) or not w.strip():
+                _die(f"wants[] entry must be a non-empty string: {w!r}")
+            unit_lines.append(f"Wants={w}")
+
+    after = payload.get("after")
+    if isinstance(after, list) and after:
+        for a in after:
+            if not isinstance(a, str) or not a.strip():
+                _die(f"after[] entry must be a non-empty string: {a!r}")
+            unit_lines.append(f"After={a}")
+
+    run_as = payload.get("run_as")
+    if run_as:
+        if not isinstance(run_as, str) or not _UNIT_NAME_RE.match(run_as):
+            _die(f"invalid run_as: {run_as!r}")
+        service_lines.append(f"User={run_as}")
+
+    group = payload.get("group")
+    if group:
+        if not isinstance(group, str) or not _UNIT_NAME_RE.match(group):
+            _die(f"invalid group: {group!r}")
+        service_lines.append(f"Group={group}")
+
+    env = payload.get("environment")
+    if env:
+        if not isinstance(env, dict):
+            _die("environment must be a mapping")
+        for k, v in env.items():
+            if not isinstance(k, str) or "=" in k or not k:
+                _die(f"invalid environment key: {k!r}")
+            if not isinstance(v, str):
+                _die(f"environment value for {k!r} must be a string")
+            # Escape any embedded double quotes — Environment=" ... " syntax.
+            escaped = v.replace("\\", "\\\\").replace("\"", "\\\"")
+            service_lines.append(f'Environment="{k}={escaped}"')
+
+    restart = payload.get("restart")
+    if restart:
+        if not isinstance(restart, str) or not re.match(r"^[a-z-]+$", restart):
+            _die(f"invalid restart: {restart!r}")
+        service_lines.append(f"Restart={restart}")
+
+    restart_sec = payload.get("restart_sec")
+    if restart_sec is not None:
+        if not isinstance(restart_sec, int) or restart_sec < 0:
+            _die(f"invalid restart_sec: {restart_sec!r}")
+        service_lines.append(f"RestartSec={restart_sec}")
+
+    parts: list[str] = [f"{_MANAGED_BY_PREFIX}{package}"]
+    if unit_lines:
+        parts.append("[Unit]")
+        parts.extend(unit_lines)
+        parts.append("")
+    if service_lines:
+        parts.append("[Service]")
+        parts.extend(service_lines)
+        parts.append("")
+    return "\n".join(parts) + "\n"
+
+
+def _systemctl(*args: str) -> None:
+    """Run systemctl, dying with a useful message on non-zero."""
+    cmd = ["systemctl", *args]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _die(f"systemctl {' '.join(args)} failed: {e}")
+        return
+    if r.returncode != 0:
+        _die(
+            f"systemctl {' '.join(args)} exited {r.returncode}: "
+            f"{(r.stderr or r.stdout).strip()[:500]}"
+        )
+
+
+def _op_configure_systemd_service(payload: dict, package: str) -> None:
+    service = _validate_service_name(payload.get("service"))
+    dropin_dir = Path("/etc/systemd/system") / f"{service}.service.d"
+    dropin_path = dropin_dir / _DROPIN_FILENAME
+
+    rendered = _render_dropin(payload, package)
+
+    # Idempotency: if content matches what we'd write, skip the daemon-reload
+    # and restart entirely so re-installs are quiet no-ops.
+    if dropin_path.exists():
+        try:
+            current = dropin_path.read_text()
+        except OSError:
+            current = ""
+        if current == rendered:
+            print(f"configure-systemd-service: {service} already up to date")
+            return
+
+    _atomic_write(dropin_path, rendered, mode=0o644)
+    _systemctl("daemon-reload")
+    _systemctl("restart", service)
+    print(f"configure-systemd-service: wrote {dropin_path} and restarted {service}")
+
+
+# ── op: set-config-file-value ───────────────────────────────────────────
+
+
+def _normalize_target_file(raw: object) -> Path:
+    """Defensive path-traversal guard. Refuses non-absolute paths and
+    `..`/redundant segments (anything `os.path.normpath` would rewrite).
+
+    Deliberately does NOT call ``Path.resolve()`` — on macOS `/etc` is a
+    symlink to `/private/etc`, which would make a legitimate target look
+    rewritten. Symlink-escape is mitigated by the Pantry-side allow-list
+    of permitted file paths above us, not by the wrapper.
+    """
+    if not isinstance(raw, str) or not raw.startswith("/"):
+        _die(f"invalid file: must be an absolute path: {raw!r}")
+        return Path()  # unreachable
+    if os.path.normpath(raw) != raw:
+        _die(
+            f"path has '..' or redundant segments: {raw!r} "
+            f"(normalizes to {os.path.normpath(raw)!r})"
+        )
+    return Path(raw)
+
+
+def _libconfig_upsert(
+    src: str, section: str, key: str, value: str,
+) -> str:
+    """Idempotently set `key = "value";` inside the named libconfig section.
+
+    libconfig (used by shairport-sync among others) syntax for our purposes:
+
+        section =
+        {
+            key = "value";
+            // commented_key = "default";
+        };
+
+    Behavior:
+      - If a non-commented `key = ...;` line exists inside `section`, the
+        value is replaced.
+      - Otherwise a new `key = "value";` line is appended immediately after
+        the opening `{`.
+      - If the named `section = { ... };` block is missing, one is added at
+        the end of the file. (Doesn't apply to shairport.conf which ships
+        all blocks pre-stubbed, but keeps the wrapper resilient.)
+
+    Values are wrapped in double quotes and embedded quotes escaped.
+    """
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", section):
+        _die(f"invalid section name: {section!r}")
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        _die(f"invalid key name: {key!r}")
+    escaped_value = value.replace("\\", "\\\\").replace("\"", "\\\"")
+    new_line = f'\t{key} = "{escaped_value}";'
+
+    # Find the section's `{ ... };` block.
+    section_open_re = re.compile(
+        rf"^[ \t]*{re.escape(section)}[ \t]*=[ \t]*\n[ \t]*\{{",
+        re.MULTILINE,
+    )
+    m = section_open_re.search(src)
+    if not m:
+        # Append a new section at the end.
+        return src.rstrip() + f"\n\n{section} =\n{{\n{new_line}\n}};\n"
+
+    # Locate the closing `};` after the opening brace.
+    brace_pos = m.end()  # index just after the `{`
+    close_re = re.compile(r"\n\s*\}\s*;", re.MULTILINE)
+    cm = close_re.search(src, pos=brace_pos)
+    if not cm:
+        _die(f"section {section!r} opens but never closes — refusing to edit")
+        return src  # unreachable
+
+    block = src[brace_pos:cm.start()]
+    block_end = cm.start()
+
+    # Look for an existing (non-commented) `key = ...;` line.
+    key_line_re = re.compile(
+        rf"^([ \t]*)({re.escape(key)})[ \t]*=[ \t]*[^\n]*;",
+        re.MULTILINE,
+    )
+    found_replacement: str | None = None
+    for km in key_line_re.finditer(block):
+        prefix = block[max(0, km.start() - 4):km.start()]
+        # Skip commented-out template lines like `//\tkey = "default";`.
+        # libconfig also supports `#` comments; we treat both as inactive.
+        if prefix.lstrip().startswith(("//", "#")):
+            continue
+        # Replace this line, preserving the leading indent.
+        indent = km.group(1)
+        replaced = f'{indent}{key} = "{escaped_value}";'
+        found_replacement = (
+            block[:km.start()] + replaced + block[km.end():]
+        )
+        break
+
+    if found_replacement is not None:
+        new_block = found_replacement
+    else:
+        # Insert immediately after the opening brace (with a newline).
+        new_block = "\n" + new_line + block.rstrip("\n") + "\n"
+
+    return src[:brace_pos] + new_block + src[block_end:]
+
+
+def _op_set_config_file_value(payload: dict, package: str) -> None:
+    fmt = payload.get("format")
+    if fmt != "libconfig":
+        _die(f"unsupported format: {fmt!r} (supported: libconfig)")
+
+    target = _normalize_target_file(payload.get("file"))
+    if not target.exists():
+        _die(f"file does not exist: {target}")
+
+    section = payload.get("section")
+    key = payload.get("key")
+    value = payload.get("value")
+    if not isinstance(section, str) or not isinstance(key, str):
+        _die("section and key must be strings")
+    if not isinstance(value, str):
+        _die("value must be a string")
+
+    src = target.read_text()
+    out = _libconfig_upsert(src, section, key, value)  # type: ignore[arg-type]
+
+    if out == src:
+        print(f"set-config-file-value: {target} already has {section}.{key} = {value!r}")
+        return
+
+    _atomic_write(target, out, mode=0o644)
+    print(
+        f"set-config-file-value: updated {target} "
+        f"({section}.{key} = {value!r}, package={package})"
+    )
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────
+
+
+def _op_remove_managed_dropins(package: str) -> None:
+    """Find and remove systemd drop-ins owned by this package.
+
+    Scans /etc/systemd/system/*.service.d/*.conf for files whose first
+    non-empty line is the marker `# managed-by: jarvis-package <name>`.
+    Each matching file is removed; systemctl daemon-reload runs once at
+    the end, and each affected service is restarted so it picks up the
+    revert to package-default behavior.
+
+    This op takes no payload — just the --package arg. Idempotent: if no
+    drop-ins match (uninstall on a package that never wrote any), the op
+    is a clean no-op.
+    """
+    dropin_root = Path("/etc/systemd/system")
+    if not dropin_root.exists():
+        print("remove-managed-dropins: /etc/systemd/system does not exist; nothing to do")
+        return
+
+    marker = f"{_MANAGED_BY_PREFIX}{package}"
+    removed: list[str] = []
+    affected_services: list[str] = []
+
+    for service_dir in sorted(dropin_root.glob("*.service.d")):
+        for dropin in sorted(service_dir.glob("*.conf")):
+            try:
+                first_line = dropin.read_text().splitlines()[:1]
+            except OSError:
+                continue
+            if not first_line or first_line[0].strip() != marker:
+                continue
+            try:
+                dropin.unlink()
+            except OSError as e:
+                print(f"remove-managed-dropins: failed to remove {dropin}: {e}",
+                      file=sys.stderr)
+                continue
+            removed.append(str(dropin))
+            service_name = service_dir.name[: -len(".service.d")]
+            if service_name not in affected_services:
+                affected_services.append(service_name)
+
+    if not removed:
+        print(f"remove-managed-dropins: no drop-ins for package {package!r}")
+        return
+
+    # Reload + restart affected services so they revert to package defaults.
+    _systemctl("daemon-reload")
+    for svc in affected_services:
+        try:
+            _systemctl("restart", svc)
+        except SystemExit:
+            # systemctl restart can fail if the service is in a bad state;
+            # we've already removed our drop-in, so partial success is fine.
+            print(f"remove-managed-dropins: warn — restart {svc} failed (continuing)",
+                  file=sys.stderr)
+
+    print(
+        f"remove-managed-dropins: removed {len(removed)} drop-in(s) for {package!r}, "
+        f"restarted: {', '.join(affected_services)}"
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Jarvis post-install op dispatcher")
+    parser.add_argument(
+        "--package", required=True,
+        help="Name of the Jarvis package that owns this op (used in managed-by marker).",
+    )
+    sub = parser.add_subparsers(dest="op", required=True)
+    sub.add_parser("configure-systemd-service", help="Write a systemd drop-in.")
+    sub.add_parser("set-config-file-value", help="Set a key=value in a config file.")
+    sub.add_parser(
+        "remove-managed-dropins",
+        help="Remove all drop-ins this package previously wrote (uninstall).",
+    )
+    args = parser.parse_args()
+
+    package = _validate_package_name(args.package)
+
+    if args.op == "remove-managed-dropins":
+        # No stdin payload — operates purely on --package.
+        _op_remove_managed_dropins(package)
+        return 0
+
+    payload = _read_payload()
+
+    if args.op == "configure-systemd-service":
+        _op_configure_systemd_service(payload, package)
+    elif args.op == "set-config-file-value":
+        _op_set_config_file_value(payload, package)
+    else:
+        _die(f"unknown op: {args.op}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
