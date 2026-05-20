@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from jarvis_command_sdk import IJarvisCommand, CommandExample
@@ -392,3 +393,44 @@ class TestCommandManifest:
         assert "finance" in VALID_CATEGORIES
         assert "smart-home" in VALID_CATEGORIES
         assert len(VALID_CATEGORIES) > 10
+
+
+class TestCommandManifestAptPackages:
+    """`apt_packages` is the bridge from manifest YAML into the install
+    pipeline (`services/command_store_service._install_apt_deps`). Before #15
+    Pydantic dropped this field silently — the wrapper was never invoked
+    even when the manifest declared packages. Pin the contract."""
+
+    def test_apt_packages_defaults_to_empty_list(self):
+        m = CommandManifest(name="x", description="y")
+        assert m.apt_packages == []
+
+    def test_apt_packages_survives_validation(self):
+        m = CommandManifest(name="x", description="y", apt_packages=["mpv", "ffmpeg"])
+        assert m.apt_packages == ["mpv", "ffmpeg"]
+
+    def test_apt_packages_round_trips_through_dict(self):
+        """YAML-loaded manifests come in as **kwargs from a yaml.safe_load
+        dict. The field must thread through cleanly so _install_apt_deps
+        sees the values the author declared."""
+        raw = {
+            "name": "media_command",
+            "description": "Plays music",
+            "version": "1.0.0",
+            "apt_packages": ["mpv", "alsa-utils"],
+        }
+        m = CommandManifest(**raw)
+        assert m.apt_packages == ["mpv", "alsa-utils"]
+        # `getattr` is how the install pipeline currently reads it — must
+        # succeed even on instances built before the field existed.
+        assert getattr(m, "apt_packages", None) == ["mpv", "alsa-utils"]
+
+    def test_apt_packages_rejects_non_list(self):
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            CommandManifest(name="x", description="y", apt_packages="mpv")  # type: ignore[arg-type]
+
+    def test_apt_packages_rejects_non_string_entry(self):
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            CommandManifest(name="x", description="y", apt_packages=["mpv", 42])  # type: ignore[list-item]
