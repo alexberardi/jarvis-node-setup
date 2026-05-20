@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -295,6 +296,30 @@ OWW_CHUNK = 1280
 # Many USB mics only support 44100/48000 Hz — capture at 48 kHz and downsample
 MIC_RATE = 48000
 MIC_CHUNK = OWW_CHUNK * (MIC_RATE // OWW_RATE)  # 3840 samples at 48 kHz = 80 ms
+
+# Each captured chunk is exactly one OWW frame = 80 ms of audio.
+_CHUNK_SECONDS: float = OWW_CHUNK / OWW_RATE  # 0.08
+# Pre-wake VAD: keep ~5 s of "was-speech" frames in a ring buffer so we can
+# tell the command-center "the room had ongoing speech for the N seconds
+# before this wake fired." Mid-conversation wakes (the false-wake case we
+# most want to silence) jump out because the buffer is mostly True; a user
+# walking up and saying "hey Jarvis what's the weather" has a near-empty
+# buffer. The CC LLM uses this as a direction hint for its not_for_me call.
+PRE_WAKE_VAD_WINDOW_SECS: float = 5.0
+PRE_WAKE_VAD_FRAMES: int = max(1, int(PRE_WAKE_VAD_WINDOW_SECS / _CHUNK_SECONDS))
+
+
+def _pre_wake_vad_threshold() -> float:
+    """RMS (int16) above which we count a frame as speech-like.
+
+    The dev-Pi USB mic showed baseline-ambient RMS sustained in the
+    high-hundreds-to-low-thousands range, so the original 500 default
+    flagged ordinary "quiet room" frames as speech. 2500 separates
+    that ambient floor from a person actually speaking. Per-room mic
+    tuning lives in the ``pre_wake_vad_rms_threshold`` setting so we
+    can adjust without a redeploy once we have observed values.
+    """
+    return Config.get_float("pre_wake_vad_rms_threshold", 2500.0)
 
 _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
 
@@ -795,6 +820,7 @@ def send_for_transcription(
     conversation_id: str | None = None,
     warmup_result: dict | None = None,
     skip_ack: bool = False,
+    pre_wake_speech_seconds: float | None = None,
 ) -> Dict[str, Any] | None:
     global _last_speaker_user_id
 
@@ -845,6 +871,7 @@ def send_for_transcription(
                 warmup_thread=warmup_thread,
                 warmup_result=warmup_result,
                 skip_ack=skip_ack,
+                pre_wake_speech_seconds=pre_wake_speech_seconds,
             )
         except (ConnectionError, OSError, TimeoutError) as e:
             logger.error("Command center unreachable", error=str(e))
@@ -1301,6 +1328,17 @@ def start_voice_listener(ma_service):
 
             wake_q = bus.subscribe("wake")
             score = 0.0
+            # Pre-wake VAD ring buffer — one bool per 80 ms chunk, last
+            # PRE_WAKE_VAD_FRAMES kept. On wake fire we sum it and report
+            # how many seconds of speech happened in the window before wake.
+            # Fresh per outer iteration so prior interactions don't leak in.
+            pre_wake_speech_frames: deque[bool] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
+            # Parallel RMS-value deque used only for the wake-fire diagnostic
+            # log — lets us see the actual mic baseline so the threshold can
+            # be tuned per room without guessing.
+            pre_wake_rms_values: deque[float] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
+            pre_wake_vad_threshold: float = _pre_wake_vad_threshold()
+            pre_wake_speech_seconds: float | None = None
             try:
                 was_paused = False
                 while True:
@@ -1334,12 +1372,24 @@ def start_voice_listener(ma_service):
                     # First chunk after a pause: reset the openWakeWord LSTM
                     # state. Without this, residual context from before the
                     # pause (often the wake response audio echoing back)
-                    # immediately re-triggers a wake event.
+                    # immediately re-triggers a wake event. Also drop the
+                    # pre-wake VAD buffer — frames from before the pause
+                    # are no longer "the room before this wake".
                     if was_paused:
                         oww.reset()
+                        pre_wake_speech_frames.clear()
+                        pre_wake_rms_values.clear()
                         was_paused = False
 
                     samples = np.frombuffer(raw_data, dtype=np.int16)
+
+                    # Per-chunk RMS for the pre-wake VAD ring buffer. Use
+                    # the raw 48 kHz samples (before resample/clip) so the
+                    # energy reading is unmodified mic input. Tiny cost.
+                    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                    pre_wake_speech_frames.append(rms > pre_wake_vad_threshold)
+                    pre_wake_rms_values.append(rms)
+
                     if resample_down > 1:
                         resampled = resample_poly(samples, up=1, down=resample_down)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
@@ -1353,6 +1403,36 @@ def start_voice_listener(ma_service):
                             threshold=wake_threshold,
                         )
                     if score > wake_threshold:
+                        speech_frames = sum(pre_wake_speech_frames)
+                        pre_wake_speech_seconds = round(
+                            speech_frames * _CHUNK_SECONDS, 2,
+                        )
+                        # Diagnostic RMS stats for threshold calibration.
+                        # If the threshold is mis-tuned for this mic the
+                        # speech_seconds count will be obviously off relative
+                        # to the actual energy distribution — log the shape
+                        # so we can pick a real number, not a guess.
+                        if pre_wake_rms_values:
+                            rms_sorted = sorted(pre_wake_rms_values)
+                            rms_n = len(rms_sorted)
+                            rms_stats = {
+                                "max": round(rms_sorted[-1], 1),
+                                "p95": round(rms_sorted[int(rms_n * 0.95)], 1),
+                                "p75": round(rms_sorted[int(rms_n * 0.75)], 1),
+                                "median": round(rms_sorted[rms_n // 2], 1),
+                                "min": round(rms_sorted[0], 1),
+                            }
+                        else:
+                            rms_stats = {}
+                        logger.info(
+                            "Wake fired",
+                            score=round(float(score), 3),
+                            pre_wake_speech_seconds=pre_wake_speech_seconds,
+                            pre_wake_window_seconds=PRE_WAKE_VAD_WINDOW_SECS,
+                            buffered_frames=len(pre_wake_speech_frames),
+                            vad_threshold=pre_wake_vad_threshold,
+                            rms_stats=rms_stats,
+                        )
                         break
             finally:
                 bus.unsubscribe("wake")
@@ -1421,6 +1501,7 @@ def start_voice_listener(ma_service):
                         conversation_id=conversation_id,
                         warmup_result=warmup_result,
                         skip_ack=ack_played,
+                        pre_wake_speech_seconds=pre_wake_speech_seconds,
                     )
                     # Capture TTS-end time RIGHT after send_for_transcription
                     # returns (which is right after speak_result completes).

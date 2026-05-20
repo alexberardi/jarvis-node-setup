@@ -75,11 +75,15 @@ class ToolCallingResponse(BaseModel):
     def is_final(self) -> bool:
         """Check if this is a final response (conversation is complete)"""
         return self.stop_reason == "complete" if self.stop_reason else False
-    
+
+    def is_not_for_me(self) -> bool:
+        """Server signaled the wake-up wasn't addressed to Jarvis — silent abort."""
+        return self.stop_reason == "not_for_me"
+
     def requires_tool_execution(self) -> bool:
         """Check if this response requires tool execution"""
         return self.stop_reason == "tool_calls" and self.tool_calls is not None and len(self.tool_calls) > 0
-    
+
     def requires_validation(self) -> bool:
         """Check if this response requires user validation"""
         return self.stop_reason == "validation_required" and self.validation_request is not None

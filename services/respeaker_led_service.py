@@ -10,6 +10,7 @@ Patterns:
 - "thinking"         — amber pinwheel: 1 LED lit, then 2, then 3, then loops
 - "speaking"         — cyan steady (TTS response playing)
 - "error"            — red steady (command failed; auto-clears with TTS)
+- "not_for_me"       — orange steady (false wake detected; brief preview, auto-clears)
 - "alert"            — red blink (~1Hz, used when alerts queued)
 - "muted"            — solid red (reserved for future)
 - "shutdown_warning" — fast red blink (power button held)
@@ -99,6 +100,12 @@ def _p_error(_t: float) -> list[tuple[int, int, int, int]]:
     return [(255, 0, 0, 50)] * NUM_LEDS
 
 
+def _p_not_for_me(_t: float) -> list[tuple[int, int, int, int]]:
+    # Saturated orange — red-shifted enough to read distinctly from the
+    # amber thinking pinwheel (255, 140, 0) at a glance.
+    return [(255, 90, 0, 45)] * NUM_LEDS
+
+
 def _p_muted(_t: float) -> list[tuple[int, int, int, int]]:
     return [(255, 0, 0, 30)] * NUM_LEDS
 
@@ -118,6 +125,7 @@ _PATTERNS: dict[str, Callable[[float], list[tuple[int, int, int, int]]]] = {
     "thinking": _p_thinking,
     "speaking": _p_speaking,
     "error": _p_error,
+    "not_for_me": _p_not_for_me,
     "muted": _p_muted,
     "shutdown_warning": _p_shutdown_warning,
 }

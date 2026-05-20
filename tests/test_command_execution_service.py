@@ -404,3 +404,56 @@ class TestContinueConversation:
 
         assert result["wait_for_input"] is True
         assert result["clear_history"] is False
+
+
+# ---------- not_for_me silent-abort tests ----------
+
+
+class TestNotForMeSilentAbort:
+    """When the server signals not_for_me, the node returns a silent-abort
+    dict so the caller skips TTS and the follow-up loop exits immediately."""
+
+    def test_returns_not_for_me_and_audio_played(self, mock_deps):
+        service = CommandExecutionService()
+
+        not_for_me = ToolCallingResponse(
+            stop_reason="not_for_me",
+            assistant_message=None,
+        )
+        mock_deps["client"].send_command.return_value = not_for_me
+
+        result = service.continue_conversation("conv-x", "and then she said")
+
+        assert result["success"] is True
+        assert result["message"] == ""
+        assert result["not_for_me"] is True
+        assert result["audio_played"] is True
+        # clear_history stays False — only ``not_for_me`` should short-circuit
+        # the follow-up loop; one-shot commands that legitimately set
+        # clear_history must still allow follow-ups.
+        assert result["clear_history"] is False
+        # No tool round-trip should be needed.
+        mock_deps["client"].send_tool_results.assert_not_called()
+
+    def test_skips_tool_loop_entirely(self, mock_deps):
+        """A not_for_me response must short-circuit before any tool execution
+        or validation handling — even if tool_calls happened to be present."""
+        service = CommandExecutionService()
+
+        # Misshapen response: stop_reason=not_for_me but also has tool_calls.
+        # The not_for_me signal wins; tools must not execute.
+        tc = _make_tool_call("should_never_run")
+        weird = ToolCallingResponse(
+            stop_reason="not_for_me",
+            tool_calls=[tc],
+        )
+        mock_deps["client"].send_command.return_value = weird
+
+        validation_handler = MagicMock()
+        result = service.continue_conversation(
+            "conv-y", "ambient", validation_handler=validation_handler,
+        )
+
+        assert result["not_for_me"] is True
+        validation_handler.assert_not_called()
+        mock_deps["discovery"].get_command.assert_not_called()

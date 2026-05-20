@@ -128,6 +128,7 @@ class JarvisCommandCenterClient:
         voice_command: str,
         conversation_id: str,
         speaker_user_id: int | None = None,
+        pre_wake_speech_seconds: float | None = None,
     ) -> tuple[str, Any]:
         """Send a voice command to the unified streaming endpoint.
 
@@ -140,6 +141,10 @@ class JarvisCommandCenterClient:
             conversation_id: Unique conversation identifier
             speaker_user_id: Actual speaker from STT (for mismatch detection
                             when warmup used a cached speaker ID)
+            pre_wake_speech_seconds: Optional seconds of speech-like audio
+                            detected just before the wake word fired
+                            (from the node's pre-wake VAD ring buffer).
+                            CC surfaces this to the LLM as a direction hint.
 
         Returns:
             A tuple of (tag, payload):
@@ -153,6 +158,8 @@ class JarvisCommandCenterClient:
         }
         if speaker_user_id is not None:
             payload["speaker_user_id"] = speaker_user_id
+        if pre_wake_speech_seconds is not None:
+            payload["pre_wake_speech_seconds"] = pre_wake_speech_seconds
 
         logger.info(
             "Sending unified voice command",
