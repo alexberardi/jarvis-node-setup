@@ -154,6 +154,7 @@ else
         portaudio19-dev \
         sox \
         ffmpeg \
+        mpv \
         sqlcipher \
         libsqlcipher-dev \
         avahi-utils \

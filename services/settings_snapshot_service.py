@@ -228,7 +228,40 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
         "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 5),
         "volume_percent": Config.get_int("volume_percent", 100),
+        "led_enabled": Config.get_bool("led_enabled", True),
+        "led_brightness_percent": Config.get_int("led_brightness_percent", 100),
     }
+
+    # Detected hardware — surfaces ReSpeaker HAT presence + audio backend to
+    # the mobile app so it can hide/show HAT-only controls and warn when the
+    # node's hardware doesn't support a feature the user is configuring.
+    hardware: dict[str, Any] = {}
+    try:
+        from services.respeaker_led_service import respeaker_available
+        hardware["hat_detected"] = respeaker_available()
+        hardware["led_chain_available"] = respeaker_available()
+    except Exception:
+        hardware["hat_detected"] = False
+        hardware["led_chain_available"] = False
+
+    try:
+        from utils.audio_volume import get_audio_card, is_muted
+        hardware["audio_card"] = get_audio_card()
+        muted = is_muted()
+        if muted is not None:
+            hardware["is_muted"] = muted
+    except Exception:
+        hardware["audio_card"] = None
+
+    # gpiozero is only available on Pi-class hardware; treat any import or
+    # detection error as "no button" rather than failing the whole snapshot.
+    try:
+        import gpiozero  # noqa: F401
+        hardware["button_available"] = hardware.get("hat_detected", False)
+    except Exception:
+        hardware["button_available"] = False
+
+    node_config["hardware"] = hardware
 
     return {
         "schema_version": SCHEMA_VERSION,

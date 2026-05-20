@@ -1,7 +1,10 @@
 """Tests for AlertQueueService."""
 
+import sys
 import threading
+import types
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -132,3 +135,62 @@ class TestAlertQueueService:
         # 5 threads x 20 alerts = 100 unique titles, capped at 50
         assert self.queue.count() <= 50
         assert self.queue.count() > 0
+
+
+def _install_fake_tts(monkeypatch) -> MagicMock:
+    """Inject a fake core.helpers.get_tts_provider so announce_pending_and_flush
+    can run without a real TTS provider configured."""
+    tts = MagicMock()
+    fake_helpers = types.ModuleType("core.helpers")
+    fake_helpers.get_tts_provider = lambda: tts  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "core.helpers", fake_helpers)
+    return tts
+
+
+class TestAnnouncePendingAndFlush:
+    def setup_method(self) -> None:
+        self.queue = AlertQueueService()
+
+    def test_speaks_each_pending_alert_and_flushes(self, monkeypatch) -> None:
+        tts = _install_fake_tts(monkeypatch)
+        self.queue.add_alert(_make_alert("Alert 1"))
+        self.queue.add_alert(_make_alert("Alert 2"))
+
+        count = self.queue.announce_pending_and_flush()
+
+        assert count == 2
+        # Both alerts spoken in priority order (same priority → created_at).
+        spoken = [call.args[1] for call in tts.speak.call_args_list]
+        assert "Summary for Alert 1" in spoken
+        assert "Summary for Alert 2" in spoken
+        # Queue is empty after.
+        assert self.queue.count() == 0
+
+    def test_speaks_empty_message_when_no_alerts(self, monkeypatch) -> None:
+        tts = _install_fake_tts(monkeypatch)
+        count = self.queue.announce_pending_and_flush()
+        assert count == 0
+        tts.speak.assert_called_once()
+        assert "no new notifications" in tts.speak.call_args.args[1].lower()
+
+    def test_uses_led_service_transient(self, monkeypatch) -> None:
+        _install_fake_tts(monkeypatch)
+        led = MagicMock()
+        self.queue.add_alert(_make_alert("Alert"))
+
+        self.queue.announce_pending_and_flush(led_service=led)
+
+        # speaking pattern set, then cleared.
+        led.set_transient_pattern.assert_any_call("speaking")
+        led.set_transient_pattern.assert_any_call(None)
+
+    def test_clears_led_even_when_tts_raises(self, monkeypatch) -> None:
+        tts = _install_fake_tts(monkeypatch)
+        tts.speak.side_effect = RuntimeError("boom")
+        led = MagicMock()
+        self.queue.add_alert(_make_alert("Alert"))
+
+        # Should not raise — alert TTS failures are caught per-alert.
+        self.queue.announce_pending_and_flush(led_service=led)
+        # LED transient cleared in finally.
+        led.set_transient_pattern.assert_any_call(None)

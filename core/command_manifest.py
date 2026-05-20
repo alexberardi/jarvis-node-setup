@@ -130,6 +130,11 @@ class CommandManifest(BaseModel):
     # Multi-component bundles (explicit or inferred from repo structure)
     components: list[ManifestComponent] = Field(default_factory=list)
 
+    # System-level apt packages installed via the sudoers-gated
+    # `jarvis-apt-install` wrapper. Pantry enforces an allow-list (#16); the
+    # node runtime installs declared packages at command-install time.
+    apt_packages: list[str] = Field(default_factory=list)
+
     @property
     def is_bundle(self) -> bool:
         """True if this package has multiple components or non-command types."""

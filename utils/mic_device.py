@@ -7,8 +7,8 @@ device that captures ambient silence — whisper returns [BLANK_AUDIO]
 for every command.
 
 Name-based matching is preferred over a numeric index: ALSA card order
-on Raspberry Pi isn't stable across boots when HDMI, hifiberry, and a
-USB mic race on enumeration.
+on Raspberry Pi isn't stable across boots when HDMI and the HAT race
+on enumeration.
 """
 
 from __future__ import annotations

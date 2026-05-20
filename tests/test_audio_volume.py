@@ -1,0 +1,321 @@
+"""Unit tests for utils.audio_volume.
+
+We mock the underlying ``_run`` helper so these run on any platform —
+the production code shells out to ``pactl`` and ``aplay``, which aren't
+present on dev machines. The tests verify the right shell calls happen,
+in the right order, with the right arguments.
+"""
+
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from utils import audio_volume
+
+
+def _ok(stdout: str = "") -> MagicMock:
+    """Mock CompletedProcess for a successful command."""
+    return MagicMock(returncode=0, stdout=stdout, stderr="")
+
+
+def _fail(stderr: str = "boom") -> MagicMock:
+    return MagicMock(returncode=1, stdout="", stderr=stderr)
+
+
+# Sample `pactl list short sinks` output with one local + one BT sink.
+PACTL_SHORT_SINKS = (
+    "0\talsa_output.platform-soc_sound.stereo-fallback\tmodule-alsa-card.c\ts16le 2ch 48000Hz\tSUSPENDED\n"
+    "1\tbluez_sink.AA_BB_CC_DD_EE_FF.a2dp_sink\tmodule-bluez5-device.c\ts16le 2ch 44100Hz\tIDLE\n"
+)
+
+PACTL_GET_VOLUME_50 = (
+    "Volume: front-left: 32768 /  50% / -18.00 dB,"
+    "   front-right: 32768 /  50% / -18.00 dB\n"
+    "        balance 0.00\n"
+)
+
+PACTL_GET_MUTE_NO = "Mute: no\n"
+PACTL_GET_MUTE_YES = "Mute: yes\n"
+
+# `aplay -l` output on a Pi with the ReSpeaker HAT installed.
+APLAY_L_OUTPUT = (
+    "**** List of PLAYBACK Hardware Devices ****\n"
+    "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]\n"
+    "  Subdevices: 1/1\n"
+    "  Subdevice #0: subdevice #0\n"
+    "card 1: seeed2micvoicec [seeed2micvoicec], device 0: bcm2835-i2s-tlv320aic3x-hifi tlv320aic3x-hifi-0\n"
+    "  Subdevices: 1/1\n"
+    "  Subdevice #0: subdevice #0\n"
+)
+
+
+class _RunStub:
+    """Records every command issued and returns canned responses."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], timeout: float = 2.0) -> MagicMock | None:
+        self.calls.append(list(cmd))
+        if cmd[:2] == ["aplay", "-l"]:
+            return _ok(APLAY_L_OUTPUT)
+        if cmd[:2] == ["pactl", "list"]:
+            return _ok(PACTL_SHORT_SINKS)
+        if cmd[:2] == ["pactl", "get-sink-volume"]:
+            return _ok(PACTL_GET_VOLUME_50)
+        if cmd[:2] == ["pactl", "get-sink-mute"]:
+            return _ok(PACTL_GET_MUTE_NO)
+        if cmd[:2] in (["pactl", "set-sink-volume"], ["pactl", "set-sink-mute"]):
+            return _ok()
+        return _fail("unknown command in stub")
+
+
+@pytest.fixture(autouse=True)
+def isolate_config(tmp_path, monkeypatch):
+    """Point CONFIG_PATH at a per-test tmp file so set/get don't touch the
+    real working-tree config.json.
+    """
+    config_file = tmp_path / "config.json"
+    monkeypatch.setenv("CONFIG_PATH", str(config_file))
+    return config_file
+
+
+@pytest.fixture
+def stub(monkeypatch) -> _RunStub:
+    s = _RunStub()
+    monkeypatch.setattr(audio_volume, "_run", s)
+    return s
+
+
+class TestGetAudioCard:
+    def test_skips_hdmi_returns_seeed(self, stub):
+        # First non-HDMI card on a real HAT-equipped Pi is the seeed card.
+        assert audio_volume.get_audio_card() == "seeed2micvoicec"
+
+    def test_returns_none_when_only_hdmi(self, monkeypatch):
+        only_hdmi = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM i2s-hifi-0\n"
+        )
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: _ok(only_hdmi))
+        assert audio_volume.get_audio_card() is None
+
+    def test_returns_none_when_aplay_missing(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
+        assert audio_volume.get_audio_card() is None
+
+    def test_returns_none_when_aplay_fails(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: _fail())
+        assert audio_volume.get_audio_card() is None
+
+
+class TestGetVolumePercent:
+    def test_prefers_persisted_value(self, stub, isolate_config):
+        # Persisted value is the source of truth — bypasses any drift
+        # through pactl's integer percent rounding.
+        isolate_config.write_text(json.dumps({"volume_percent": 70}))
+        assert audio_volume.get_volume_percent() == 70
+
+    def test_falls_back_to_pactl_when_no_persisted_value(self, stub):
+        # No volume_percent in config.json yet (fresh install / first
+        # boot before the user has touched the slider).
+        assert audio_volume.get_volume_percent() == 50
+
+    def test_returns_none_when_pactl_missing_and_no_persisted(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
+        assert audio_volume.get_volume_percent() is None
+
+    def test_returns_none_on_nonzero_exit_no_persisted(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: _fail())
+        assert audio_volume.get_volume_percent() is None
+
+    def test_picks_max_channel_volume(self, monkeypatch, isolate_config):
+        # Asymmetric channels — pick the louder one so the displayed
+        # value reflects what the user actually hears.
+        asym = (
+            "Volume: front-left: 19660 /  30% / -27.06 dB,"
+            "   front-right: 32768 /  50% / -18.00 dB\n"
+        )
+
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["pactl", "get-sink-volume"]:
+                return _ok(asym)
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.get_volume_percent() == 50
+
+
+class TestIsMuted:
+    def test_unmuted(self, stub):
+        assert audio_volume.is_muted() is False
+
+    def test_muted(self, monkeypatch):
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: _ok(PACTL_GET_MUTE_YES),
+        )
+        assert audio_volume.is_muted() is True
+
+    def test_unavailable(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
+        assert audio_volume.is_muted() is None
+
+
+class TestSetVolumePercent:
+    def test_hits_default_sink_and_every_bluez_sink(self, stub, isolate_config):
+        assert audio_volume.set_volume_percent(25) is True
+
+        # Persisted so subsequent get_volume_percent returns 25 exactly.
+        assert json.loads(isolate_config.read_text())["volume_percent"] == 25
+
+        # PulseAudio default sink — pass-through, no taper
+        assert any(
+            c[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"] and c[3] == "25%"
+            for c in stub.calls
+        ), f"missing default sink set 25%, calls={stub.calls}"
+
+        # BT sink discovered from `pactl list short sinks`
+        assert any(
+            c[:2] == ["pactl", "set-sink-volume"]
+            and c[2].startswith("bluez_sink.")
+            and c[3] == "25%"
+            for c in stub.calls
+        ), f"missing bluez sink set 25%, calls={stub.calls}"
+
+    def test_max(self, stub):
+        audio_volume.set_volume_percent(100)
+        assert any(
+            c[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"] and c[3] == "100%"
+            for c in stub.calls
+        )
+
+    def test_zero(self, stub):
+        audio_volume.set_volume_percent(0)
+        assert any(
+            c[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"] and c[3] == "0%"
+            for c in stub.calls
+        )
+
+    def test_clamps_above_100(self, stub):
+        audio_volume.set_volume_percent(250)
+        assert any(
+            c[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"] and c[3] == "100%"
+            for c in stub.calls
+        )
+
+    def test_clamps_below_zero(self, stub):
+        audio_volume.set_volume_percent(-50)
+        assert any(
+            c[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"] and c[3] == "0%"
+            for c in stub.calls
+        )
+
+    def test_returns_false_when_default_sink_fails(self, monkeypatch):
+        # If the primary sink can't be set, the slider would lie to the user.
+        def stub(cmd, timeout=2.0):
+            if cmd[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"]:
+                return _fail()
+            return _ok(PACTL_SHORT_SINKS if cmd[:2] == ["pactl", "list"] else "")
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.set_volume_percent(50) is False
+
+    def test_does_not_persist_on_failure(self, monkeypatch, isolate_config):
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["pactl", "set-sink-volume"]:
+                return _fail()
+            return _ok(PACTL_SHORT_SINKS if cmd[:2] == ["pactl", "list"] else "")
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        audio_volume.set_volume_percent(50)
+        assert not isolate_config.exists()
+
+
+class TestAdjustVolumePercent:
+    def test_increment_uses_persisted_value(self, stub, isolate_config):
+        isolate_config.write_text(json.dumps({"volume_percent": 70}))
+        assert audio_volume.adjust_volume_percent(10) == 80
+
+    def test_increment_falls_back_to_pactl(self, stub):
+        # No persisted value; pactl reports 50% → +10 = 60.
+        assert audio_volume.adjust_volume_percent(10) == 60
+
+    def test_decrement_clamped(self, stub):
+        assert audio_volume.adjust_volume_percent(-100) == 0
+
+    def test_increment_clamped(self, stub):
+        assert audio_volume.adjust_volume_percent(100) == 100
+
+    def test_returns_none_when_unreadable(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
+        assert audio_volume.adjust_volume_percent(10) is None
+
+
+class TestSetMuted:
+    def test_mute_calls_every_sink(self, stub):
+        assert audio_volume.set_muted(True) is True
+
+        assert any(
+            c[:3] == ["pactl", "set-sink-mute", "@DEFAULT_SINK@"] and c[3] == "1"
+            for c in stub.calls
+        )
+        assert any(
+            c[:2] == ["pactl", "set-sink-mute"]
+            and c[2].startswith("bluez_sink.")
+            and c[3] == "1"
+            for c in stub.calls
+        )
+
+    def test_unmute(self, stub):
+        audio_volume.set_muted(False)
+        assert any(
+            c[:3] == ["pactl", "set-sink-mute", "@DEFAULT_SINK@"] and c[3] == "0"
+            for c in stub.calls
+        )
+
+    def test_returns_false_when_default_sink_fails(self, monkeypatch):
+        def stub(cmd, timeout=2.0):
+            if cmd[:3] == ["pactl", "set-sink-mute", "@DEFAULT_SINK@"]:
+                return _fail()
+            return _ok(PACTL_SHORT_SINKS if cmd[:2] == ["pactl", "list"] else "")
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.set_muted(True) is False
+
+
+class TestPersistVolumePercent:
+    def test_writes_to_config_path(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"node_id": "test-node"}))
+        monkeypatch.setenv("CONFIG_PATH", str(config_file))
+
+        assert audio_volume.persist_volume_percent(45) is True
+
+        written = json.loads(config_file.read_text())
+        assert written["volume_percent"] == 45
+        assert written["node_id"] == "test-node"  # other keys preserved
+
+    def test_creates_config_when_missing(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        monkeypatch.setenv("CONFIG_PATH", str(config_file))
+        assert audio_volume.persist_volume_percent(70) is True
+        assert json.loads(config_file.read_text())["volume_percent"] == 70
+
+    def test_clamps_value(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.json"
+        monkeypatch.setenv("CONFIG_PATH", str(config_file))
+        audio_volume.persist_volume_percent(150)
+        assert json.loads(config_file.read_text())["volume_percent"] == 100
+
+
+class TestListBluezSinks:
+    def test_filters_only_bluez(self, stub):
+        assert audio_volume._list_bluez_sinks() == [
+            "bluez_sink.AA_BB_CC_DD_EE_FF.a2dp_sink"
+        ]
+
+    def test_empty_when_pactl_missing(self, monkeypatch):
+        monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
+        assert audio_volume._list_bluez_sinks() == []
