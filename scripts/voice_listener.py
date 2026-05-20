@@ -126,7 +126,30 @@ def _music_is_playing() -> bool:
 # If a command explicitly stops playback (e.g. "stop the music"), the player
 # process terminates on its own — pkill -CONT against a missing process is
 # a harmless no-op.
-_PLAYER_BINARIES: tuple[str, ...] = ("mpv", "ffplay", "cvlc", "vlc", "spotifyd")
+# Binaries that can be safely SIGSTOP'd while ducking: unidirectional consumers
+# (they read from an upstream source and write to PA; pausing the process just
+# halts both ends without breaking any local protocol). mpv/ffplay/cvlc/vlc
+# typically stream HTTP and don't care if reads stall; spotifyd talks to
+# Spotify's cloud, again no local protocol waiting on it.
+_SIGSTOP_PLAYER_BINARIES: tuple[str, ...] = (
+    "mpv", "ffplay", "cvlc", "vlc",
+    "spotifyd",  # jarvis-cmd-spotify
+)
+
+# Binaries that must NOT be SIGSTOP'd because they participate in a
+# request/response protocol with a remote peer that expects timely ACKs.
+# shairport-sync is the canonical example: SIGSTOP'ing it makes Music
+# Assistant's RTSP TEARDOWN hang (MA can't update queue state → UI stuck
+# showing "playing" after voice-stop). Muting the PA sink-input alone is
+# sufficient — shairport keeps running and answering RTSP, but its audio
+# output reaches a muted sink during the conversation.
+_MUTE_ONLY_PLAYER_BINARIES: tuple[str, ...] = (
+    "shairport-sync",  # jarvis-cmd-music-assistant (AirPlay receiver for MA streams)
+)
+
+# Union — used by the PA sink-input matcher, which mutes everything regardless
+# of pause mechanism.
+_PLAYER_BINARIES: tuple[str, ...] = _SIGSTOP_PLAYER_BINARIES + _MUTE_ONLY_PLAYER_BINARIES
 
 
 def _player_sink_input_ids() -> list[str]:
@@ -179,7 +202,7 @@ def _pause_active_playback() -> None:
     music WAS playing. pkill/pactl against missing targets is harmless.
     """
     stopped: list[str] = []
-    for binary in _PLAYER_BINARIES:
+    for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
             r = subprocess.run(
                 ["pkill", "-STOP", "-x", binary],
@@ -225,7 +248,7 @@ def _resume_active_playback() -> None:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
     resumed: list[str] = []
-    for binary in _PLAYER_BINARIES:
+    for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
             r = subprocess.run(
                 ["pkill", "-CONT", "-x", binary],
@@ -865,6 +888,16 @@ def _follow_up_loop(
     # comfortable headroom; users can override via config.
     follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 10.0)
     if follow_up_seconds <= 0:
+        return
+
+    # If the server signalled not_for_me (ambient false-wake), skip the
+    # follow-up window entirely — otherwise we'd sit listening while the
+    # user keeps talking to whoever they were actually addressing.
+    # Note: only ``not_for_me`` short-circuits — ``clear_history`` alone
+    # is set by many normal one-shot commands (timers, lamp toggles) and
+    # those should still allow follow-ups.
+    if initial_result and initial_result.get("not_for_me"):
+        logger.info("Initial result signalled not_for_me, skipping follow-up loop")
         return
 
     conversation_id: str | None = None
