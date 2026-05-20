@@ -522,8 +522,11 @@ ASOUND
   # calibration ("had to yank Pi power" loud). Safe baseline:
   #   - PCM (DAC digital) at full scale — gives PA headroom
   #   - Line (analog gain) at 0 dB (no boost), enabled
-  #   - Line DAC (digital mixer level) at -23.5 dB so PA @ 100% is a sane
-  #     room-volume ceiling rather than ear-splitting
+  #   - Line DAC (digital mixer level) at -9 dB (control value 100/118).
+  #     The earlier baseline of 78 (-20 dB) was too quiet on the JST
+  #     speaker — even PA @ 100% was barely audible across the room.
+  #     -9 dB matches the level hand-tuned on the dev node and confirmed
+  #     not to be uncomfortably loud at full PA volume.
   #   - HP / HPCOM paths kept muted (unused, conserves power and prevents
   #     the slight crosstalk we observed during testing)
   # Each amixer call is `|| true` so an unknown control name on a future
@@ -532,7 +535,7 @@ ASOUND
     info "Applying TLV320AIC3104 mixer baseline..."
     amixer -c seeed2micvoicec sset 'PCM' '100%' unmute               2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Line' '0' unmute                 2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'Line DAC' '78' unmute            2>/dev/null || true
+    amixer -c seeed2micvoicec sset 'Line DAC' '100' unmute           2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Left Line Mixer DACL1' on        2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Right Line Mixer DACR1' on       2>/dev/null || true
     amixer -c seeed2micvoicec sset 'HP' '0' mute                     2>/dev/null || true
