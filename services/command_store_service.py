@@ -341,6 +341,204 @@ def _install_apt_deps(manifest: CommandManifest) -> None:
         )
 
 
+# ── post_install ops ────────────────────────────────────────────────────
+#
+# Declarative ops the node runs after pip+apt to make a freshly-installed
+# apt package usable by the package — currently just `shairport-sync`'s pa
+# backend + systemd User=pi drop-in. Each op is bounded by a Pantry-side
+# allow-list checked at submission time; the sudoers-gated wrapper at
+# /usr/local/sbin/jarvis-post-install does the privileged write.
+#
+# Idempotent: re-running install on the same package re-applies the same
+# rendered drop-in (no-op when content matches) and the same config-file
+# upsert (no-op when value matches). Failures raise InstallError, aborting
+# the install in the same way an apt or pip failure would.
+
+_POST_INSTALL_WRAPPER_PATH = Path("/usr/local/sbin/jarvis-post-install")
+
+# Matches the apt/pip 300s timeout pattern.
+_POST_INSTALL_TIMEOUT_SECONDS = 300
+
+
+def _jarvis_user_and_uid() -> tuple[str, int]:
+    """Return (User=, UID) of the jarvis-node systemd unit on this host.
+
+    We infer rather than hardcode so multi-user nodes or future containers
+    where the service user isn't `pi` don't accidentally get drop-ins
+    pinned to the wrong account. Falls back to the current process's user
+    if systemctl isn't available (dev environments).
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "jarvis-node", "--property=User", "--value"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        username = (result.stdout or "").strip() if result.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        username = ""
+
+    if not username:
+        # No systemctl (likely a Mac dev box). Use the running user — won't
+        # be invoked on real systems anyway, but keeps tests / smoke runs
+        # from blowing up.
+        import getpass
+        username = getpass.getuser()
+
+    try:
+        import pwd
+        uid = pwd.getpwnam(username).pw_uid
+    except (KeyError, ImportError):
+        uid = os.geteuid()
+    return username, uid
+
+
+def _expand_uid_tokens(value: Any, uid: int) -> Any:
+    """Recursively substitute ${UID} → str(uid) inside strings.
+
+    Op payloads are JSON-shaped, so we only need to walk dicts, lists, and
+    strings. Other primitives pass through unchanged.
+    """
+    if isinstance(value, str):
+        return value.replace("${UID}", str(uid))
+    if isinstance(value, list):
+        return [_expand_uid_tokens(v, uid) for v in value]
+    if isinstance(value, dict):
+        return {k: _expand_uid_tokens(v, uid) for k, v in value.items()}
+    return value
+
+
+def _run_post_install(manifest: CommandManifest, package_name: str) -> None:
+    """Execute manifest.post_install ops via the sudoers-gated wrapper.
+
+    Each op is invoked as:
+        sudo /usr/local/sbin/jarvis-post-install --package <name> <op-subcmd>
+    with the op's JSON payload on stdin. The wrapper handles the actual
+    privileged write (systemd drop-in or config-file upsert) and restarts
+    affected services as needed.
+
+    Raises InstallError on any op failure — matches the apt/pip path's
+    abort-on-failure semantics.
+    """
+    ops = getattr(manifest, "post_install", None) or []
+    if not ops:
+        return
+
+    if not _POST_INSTALL_WRAPPER_PATH.exists():
+        raise InstallError(
+            f"post-install wrapper missing at {_POST_INSTALL_WRAPPER_PATH} — "
+            f"re-run install.sh to deploy it (ops requested: "
+            f"{[op.get('type') for op in ops]})"
+        )
+
+    jarvis_user, jarvis_uid = _jarvis_user_and_uid()
+    logger.info(
+        "Running post_install ops",
+        package=package_name,
+        op_count=len(ops),
+        jarvis_user=jarvis_user,
+        jarvis_uid=jarvis_uid,
+    )
+
+    # Map op type → wrapper subcommand. Keep names in lockstep with the
+    # SDK schema and Pantry allow-list — drift here means submissions pass
+    # Pantry but fail at install.
+    _OP_SUBCOMMAND = {
+        "configure_systemd_service": "configure-systemd-service",
+        "set_config_file_value": "set-config-file-value",
+    }
+
+    for i, raw_op in enumerate(ops):
+        op_type = raw_op.get("type")
+        subcmd = _OP_SUBCOMMAND.get(op_type or "")
+        if subcmd is None:
+            raise InstallError(
+                f"post_install[{i}]: unknown op type {op_type!r}. "
+                f"Known: {sorted(_OP_SUBCOMMAND.keys())}"
+            )
+
+        # Resolve `run_as: jarvis_user` sentinel and ${UID} tokens.
+        payload = {k: v for k, v in raw_op.items() if k != "type"}
+        if payload.get("run_as") == "jarvis_user":
+            payload["run_as"] = jarvis_user
+        payload = _expand_uid_tokens(payload, jarvis_uid)
+
+        logger.info(
+            "Dispatching post_install op",
+            package=package_name,
+            op_index=i,
+            op_type=op_type,
+            target=payload.get("service") or payload.get("file"),
+        )
+
+        try:
+            result = subprocess.run(
+                ["sudo", str(_POST_INSTALL_WRAPPER_PATH),
+                 "--package", package_name, subcmd],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=_POST_INSTALL_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as e:
+            raise InstallError(
+                f"post_install[{i}]: wrapper not invokable: {e}"
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise InstallError(
+                f"post_install[{i}]: timed out after "
+                f"{_POST_INSTALL_TIMEOUT_SECONDS}s (op={op_type})"
+            ) from e
+
+        if result.returncode != 0:
+            raise InstallError(
+                f"post_install[{i}] ({op_type}) failed: "
+                f"{(result.stderr or result.stdout).strip()[:500]}"
+            )
+
+        logger.info(
+            "post_install op succeeded",
+            package=package_name,
+            op_index=i,
+            op_type=op_type,
+            output=(result.stdout or "").strip()[:200],
+        )
+
+
+def _remove_post_install_dropins(package_name: str) -> None:
+    """Best-effort: invoke the sudoers-gated wrapper to remove drop-ins
+    this package previously wrote (matched by managed-by marker).
+
+    Config-file edits (set_config_file_value) are NOT auto-reverted —
+    no straightforward way to do that without recording originals, and
+    leaving an apt-package's config file as the user wants it is the
+    safer default. Operators can hand-revert from .bak files if needed.
+
+    Never raises — uninstall must succeed even if the wrapper isn't
+    installed or systemctl is unavailable.
+    """
+    if not _POST_INSTALL_WRAPPER_PATH.exists():
+        return
+    try:
+        result = subprocess.run(
+            ["sudo", str(_POST_INSTALL_WRAPPER_PATH),
+             "--package", package_name, "remove-managed-dropins"],
+            capture_output=True, text=True, timeout=30.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.warning("post_install dropin removal skipped", error=str(e))
+        return
+    if result.returncode != 0:
+        logger.warning(
+            "post_install dropin removal failed",
+            package=package_name,
+            stderr=(result.stderr or "").strip()[:300],
+        )
+        return
+    out = (result.stdout or "").strip()
+    if out:
+        logger.info("post_install dropins removed", package=package_name, detail=out)
+
+
 def _install_pip_deps(manifest: CommandManifest) -> None:
     """Install pip dependencies declared in the manifest."""
     deps: list[str] = []
@@ -725,6 +923,11 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
     # 10. Install pip deps
     _install_pip_deps(manifest)
 
+    # 10b. Run declarative post-install ops via the sudoers-gated wrapper.
+    # Comes after apt + pip so the services being configured (and any
+    # config files we touch) exist on disk by the time we get here.
+    _run_post_install(manifest, manifest.name)
+
     # 11. Generate package namespace for dependency imports
     _generate_package_namespace(manifest.name, manifest)
 
@@ -1080,6 +1283,11 @@ def remove(package_name: str, component_type: str | None = None) -> None:
     """
     # Guard: fail if other packages depend on this one
     _check_no_dependents(package_name)
+
+    # Best-effort cleanup of any systemd drop-ins written by this package's
+    # post_install ops. Marker-driven (see _remove_post_install_dropins);
+    # failures are logged but never block the uninstall.
+    _remove_post_install_dropins(package_name)
 
     # Collect secret keys to clean up (before removing files)
     _cleanup_secrets_for_package(package_name)
