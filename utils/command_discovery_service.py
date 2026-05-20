@@ -57,9 +57,14 @@ class CommandDiscoveryService:
 
         # Remove cached custom_commands modules so importlib.import_module()
         # re-executes new module files instead of returning stale cache hits.
+        # `pop(key, None)` instead of `del` so a concurrent caller (background
+        # refresh thread + a mobile-triggered settings snapshot can both land
+        # here at once) doesn't crash the second one with KeyError, which then
+        # surfaces as "settings snapshot error: 'commands.custom_commands'" on
+        # the mobile app.
         for key in list(sys.modules.keys()):
             if key.startswith("commands.custom_commands"):
-                del sys.modules[key]
+                sys.modules.pop(key, None)
 
         from services.command_store_service import register_package_lib_paths
         register_package_lib_paths()
