@@ -109,16 +109,16 @@ class AudioProvider(ABC):
             logger.info("PCM playback pre-empted (barge-in)")
             return False
         # Pipe raw PCM into aplay over stdin instead of going through PyAudio.
-        # PyAudio on Pi Zero 2 W + softvol + asym + plughw was glitching
-        # audibly even when network chunks arrived on time. aplay is the
-        # same binary the short-TTS path uses successfully, and it talks
-        # directly to the ALSA device we've configured in /etc/asound.conf.
+        # PyAudio on Pi Zero 2 W was glitching audibly even when network
+        # chunks arrived on time. aplay is the same binary the short-TTS
+        # path uses successfully, and it talks directly to the ALSA device
+        # we've configured in /etc/asound.conf.
         format_arg = {1: "U8", 2: "S16_LE", 3: "S24_LE", 4: "S32_LE"}.get(
             sample_width, "S16_LE"
         )
         cmd = [
             "aplay",
-            "-D", "output",      # the softvol alias defined in asound.conf
+            "-D", "output",      # the pulse alias defined in /etc/asound.conf
             "-q",
             "-f", format_arg,
             "-r", str(sample_rate),

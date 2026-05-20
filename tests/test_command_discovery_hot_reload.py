@@ -172,3 +172,66 @@ class TestHotReloadImportCacheInvalidation:
         # Reinstall
         _install_fake_command()
         assert _TEST_PKG_NAME in scan()
+
+
+class TestDiscoveryConcurrency:
+    """Concurrent discovery must not crash on `sys.modules` cache clearing.
+
+    The background refresh thread and a mobile-triggered settings snapshot
+    can both call ``_discover_commands()`` at the same time. The old code
+    did ``del sys.modules[key]`` after enumerating keys — whichever caller
+    ran ``del`` second on the same key raised KeyError, surfaced on the
+    mobile app as "Settings snapshot error: 'commands.custom_commands'".
+    """
+
+    def test_concurrent_discovery_does_not_raise(self):
+        from utils.command_discovery_service import CommandDiscoveryService
+
+        # refresh_interval is huge so the background thread doesn't fire
+        # during the test — we only care about the refresh_now() calls.
+        svc = CommandDiscoveryService(refresh_interval=3600)
+
+        import threading
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                svc.refresh_now()
+            except BaseException as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, f"Concurrent discovery raised: {errors!r}"
+
+    def test_eviction_loop_pattern_tolerates_missing_keys(self):
+        """Direct test of the inner cleanup loop pattern.
+
+        Pre-fix the loop was::
+
+            for key in list(sys.modules.keys()):
+                if key.startswith("commands.custom_commands"):
+                    del sys.modules[key]
+
+        which raises ``KeyError`` if a concurrent caller has already
+        removed the key by the time `del` runs. The fix uses
+        ``sys.modules.pop(key, None)`` — idempotent.
+        """
+        sys.modules["commands.custom_commands._race_probe"] = object()  # type: ignore[assignment]
+        snapshot = [
+            k for k in list(sys.modules.keys())
+            if k.startswith("commands.custom_commands")
+        ]
+        assert "commands.custom_commands._race_probe" in snapshot
+
+        # Simulate a concurrent caller already evicting the probe key
+        # between the snapshot and the cleanup loop.
+        sys.modules.pop("commands.custom_commands._race_probe", None)
+
+        # The production pattern (post-fix) must tolerate this state.
+        for k in snapshot:
+            sys.modules.pop(k, None)  # would have been `del sys.modules[k]`
