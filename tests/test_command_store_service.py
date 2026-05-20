@@ -220,12 +220,12 @@ class TestRemove:
                 remove("nonexistent")
 
     def test_remove_sweeps_orphans_missing_from_component_dirs(self, tmp_path):
-        """Defensive sweep: dirs declared in `components` are removed even when
-        `component_dirs` was written incomplete.
+        """Defensive sweep: dirs declared in ``components`` are removed even when
+        ``component_dirs`` was written incomplete.
 
         Regression for the spotify_keepalive orphan-agent incident: an older
         install (or a partial metadata write) recorded only the command in
-        `component_dirs`, so the agent dir survived uninstall and kept the
+        ``component_dirs``, so the agent dir survived uninstall and kept the
         agent scheduler trying to run a missing module every 10 seconds.
         """
         # Project layout: command + agent dirs both populated.
