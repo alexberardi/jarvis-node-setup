@@ -80,15 +80,22 @@ register_service() {
     "{\"name\":\"$name\",\"host\":\"$host\",\"port\":$port,\"scheme\":\"http\",\"health_path\":\"/health\"}"
 }
 
-# POST /auth/register — auth's registration endpoint takes no admin token.
-# Returns {access_token, refresh_token, user, household_id}. We only need the
-# household_id; the endpoint auto-creates a default "My Home" household, which
-# is enough scaffolding for the admin-node registration below.
+# POST /auth/setup — auth's first-superuser endpoint. Same body + response
+# shape as /auth/register, but the created user has is_superuser=true.
+# Switched from /auth/register in v2.16 so CASE-214 (factory-reset) can
+# pass — that endpoint requires either node.household_id + power_user
+# role OR is_superuser, and CC's create_node doesn't currently persist
+# household_id on the local Node row, so the only path through CC's
+# household_role check in CI is the superuser branch.
+#
+# /auth/setup is gated on "no superusers exist yet" and 409s otherwise.
+# `compose down -v` between runs wipes the DB, so on every CI run we're
+# the first user. Matches the real-prod flow (first user IS a superuser).
 register_ci_user() {
   local email="$1"
   local password="$2"
-  log "Registering CI user: $email (auto-creates household)"
-  http_post "$AUTH_URL/auth/register" \
+  log "Registering CI user as initial superuser: $email"
+  http_post "$AUTH_URL/auth/setup" \
     "" "" \
     "{\"email\":\"$email\",\"password\":\"$password\"}"
 }

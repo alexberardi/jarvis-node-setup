@@ -75,7 +75,8 @@ The runner is a single point of change. Each service repo only needs the
 | **v2.13** | First test on the **server→node async channel** (MQTT). Expose mosquitto port 1883, add paho-mqtt to the runner, capture access_token from `/auth/register` in seed.sh, subscribe to a per-node topic from the test, POST a publishing endpoint, assert the message arrives with the right payload. | `CASE-212` (POST `/nodes/{id}/settings/requests` → CC publishes `jarvis/nodes/{id}/settings/request` with the matching `request_id`) |
 | **v2.14** | Mixed server+client tool branch — single LLM response with both a server tool (e.g. `remember`) and a client tool. CC's loop runs the server, appends the result, re-calls the LLM, returns the iter-2 client tool. Fake LLM gains `requires_tool_message` matcher hint to differentiate iterations. | `CASE-213` ("test mixed tools" → 202 with the iter-2 `client_tool_four` only — proves the loop ran twice) |
 | **v2.15** | Fan-out — runner generalization. `bring_up_cc` becomes `bring_up_stack`; per-service compose overlays under `compose/ci-overlays/` swap each supported service from `:dev` to `build:` when it's the originator. `jarvis-auth` and `jarvis-config-service` join `jarvis-command-center` as services whose PRs get tested against source. CC also switches to `:dev` by default (was inline build). Trigger workflows in each fanned-out repo are a separate follow-up (one PR per repo). | (no new cases — existing 20 now run against auth/config-service PRs from source) |
-| **v2.16** *(next)* | Extend MQTT publish coverage to `jarvis/nodes/{id}/factory-reset` (destructive path; high blast radius). | `CASE-214` |
+| **v2.16** | Factory-reset MQTT publish — highest-blast-radius topic. POST `/admin/nodes/{id}/factory-reset` creates a NodeTask, mints a reset_token, publishes `jarvis/nodes/{id}/factory-reset` with `{request_id, node_id, task_id}`. Catches drift in the destructive flow. | `CASE-214` (response's reset_token == published request_id) |
+| **v2.17** *(next)* | `jarvis/nodes/{id}/package-install` — Pantry integration | `CASE-215` |
 
 Round-trip on a coding-agent PR: ~3-4 min cold, ~1 min warm once Buildx
 GHA cache primes.
@@ -440,7 +441,7 @@ Three smoke cases that exercise both fakes via `httpx`. Lives at
 `tests/` (not `tests/integration/`) because `tests/integration/conftest.py`
 imports the production codebase, which depends on `jarvis_command_sdk`.
 
-### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…213)
+### `tests/test_cc_real_smoke.py` — v2.1+ real-stack tests (CASE-101…104, 201…214)
 
 All gated by `@pytest.mark.skipif(not CC_URL, ...)` so they cleanly skip
 when the compose stack isn't up (v1 fakes-only mode). CASE-201 also
@@ -468,6 +469,7 @@ seed.sh from `/auth/register`).
 | `CASE-211` | Multi-tool flow. POSTs `/voice/command/stream` with `voice_command="test multi-tool flow"`. The fake LLM emits two tool_calls in one response (`client_tool_one` + `client_tool_two`, generic names that don't collide with CC's server-tool registry). CC's tool exec engine puts both in `client_calls` and returns a single 202 with both tool_calls in order. Asserts 202, stop_reason=tool_calls, exactly two tool_calls, names in order, distinct IDs. Catches drift in the `server_results` + `client_calls` split (the mixed branch — server-then-client — is a future case). |
 | `CASE-212` | The server→node MQTT push channel. Subscribes to `jarvis/nodes/{CC_NODE_ID}/settings/request` via paho-mqtt at `127.0.0.1:1883` (compose-mapped mosquitto port). POSTs `/api/v0/nodes/{CC_NODE_ID}/settings/requests` with `Authorization: Bearer <CC_USER_JWT>` — CC creates a SettingsRequest row and publishes the MQTT signal synchronously inside the handler. Test asserts a message arrives within 10s with `node_id == CC_NODE_ID` and `request_id` matching the 201 response. Plumbing landing with this case: mosquitto port mapping, paho-mqtt added to the runner, `CC_USER_JWT` captured from `/auth/register`'s access_token by seed.sh. This is the only case so far on the async channel — every other case is request/response. |
 | `CASE-213` | Mixed server+client tool branch. POSTs `/voice/command/stream` with `voice_command="test mixed tools"`. Iter 1 of CC's tool loop gets `[remember (server) + client_tool_three (client)]` — runs `remember` (returns no_speaker error; server_results still populated), continues the loop with the tool result appended to messages. Iter 2 the fake LLM matches the second canned entry (gated on `requires_tool_message: true`) → returns `[client_tool_four]` only. CC returns 202 with that single tool_call. Asserts the response is exactly `[client_tool_four]` — proves the loop iterated past the server tool (if it didn't, we'd see iter-1's response). The fake-LLM matcher gained a `requires_tool_message` hint to differentiate iterations. |
+| `CASE-214` | Factory-reset MQTT publish. Subscribes to `jarvis/nodes/{CC_NODE_ID}/factory-reset`, POSTs `/api/v0/admin/nodes/{CC_NODE_ID}/factory-reset` with `Authorization: Bearer <CC_USER_JWT>`. CC creates a `NodeTask(kind="factory_reset")`, mints a reset_token, publishes the MQTT signal synchronously (admin.py:504-516). Asserts the published payload's `request_id == reset_token` from the response, `task_id == task_id` from the response, `node_id == CC_NODE_ID`. Highest-blast-radius MQTT topic — drift here silently bricks the mobile "reset device" flow for every prod node. |
 
 ### `tools/parse_junit.py`
 
@@ -502,7 +504,7 @@ One marker per test. Only the first is captured by the conftest hook.
 | `head_ref` | no | Branch name. Currently unused; reserved for v2.5+. |
 | `originating_repo` | yes | Full `owner/name`. |
 | `qa_plan_comment_id` | no | Reserved for v2.5+ — the roadmap-issue comment ID containing the `<!-- qa-test-plan:v1 -->` body. |
-| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 20 known cases. |
+| `plan_cases` | no | Comma-separated CASE-IDs. Defaults to all 21 known cases. |
 | `linked_prs` | no | JSON map of `{repo_name: branch_or_sha}` for cross-service PR deps. Empty `{}` default; not consumed yet. |
 
 ### Sentinel comments
@@ -791,12 +793,13 @@ gh pr view <pr> --repo alexberardi/<service> --json statusCheckRollup \
    returns `speaker: {user_id: None, confidence: 0.0}`. A real
    speaker-resolution case would require either real voice profiles
    in whisper or stubbing the speaker resolver in CC.
-5. **Only one MQTT publish topic covered.** `CASE-212` proves the
-   `jarvis/nodes/{id}/settings/request` topic + payload work end-to-end.
-   CC has ~13 other publish surfaces (factory-reset, package-install,
-   k2/provision, device-scan, etc.) that aren't exercised. Most of
-   them follow the same pattern (uuid `request_id` + per-node topic),
-   so adding more is mechanical once needed.
+5. **MQTT publish coverage is selective.** `CASE-212` covers
+   `settings/request` and `CASE-214` covers `factory-reset` — the
+   two highest-blast-radius topics. ~11 other publish surfaces
+   (package-install, k2/provision, device-scan, etc.) follow the
+   same pattern. Next on the list: package-install (v2.17). After
+   that we stop being mechanical and only add topics with specific
+   regression-risk signals.
 4. **Plan cases are hardcoded** in the workflow's default. The QA agent
    will eventually pass `plan_cases` in the trigger payload once we
    update the trigger.
@@ -919,21 +922,18 @@ status.
 
 ## Roadmap
 
-### v2.16 — extend MQTT publish coverage (next)
+### v2.17 — package-install MQTT (next)
 
-CASE-212 proves the publish channel works at all. Each subsequent
-topic case adds a regression catcher for one specific server→node
-message. We're being selective rather than mechanical — adding all
-~13 topics would be wasted effort once the pattern is proven.
+CASE-212 (settings/request) + CASE-214 (factory-reset) cover two
+of the most critical publish topics. Remaining roadmap targets:
 
-Next targets, in blast-radius order:
-- **CASE-214** `jarvis/nodes/{id}/factory-reset` — destructive, runs
-  on DELETE `/nodes/{id}` and on POST `/nodes/{id}/factory-reset`.
 - **CASE-215** `jarvis/nodes/{id}/package-install` — Pantry
   integration, every dynamic install touches it.
 - **CASE-216** `jarvis/nodes/{id}/k2/provision` — pairing flow.
 
-After those three, declare v2 done and pivot to v3.
+After those, the next ~10 MQTT topics are repetitive enough that
+adding each one buys diminishing returns. Declare v2 done at that
+point and pivot to v3.
 
 ### v3 — real GPU testing
 
