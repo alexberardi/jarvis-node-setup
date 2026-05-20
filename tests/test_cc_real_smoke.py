@@ -1193,3 +1193,119 @@ def test_cc_publishes_to_mqtt_on_factory_reset():
     finally:
         client.loop_stop()
         client.disconnect()
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.qa_case("CASE-215")
+def test_cc_publishes_to_mqtt_on_package_install():
+    """Package-install MQTT — the Pantry integration channel.
+
+    Every dynamic command install on a node flows through this topic.
+    Mobile picks a Pantry package → POSTs CC's package-install endpoint
+    → CC stores the request + publishes `jarvis/nodes/{id}/package-install`
+    → node receives MQTT → clones the repo at the requested git_tag →
+    POSTs results back to CC. Topic shape drift = the entire Pantry
+    install flow silently fails.
+
+    Distinct from CASE-212/214 in two ways:
+      - Auth: `verify_provisioning_auth` accepts EITHER the admin key
+        (X-API-Key) or a user JWT. We use the admin key here — simpler
+        than the JWT path and exercises that branch of the verifier.
+      - Payload is richer: `{request_id, command_name, github_repo_url,
+        git_tag}`. CASE-214 round-tripped 3 fields; this round-trips 4.
+
+    Sequence:
+      1. Subscribe to `jarvis/nodes/{CC_NODE_ID}/package-install`.
+      2. POST `/api/v0/nodes/{CC_NODE_ID}/package-install` with
+         `X-API-Key: ci-admin-key` and a known package body.
+      3. Assert 201 + body.id present + the MQTT payload's
+         request_id matches body.id, and command_name /
+         github_repo_url / git_tag echo what we sent.
+
+    Side-effect note: creates a `PackageInstallRequest` row with
+    status="pending" and an expires_at 5 minutes out. With no real node
+    to follow up, the row sits pending until expiry — `compose down -v`
+    clears it between CI runs.
+    """
+    import json
+    import queue
+    from urllib.parse import urlparse
+
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.enums import CallbackAPIVersion
+
+    parsed = urlparse(MQTT_BROKER_URL)
+    broker_host = parsed.hostname or "127.0.0.1"
+    broker_port = parsed.port or 1883
+
+    received: queue.Queue = queue.Queue()
+    topic = f"jarvis/nodes/{CC_NODE_ID}/package-install"
+
+    def on_connect(client, _userdata, _flags, _rc, *_args):
+        client.subscribe(topic, qos=1)
+
+    def on_message(_client, _userdata, msg):
+        received.put((msg.topic, msg.payload))
+
+    client = mqtt.Client(
+        callback_api_version=CallbackAPIVersion.VERSION2,
+        client_id="ci-case-215-subscriber",
+    )
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(broker_host, broker_port, keepalive=30)
+    client.loop_start()
+    try:
+        # Known payload — the values flow through CC unchanged to the
+        # MQTT message, so we can assert each field round-tripped.
+        request_body = {
+            "command_name": "ci-test-package",
+            "github_repo_url": "https://github.com/example/ci-test-package",
+            "git_tag": "v0.0.1",
+        }
+        response = httpx.post(
+            f"{CC_URL}/api/v0/nodes/{CC_NODE_ID}/package-install",
+            headers={"X-API-Key": "ci-admin-key"},
+            json=request_body,
+            timeout=15.0,
+        )
+        assert response.status_code == 201, (
+            f"expected 201 from package-install, got {response.status_code} "
+            f"body={response.text[:400]}"
+        )
+        body_json = response.json()
+        expected_request_id = body_json.get("id")
+        assert expected_request_id, (
+            f"expected id in response, got {body_json}"
+        )
+
+        try:
+            received_topic, raw_payload = received.get(timeout=10.0)
+        except queue.Empty:
+            raise AssertionError(
+                f"timed out waiting 10s for MQTT publish on {topic}. "
+                f"Check: did CC store the row but fail to publish? "
+                f"(package_install.py:541-565 try/except swallows errors)"
+            )
+
+        assert received_topic == topic, (
+            f"unexpected topic, got {received_topic}"
+        )
+        payload = json.loads(raw_payload.decode("utf-8"))
+        assert payload.get("request_id") == expected_request_id, (
+            f"expected request_id={expected_request_id} to match "
+            f"response.id, got payload={payload}"
+        )
+        # Every field in request_body should survive verbatim into the
+        # MQTT payload.
+        for field in ("command_name", "github_repo_url", "git_tag"):
+            assert payload.get(field) == request_body[field], (
+                f"expected {field}={request_body[field]} to round-trip, "
+                f"got payload[{field}]={payload.get(field)!r}"
+            )
+    finally:
+        client.loop_stop()
+        client.disconnect()
