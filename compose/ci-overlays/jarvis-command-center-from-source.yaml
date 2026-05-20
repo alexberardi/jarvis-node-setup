@@ -1,0 +1,26 @@
+# Compose overlay used by the integration runner when a PR in
+# jarvis-command-center is the service-under-test. Replaces the default
+# `image: ghcr.io/...:dev` in docker-compose.ci.yaml with a `build:` block
+# pointing at the PR's checked-out source.
+#
+# Invoked as:
+#     docker compose -f docker-compose.ci.yaml \
+#                    -f compose/ci-overlays/jarvis-command-center-from-source.yaml \
+#                    --profile core up -d --wait jarvis-command-center
+#
+# The runner workflow handles passing both `-f` flags.
+
+name: jarvis-ci
+
+services:
+  jarvis-command-center:
+    # When overriding `image:` with `build:` in a compose overlay, Docker
+    # uses the build output and ignores the original image reference.
+    build:
+      context: ${CC_SOURCE_PATH:-./_src/jarvis-command-center}
+      # Buildx GHA cache: cold ~3 min build collapses to ~30s on warm
+      # runs when CC's Dockerfile-relevant files didn't change.
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
