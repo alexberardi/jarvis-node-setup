@@ -472,25 +472,25 @@ ASOUND
   # --- TLV320AIC3104 mixer baseline ---
   # The codec defaults leave HP/speaker output muted (HP gain = 0) and PCM
   # at -23.5 dB — playback technically works but is inaudible. Set sensible
-  # levels and store with alsactl so they persist across reboots. The
-  # JST speaker is wired to the HP path on this HAT, so the HP controls
-  # are what actually drive the user-visible speaker.
-  # Each amixer call is `|| true` so an unknown control name on a different
-  # kernel version doesn't abort the installer.
+  # levels once at install time and store with alsactl so they persist
+  # across reboots. After this, runtime volume is controlled entirely by
+  # PulseAudio (pactl) — see utils/audio_volume.py.
+  #
+  # On the ReSpeaker v2.0 the JST speaker is wired to the codec's
+  # LLOUT/RLOUT (Line Out) path — NOT HPLOUT/HPROUT. Driving the HP path
+  # can't power the speaker effectively (HP outs are ~25 mW into 16 ohm)
+  # AND driving Line at full amplification was dangerously loud in
+  # calibration ("had to yank Pi power" loud). Safe baseline:
+  #   - PCM (DAC digital) at full scale — gives PA headroom
+  #   - Line (analog gain) at 0 dB (no boost), enabled
+  #   - Line DAC (digital mixer level) at -23.5 dB so PA @ 100% is a sane
+  #     room-volume ceiling rather than ear-splitting
+  #   - HP / HPCOM paths kept muted (unused, conserves power and prevents
+  #     the slight crosstalk we observed during testing)
+  # Each amixer call is `|| true` so an unknown control name on a future
+  # kernel doesn't abort the installer.
   if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
     info "Applying TLV320AIC3104 mixer baseline..."
-    # On the ReSpeaker v2.0 the JST speaker is wired to the codec's
-    # LLOUT/RLOUT (Line Out) path — NOT HPLOUT/HPROUT. Driving the HP
-    # path can't power the speaker effectively (HP outs are ~25 mW into
-    # 16 ohm) AND driving Line at full amplification was dangerously loud
-    # in calibration ("had to yank Pi power" loud). Safe baseline:
-    #   - Line (analog gain) at 0 dB (no boost), enabled
-    #   - Line DAC (digital mixer level) at -20 dB
-    #   - PCM (DAC digital) at 0 dB (max — gives full headroom)
-    #   - HP / HPCOM paths kept muted (unused, conserves power and
-    #     prevents the slight crosstalk we observed during testing)
-    # Net path is ~-20 dB below full scale. SoftMaster (softvol) tops
-    # out at 0 dB so it can attenuate but not amplify.
     amixer -c seeed2micvoicec sset 'PCM' '100%' unmute               2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Line' '0' unmute                 2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Line DAC' '78' unmute            2>/dev/null || true
@@ -503,7 +503,6 @@ ASOUND
     amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'SoftMaster' '100%'               2>/dev/null || true
     alsactl store 2>/dev/null || true
     success "TLV320AIC3104 mixer baseline applied"
   else
@@ -993,8 +992,8 @@ print_success() {
   printf "\n"
 
   if [ "${NEEDS_REBOOT:-0}" -eq 1 ]; then
-    printf "  ${BOLD}Rebooting now${NC} to activate kernel overlays (WM8960 audio\n"
-    printf "  codec, SPI, I2C). The node will start automatically in\n"
+    printf "  ${BOLD}Rebooting now${NC} to activate kernel overlays (TLV320AIC3104\n"
+    printf "  audio codec, SPI, I2C). The node will start automatically in\n"
     printf "  provisioning mode after reboot. Connect with the Jarvis mobile\n"
     printf "  app to complete setup.\n"
   else

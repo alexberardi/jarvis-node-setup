@@ -18,5 +18,6 @@
   "stt_provider": "jarvis-whisper-api",
   "tts_provider": "jarvis-tts-api",
   "wake_response_provider": "jarvis-tts-api",
-  "skip_warmup_inference": true
+  "skip_warmup_inference": true,
+  "release_track": "stable"
 }
