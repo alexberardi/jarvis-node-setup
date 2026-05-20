@@ -436,30 +436,57 @@ options snd-soc-tlv320aic3x index=0
 ALSA_MOD
 
   # --- ALSA system config ---
-  # Route everything through PulseAudio (PipeWire's pulse compat layer).
-  # PA mixes multiple playback streams natively, which softvol-direct
-  # didn't — two concurrent openers of softvol→plughw got "Device or
-  # resource busy" (the TLV320 codec exposes a single playback substream).
-  # We need concurrent playback for the wake-response + music case where
-  # jarvis plays a chime/TTS while a media player (mpv/ffplay) is mid-track.
-  # dmix doesn't work on this codec ("unable to initialize sum ring buffer")
-  # so the libasound2 pulse plugin is the working solution.
+  # Hybrid PA/ALSA: PA for playback, direct dsnoop for capture.
+  #
+  # PLAYBACK → PulseAudio. PA's sink-input mixing lets the wake response
+  # and any media player (mpv/ffplay/spotifyd/...) emit audio concurrently.
+  # The TLV320AIC3104 codec exposes a single playback substream, so
+  # softvol-direct gave the second opener ENOSPC ("Device or resource
+  # busy"), and dmix on this codec fails ("unable to initialize sum ring
+  # buffer"). PA is the working solution for concurrent playback.
+  #
+  # CAPTURE → direct hardware via dsnoop. The previous config (which
+  # routed dsnoopmic through PA too) added 25-50ms of buffering AND
+  # exposed the wake-word audio stream to PA's input-side resampling
+  # and any noise-suppression / AGC modules. Together they degraded
+  # openWakeWord scores enough that "hey jarvis" became unreliable on
+  # the ReSpeaker HAT. dsnoop is built for sharing a single capture
+  # device among multiple openers (the wake-word loop + the barge-in
+  # monitor) at zero added latency. The plug wrapper handles
+  # channel/format adaptation for callers that want mono.
   #
   # Alias names `output` and `dsnoopmic` are referenced from app code
   # (config.example.json's `mic_device_name="dsnoopmic"` and
-  # platform_abstraction.py's `aplay -D output`). They stay as the public
-  # interface — only the internals changed.
+  # platform_abstraction.py's `aplay -D output`). They stay as the
+  # public interface — only the internals change.
   cat > /etc/asound.conf <<'ASOUND'
+# --- Playback -----------------------------------------------------------
 pcm.output {
     type pulse
 }
 
-pcm.dsnoopmic {
-    type pulse
+# --- Capture ------------------------------------------------------------
+pcm.dsnoopmic_hw {
+    type dsnoop
+    ipc_key 87654321
+    slave {
+        pcm "hw:CARD=seeed2micvoicec,DEV=0"
+        channels 2
+        rate 48000
+        format S16_LE
+    }
 }
 
+pcm.dsnoopmic {
+    type plug
+    slave.pcm "dsnoopmic_hw"
+}
+
+# --- Default split: playback via PA, capture direct --------------------
 pcm.!default {
-    type pulse
+    type asym
+    playback.pcm "output"
+    capture.pcm "dsnoopmic"
 }
 
 ctl.!default {
