@@ -1,8 +1,10 @@
 """ButtonService — GPIO17 button on the ReSpeaker 2-mics Pi HAT v2.
 
 Behavior:
-- Short press (<3s):    publish ``jarvis/nodes/<node_id>/button/notifications_request``
-                        so the command-center can speak any queued notifications.
+- Short press (<3s):    run the registered ``on_short_press`` callback if set
+                        (typically: speak any queued alerts), AND publish
+                        ``jarvis/nodes/<node_id>/button/notifications_request``
+                        on MQTT for observability.
 - Long hold (>=3s):     publish ``jarvis/nodes/<node_id>/button/shutdown`` and
                         run ``sudo systemctl poweroff`` for a clean shutdown.
 - During hold (>=1s):   LED service shows the ``shutdown_warning`` transient so
@@ -22,7 +24,7 @@ import json
 import subprocess
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
@@ -67,6 +69,9 @@ class ButtonService:
         self._warning_timer: Optional[threading.Timer] = None
         self._button = None
         self._available = False
+        # Local handler invoked on short-press (before MQTT publish). Wired
+        # from main.py once the alert queue + LED + TTS chain is ready.
+        self.on_short_press: Optional[Callable[[], None]] = None
 
         Button = _try_import_gpiozero()
         if Button is None:
@@ -138,8 +143,26 @@ class ButtonService:
 
         if self._is_held:
             return  # Shutdown already initiated by _on_held
+        # Run the local handler in a worker thread so the gpiozero callback
+        # thread isn't blocked by TTS playback — otherwise rapid presses or
+        # a long-hold during speech would never reach _on_held.
+        if self.on_short_press is not None:
+            threading.Thread(
+                target=self._safe_run_short_press,
+                daemon=True,
+                name="ButtonShortPress",
+            ).start()
         self._publish_notifications_request()
         self._press_time = None
+
+    def _safe_run_short_press(self) -> None:
+        cb = self.on_short_press
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:
+            logger.warning("Button short-press handler failed", error=str(e))
 
     def _on_held(self) -> None:
         self._is_held = True

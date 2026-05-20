@@ -81,6 +81,59 @@ class AlertQueueService:
         """Count non-expired. Caller holds lock."""
         return sum(1 for a in self._alerts if not a.is_expired)
 
+    def announce_pending_and_flush(self, led_service: Optional[object] = None) -> int:
+        """Speak every pending alert via TTS, flush the queue, return the count.
+
+        Designed for synchronous triggers like the ReSpeaker user button —
+        skips the snooze/dismiss inline-listen step that the voice loop's
+        ``_drain_alert_announcements`` performs, because the button press
+        itself is the user's acknowledgement.
+
+        Speaks "No new notifications." when the queue is empty so the user
+        still gets feedback that the button was registered. Returns the
+        number of alerts spoken (0 when nothing was pending).
+        """
+        # Imports kept local — alert_queue_service is loaded early in main.py
+        # before TTS provider config is necessarily set, and we don't want a
+        # missing TTS provider to break alert *queueing*.
+        try:
+            from core.helpers import get_tts_provider
+        except Exception as e:
+            logger.warning("announce_pending_and_flush: TTS unavailable", error=str(e))
+            return 0
+
+        pending = self.get_pending()
+
+        if led_service is not None:
+            try:
+                led_service.set_transient_pattern("speaking")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        try:
+            tts = get_tts_provider()
+            if not pending:
+                try:
+                    tts.speak(True, "No new notifications.")
+                except Exception as e:
+                    logger.warning("announce empty TTS failed", error=str(e))
+                return 0
+
+            for alert in pending:
+                try:
+                    tts.speak(True, alert.summary)
+                except Exception as e:
+                    logger.warning("alert TTS failed", error=str(e),
+                                   title=alert.title)
+            self.flush()
+            return len(pending)
+        finally:
+            if led_service is not None:
+                try:
+                    led_service.set_transient_pattern(None)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
 
 # Singleton
 _instance: Optional[AlertQueueService] = None
