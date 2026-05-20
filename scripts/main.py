@@ -182,9 +182,9 @@ def main():
     except Exception as e:
         logger.warning("Encryption key init failed", error=str(e))
 
-    # Apply persisted audio volume to ALSA. Reboots / alsa-restore aren't
-    # reliable for keeping softvol where the user set it, so config.json
-    # is the source of truth and we re-apply on every startup.
+    # Apply persisted audio volume to PulseAudio. config.json is the
+    # source of truth for the user-facing volume; re-apply on every
+    # startup so a reboot doesn't reset the slider to PA's default.
     try:
         from utils.audio_volume import set_volume_percent
         vol = Config.get_int("volume_percent", -1)
@@ -245,14 +245,23 @@ def main():
         from services.led_service import get_led_service
 
         led_service = get_led_service()
+        # Apply persisted LED preferences from config.json before anything
+        # else can drive the LEDs so the user's chosen brightness / off
+        # state is honored from the first frame (vs. flickering at full
+        # brightness for one tick before update_node_config dials it back).
+        if hasattr(led_service, "set_enabled"):
+            led_service.set_enabled(Config.get_bool("led_enabled", True))
+        if hasattr(led_service, "set_brightness_scale"):
+            led_service.set_brightness_scale(Config.get_int("led_brightness_percent", 100))
         alert_queue = get_alert_queue_service()
         alert_queue.on_change = lambda count: led_service.set_pattern("alert" if count > 0 else "normal")
     except Exception as e:
         logger.warning("Alert/LED service init failed (non-fatal)", error=str(e))
 
-    # Initialize ReSpeaker button (GPIO17) — short-press requests notification
-    # playback; long-hold (>=3s) powers the node off cleanly. No-op on hardware
-    # without the HAT or with gpiozero unavailable.
+    # Initialize ReSpeaker button (GPIO17) — short-press speaks queued alerts
+    # via local TTS and flushes the queue; long-hold (>=3s) powers the node
+    # off cleanly. Both events also publish on MQTT for CC observability.
+    # No-op on hardware without the HAT or with gpiozero unavailable.
     try:
         from services.button_service import get_button_service
 
@@ -261,7 +270,9 @@ def main():
             return client
 
         if led_service is not None:
-            get_button_service(led_service, _mqtt_client_provider)
+            button_service = get_button_service(led_service, _mqtt_client_provider)
+            if alert_queue is not None:
+                button_service.on_short_press = lambda: alert_queue.announce_pending_and_flush(led_service)
     except Exception as e:
         logger.warning("Button service init failed (non-fatal)", error=str(e))
 
