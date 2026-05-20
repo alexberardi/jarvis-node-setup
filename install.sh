@@ -929,6 +929,11 @@ create_service() {
 Description=Jarvis Node Service
 After=network-online.target
 Wants=network-online.target
+# Rate-limit settings live in [Unit] (since systemd v229) — having them
+# under [Service] is silently ignored AND logs "Unknown key" on every
+# daemon-reload.
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 User=${SERVICE_USER}
@@ -937,8 +942,6 @@ ExecStart=${INSTALL_DIR}/.venv/bin/python -m scripts.main
 WorkingDirectory=${INSTALL_DIR}
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=300
 TimeoutStopSec=30
 KillSignal=SIGTERM
 Environment=HOME=${SERVICE_HOME}
