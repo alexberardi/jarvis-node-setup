@@ -474,6 +474,18 @@ pcm.dsnoopmic_hw {
         channels 2
         rate 48000
         format S16_LE
+        # Cap dsnoop's ring buffer at ~85ms so the wake-word loop can never
+        # be scoring stale audio. Without explicit sizes, dsnoop chooses
+        # defaults that can hold hundreds of ms; under CPU bursts (LLM
+        # responses, TTS streaming, music mixing) the main thread falls
+        # behind on consuming chunks and the model ends up evaluating
+        # audio from N hundred ms ago — user-perceived "wake took
+        # forever to fire". 1024-sample periods × 4 = 4096-sample buffer
+        # at 48kHz = 21ms × 4 = 85ms. Under-runs (xruns) on a too-slow
+        # reader are preferable to stale audio: the model misses some
+        # frames but is always scoring "now".
+        period_size 1024
+        buffer_size 4096
     }
 }
 
@@ -824,6 +836,22 @@ install_apt_wrapper() {
   success "Installed ${dest}"
 }
 
+install_post_install_wrapper() {
+  # Copy scripts/jarvis-post-install → /usr/local/sbin/, root-owned 0755.
+  # The service user invokes this via `sudo` to run declarative post-install
+  # ops (systemd drop-ins, config-file upserts) without holding broad system
+  # privileges. Op-and-target combinations are gated server-side by Pantry's
+  # post-install-allowlist.yaml.
+  local src="${INSTALL_DIR}/scripts/jarvis-post-install"
+  local dest="/usr/local/sbin/jarvis-post-install"
+  if [ ! -f "$src" ]; then
+    warn "scripts/jarvis-post-install missing — post_install ops from Pantry will fail"
+    return
+  fi
+  install -o root -g root -m 0755 "$src" "$dest"
+  success "Installed ${dest}"
+}
+
 install_sudoers() {
   local sudoers_path="/etc/sudoers.d/jarvis-node"
   local tmp
@@ -848,6 +876,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/dnsmasq
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/pkill, /usr/bin/killall, /usr/bin/pgrep
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-post-install *
 EOF
   chmod 0440 "$tmp"
   if visudo -cf "$tmp" >/dev/null 2>&1; then
@@ -1079,6 +1108,7 @@ main() {
   migrate_to_pi_home
   chown_install_dir
   install_apt_wrapper
+  install_post_install_wrapper
   install_sudoers
   create_service
 
