@@ -1071,3 +1071,125 @@ def test_cc_voice_command_mixed_tools_iterates():
         f"the loop didn't continue past iter 1; if you see [] CC dropped "
         f"the client_calls when continuing the loop."
     )
+
+
+@pytest.mark.skipif(not CC_URL, reason=SKIP_REASON)
+@pytest.mark.skipif(
+    not (CC_NODE_ID and CC_NODE_KEY), reason=SKIP_NO_NODE
+)
+@pytest.mark.skipif(not CC_USER_JWT, reason=SKIP_NO_JWT)
+@pytest.mark.qa_case("CASE-214")
+def test_cc_publishes_to_mqtt_on_factory_reset():
+    """Factory-reset is the highest-blast-radius MQTT publish surface.
+
+    Triggered by POST `/api/v0/admin/nodes/{node_id}/factory-reset` (or
+    DELETE `/nodes/{node_id}`), it tells the node to wipe local state
+    and re-provision. If the topic or payload shape drifts, every prod
+    node silently misses factory-reset commands — bricking the mobile
+    "reset device" flow with no error surfaced anywhere.
+
+    Sequence:
+      1. Test subscribes to `jarvis/nodes/{CC_NODE_ID}/factory-reset`
+         via paho-mqtt at 127.0.0.1:1883.
+      2. Test POSTs `/api/v0/admin/nodes/{CC_NODE_ID}/factory-reset`
+         with `Authorization: Bearer <CC_USER_JWT>`. CC creates a
+         `NodeTask(kind="factory_reset")`, mints a reset token, and
+         publishes the MQTT signal synchronously (see
+         jarvis-command-center/app/admin.py:504-516).
+      3. Test asserts the message arrives within 10s and the payload
+         fields match the 200 response body:
+           - `node_id` == CC_NODE_ID
+           - `request_id` == reset_token from the response
+           - `task_id` == task_id from the response
+
+    What CASE-214 catches beyond CASE-212:
+      - The factory-reset code path (different handler, different
+        payload shape with task_id added — CASE-212 only asserted
+        node_id + request_id).
+      - The MQTT publish is on a *different* topic suffix, so a global
+        topic-format change would surface here too.
+      - The NodeTask creation flow + reset_token round-trip both work.
+
+    Side-effect note: the POST creates a `NodeTask(state="dispatched")`
+    in CC's DB but doesn't actually delete the node from auth. The
+    node would normally receive the MQTT and POST back to
+    `/nodes/factory-reset/{task_id}/status`; without a real node
+    listening, the task sits in `dispatched`. `compose down -v` at
+    the end of CI tears down all state, so subsequent runs start
+    clean.
+    """
+    import json
+    import queue
+    from urllib.parse import urlparse
+
+    import paho.mqtt.client as mqtt
+    from paho.mqtt.enums import CallbackAPIVersion
+
+    parsed = urlparse(MQTT_BROKER_URL)
+    broker_host = parsed.hostname or "127.0.0.1"
+    broker_port = parsed.port or 1883
+
+    received: queue.Queue = queue.Queue()
+    topic = f"jarvis/nodes/{CC_NODE_ID}/factory-reset"
+
+    def on_connect(client, _userdata, _flags, _rc, *_args):
+        client.subscribe(topic, qos=1)
+
+    def on_message(_client, _userdata, msg):
+        received.put((msg.topic, msg.payload))
+
+    client = mqtt.Client(
+        callback_api_version=CallbackAPIVersion.VERSION2,
+        client_id="ci-case-214-subscriber",
+    )
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(broker_host, broker_port, keepalive=30)
+    client.loop_start()
+    try:
+        response = httpx.post(
+            f"{CC_URL}/api/v0/admin/nodes/{CC_NODE_ID}/factory-reset",
+            headers={"Authorization": f"Bearer {CC_USER_JWT}"},
+            timeout=15.0,
+        )
+        assert response.status_code == 200, (
+            f"expected 200 from factory-reset, got {response.status_code} "
+            f"body={response.text[:400]}"
+        )
+        body_json = response.json()
+        expected_reset_token = body_json.get("reset_token")
+        expected_task_id = body_json.get("task_id")
+        assert expected_reset_token, (
+            f"expected reset_token in response, got {body_json}"
+        )
+        assert expected_task_id, (
+            f"expected task_id in response, got {body_json}"
+        )
+
+        try:
+            received_topic, raw_payload = received.get(timeout=10.0)
+        except queue.Empty:
+            raise AssertionError(
+                f"timed out waiting 10s for MQTT publish on {topic}. "
+                f"Check: did CC create the NodeTask but fail to publish? "
+                f"(admin.py:504-516 try/except swallows publish errors)"
+            )
+
+        assert received_topic == topic, (
+            f"unexpected topic, got {received_topic}"
+        )
+        payload = json.loads(raw_payload.decode("utf-8"))
+        assert payload.get("node_id") == CC_NODE_ID, (
+            f"expected node_id={CC_NODE_ID}, got payload={payload}"
+        )
+        assert payload.get("request_id") == expected_reset_token, (
+            f"expected request_id={expected_reset_token} to match "
+            f"reset_token in response, got payload={payload}"
+        )
+        assert payload.get("task_id") == expected_task_id, (
+            f"expected task_id={expected_task_id} to match response, "
+            f"got payload={payload}"
+        )
+    finally:
+        client.loop_stop()
+        client.disconnect()
