@@ -94,13 +94,23 @@ jobs:
           if [[ -z "$LINKED_PRS" ]]; then
             LINKED_PRS="{}"
           fi
-          # bring_up_cc=true triggers the v2.1 compose path (Postgres + CC built
-          # from PR source). Today it only fires when the originating service is
-          # jarvis-command-center; v2.2 onwards branches on more services.
-          BRING_UP_CC="false"
-          if [[ "$SERVICE" == "jarvis-command-center" ]]; then
-            BRING_UP_CC="true"
-          fi
+          # v2.15 fan-out: bring_up_stack=true for any service that has a
+          # `from-source` overlay in compose/ci-overlays/. For those, the
+          # runner checks out the PR's source into _src/{service} and the
+          # overlay swaps that service's :dev image for a `build:` block.
+          # All other services in the stack stay at :dev.
+          #
+          # Services without an overlay (jarvis-tts, jarvis-whisper-api,
+          # jarvis-llm-proxy-api today) only run the fakes-only smoke
+          # tests when their PRs trigger the loop.
+          BRING_UP_STACK="false"
+          COMPOSE_OVERLAY=""
+          case "$SERVICE" in
+            jarvis-command-center|jarvis-auth|jarvis-config-service)
+              BRING_UP_STACK="true"
+              COMPOSE_OVERLAY="compose/ci-overlays/${SERVICE}-from-source.yaml"
+              ;;
+          esac
           {
             echo "service=$SERVICE"
             echo "pr_number=$PR_NUMBER"
@@ -109,7 +119,8 @@ jobs:
             echo "qa_plan_comment_id=$QA_PLAN_COMMENT_ID"
             echo "plan_cases=$PLAN_CASES"
             echo "linked_prs=$LINKED_PRS"
-            echo "bring_up_cc=$BRING_UP_CC"
+            echo "bring_up_stack=$BRING_UP_STACK"
+            echo "compose_overlay=$COMPOSE_OVERLAY"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
@@ -131,24 +142,23 @@ jobs:
           pip install pytest pytest-asyncio fastapi uvicorn httpx pydantic pyyaml python-multipart paho-mqtt
 
       - name: Check out originating service repo at PR head
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.payload.outputs.originating_repo }}
           ref: ${{ steps.payload.outputs.head_sha }}
           # actions/checkout requires path: to be a subdirectory of the
-          # workspace. We land CC inside the workspace and tell compose
-          # where to find it via the CC_SOURCE_PATH env var (the compose
-          # default of `../jarvis-command-center` is for local-dev where
-          # this repo and CC sit as siblings on disk).
-          path: _src/jarvis-command-center
+          # workspace. Land the originator's source at _src/{service} so
+          # the matching overlay's `build.context` (defaults like
+          # `./_src/jarvis-auth`) finds it.
+          path: _src/${{ steps.payload.outputs.service }}
 
       - name: Set up Docker Buildx
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -191,21 +201,25 @@ jobs:
           exit 1
 
       - name: Phase 1 — bring up deps (postgres + auth + config-service + mqtt)
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
-        env:
-          CC_SOURCE_PATH: ./_src/jarvis-command-center
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         run: |
           # Start everything CC depends on, but NOT CC itself. We need
           # auth + config-service healthy first so seed.sh can register
           # CC's app-client (auth generates the key, which we then pass
           # into CC's env in phase 2).
-          docker compose -f docker-compose.ci.yaml --profile core up -d --wait \
+          #
+          # The compose overlay (when set) swaps the service-under-test
+          # from its :dev image to a `build:` block. For an auth or
+          # config-service PR the build happens in this phase.
+          docker compose -f docker-compose.ci.yaml \
+            ${{ steps.payload.outputs.compose_overlay && format('-f {0}', steps.payload.outputs.compose_overlay) || '' }} \
+            --profile core up -d --wait \
             postgres jarvis-auth jarvis-config-service mosquitto
           echo "=== compose ps after phase 1 ==="
           docker compose -f docker-compose.ci.yaml ps
 
       - name: Seed auth + config-service
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         env:
           AUTH_URL: http://localhost:7701
           CONFIG_URL: http://localhost:7700
@@ -215,25 +229,30 @@ jobs:
           bash compose/seed.sh
 
       - name: Phase 2 — bring up CC with seeded app-key
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         env:
-          CC_SOURCE_PATH: ./_src/jarvis-command-center
           # JARVIS_CC_APP_KEY is set by seed.sh via GITHUB_ENV and gets
           # interpolated into docker-compose.ci.yaml's CC environment.
           JARVIS_CC_APP_KEY: ${{ env.JARVIS_CC_APP_KEY }}
         run: |
-          docker compose -f docker-compose.ci.yaml --profile core up -d --wait \
+          # CC is built from PR source when service==jarvis-command-center
+          # (the overlay overrides its image with `build:`); otherwise the
+          # :dev image gets pulled. Either way the env interpolation +
+          # healthcheck behave the same.
+          docker compose -f docker-compose.ci.yaml \
+            ${{ steps.payload.outputs.compose_overlay && format('-f {0}', steps.payload.outputs.compose_overlay) || '' }} \
+            --profile core up -d --wait \
             jarvis-command-center
           echo "=== compose ps after phase 2 ==="
           docker compose -f docker-compose.ci.yaml ps
 
       - name: Tail CC startup logs on success
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         run: |
           docker compose -f docker-compose.ci.yaml logs --tail=30 jarvis-command-center || true
 
       - name: Phase 2.5 — register node in CC
-        if: ${{ steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ steps.payload.outputs.bring_up_stack == 'true' }}
         env:
           CC_URL: http://localhost:7703
           CC_ADMIN_KEY: ci-admin-key
@@ -284,7 +303,7 @@ jobs:
           # CC_URL is only set when the compose stack is up; the real-stack
           # tests use its presence as the gate for skipif. AUTH_URL and
           # CONFIG_URL point at the docker-compose.ci.yaml port mappings.
-          CC_URL: ${{ steps.payload.outputs.bring_up_cc == 'true' && 'http://localhost:7703' || '' }}
+          CC_URL: ${{ steps.payload.outputs.bring_up_stack == 'true' && 'http://localhost:7703' || '' }}
           AUTH_URL: http://localhost:7701
           CONFIG_URL: http://localhost:7700
           # CC's seeded app credentials — CASE-201 validates them against
@@ -293,7 +312,7 @@ jobs:
           CC_APP_KEY: ${{ env.CC_APP_KEY }}
           # v2.4 — seeded node credentials for the positive-path
           # /internal/validate-node test (CASE-202). Both are set by
-          # compose/seed.sh via $GITHUB_ENV; empty when bring_up_cc=false,
+          # compose/seed.sh via $GITHUB_ENV; empty when bring_up_stack=false,
           # in which case CASE-202's skipif gate fires.
           CC_NODE_ID: ${{ env.CC_NODE_ID }}
           CC_NODE_KEY: ${{ env.CC_NODE_KEY }}
@@ -398,18 +417,30 @@ jobs:
             -f "description=$DESC" \
             -f "target_url=$RUN_URL" || echo "::warning::status post failed"
 
-      - name: Tail CC logs on failure
-        if: ${{ always() && steps.payload.outputs.bring_up_cc == 'true' }}
+      - name: Tail service logs on failure
+        if: ${{ always() && steps.payload.outputs.bring_up_stack == 'true' }}
         run: |
+          # CC logs are always interesting (every voice case hits it).
+          # Auth/config-service get a tail too when they're the
+          # service-under-test (build failures show up here).
           echo "=== CC compose logs (tail) ==="
           docker compose -f docker-compose.ci.yaml logs --tail=100 jarvis-command-center || true
+          echo "=== auth compose logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml logs --tail=50 jarvis-auth || true
+          echo "=== config-service compose logs (tail) ==="
+          docker compose -f docker-compose.ci.yaml logs --tail=50 jarvis-config-service || true
           echo "=== postgres logs (tail) ==="
           docker compose -f docker-compose.ci.yaml logs --tail=30 postgres || true
 
       - name: Tear down compose stack
-        if: ${{ always() && steps.payload.outputs.bring_up_cc == 'true' }}
+        if: ${{ always() && steps.payload.outputs.bring_up_stack == 'true' }}
         run: |
-          docker compose -f docker-compose.ci.yaml --profile core down -v --remove-orphans || true
+          # The overlay isn't required for `down` (no build needed), but
+          # passing it keeps the compose project name + service set
+          # consistent with `up`, which prevents stale containers.
+          docker compose -f docker-compose.ci.yaml \
+            ${{ steps.payload.outputs.compose_overlay && format('-f {0}', steps.payload.outputs.compose_overlay) || '' }} \
+            --profile core down -v --remove-orphans || true
 
       - name: Cleanup fake processes
         if: always()

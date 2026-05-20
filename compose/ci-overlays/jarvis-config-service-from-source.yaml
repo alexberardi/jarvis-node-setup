@@ -1,0 +1,22 @@
+# Compose overlay used when a PR in jarvis-config-service is the
+# service-under-test. Replaces the default
+# `image: ghcr.io/alexberardi/jarvis-config-service:dev` with a `build:`
+# block pointing at the PR's checked-out source.
+#
+# Invoked as:
+#     docker compose -f docker-compose.ci.yaml \
+#                    -f compose/ci-overlays/jarvis-config-service-from-source.yaml \
+#                    --profile core up -d --wait jarvis-config-service
+#
+# The runner workflow handles passing both `-f` flags.
+
+name: jarvis-ci
+
+services:
+  jarvis-config-service:
+    build:
+      context: ${CONFIG_SERVICE_SOURCE_PATH:-./_src/jarvis-config-service}
+      cache_from:
+        - type=gha
+      cache_to:
+        - type=gha,mode=max
