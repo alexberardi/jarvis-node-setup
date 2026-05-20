@@ -94,3 +94,23 @@ class TestSudoersHeredoc:
         assert re.search(
             r"NOPASSWD:\s*/usr/local/sbin/jarvis-self-update\s+\*", body
         ), f"Expected jarvis-self-update sudoers line not found. Body:\n{body}"
+
+    def test_sudoers_template_includes_alsa_store_wrapper_line(self):
+        """jarvis-node persists runtime amixer changes via this wrapper.
+
+        Wrapper takes no arguments (writes /var/lib/alsa/asound.state and
+        nothing else), so the sudoers line must NOT include the `*` glob
+        — strict no-args is the security contract.
+        """
+        body = _render_sudoers_heredoc()
+        assert "/usr/local/sbin/jarvis-alsa-store" in body
+        # Match the line and assert no trailing wildcard
+        line = next(
+            (l for l in body.splitlines() if "jarvis-alsa-store" in l),
+            None,
+        )
+        assert line is not None, f"jarvis-alsa-store line not found. Body:\n{body}"
+        assert "*" not in line, (
+            f"jarvis-alsa-store sudoers line must not include `*` "
+            f"(wrapper takes no args) — got: {line!r}"
+        )

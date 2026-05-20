@@ -875,6 +875,24 @@ install_self_update_wrapper() {
   success "Installed ${dest}"
 }
 
+install_alsa_store_wrapper() {
+  # Copy scripts/jarvis-alsa-store → /usr/local/sbin/, root-owned 0755.
+  # Lets jarvis-node persist amixer changes to /var/lib/alsa/asound.state
+  # without a sudo password prompt. Without this wrapper any runtime
+  # mixer tuning (volume baseline drift correction, hand-applied amixer
+  # ops during debug) evaporates on the next reboot because alsa-restore
+  # reloads the install-time baseline — see prod kitchen node calibration
+  # session, May 2026.
+  local src="${INSTALL_DIR}/scripts/jarvis-alsa-store"
+  local dest="/usr/local/sbin/jarvis-alsa-store"
+  if [ ! -f "$src" ]; then
+    warn "scripts/jarvis-alsa-store missing — runtime mixer changes will not persist across reboot"
+    return
+  fi
+  install -o root -g root -m 0755 "$src" "$dest"
+  success "Installed ${dest}"
+}
+
 install_sudoers() {
   local sudoers_path="/etc/sudoers.d/jarvis-node"
   local tmp
@@ -901,6 +919,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-post-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-self-update *
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-alsa-store
 EOF
   chmod 0440 "$tmp"
   if visudo -cf "$tmp" >/dev/null 2>&1; then
@@ -1137,6 +1156,7 @@ main() {
   install_apt_wrapper
   install_post_install_wrapper
   install_self_update_wrapper
+  install_alsa_store_wrapper
   install_sudoers
   create_service
 
