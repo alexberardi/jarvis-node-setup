@@ -151,7 +151,7 @@ class LEDService:
         # the visual when no RGB is present. error/shutdown_warning still
         # render distinctly because they're safety-relevant signals.
         if self._transient in (
-            None, "wake_detected", "listening", "thinking", "speaking", "muted",
+            None, "wake_detected", "listening", "thinking", "speaking", "not_for_me", "muted",
         ):
             return self._stable
         return self._transient
