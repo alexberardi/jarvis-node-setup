@@ -12,6 +12,7 @@ without polling the node directly.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from dataclasses import asdict, dataclass
@@ -25,6 +26,7 @@ class VersionInfo:
     install_mode: str  # "tarball" | "docker" | "dev"
     git_sha: str | None
     install_dir: str | None
+    release_track: str = "stable"  # "stable" | "dev"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +61,16 @@ def _git_describe(cwd: Path) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _read_release_track() -> str:
+    """Read release_track from config.json. Defaults to 'stable'."""
+    config_path = os.environ.get("CONFIG_PATH", "config.json")
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return json.load(f).get("release_track", "stable")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "stable"
+
+
 def _detect_install_mode() -> str:
     if os.path.exists("/.dockerenv"):
         return "docker"
@@ -71,6 +83,7 @@ def version_info() -> VersionInfo:
     """Return this node's version info, built fresh each call so a rebuild
     of the service picks up the new VERSION file without a cold start."""
     install_mode = _detect_install_mode()
+    track = _read_release_track()
 
     # Tarball install: /opt/jarvis-node/VERSION is authoritative.
     if install_mode == "tarball":
@@ -80,6 +93,7 @@ def version_info() -> VersionInfo:
             install_mode="tarball",
             git_sha=None,
             install_dir="/opt/jarvis-node",
+            release_track=track,
         )
 
     # Docker: VERSION is baked into the image at /app/VERSION.
@@ -90,6 +104,7 @@ def version_info() -> VersionInfo:
             install_mode="docker",
             git_sha=None,
             install_dir="/app",
+            release_track=track,
         )
 
     # Dev: best-effort git describe from this file's repo.
@@ -100,4 +115,5 @@ def version_info() -> VersionInfo:
         install_mode="dev",
         git_sha=sha,
         install_dir=str(repo),
+        release_track=track,
     )

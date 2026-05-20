@@ -219,6 +219,51 @@ class TestRemove:
             with pytest.raises(RemoveError, match="not installed"):
                 remove("nonexistent")
 
+    def test_remove_sweeps_orphans_missing_from_component_dirs(self, tmp_path):
+        """Defensive sweep: dirs declared in `components` are removed even when
+        `component_dirs` was written incomplete.
+
+        Regression for the spotify_keepalive orphan-agent incident: an older
+        install (or a partial metadata write) recorded only the command in
+        `component_dirs`, so the agent dir survived uninstall and kept the
+        agent scheduler trying to run a missing module every 10 seconds.
+        """
+        # Project layout: command + agent dirs both populated.
+        project_dir = tmp_path / "project"
+        cmd_dir = project_dir / "commands" / "custom_commands" / "spotify"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "command.py").write_text("# spotify cmd")
+        agent_dir = project_dir / "agents" / "custom_agents" / "spotify_keepalive"
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "agent.py").write_text("# keepalive agent")
+
+        # Packages metadata: declares both components, but only records the
+        # command in component_dirs — the bug being defended against.
+        packages_dir = tmp_path / "packages"
+        packages_dir.mkdir()
+        pkg_meta = {
+            "package_name": "spotify",
+            "version": "1.0.0",
+            "components": [
+                {"type": "command", "name": "spotify", "path": "commands/spotify/command.py"},
+                {"type": "agent", "name": "spotify_keepalive", "path": "agents/spotify_keepalive/agent.py"},
+            ],
+            "component_dirs": {
+                "command:spotify": str(cmd_dir),
+                # agent intentionally missing
+            },
+        }
+        with open(packages_dir / "spotify.json", "w") as f:
+            json.dump(pkg_meta, f)
+
+        with patch("services.command_store_service.PACKAGES_DIR", packages_dir), \
+             patch("services.command_store_service._PROJECT_DIR", project_dir):
+            remove("spotify")
+
+        assert not cmd_dir.exists(), "command dir should be removed via component_dirs"
+        assert not agent_dir.exists(), "agent dir should be removed by the defensive sweep"
+        assert not (packages_dir / "spotify.json").exists(), "package metadata should be removed"
+
 
 class TestListInstalled:
     def test_empty_list(self, tmp_path):

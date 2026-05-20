@@ -824,9 +824,8 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
         except Exception as e:
             logger.warning("LED live-apply failed", error=str(e))
 
-    # is_muted: mirror the mute switch into ALSA + PA right away (the
-    # persisted state is informational only — ALSA's softvol mute is the
-    # source of truth for runtime).
+    # is_muted: mirror the mute switch into PA right away (PA's sink
+    # mute is the source of truth for runtime).
     if "is_muted" in settings:
         try:
             from utils.audio_volume import set_muted
