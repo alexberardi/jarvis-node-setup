@@ -1103,6 +1103,35 @@ def remove(package_name: str, component_type: str | None = None) -> None:
                 shutil.rmtree(comp_dir)
                 logger.info("Removed component dir", component=comp_name, dir=comp_dir_str)
 
+        # Defensive sweep: reconstruct install dirs from the declared components
+        # list and remove any that linger. Why: older installs (and partial
+        # metadata writes) sometimes recorded only a subset of components in
+        # `component_dirs` — most commonly the command, omitting bundled
+        # agents/protocols. Without this sweep those orphans stay on disk after
+        # uninstall, the agent scheduler keeps trying to run them, and you get
+        # CPU-burning ImportError loops (see jarvis-node spotify_keepalive
+        # incident, May 2026). Idempotent: dirs removed above are skipped.
+        for comp in pkg_meta.get("components", []):
+            comp_type = comp.get("type")
+            comp_decl_name = comp.get("name")
+            if not comp_type or not comp_decl_name:
+                continue
+            install_rel = COMPONENT_INSTALL_DIRS.get(comp_type)
+            if not install_rel:
+                continue
+            install_dir = _PROJECT_DIR / install_rel / comp_decl_name
+            if not install_dir.exists() or not install_dir.is_dir():
+                continue
+            # Safety: must be under project dir (defense in depth)
+            if not str(install_dir.resolve()).startswith(str(_PROJECT_DIR.resolve())):
+                continue
+            shutil.rmtree(install_dir)
+            logger.info(
+                "Removed orphan component dir (defensive sweep)",
+                component=f"{comp_type}:{comp_decl_name}",
+                dir=str(install_dir),
+            )
+
         # Remove shared lib dir and auto-generated namespace
         pkg_dir = PACKAGES_DIR / package_name
         lib_dir = pkg_dir / "lib"
