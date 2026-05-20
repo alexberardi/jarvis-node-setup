@@ -434,3 +434,45 @@ class TestCommandManifestAptPackages:
         import pydantic
         with pytest.raises(pydantic.ValidationError):
             CommandManifest(name="x", description="y", apt_packages=["mpv", 42])  # type: ignore[list-item]
+
+
+class TestCommandManifestPostInstall:
+    """`post_install` carries declarative ops the node-side dispatcher
+    runs after pip+apt. Pre-#19 Pydantic dropped the field silently; the
+    install pipeline would call _run_post_install with an empty list and
+    no service config would land. Same regression class as apt_packages."""
+
+    def test_post_install_defaults_to_empty_list(self):
+        m = CommandManifest(name="x", description="y")
+        assert m.post_install == []
+
+    def test_post_install_survives_validation_as_list_of_dicts(self):
+        ops = [
+            {"type": "configure_systemd_service", "service": "shairport-sync",
+             "run_as": "jarvis_user", "group": "audio"},
+            {"type": "set_config_file_value", "file": "/etc/shairport-sync.conf",
+             "format": "libconfig", "section": "general",
+             "key": "output_backend", "value": "pa"},
+        ]
+        m = CommandManifest(name="x", description="y", post_install=ops)
+        assert len(m.post_install) == 2
+        assert m.post_install[0]["type"] == "configure_systemd_service"
+        assert m.post_install[1]["key"] == "output_backend"
+
+    def test_post_install_round_trips_through_kwargs(self):
+        """YAML-loaded manifests come in as **kwargs from yaml.safe_load."""
+        raw = {
+            "name": "media", "description": "media", "version": "1.0.0",
+            "post_install": [
+                {"type": "configure_systemd_service", "service": "foo"},
+            ],
+        }
+        m = CommandManifest(**raw)
+        assert m.post_install == [
+            {"type": "configure_systemd_service", "service": "foo"},
+        ]
+
+    def test_post_install_rejects_non_list(self):
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            CommandManifest(name="x", description="y", post_install="oops")  # type: ignore[arg-type]
