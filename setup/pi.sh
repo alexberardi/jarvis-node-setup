@@ -172,6 +172,17 @@ else
 
     log_success "System dependencies installed"
 fi
+
+# BlueZ Class of Device — make iOS list jarvis-dev as an audio device
+# in the BT picker. Without this it classifies us as "Computer" and
+# either hides us from the audio output list or won't route A2DP.
+if grep -q "^#Class = 0x000100" /etc/bluetooth/main.conf 2>/dev/null; then
+    log_info "Setting BlueZ Class of Device to audio (0x240404)..."
+    sudo sed -i 's/^#Class = 0x000100/Class = 0x240404/' /etc/bluetooth/main.conf
+    sudo systemctl restart bluetooth 2>/dev/null || true
+    log_success "BlueZ Class set"
+fi
+
 log_info "Python version: $(${PY_BIN} --version)"
 
 # Step 2: Python venv
