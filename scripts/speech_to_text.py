@@ -255,7 +255,15 @@ def listen_for_follow_up(
     silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
     max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
     if min_speech_secs is None:
-        min_speech_secs = Config.get_float("follow_up_min_speech_secs", 0.7)
+        # Lowered from 0.7 → 0.3 on 2026-05-20: 0.7 was discarding the
+        # shortest valid follow-up replies ("yes" ~250 ms, "no" ~200 ms,
+        # "yeah" ~350 ms, "thanks" ~500 ms) as noise. The trade-off is
+        # marginally higher risk that a sub-half-second ambient burst
+        # (chair scrape, door close) gets sent to Whisper, but the
+        # downstream _is_non_speech filter catches the obvious
+        # [BLANK_AUDIO]/[silence] hallucinations. Settable via
+        # ``follow_up_min_speech_secs`` if a room turns out to be noisier.
+        min_speech_secs = Config.get_float("follow_up_min_speech_secs", 0.3)
 
     output_filename = str(_cache_dir / "follow_up.wav")
     chunk_secs = bus.chunk_samples / bus.rate

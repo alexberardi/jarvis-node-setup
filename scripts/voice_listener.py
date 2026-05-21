@@ -997,10 +997,15 @@ def _follow_up_loop(
         # outer pause/restore wrapping (in start_voice_listener) only catches
         # players that existed at wake time — but a previous turn may have
         # *just spawned* a player (e.g. Pandora.play -> mpv) that needs to be
-        # silenced for the follow-up capture too. pkill is cheap; calling it
-        # every iteration just keeps the new player paused for the duration
-        # of the listen.
-        _pause_active_playback()
+        # silenced for the follow-up capture too.
+        #
+        # Backgrounded (was synchronous): pkill+pactl cost ~400 ms here on
+        # the Pi Zero even when nothing's playing, and it ran BEFORE the
+        # listen window started — so 400 ms of every follow-up window was
+        # spent on subprocess startup while user audio piled up in the bus.
+        # If music IS playing, the pause lands within ~400 ms which is
+        # negligible relative to the multi-second listen window.
+        _bg_executor.submit(_pause_active_playback)
         audio_file = listen_for_follow_up(
             bus, timeout_seconds=iter_timeout, history_secs=history_secs,
             follow_up_iteration=iteration,
