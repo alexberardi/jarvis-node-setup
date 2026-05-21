@@ -28,6 +28,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from scipy.signal import resample_poly
@@ -37,6 +38,22 @@ from core.audio_bus import AudioBus
 from core.platform_audio import platform_audio
 
 logger = JarvisLogger(service="jarvis-node")
+
+# Shared lock for openWakeWord operations across threads. Imported by
+# voice_listener.py too — there's one oww model instance shared between
+# the wake loop, this barge-in monitor, and a background reset thread.
+# ``oww.reset()`` takes ~1.5 s on the Pi Zero; voice_listener runs it in
+# a background pool after wake fires (so the wake response can play
+# immediately) and this lock prevents that background reset from racing
+# with predict()/reset() in either the wake loop or this monitor.
+oww_lock = threading.Lock()
+
+# Single-thread executor for background oww.reset() calls. Used by
+# ``BargeInMonitor.stop()`` so the 1.5 s LSTM reinit doesn't block the
+# return-to-idle path. max_workers=1 because reset isn't parallelizable
+# anyway (the lock serializes it), and the queue depth is naturally
+# bounded — one reset per wake cycle.
+_reset_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="oww-reset")
 
 # openWakeWord constants (must match voice_listener.py)
 _OWW_RATE = 16000
@@ -136,9 +153,25 @@ class BargeInMonitor:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
-        # Reset OWW here — in the caller's thread — so there is zero
-        # chance of overlapping with oww.predict() in the wake loop.
-        self._oww.reset()
+        # oww.reset() is ~1.5 s of LSTM reinit on the Pi Zero. Doing it
+        # synchronously here was the second hidden source of dead air
+        # in the wake cycle: the response was already over but stop()
+        # blocked the return to wake mode. Submit to the module-level
+        # executor under the shared ``oww_lock``; any future predict()
+        # naturally waits. The next wake loop won't predict for many
+        # seconds (follow-up window, etc.) so the background reset is
+        # guaranteed to finish first in practice.
+        oww = self._oww
+
+        def _bg_reset() -> None:
+            _t = time.monotonic()
+            with oww_lock:
+                oww.reset()
+            logger.info(
+                "Barge-in oww.reset finished",
+                duration_ms=int((time.monotonic() - _t) * 1000),
+            )
+        _reset_executor.submit(_bg_reset)
 
     def _monitor_loop(self) -> None:
         q = self._bus.subscribe(self._subscriber_name)
@@ -206,7 +239,8 @@ class BargeInMonitor:
                     if self._needs_resample:
                         resampled = resample_poly(samples, up=1, down=self._resample_ratio)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
-                    self._oww.predict(samples)
+                    with oww_lock:
+                        self._oww.predict(samples)
                     continue
 
                 # Periodic diagnostics
@@ -224,7 +258,8 @@ class BargeInMonitor:
                     resampled = resample_poly(samples, up=1, down=self._resample_ratio)
                     samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
-                predictions = self._oww.predict(samples)
+                with oww_lock:
+                    predictions = self._oww.predict(samples)
                 score = predictions.get(self._wake_word, 0)
 
                 if score > max_score:

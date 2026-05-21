@@ -421,9 +421,12 @@ def main():
             start_voice_listener(ma_service)
             break  # Clean exit from voice listener
         except Exception as e:
+            import traceback as _tb
             logger.error(
                 "Voice listener failed",
                 error=str(e),
+                error_type=type(e).__name__,
+                traceback=_tb.format_exc(),
                 attempt=voice_attempt,
                 max_attempts=max_voice_retries,
             )
