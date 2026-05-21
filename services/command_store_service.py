@@ -297,11 +297,68 @@ def _is_custom_installed(obj: object, package_dir: str, custom_subdir: str) -> b
 _APT_MIN_FREE_BYTES = 500 * 1024 * 1024
 
 _APT_WRAPPER_PATH = Path("/usr/local/sbin/jarvis-apt-install")
+_APT_SOURCE_WRAPPER_PATH = Path("/usr/local/sbin/jarvis-apt-source")
 
 # Matches _install_pip_deps' 300s timeout. Apt can be slow on first run
 # (apt-get update + index rebuild on stale Pis), but anything over this is
 # almost certainly a stuck lock or DNS issue.
 _APT_TIMEOUT_SECONDS = 300
+
+# 3rd-party apt source setup (key fetch + sources.list write) should be
+# fast — it's bounded by the curl key fetch. 60s is generous; anything
+# slower is a stuck DNS / GitHub Pages issue.
+_APT_SOURCE_TIMEOUT_SECONDS = 60
+
+
+def _install_apt_sources(manifest: CommandManifest) -> None:
+    """Register 3rd-party apt sources declared in the manifest.
+
+    Runs BEFORE _install_apt_deps so `apt install <pkg>` can resolve any
+    package that lives outside the default Debian repos (e.g. raspotify).
+    Idempotent — the wrapper no-ops when key+sources.list files already
+    match.
+
+    Source values reaching this point have already been validated by
+    Pantry's apt-source-allowlist against an exact (name, key_url, repo)
+    match (or are author-trusted for local installs); the wrapper enforces
+    shape only.
+    """
+    apt_sources = getattr(manifest, "apt_sources", None) or []
+    if not apt_sources:
+        return
+
+    for src in apt_sources:
+        name = getattr(src, "name", None) or src.get("name", "") if not isinstance(src, str) else ""
+        key_url = getattr(src, "key_url", None) or (src.get("key_url", "") if isinstance(src, dict) else "")
+        repo = getattr(src, "repo", None) or (src.get("repo", "") if isinstance(src, dict) else "")
+        if not (name and key_url and repo):
+            raise InstallError(
+                f"apt_sources entry missing required field(s) (name/key_url/repo): {src}"
+            )
+
+        logger.info("Registering apt source", name=name, repo=repo)
+        try:
+            result = subprocess.run(
+                ["sudo", str(_APT_SOURCE_WRAPPER_PATH), name, key_url, repo],
+                capture_output=True,
+                text=True,
+                timeout=_APT_SOURCE_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError as e:
+            raise InstallError(
+                f"apt-source wrapper missing at {_APT_SOURCE_WRAPPER_PATH} — "
+                f"re-run install.sh to deploy it (source: {name}): {e}"
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise InstallError(
+                f"apt-source registration timed out after {_APT_SOURCE_TIMEOUT_SECONDS}s "
+                f"(source: {name})"
+            ) from e
+
+        if result.returncode != 0:
+            raise InstallError(
+                f"apt-source registration failed: {result.stderr.strip()} (source: {name})"
+            )
 
 
 def _install_apt_deps(manifest: CommandManifest) -> None:
@@ -917,7 +974,11 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
         if first_cmd_dir.exists():
             _write_store_metadata(first_cmd_dir, manifest, source_label)
 
-    # 9. Install apt deps (before pip so a fast apt failure aborts cleanly).
+    # 9a. Register 3rd-party apt sources (before _install_apt_deps so the
+    # next apt-get install can resolve packages from them).
+    _install_apt_sources(manifest)
+
+    # 9b. Install apt deps (before pip so a fast apt failure aborts cleanly).
     _install_apt_deps(manifest)
 
     # 10. Install pip deps
