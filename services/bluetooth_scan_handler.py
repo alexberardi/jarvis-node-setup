@@ -8,6 +8,8 @@ Flow:
 Similarly for pair, disconnect, and discoverable actions.
 """
 
+import subprocess
+import time
 from typing import Any
 
 from jarvis_log_client import JarvisLogger
@@ -181,20 +183,124 @@ def run_bluetooth_pair_and_upload(request_id: str, mac_address: str, role: str) 
 
 
 def _configure_audio(mac_address: str, role: str) -> None:
-    """Log the audio routing intent. Does NOT change the default sink.
+    """Configure audio routing for a newly-connected device.
 
-    PulseAudio's bluez module automatically creates a sink for connected
-    BT audio devices. Music commands route to it explicitly; TTS stays
-    on the default (local) sink so Jarvis voice always comes from the
-    room speaker.
+    role="source" (Pi → external speaker): PulseAudio creates the sink
+    automatically; music commands route to it via the BluetoothAudio
+    SDK helper.
+
+    role="sink" (phone → Pi as a Bluetooth speaker): bridge the
+    bluez_source to the default sink with module-loopback. PulseAudio
+    creates the source on A2DP connect but nothing reads from it
+    without an explicit loopback.
     """
     mac_underscored = mac_address.replace(":", "_")
 
     if role == "source":
         sink_name = f"bluez_sink.{mac_underscored}.a2dp_sink"
         logger.info("BT audio sink available for music routing", sink=sink_name)
-    elif role == "sink":
-        logger.info("BT audio source available (phone → Pi)", source=mac_underscored)
+        return
+
+    if role != "sink":
+        return
+
+    source_name = f"bluez_source.{mac_underscored}.a2dp_source"
+
+    # The bluez_source appears after A2DP profile negotiation, which lags
+    # the ACL link coming up. Poll briefly for it.
+    deadline = time.monotonic() + 5.0
+    found = False
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if source_name in result.stdout:
+                found = True
+                break
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.error("pactl list sources failed", error=str(e))
+            return
+        time.sleep(0.3)
+    if not found:
+        logger.warning(
+            "BT a2dp_source not visible within 5s — loopback skipped",
+            source=source_name,
+        )
+        return
+
+    # Idempotency — reuse an existing loopback rather than stacking
+    # duplicates on re-pair / quick reconnect.
+    if _find_loopback_module(source_name) is not None:
+        logger.info("BT loopback already loaded", source=source_name)
+        return
+
+    # latency_msec=100 keeps lip-sync acceptable for video while
+    # tolerating typical ALSA buffer hiccups.
+    try:
+        load = subprocess.run(
+            ["pactl", "load-module", "module-loopback",
+             f"source={source_name}", "latency_msec=100"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.error("pactl load-module failed", source=source_name, error=str(e))
+        return
+
+    if load.returncode == 0:
+        logger.info(
+            "BT loopback loaded (phone → Pi speaker)",
+            source=source_name,
+            module_id=load.stdout.strip(),
+        )
+    else:
+        logger.error(
+            "BT loopback load failed",
+            source=source_name,
+            stderr=load.stderr.strip(),
+        )
+
+
+def _find_loopback_module(source_name: str) -> str | None:
+    """Return the pactl module ID of an existing loopback for source_name, or None."""
+    try:
+        result = subprocess.run(
+            ["pactl", "list", "modules", "short"],
+            capture_output=True, text=True, timeout=3,
+        )
+        for line in result.stdout.splitlines():
+            parts = line.split("\t")
+            if (
+                len(parts) >= 3
+                and parts[1] == "module-loopback"
+                and f"source={source_name}" in parts[2]
+            ):
+                return parts[0]
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _unload_loopback_for_mac(mac_address: str) -> None:
+    """Unload any module-loopback bridging this device's a2dp_source.
+
+    Idempotent — no-op if nothing is loaded for this MAC. Safe to call
+    even when the device was a sink (no loopback) rather than a source.
+    """
+    mac_underscored = mac_address.replace(":", "_")
+    source_name = f"bluez_source.{mac_underscored}.a2dp_source"
+    module_id = _find_loopback_module(source_name)
+    if module_id is None:
+        return
+    try:
+        subprocess.run(
+            ["pactl", "unload-module", module_id],
+            capture_output=True, text=True, timeout=5,
+        )
+        logger.info("BT loopback unloaded", source=source_name, module_id=module_id)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.error("BT loopback unload failed", source=source_name, error=str(e))
 
 
 def _persist_device(mac_address: str, device_name: str, role: str) -> None:
@@ -264,6 +370,11 @@ def _upload_pair_error(request_id: str, error_message: str) -> None:
 def run_bluetooth_disconnect(mac_address: str) -> None:
     """Disconnect a Bluetooth device. Runs in background thread."""
     try:
+        # Drop the phone-as-source loopback (if any) before the BT link
+        # goes away — pulseaudio handles a stale loopback gracefully, but
+        # cleaning up while the source still exists keeps the logs sane.
+        _unload_loopback_for_mac(mac_address)
+
         provider = get_bluetooth_provider()
         if provider.disconnect(mac_address):
             logger.info("Bluetooth device disconnected", mac=mac_address)
@@ -291,6 +402,10 @@ def run_bluetooth_release(mac_address: str, forget: bool = False) -> None:
     """
     try:
         provider = get_bluetooth_provider()
+
+        # Drop the phone-as-source loopback (if any) before the BT link
+        # goes away.
+        _unload_loopback_for_mac(mac_address)
 
         # Disconnect first so we don't fight bluez during remove.
         provider.disconnect(mac_address)

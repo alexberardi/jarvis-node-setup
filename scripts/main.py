@@ -31,6 +31,7 @@ from jarvis_log_client import init as init_logging, init_node as init_logging_no
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
 from scripts.voice_listener import start_voice_listener
+from services.bluetooth_pair_agent import start_agent as start_bt_pair_agent
 from services.agent_scheduler_service import initialize_agent_scheduler
 from services.timer_service import initialize_timer_service
 from utils.config_service import Config
@@ -320,6 +321,12 @@ def main():
 
     # Device scanning is now user-driven via MQTT (mobile → CC → node).
     # See services/device_scan_handler.py and mqtt_tts_listener.py.
+
+    # Start a persistent BlueZ pair agent so incoming pair requests
+    # (phone → Pi) and A2DP profile authorization complete without user
+    # interaction. Without this, bluez rejects auth with "Authentication
+    # attempt without agent" and the phone sees "pairing unsuccessful".
+    start_bt_pair_agent()
 
     # Auto-reconnect known Bluetooth devices in background
     # Re-try reconnect every 10 min so a device that appears after boot
