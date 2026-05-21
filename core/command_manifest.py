@@ -57,6 +57,19 @@ class ManifestComponent(BaseModel):
     description: str = ""
 
 
+class ManifestAptSource(BaseModel):
+    """A 3rd-party apt source the package needs registered before `apt install`.
+
+    Pantry's apt-source-allowlist validates submissions against an exact
+    match of (name, key_url, repo). The node-side wrapper enforces shape
+    only — it trusts the values reached it after Pantry's gate.
+    """
+
+    name: str
+    key_url: str
+    repo: str
+
+
 class ManifestAuthor(BaseModel):
     github: str
 
@@ -134,6 +147,14 @@ class CommandManifest(BaseModel):
     # `jarvis-apt-install` wrapper. Pantry enforces an allow-list (#16); the
     # node runtime installs declared packages at command-install time.
     apt_packages: list[str] = Field(default_factory=list)
+
+    # 3rd-party apt sources (key URL + repo line) the package needs
+    # registered before `apt install` can resolve its apt_packages. Each
+    # entry is validated by Pantry's apt-source-allowlist against an exact
+    # (name, key_url, repo) match before the package can be submitted; the
+    # node-side `jarvis-apt-source` wrapper enforces shape only. Run before
+    # _install_apt_deps so apt-get can see the new source.
+    apt_sources: list[ManifestAptSource] = Field(default_factory=list)
 
     # Declarative post-install ops (named op + parameters). Run after apt+pip
     # via the sudoers-gated `jarvis-post-install` wrapper. Pantry validates

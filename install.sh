@@ -875,6 +875,22 @@ install_self_update_wrapper() {
   success "Installed ${dest}"
 }
 
+install_apt_source_wrapper() {
+  # Copy scripts/jarvis-apt-source → /usr/local/sbin/, root-owned 0755.
+  # The service user invokes this via `sudo` to register 3rd-party apt
+  # sources declared in a package's `apt_sources:` manifest field (key URL
+  # + repo line). Pantry's apt-source-allowlist.yaml validates submissions
+  # before they reach the node; the wrapper enforces shape only.
+  local src="${INSTALL_DIR}/scripts/jarvis-apt-source"
+  local dest="/usr/local/sbin/jarvis-apt-source"
+  if [ ! -f "$src" ]; then
+    warn "scripts/jarvis-apt-source missing — packages declaring apt_sources will fail to install"
+    return
+  fi
+  install -o root -g root -m 0755 "$src" "$dest"
+  success "Installed ${dest}"
+}
+
 install_alsa_store_wrapper() {
   # Copy scripts/jarvis-alsa-store → /usr/local/sbin/, root-owned 0755.
   # Lets jarvis-node persist amixer changes to /var/lib/alsa/asound.state
@@ -917,6 +933,7 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/dnsmasq
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/pkill, /usr/bin/killall, /usr/bin/pgrep
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/sbin/ip
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-source *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-post-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-self-update *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-alsa-store
@@ -1154,6 +1171,7 @@ main() {
   migrate_to_pi_home
   chown_install_dir
   install_apt_wrapper
+  install_apt_source_wrapper
   install_post_install_wrapper
   install_self_update_wrapper
   install_alsa_store_wrapper
