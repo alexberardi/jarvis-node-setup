@@ -936,6 +936,12 @@ ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-apt-source *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-post-install *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-self-update *
+# Defense-in-depth: the wrapper above is the supported entry point, but
+# nodes still running the pre-e403209 update_service.py call systemd-run
+# directly. Without this line they silently hit a sudo password prompt
+# and the install never starts. Matches the exact argv shape that code
+# emits — anything else still requires a password.
+${SERVICE_USER} ALL=(root) NOPASSWD: /usr/bin/systemd-run --unit=jarvis-node-update --collect --no-block --same-dir bash -c *
 ${SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/sbin/jarvis-alsa-store
 EOF
   chmod 0440 "$tmp"
