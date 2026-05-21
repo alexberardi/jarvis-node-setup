@@ -1415,30 +1415,28 @@ def start_voice_listener(ma_service):
                         resampled = resample_poly(samples, up=1, down=resample_down)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
-                    _t_predict_start = time.monotonic()
                     with _oww_lock:
                         predictions = oww.predict(samples)
-                    _predict_ms = int((time.monotonic() - _t_predict_start) * 1000)
                     score = predictions.get(WAKE_WORD_MODEL, 0)
-                    # If predict runs longer than ~60 ms it can't keep
-                    # up with the 80 ms-per-chunk real-time budget — the
-                    # bus queue grows and Wake-fired-vs-actual-speech
-                    # latency goes up. Logging only the slow ticks keeps
-                    # noise down; if this never fires we know oww isn't
-                    # the bottleneck. Also log score whenever we see
-                    # any non-trivial detection so we can see what oww
-                    # actually saw during the user's "hey jarvis".
-                    if _predict_ms > 60:
-                        logger.info(
-                            f"⏱️ oww.predict took {_predict_ms}ms "
-                            f"(>60ms budget — wake loop falling behind real-time)"
-                        )
+                    # Per-chunk predict timing logging was removed
+                    # 2026-05-20: on the Pi Zero, logger.info() costs
+                    # 5-20 ms per call, and our >60 ms warning was
+                    # firing every chunk in steady state — creating a
+                    # feedback loop where the logging itself pushed
+                    # predict from 60 ms toward 80 ms, then logged
+                    # again. We measured predict at 60-80 ms (right at
+                    # the 80 ms real-time budget) — that's a known
+                    # property of openWakeWord on this hardware, not
+                    # something logging per chunk can help with.
                     if score > 0.05:
+                        # Bounded: only fires when oww sees something
+                        # meaningful (someone actually talking). Useful
+                        # for debugging "I said hey jarvis but it didn't
+                        # hear" — shows the score it saw vs threshold.
                         logger.info(
                             "oww-score",
                             score=round(float(score), 3),
                             threshold=wake_threshold,
-                            predict_ms=_predict_ms,
                         )
                     if score > wake_threshold:
                         t_wake_fired = time.monotonic()
