@@ -333,6 +333,26 @@ _last_speaker_user_id: int | None = None
 # ``get_audio_bus()`` and subscribe.
 _audio_bus: AudioBus | None = None
 
+# ``oww_lock`` lives in ``core.barge_in`` because BargeInMonitor also
+# calls oww.predict() and oww.reset() on the same model. Sharing one
+# lock across both files keeps every predict/reset serialized — single
+# concurrent operation against the model at any moment.
+from core.barge_in import oww_lock as _oww_lock
+
+
+def _locked_oww_reset(oww_model) -> None:
+    """Reset oww under the shared lock. Submit to ``_bg_executor`` to
+    keep the wake-hot-path unblocked while still serializing with any
+    in-flight ``oww.predict()``.
+    """
+    _t = time.monotonic()
+    with _oww_lock:
+        oww_model.reset()
+    logger.info(
+        f"⏱️ wake-step | background oww.reset finished in "
+        f"{int((time.monotonic() - _t) * 1000)}ms"
+    )
+
 
 def get_audio_bus() -> AudioBus | None:
     """Return the running AudioBus, or None if voice_listener hasn't started."""
@@ -1376,7 +1396,8 @@ def start_voice_listener(ma_service):
                     # pre-wake VAD buffer — frames from before the pause
                     # are no longer "the room before this wake".
                     if was_paused:
-                        oww.reset()
+                        with _oww_lock:
+                            oww.reset()
                         pre_wake_speech_frames.clear()
                         pre_wake_rms_values.clear()
                         was_paused = False
@@ -1394,24 +1415,38 @@ def start_voice_listener(ma_service):
                         resampled = resample_poly(samples, up=1, down=resample_down)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
-                    predictions = oww.predict(samples)
+                    _t_predict_start = time.monotonic()
+                    with _oww_lock:
+                        predictions = oww.predict(samples)
+                    _predict_ms = int((time.monotonic() - _t_predict_start) * 1000)
                     score = predictions.get(WAKE_WORD_MODEL, 0)
+                    # If predict runs longer than ~60 ms it can't keep
+                    # up with the 80 ms-per-chunk real-time budget — the
+                    # bus queue grows and Wake-fired-vs-actual-speech
+                    # latency goes up. Logging only the slow ticks keeps
+                    # noise down; if this never fires we know oww isn't
+                    # the bottleneck. Also log score whenever we see
+                    # any non-trivial detection so we can see what oww
+                    # actually saw during the user's "hey jarvis".
+                    if _predict_ms > 60:
+                        logger.info(
+                            f"⏱️ oww.predict took {_predict_ms}ms "
+                            f"(>60ms budget — wake loop falling behind real-time)"
+                        )
                     if score > 0.05:
-                        logger.debug(
-                            "Wake word score",
+                        logger.info(
+                            "oww-score",
                             score=round(float(score), 3),
                             threshold=wake_threshold,
+                            predict_ms=_predict_ms,
                         )
                     if score > wake_threshold:
+                        t_wake_fired = time.monotonic()
                         speech_frames = sum(pre_wake_speech_frames)
                         pre_wake_speech_seconds = round(
                             speech_frames * _CHUNK_SECONDS, 2,
                         )
                         # Diagnostic RMS stats for threshold calibration.
-                        # If the threshold is mis-tuned for this mic the
-                        # speech_seconds count will be obviously off relative
-                        # to the actual energy distribution — log the shape
-                        # so we can pick a real number, not a guess.
                         if pre_wake_rms_values:
                             rms_sorted = sorted(pre_wake_rms_values)
                             rms_n = len(rms_sorted)
@@ -1435,7 +1470,12 @@ def start_voice_listener(ma_service):
                         )
                         break
             finally:
+                _t_unsub_start = time.monotonic()
                 bus.unsubscribe("wake")
+                logger.info(
+                    f"⏱️ wake-step | bus.unsubscribe took "
+                    f"{int((time.monotonic() - _t_unsub_start) * 1000)}ms"
+                )
 
             # If we broke out without a wake (alert-drain case), handle
             # alerts and loop.
@@ -1446,24 +1486,53 @@ def start_voice_listener(ma_service):
                     )
                 except Exception as e:
                     logger.warning("Alert drain failed", error=str(e))
-                oww.reset()
+                with _oww_lock:
+                    oww.reset()
                 print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
                 continue
 
-            oww.reset()
+            # Clear oww's LSTM state so the next wake cycle doesn't
+            # false-retrigger on the tail of the wake word we just
+            # detected — BUT do it in the background. On the Pi Zero
+            # ``oww.reset()`` is ~1.5 s of model state reinit, and
+            # blocking on it here pushes "You rang?" 1.5 s later for
+            # zero user benefit (the next wake loop won't run for
+            # multiple seconds while we play TTS, listen, etc.). The
+            # _oww_lock guarantees the reset finishes before any future
+            # predict() runs.
+            _t_reset_start = time.monotonic()
+            _bg_executor.submit(_locked_oww_reset, oww)
+            logger.info(
+                f"⏱️ wake-step | oww.reset SUBMITTED to background in "
+                f"{int((time.monotonic() - _t_reset_start) * 1000)}ms"
+            )
 
             # Drop music volume for the duration of the command exchange so
-            # the user's voice isn't competing with their own playback. Wraps
-            # the entire flow (wake response + listen + STT + LLM + TTS +
-            # follow-up loop) in a try/finally so the volume is always
-            # restored, even on exception. If the command stopped playback,
-            # there's nothing audible to restore — no-op in practice.
-            _duck_music()
+            # the user's voice isn't competing with their own playback.
+            # Fire-and-forget background — see note above the executor.
+            _t_duck_start = time.monotonic()
+            _bg_executor.submit(_duck_music)
+            logger.info(
+                f"⏱️ wake-step | duck submit took "
+                f"{int((time.monotonic() - _t_duck_start) * 1000)}ms"
+            )
             try:
+                _t_handle_start = time.monotonic()
+                logger.info(
+                    f"⏱️ wake-step | T+"
+                    f"{int((_t_handle_start - t_wake_fired) * 1000)}ms "
+                    f"entering handle_keyword_detected"
+                )
                 try:
                     handle_keyword_detected()
                 except Exception as e:
                     logger.warning("Wake response TTS failed, continuing", error=str(e))
+                _t_handle_end = time.monotonic()
+                logger.info(
+                    f"⏱️ wake-step | handle_keyword_detected took "
+                    f"{int((_t_handle_end - _t_handle_start) * 1000)}ms "
+                    f"(T+{int((_t_handle_end - t_wake_fired) * 1000)}ms total)"
+                )
 
                 conversation_id = str(uuid.uuid4())
                 warmup_result: dict = {"success": False}
@@ -1483,18 +1552,31 @@ def start_voice_listener(ma_service):
                     )
 
                 result = None
+                _t_listen_start = time.monotonic()
                 try:
                     # history_secs=0 + skip_secs=0.3: do NOT replay the
                     # wake-response TTS tail (that bug made the node
                     # transcribe and respond to itself).
                     recording = listen(bus, history_secs=0.0, skip_secs=0.3)
+                    _t_listen_end = time.monotonic()
+                    logger.info(
+                        f"⏱️ wake-step | listen() took "
+                        f"{int((_t_listen_end - _t_listen_start) * 1000)}ms "
+                        f"(T+{int((_t_listen_end - t_wake_fired) * 1000)}ms total)"
+                    )
 
+                    _t_ack_start = time.monotonic()
                     ack_played = _play_processing_ack()
+                    logger.info(
+                        f"⏱️ wake-step | processing-ack took "
+                        f"{int((time.monotonic() - _t_ack_start) * 1000)}ms "
+                        f"(played={ack_played})"
+                    )
 
                     if barge_in:
                         barge_in.start()
 
-                    start = time.perf_counter()
+                    _t_xform_start = time.monotonic()
                     result = send_for_transcription(
                         recording, command_service, stt_provider, validation_handler,
                         warmup_thread=warmup_thread,
@@ -1511,15 +1593,25 @@ def start_voice_listener(ma_service):
                     # routinely costs ~1.5s — that 1.5s is exactly the gap users
                     # speak into.
                     tts_end_ts = time.monotonic()
-                    end = time.perf_counter()
-                    logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+                    _t_xform_end = tts_end_ts
+                    logger.info(
+                        f"⏱️ wake-step | send_for_transcription took "
+                        f"{int((_t_xform_end - _t_xform_start) * 1000)}ms "
+                        f"(T+{int((_t_xform_end - t_wake_fired) * 1000)}ms total "
+                        f"— incl STT + CC + TTS playback)"
+                    )
                 except Exception as e:
                     logger.warning("Command processing failed, resuming listener", error=str(e))
                     print(f"Command failed: {e}")
                     tts_end_ts = time.monotonic()
                 finally:
+                    _t_barge_stop_start = time.monotonic()
                     if barge_in:
                         barge_in.stop()
+                    logger.info(
+                        f"⏱️ wake-step | barge_in.stop took "
+                        f"{int((time.monotonic() - _t_barge_stop_start) * 1000)}ms"
+                    )
 
                 if barge_in and barge_in.was_interrupted:
                     logger.info("Barge-in: TTS interrupted, returning to wake word")
@@ -1533,12 +1625,22 @@ def start_voice_listener(ma_service):
                     except Exception as e:
                         logger.warning("Follow-up loop error, resuming wake word", error=str(e))
             finally:
-                _restore_music()
+                # Mirror the duck: always background, no pre-check. The
+                # restore (pactl unmute + SIGCONT) is idempotent against
+                # missing/unmuted targets, so spending background CPU when
+                # nothing was paused is harmless. Critical: never block
+                # the return to wake-word mode on pactl round-trips.
+                _bg_executor.submit(_restore_music)
                 # Safety net: always clear the transient LED state when
                 # returning to wake-word mode, so a half-finished path can't
                 # leave the pinwheel (or any other transient) stuck.
                 _set_led_transient(None)
 
+            logger.info(
+                f"⏱️ wake-cycle COMPLETE | total="
+                f"{int((time.monotonic() - t_wake_fired) * 1000)}ms "
+                f"from wake_fired to return-to-idle"
+            )
             _bg_executor.submit(_fetch_next_processing_ack)
             print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}'")
 
