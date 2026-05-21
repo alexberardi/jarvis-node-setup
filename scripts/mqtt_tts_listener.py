@@ -917,6 +917,135 @@ def handle_invalidate_device_cache(details: Dict[str, Any]) -> None:
         logger.warning("invalidate_device_cache failed", error=str(e))
 
 
+def handle_measure_ambient_noise(details: Dict[str, Any]) -> None:
+    """Capture ambient audio and post back a suggested silence_threshold.
+
+    Lets the mobile "Set Automatically" button calibrate the silence
+    threshold from real room conditions. Uses the existing AudioBus so
+    there's no PyAudio contention with the wake detector; wake detection
+    is paused for the measurement window so the user doesn't accidentally
+    wake the node mid-calibration.
+
+    Expected ``details``::
+
+        request_id: str
+        duration_seconds: float  (optional, default 3.0)
+    """
+    import queue as _queue
+
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    request_id: Optional[str] = details.get("request_id")
+    if not request_id:
+        logger.warning("measure_ambient_noise: missing request_id, ignoring")
+        return
+
+    if not _verify_command(request_id):
+        logger.warning("measure_ambient_noise: verification failed",
+                       request_id=request_id[:8])
+        return
+
+    duration_seconds: float = float(details.get("duration_seconds") or 3.0)
+    duration_seconds = max(1.0, min(10.0, duration_seconds))
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.error("measure_ambient_noise: CC URL not resolved")
+        return
+
+    node_id: str = Config.get_str("node_id", "") or ""
+    result_url = (
+        f"{base_url.rstrip('/')}/api/v0/nodes/{node_id}"
+        f"/ambient-noise-measurements/{request_id}/result"
+    )
+
+    def _post_result(payload: Dict[str, Any]) -> None:
+        try:
+            RestClient.post(result_url, data=payload, timeout=10)
+        except Exception as e:
+            logger.error("measure_ambient_noise: result POST failed", error=str(e))
+
+    from scripts.voice_listener import get_audio_bus, wake_paused
+    from scripts.speech_to_text import calculate_rms
+
+    bus = get_audio_bus()
+    if bus is None:
+        logger.error("measure_ambient_noise: no AudioBus available")
+        _post_result({"success": False, "error": "audio_bus_unavailable"})
+        return
+
+    subscriber_name = f"ambient-noise-{request_id[:8]}"
+    rms_values: List[float] = []
+    chunks_seen: int = 0
+    chunk_secs: float = bus.chunk_samples / bus.rate
+    chunk_get_timeout: float = max(chunk_secs * 4, 0.5)
+    deadline: float = time.monotonic() + duration_seconds
+
+    try:
+        with wake_paused():
+            q = bus.subscribe(subscriber_name)
+            try:
+                while time.monotonic() < deadline:
+                    remaining = max(0.05, deadline - time.monotonic())
+                    try:
+                        data = q.get(timeout=min(chunk_get_timeout, remaining))
+                    except _queue.Empty:
+                        continue
+                    rms_values.append(calculate_rms(data))
+                    chunks_seen += 1
+            finally:
+                bus.unsubscribe(subscriber_name)
+    except Exception as e:
+        logger.error("measure_ambient_noise: capture failed", error=str(e))
+        _post_result({"success": False, "error": f"capture_failed: {e}"})
+        return
+
+    if not rms_values:
+        logger.warning("measure_ambient_noise: no audio captured")
+        _post_result({"success": False, "error": "no_audio_captured"})
+        return
+
+    import numpy as np
+
+    rms_array = np.array(rms_values, dtype=np.float32)
+    p50 = float(np.percentile(rms_array, 50))
+    p75 = float(np.percentile(rms_array, 75))
+    p95 = float(np.percentile(rms_array, 95))
+    max_rms = float(np.max(rms_array))
+
+    # Suggested silence_threshold = P75 × 1.3, rounded to nearest 100, clamped
+    # to the slider range. P75 is a more stable "typical ambient" estimate
+    # than P95 — it excludes rare peaks (a chair scrape, the user moving)
+    # that would otherwise push the threshold above the speech band. 1.3× of
+    # that gives ~30% headroom over the upper-quartile noise floor, which is
+    # enough to reject ambient while staying below conversational speech
+    # (typically 2-4× the ambient floor on the dev Pi).
+    suggested = int(round(p75 * 1.3 / 100.0)) * 100
+    suggested = max(1000, min(10000, suggested))
+
+    logger.info(
+        "Ambient noise measurement complete",
+        request_id=request_id[:8],
+        chunks=chunks_seen,
+        p50=round(p50, 1),
+        p75=round(p75, 1),
+        p95=round(p95, 1),
+        max=round(max_rms, 1),
+        suggested=suggested,
+    )
+    _post_result({
+        "success": True,
+        "duration_seconds": duration_seconds,
+        "chunks": chunks_seen,
+        "p50_rms": p50,
+        "p75_rms": p75,
+        "p95_rms": p95,
+        "max_rms": max_rms,
+        "suggested_silence_threshold": suggested,
+    })
+
+
 command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
@@ -929,6 +1058,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "enroll_voice": handle_enroll_voice,
     "verify_voice": handle_verify_voice,
     "invalidate_device_cache": handle_invalidate_device_cache,
+    "measure_ambient_noise": handle_measure_ambient_noise,
 }
 
 
