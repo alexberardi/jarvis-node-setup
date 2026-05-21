@@ -1193,14 +1193,17 @@ def _handle_settings_request_notification(raw_payload: bytes) -> None:
 
 
 def _process_settings_request(request_id: str, include_values: bool = False, user_id: int | None = None) -> None:
-    """Process a settings snapshot request (runs in background thread)."""
+    """Process a settings snapshot request (runs in background thread).
+
+    On the Pi Zero this is CPU-heavy enough to starve the wake loop while
+    it runs (SQLCipher reads + per-command secret decrypt + K2 re-encrypt).
+    A debug print used to build the snapshot a second time here for its
+    command count — removed 2026-05-20, halved the per-request CPU spike.
+    The proper fix is a keyed snapshot cache invalidated on writes; see
+    project memory ``project_snapshot_cache.md``.
+    """
     try:
         print(f"[MQTT] processing settings request {request_id[:8]}", flush=True)
-        # Debug: log snapshot command count
-        from services.settings_snapshot_service import build_snapshot as _dbg_build
-        _dbg_snapshot = _dbg_build(include_values=include_values, user_id=user_id)
-        _dbg_cmds = [c["command_name"] for c in _dbg_snapshot.get("commands", [])]
-        print(f"[MQTT] snapshot has {len(_dbg_cmds)} commands: {_dbg_cmds}", flush=True)
         success: bool = handle_snapshot_request(request_id, include_values=include_values, user_id=user_id)
         print(f"[MQTT] settings snapshot result: {success}", flush=True)
         if success:
