@@ -1,0 +1,132 @@
+#!/bin/sh
+# jarvis-apt-source — minimal sudo-able shim that registers a 3rd-party apt
+# source (signing key + sources.list entry) on the node.
+#
+# Installed to /usr/local/sbin/jarvis-apt-source (root-owned, 0755) by
+# install.sh, with /etc/sudoers.d/jarvis-node granting the service user
+# NOPASSWD access. Invoked by command_store_service._install_apt_sources()
+# for every source declared in a package's `apt_sources:` manifest field.
+#
+# The wrapper does NOT carry an allowlist — Pantry validates submissions
+# against config/apt-source-allowlist.yaml before they ever reach a node.
+# The shape checks below are a defensive injection guard, not an authz check.
+#
+# Usage:
+#   jarvis-apt-source <name> <key_url> <repo_line>
+#
+#   name      e.g. "raspotify"  (matches ^[a-z][a-z0-9._-]*$)
+#   key_url   e.g. "https://dtcooper.github.io/raspotify/key.asc"
+#   repo_line e.g. "deb https://dtcooper.github.io/raspotify raspotify main"
+#
+# Idempotent — if the key+source files are already present and match, exit 0.
+
+set -eu
+
+if [ "$#" -ne 3 ]; then
+    echo "jarvis-apt-source: usage: jarvis-apt-source <name> <key_url> <repo_line>" >&2
+    exit 2
+fi
+
+name="$1"
+key_url="$2"
+repo_line="$3"
+
+# --- Validate name (sources.list.d filename component) ---
+if ! printf '%s' "$name" | grep -Eq '^[a-z][a-z0-9._-]*$'; then
+    echo "jarvis-apt-source: invalid source name: $name" >&2
+    exit 2
+fi
+
+# --- Validate key URL (must be https) ---
+case "$key_url" in
+    https://*) ;;
+    *)
+        echo "jarvis-apt-source: key_url must be https:// (got: $key_url)" >&2
+        exit 2
+        ;;
+esac
+# No newlines, no shell metacharacters that would break later writes.
+if printf '%s' "$key_url" | grep -qE '[[:cntrl:]]|[;&|`$\\<>"'\''(){}*?[\]!]'; then
+    echo "jarvis-apt-source: key_url contains illegal characters" >&2
+    exit 2
+fi
+
+# --- Validate repo line ---
+# Standard deb sources.list format: must start with "deb " or "deb [opts] ".
+# Reject control chars and shell metacharacters that would corrupt the file
+# or trick downstream parsers.
+case "$repo_line" in
+    "deb "*|"deb-src "*) ;;
+    *)
+        echo "jarvis-apt-source: repo_line must start with 'deb ' or 'deb-src '" >&2
+        exit 2
+        ;;
+esac
+if printf '%s' "$repo_line" | grep -qE '[[:cntrl:]]|[;&|`$\\<>"'\'']'; then
+    echo "jarvis-apt-source: repo_line contains illegal characters" >&2
+    exit 2
+fi
+
+key_path="/etc/apt/trusted.gpg.d/${name}.asc"
+list_path="/etc/apt/sources.list.d/${name}.list"
+
+# --- Fetch + install signing key ---
+# Idempotent: if the file already exists with the same content, leave it
+# alone. Otherwise download and atomically swap in.
+fetch_key() {
+    local tmp
+    tmp="$(mktemp)" || return 1
+    if curl -fsSL --max-time 30 "$key_url" -o "$tmp"; then
+        # Sanity check: must not be empty + must look like ASCII-armored or
+        # binary GPG. We don't want to install a 0-byte file or an HTML 404.
+        if [ ! -s "$tmp" ]; then
+            echo "jarvis-apt-source: fetched key is empty" >&2
+            rm -f "$tmp"
+            return 1
+        fi
+        # ASCII-armored keys start with "-----BEGIN PGP PUBLIC KEY BLOCK-----".
+        # Binary keys (rare) start with byte 0x99 or 0xC6 — accept either.
+        if ! head -c 64 "$tmp" | grep -q "BEGIN PGP PUBLIC KEY BLOCK" \
+           && ! head -c 1 "$tmp" | od -An -tx1 | grep -Eq '^ (99|c6)' ; then
+            echo "jarvis-apt-source: fetched key doesn't look like a GPG key" >&2
+            rm -f "$tmp"
+            return 1
+        fi
+        # Atomic swap (mv across same filesystem).
+        chmod 0644 "$tmp"
+        mv "$tmp" "$key_path"
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+if [ -f "$key_path" ]; then
+    # Already present. Trust it — we don't re-validate the key URL against
+    # the existing key; Pantry's allowlist is the source of truth, not us.
+    :
+else
+    if ! fetch_key; then
+        echo "jarvis-apt-source: failed to fetch key from $key_url" >&2
+        exit 1
+    fi
+fi
+
+# --- Write sources.list entry ---
+# Use a single-line file so the next run can `grep -qxF` to check identity
+# without rewriting when the content matches.
+if [ -f "$list_path" ] && grep -qxF "$repo_line" "$list_path"; then
+    # Already exact match — no-op.
+    :
+else
+    printf '%s\n' "$repo_line" > "$list_path.tmp"
+    chmod 0644 "$list_path.tmp"
+    mv "$list_path.tmp" "$list_path"
+    # Stamp apt's cache stale so the next `apt-get install` refreshes for
+    # this new source. Avoid a full apt-get update here — that's slow and
+    # the caller (command_store_service) will run it anyway as part of
+    # _install_apt_deps.
+    touch -d '1 hour ago' /var/cache/apt/pkgcache.bin 2>/dev/null || true
+fi
+
+exit 0
