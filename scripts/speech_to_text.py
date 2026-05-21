@@ -270,10 +270,13 @@ def listen_for_follow_up(
     silence_frames_threshold = max(1, int(silence_duration / chunk_secs))
     max_frames = max(1, int(max_record_secs / chunk_secs))
     # Require consecutive frames above threshold to confirm speech onset.
-    # Base of 5 (~160ms at 48kHz/1536) scaled up on later follow-up
-    # iterations: ambient noise is progressively less likely to be real
-    # speech the longer the conversation goes without clear engagement.
-    base_onset = 5
+    # Lowered base 5 → 3 on 2026-05-20: 5 frames (~400 ms at 48 kHz /
+    # 3840-sample chunks) was strict enough that oscillating-amplitude
+    # speech (the natural case at conversational distance) kept resetting
+    # the counter and onset never confirmed within the 5 s window. 3 frames
+    # (~240 ms) still rejects single sharp bursts (clap, door close) since
+    # those are sub-frame events, but catches real speech faster.
+    base_onset = 3
     onset_required = min(15, base_onset + (follow_up_iteration - 1) * 3)
 
     logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
@@ -282,6 +285,11 @@ def listen_for_follow_up(
     frames: List[bytes] = []
     speech_detected = False
     onset_count = 0
+    # Diagnostic: track max RMS seen during the wait so we can tell
+    # "mic never heard the user" (max low) apart from "mic heard but
+    # onset_required not met" (max high but oscillating).
+    max_rms_seen = 0.0
+    chunks_seen = 0
     onset_deadline = time.monotonic() + timeout_seconds
     try:
         while time.monotonic() < onset_deadline:
@@ -292,19 +300,30 @@ def listen_for_follow_up(
                 continue
 
             rms = calculate_rms(data)
+            chunks_seen += 1
+            if rms > max_rms_seen:
+                max_rms_seen = rms
             if rms >= silence_threshold:
                 onset_count += 1
                 frames.append(data)
                 if onset_count >= onset_required:
                     speech_detected = True
-                    logger.info("Follow-up speech detected", rms=f"{rms:.0f}")
+                    logger.info("Follow-up speech detected", rms=f"{rms:.0f}",
+                                onset_required=onset_required)
                     break
             else:
                 onset_count = 0
                 frames.clear()
 
         if not speech_detected:
-            logger.debug("No follow-up speech detected, timeout expired")
+            logger.info(
+                "No follow-up speech detected, timeout expired",
+                timeout=round(timeout_seconds, 1),
+                chunks_seen=chunks_seen,
+                max_rms_seen=round(max_rms_seen, 0),
+                silence_threshold=silence_threshold,
+                onset_required=onset_required,
+            )
             return None
 
         silence_frames = 0
