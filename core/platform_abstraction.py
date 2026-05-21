@@ -1128,11 +1128,32 @@ class PiBluetoothProvider(BluetoothProvider):
 
     def set_discoverable(self, enabled: bool, timeout: int = 120) -> bool:
         try:
+            if enabled:
+                # Order matters: power on → pairable on → discoverable-timeout
+                # → discoverable on. Without `pairable on`, iOS filters this
+                # device out of its picker entirely even though bluez reports
+                # Discoverable: yes. The timeout has to be set BEFORE enabling
+                # discoverable so the first activation honors our value rather
+                # than bluez's default (180s).
+                self._run_bluetoothctl("power", "on", timeout=5.0)
+                self._run_bluetoothctl("pairable", "on", timeout=5.0)
+                self._run_bluetoothctl("discoverable-timeout", str(timeout), timeout=5.0)
+
             value = "on" if enabled else "off"
             result = self._run_bluetoothctl("discoverable", value, timeout=5.0)
-            if enabled and result.returncode == 0:
-                self._run_bluetoothctl("discoverable-timeout", str(timeout), timeout=5.0)
             logger.info("Bluetooth discoverable", enabled=enabled, timeout=timeout)
+
+            if enabled and result.returncode == 0:
+                # Surface adapter state to the log so we can confirm
+                # Powered/Pairable/Discoverable actually engaged without
+                # needing an SSH round-trip.
+                show = self._run_bluetoothctl("show", timeout=5.0)
+                state = "; ".join(
+                    line.strip() for line in show.stdout.splitlines()
+                    if any(k in line for k in ("Powered:", "Discoverable:", "Pairable:", "Alias:"))
+                )
+                logger.info("Bluetooth adapter state", state=state)
+
             return result.returncode == 0
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.error("Bluetooth discoverable error", error=str(e))
