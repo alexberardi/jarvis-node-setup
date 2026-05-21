@@ -257,9 +257,11 @@ def listen_for_follow_up(
     # min_seconds=3 floor protects against early cutoff). Follow-up has no
     # such floor — a 0.3 s pause between words was ending recording at
     # ~0.5 s, producing sub-second clips that Whisper transcribes as
-    # [BLANK_AUDIO]. 0.8 s rides through natural inter-word pauses.
+    # [BLANK_AUDIO]. 0.5 s rides through most natural inter-word pauses
+    # (typically 100-400 ms) while keeping the trailing wait short
+    # enough that the LED flip to "thinking" feels responsive.
     if silence_duration is None:
-        silence_duration = Config.get_float("follow_up_silence_duration", 0.8)
+        silence_duration = Config.get_float("follow_up_silence_duration", 0.5)
     max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
     if min_speech_secs is None:
         # Lowered from 0.7 → 0.3 on 2026-05-20: 0.7 was discarding the
@@ -333,12 +335,13 @@ def listen_for_follow_up(
             )
             return None
 
-        # Minimum recording window after onset: 1.0 s. Even with the longer
+        # Minimum recording window after onset: 0.7 s. Even with the longer
         # silence_duration above, a single fricative ("sh", "f") tail can
         # dip RMS below threshold for several frames in a row; the min
         # window ensures we capture at least a coherent phrase regardless.
-        # Settable via setting in case a noisier room needs to bail earlier.
-        min_record_after_onset = Config.get_float("follow_up_min_record_after_onset_secs", 1.0)
+        # 0.7 s is enough for a short reply ("yes please", "the second one")
+        # while keeping the worst-case trailing wait short for short replies.
+        min_record_after_onset = Config.get_float("follow_up_min_record_after_onset_secs", 0.7)
         min_frames_after_onset = max(1, int(min_record_after_onset / chunk_secs))
 
         silence_frames = 0
