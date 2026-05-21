@@ -221,12 +221,17 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
     node_config: dict[str, Any] = {
         "wake_word_threshold": Config.get_float("wake_word_threshold", 0.5),
-        "silence_threshold": Config.get_int("silence_threshold", 300),
-        "silence_duration": Config.get_float("silence_duration", 0.8),
+        "silence_threshold": Config.get_int("silence_threshold", 5000),
+        "silence_duration": Config.get_float("silence_duration", 0.5),
         "min_record_seconds": Config.get_float("min_record_seconds", 1.0),
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
-        "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 5),
+        "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 10),
+        "follow_up_silence_duration": Config.get_float("follow_up_silence_duration", 0.5),
+        "follow_up_min_record_after_onset_secs": Config.get_float(
+            "follow_up_min_record_after_onset_secs", 0.7
+        ),
+        "follow_up_min_speech_secs": Config.get_float("follow_up_min_speech_secs", 0.3),
         "volume_percent": Config.get_int("volume_percent", 100),
         "led_enabled": Config.get_bool("led_enabled", True),
         "led_brightness_percent": Config.get_int("led_brightness_percent", 100),

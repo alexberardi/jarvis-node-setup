@@ -95,6 +95,27 @@ class TestSudoersHeredoc:
             r"NOPASSWD:\s*/usr/local/sbin/jarvis-self-update\s+\*", body
         ), f"Expected jarvis-self-update sudoers line not found. Body:\n{body}"
 
+    def test_sudoers_template_includes_legacy_systemd_run_grant(self):
+        """Defense-in-depth grant for pre-e403209 update_service.py.
+
+        Older nodes call ``sudo systemd-run --unit=jarvis-node-update ...``
+        directly instead of going through the jarvis-self-update wrapper.
+        Without this NOPASSWD line they hit a password prompt with no TTY
+        and the mobile-triggered update silently fails (prod kitchen
+        v0.1.50 stuck task, May 2026). The argv shape pinned here matches
+        exactly what update_service.py emits — anything else still
+        requires a password.
+        """
+        body = _render_sudoers_heredoc()
+        # The whole legacy argv must appear in one NOPASSWD line:
+        # systemd-run --unit=jarvis-node-update --collect --no-block
+        # --same-dir bash -c <cmd>
+        assert re.search(
+            r"NOPASSWD:\s*/usr/bin/systemd-run\s+--unit=jarvis-node-update\s+"
+            r"--collect\s+--no-block\s+--same-dir\s+bash\s+-c\s+\*",
+            body,
+        ), f"Expected legacy systemd-run NOPASSWD line not found. Body:\n{body}"
+
     def test_sudoers_template_includes_alsa_store_wrapper_line(self):
         """jarvis-node persists runtime amixer changes via this wrapper.
 
