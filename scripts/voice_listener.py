@@ -1006,19 +1006,36 @@ def _follow_up_loop(
         # If music IS playing, the pause lands within ~400 ms which is
         # negligible relative to the multi-second listen window.
         _bg_executor.submit(_pause_active_playback)
-        audio_file = listen_for_follow_up(
-            bus, timeout_seconds=iter_timeout, history_secs=history_secs,
-            follow_up_iteration=iteration,
-        )
+        # User-facing: signal the listening state on the LED so the user
+        # knows the follow-up window is open. Without this the LEDs sit
+        # on the idle pattern after the response, the user thinks the
+        # system is done, and they don't speak — by the time they do
+        # the window has expired. Cleared after listen returns regardless
+        # of outcome.
+        _set_led_transient("listening")
+        try:
+            audio_file = listen_for_follow_up(
+                bus, timeout_seconds=iter_timeout, history_secs=history_secs,
+                follow_up_iteration=iteration,
+            )
+        finally:
+            _set_led_transient(None)
         if audio_file is None:
             logger.info("Follow-up window expired, returning to wake word mode",
                         iteration=iteration)
             break
 
+        # Audio captured — switch to "thinking" so the user knows the
+        # system has their input and is processing. Without this the
+        # LED returns to idle between speech-detected and TTS-playing,
+        # which reads as "it didn't hear me" — leading to re-speaking
+        # over the eventual response.
+        _set_led_transient("thinking")
         try:
             transcription_result = stt_provider.transcribe_with_speaker(audio_file)
         except Exception as e:
             logger.warning("Follow-up transcription failed", error=str(e))
+            _set_led_transient(None)
             break
 
         if _is_non_speech(transcription_result.text):
