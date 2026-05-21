@@ -252,7 +252,14 @@ def listen_for_follow_up(
     """
     defaults = _audio_defaults()
     silence_threshold = silence_threshold if silence_threshold is not None else defaults["silence_threshold"]
-    silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
+    # Follow-up silence-stop is more forgiving than initial-command listen.
+    # The defaults["silence_duration"] is tuned for the initial listen (where
+    # min_seconds=3 floor protects against early cutoff). Follow-up has no
+    # such floor — a 0.3 s pause between words was ending recording at
+    # ~0.5 s, producing sub-second clips that Whisper transcribes as
+    # [BLANK_AUDIO]. 0.8 s rides through natural inter-word pauses.
+    if silence_duration is None:
+        silence_duration = Config.get_float("follow_up_silence_duration", 0.8)
     max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
     if min_speech_secs is None:
         # Lowered from 0.7 → 0.3 on 2026-05-20: 0.7 was discarding the
@@ -326,7 +333,16 @@ def listen_for_follow_up(
             )
             return None
 
+        # Minimum recording window after onset: 1.0 s. Even with the longer
+        # silence_duration above, a single fricative ("sh", "f") tail can
+        # dip RMS below threshold for several frames in a row; the min
+        # window ensures we capture at least a coherent phrase regardless.
+        # Settable via setting in case a noisier room needs to bail earlier.
+        min_record_after_onset = Config.get_float("follow_up_min_record_after_onset_secs", 1.0)
+        min_frames_after_onset = max(1, int(min_record_after_onset / chunk_secs))
+
         silence_frames = 0
+        post_onset_frames = 0
         for _ in range(max_frames):
             try:
                 data = q.get(timeout=max(chunk_secs * 10, 1.0))
@@ -335,11 +351,17 @@ def listen_for_follow_up(
                 break
 
             frames.append(data)
+            post_onset_frames += 1
             rms = calculate_rms(data)
             if rms < silence_threshold:
                 silence_frames += 1
             else:
                 silence_frames = 0
+
+            # Don't allow silence-stop to fire until we've recorded enough
+            # post-onset audio for Whisper to have something to work with.
+            if post_onset_frames < min_frames_after_onset:
+                continue
 
             if silence_frames >= silence_frames_threshold:
                 logger.debug("Follow-up recording: silence detected, stopping")
