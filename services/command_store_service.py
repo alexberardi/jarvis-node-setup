@@ -596,8 +596,15 @@ def _remove_post_install_dropins(package_name: str) -> None:
         logger.info("post_install dropins removed", package=package_name, detail=out)
 
 
-def _install_pip_deps(manifest: CommandManifest) -> None:
-    """Install pip dependencies declared in the manifest."""
+def _install_pip_deps(manifest: CommandManifest, *, state: dict | None = None) -> None:
+    """Install pip dependencies declared in the manifest.
+
+    When ``state`` is provided, the keys actually pip-installed are recorded
+    at ``state["pip_deps_installed"]``. The MQTT install handler uses this
+    to schedule a service restart — newly installed top-level imports won't
+    be picked up by the long-running Python process otherwise (a failed
+    ``ImportError`` at boot caches ``None`` for the import target).
+    """
     deps: list[str] = []
 
     # From manifest packages
@@ -629,6 +636,9 @@ def _install_pip_deps(manifest: CommandManifest) -> None:
     )
     if result.returncode != 0:
         raise InstallError(f"pip install failed: {result.stderr.strip()}")
+
+    if state is not None:
+        state["pip_deps_installed"] = deps
 
 
 def _check_jarvis_dependencies(deps: list[str]) -> None:
@@ -924,12 +934,14 @@ def _write_package_metadata(
         json.dump(metadata, f, indent=2)
 
 
-def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
+def _do_install(repo_dir: Path, source_label: str, *, state: dict | None = None) -> CommandManifest:
     """Core install logic — validates, scatters components, installs deps.
 
     Args:
         repo_dir: Path to repo directory (cloned or local).
         source_label: Display label for logging (URL or path).
+        state: Optional mutable dict the installer fills with side-info
+            useful to the caller (e.g. ``pip_deps_installed``).
 
     Returns:
         The installed manifest.
@@ -982,7 +994,7 @@ def _do_install(repo_dir: Path, source_label: str) -> CommandManifest:
     _install_apt_deps(manifest)
 
     # 10. Install pip deps
-    _install_pip_deps(manifest)
+    _install_pip_deps(manifest, state=state)
 
     # 10b. Run declarative post-install ops via the sudoers-gated wrapper.
     # Comes after apt + pip so the services being configured (and any
@@ -1013,6 +1025,8 @@ def install_from_github(
     repo_url: str,
     version_tag: str | None = None,
     skip_tests: bool = False,
+    *,
+    state: dict | None = None,
 ) -> CommandManifest:
     """Install a command or bundle from a GitHub repo URL.
 
@@ -1020,6 +1034,9 @@ def install_from_github(
         repo_url: GitHub HTTPS URL.
         version_tag: Optional git tag to checkout.
         skip_tests: Skip container tests (user accepts risk).
+        state: Optional dict the installer fills with side-info (e.g.
+            ``pip_deps_installed``). Used by the MQTT install handler to
+            decide whether the node needs a restart.
 
     Returns:
         The installed command's manifest.
@@ -1027,12 +1044,12 @@ def install_from_github(
     logger.info("Installing from GitHub", repo_url=repo_url, tag=version_tag)
     repo_dir = _clone_repo(repo_url, version_tag)
     try:
-        return _do_install(repo_dir, repo_url)
+        return _do_install(repo_dir, repo_url, state=state)
     finally:
         shutil.rmtree(repo_dir.parent, ignore_errors=True)
 
 
-def install_from_local(local_path: str | Path) -> CommandManifest:
+def install_from_local(local_path: str | Path, *, state: dict | None = None) -> CommandManifest:
     """Install a command or bundle from a local directory.
 
     Useful for development and testing. Does not clone — reads directly
@@ -1040,6 +1057,8 @@ def install_from_local(local_path: str | Path) -> CommandManifest:
 
     Args:
         local_path: Path to a directory containing a manifest + components.
+        state: Optional dict the installer fills with side-info (see
+            ``install_from_github``).
 
     Returns:
         The installed command's manifest.
@@ -1048,7 +1067,7 @@ def install_from_local(local_path: str | Path) -> CommandManifest:
     if not repo_dir.is_dir():
         raise InstallError(f"Not a directory: {repo_dir}")
     logger.info("Installing from local path", path=str(repo_dir))
-    return _do_install(repo_dir, f"local:{repo_dir}")
+    return _do_install(repo_dir, f"local:{repo_dir}", state=state)
 
 
 def validate_package(local_path: str | Path) -> dict[str, Any]:
