@@ -134,7 +134,10 @@ def _music_is_playing() -> bool:
 # Spotify's cloud, again no local protocol waiting on it.
 _SIGSTOP_PLAYER_BINARIES: tuple[str, ...] = (
     "mpv", "ffplay", "cvlc", "vlc",
-    "spotifyd",  # jarvis-cmd-spotify
+    "spotifyd",   # jarvis-cmd-spotify (pre-v0.1.3, kept for backwards compat
+                  # — pkill of a missing binary is a harmless no-op)
+    "librespot",  # jarvis-cmd-spotify v0.1.3+ — switched from spotifyd to
+                  # apt-installed librespot via the raspotify package
 )
 
 # Binaries that must NOT be SIGSTOP'd because they participate in a
