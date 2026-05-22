@@ -669,6 +669,7 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
     try:
         from jarvis_command_sdk import RequestInformation
         from jarvis_command_sdk.context import set_current_user_id
+        from utils.command_execution_service import _build_secrets
 
         # Parse arguments if they're a JSON string
         if isinstance(arguments, str):
@@ -689,7 +690,7 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
         logger.info("Executing tool call", command=command_name, args=list(arguments.keys()), user_id=user_id)
         set_current_user_id(user_id)
         try:
-            response = cmd.run(ri, **arguments)
+            response = cmd.execute(ri, secrets=_build_secrets(cmd), **arguments)
         finally:
             set_current_user_id(None)
 
