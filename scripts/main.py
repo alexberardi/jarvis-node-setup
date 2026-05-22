@@ -408,14 +408,36 @@ def main():
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This
     # primes llama.cpp's prefix cache so the first real voice command is fast.
+    # SKIP on install-triggered restart: `process_voice_command` streams a
+    # TTS reply back through the speaker, which is fine to hear once at
+    # boot but annoying on every package install. The first voice command
+    # after install will be a beat slower; acceptable trade-off.
+    from services.package_install_handler import (
+        flush_post_restart_install_result,
+        has_pending_install_result,
+    )
+    _install_restart = has_pending_install_result()
+    if _install_restart:
+        logger.info("Skipping LLM warmup — install-triggered restart, staying silent")
+    else:
+        try:
+            from utils.command_execution_service import CommandExecutionService
+            warmup_service = CommandExecutionService()
+            logger.info("Warming up LLM pipeline")
+            warmup_service.process_voice_command("hello")
+            logger.info("LLM warmup complete")
+        except Exception as e:
+            logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+
+    # Flush any install result the previous process deferred when it
+    # restarted to load new pip imports. Done after MQTT + warmup so the
+    # node is fully ready, and BEFORE the voice listener starts so the
+    # wake-word path doesn't engage during the install→restart window.
+    # Mobile only sees "Done" once this POST lands.
     try:
-        from utils.command_execution_service import CommandExecutionService
-        warmup_service = CommandExecutionService()
-        logger.info("Warming up LLM pipeline")
-        warmup_service.process_voice_command("hello")
-        logger.info("LLM warmup complete")
+        flush_post_restart_install_result()
     except Exception as e:
-        logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+        logger.warning("Post-restart install result flush failed (non-fatal)", error=str(e))
 
     # Start voice listener with retry (blocks until KeyboardInterrupt or audio failure)
     max_voice_retries: int = 3
