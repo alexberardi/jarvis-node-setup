@@ -998,15 +998,17 @@ Wants=network-online.target
 # Rate-limit settings live in [Unit] (since systemd v229) — having them
 # under [Service] is silently ignored AND logs "Unknown key" on every
 # daemon-reload.
-StartLimitBurst=5
-StartLimitIntervalSec=300
+StartLimitBurst=10
+StartLimitIntervalSec=1800
 
 [Service]
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m scripts.main
 WorkingDirectory=${INSTALL_DIR}
-Restart=on-failure
+# Restart=always so the connectivity watchdog's clean exit on WiFi
+# loss triggers a restart (on-failure would only restart on rc != 0).
+Restart=always
 RestartSec=5
 TimeoutStopSec=30
 KillSignal=SIGTERM
@@ -1038,6 +1040,11 @@ EOF
 # again is a node stuck in "in_progress" until the CC sweeper gives up.
 start_service() {
   info "Starting ${SERVICE_NAME}..."
+  # NRestarts before the restart so we can detect a post-start crash
+  # loop: Restart=always respawns failing units automatically, but the
+  # NRestarts counter climbs each time and we can spot it.
+  local nrestarts_before
+  nrestarts_before=$(systemctl show -p NRestarts --value "${SERVICE_NAME}.service" 2>/dev/null || echo 0)
   systemctl restart "${SERVICE_NAME}.service"
 
   local unit_path="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -1054,13 +1061,32 @@ start_service() {
     return 0
   fi
 
+  # `systemctl is-active` returns success while the unit is merely
+  # "activating" — passes at iteration #0 before Python has imported
+  # anything, masking a crash-on-startup. Require ActiveState=active
+  # AND NRestarts unchanged for at least min_stable_s seconds, so a
+  # crash-loop respawn shows up as the counter ticking and resets us.
   local health_timeout=120
+  local min_stable_s=15
+  local stable_since=-1
   local waited=0
   while [ "$waited" -lt "$health_timeout" ]; do
-    if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
-      success "Service started"
-      rm -f "$upgrade_backup"
-      return 0
+    local state nrestarts_now
+    state=$(systemctl show -p ActiveState --value "${SERVICE_NAME}.service" 2>/dev/null)
+    nrestarts_now=$(systemctl show -p NRestarts --value "${SERVICE_NAME}.service" 2>/dev/null || echo 0)
+
+    if [ "$state" = "active" ] && [ "$nrestarts_now" = "$nrestarts_before" ]; then
+      if [ "$stable_since" = "-1" ]; then
+        stable_since="$waited"
+      fi
+      if [ "$((waited - stable_since))" -ge "$min_stable_s" ]; then
+        success "Service started and stable for ${min_stable_s}s"
+        rm -f "$upgrade_backup"
+        return 0
+      fi
+    else
+      # Either not active or systemd respawned us — reset the streak.
+      stable_since=-1
     fi
     sleep 3
     waited=$((waited + 3))
