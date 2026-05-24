@@ -37,11 +37,24 @@ set -x
 # Capture final status regardless of how we leave (success, set -e
 # failure, signal). Prints a grep-able `[INSTALL-EXIT]` line with the
 # offending command + line + function so post-mortem is obvious.
+#
+# Also performs auto-recovery: if the script exits non-zero while
+# /opt/jarvis-node is missing but /opt/jarvis-node.bak exists, we
+# atomically restore .bak into place. This catches the May-2026
+# beta-blocker scenario where the user interrupted/rebooted the Pi
+# between the `mv $INSTALL_DIR $backup` (line ~272 in
+# download_and_extract) and the curl|tar that should have repopulated
+# $INSTALL_DIR — leaving the node with no executable to run and the
+# service in a failed-state restart loop.
 trap '_ec=$?;
       _line=$LINENO;
       _func=${FUNCNAME:-main};
       _last=$BASH_COMMAND;
       set +x;
+      if [ "$_ec" -ne 0 ] && [ ! -d "/opt/jarvis-node" ] && [ -d "/opt/jarvis-node.bak" ]; then
+          mv /opt/jarvis-node.bak /opt/jarvis-node 2>/dev/null && \
+          printf "[INSTALL-RECOVERY] restored /opt/jarvis-node from .bak after failed install\\n" >&2;
+      fi;
       printf "[INSTALL-EXIT] status=%d line=%s func=%s last_command=%q\\n" \
              "$_ec" "$_line" "$_func" "$_last" >&2' EXIT
 

@@ -627,12 +627,29 @@ def _install_pip_deps(manifest: CommandManifest, *, state: dict | None = None) -
     # node service on Pi Zero 2 W (512 MB).
     # nice -n 15: lower priority so the install doesn't starve the voice
     # pipeline, MQTT, SSH, and other threads sharing the same 4 cores.
+    #
+    # Timeout bumped 300s → 600s in v0.1.67: music-assistant-client has
+    # ~10+ transitive deps (zeroconf, mashumaro, music_assistant_models,
+    # etc.) and on Pi Zero the 5-minute cap was just barely too tight,
+    # causing silent partial installs (the May-2026 beta saw the kitchen
+    # Pi end up with shairport-sync installed via apt but no Python
+    # client in the venv, so every music command failed with
+    # `music-assistant-client is not installed`). Tunable per-node via
+    # the ``pantry_pip_install_timeout_secs`` config key.
+    timeout_secs = 600
+    try:
+        from utils.config_service import Config
+        timeout_secs = max(60, Config.get_int("pantry_pip_install_timeout_secs", 600))
+    except Exception:
+        # Config service not available during early-install paths;
+        # fall back to the hardcoded default.
+        pass
     result = subprocess.run(
         ["nice", "-n", "15", sys.executable, "-m", "pip", "install",
          "--quiet", "--prefer-binary"] + deps,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=timeout_secs,
     )
     if result.returncode != 0:
         raise InstallError(f"pip install failed: {result.stderr.strip()}")
@@ -912,6 +929,18 @@ def _write_package_metadata(
     This tracks all component install dirs for clean uninstall.
     """
     PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+    # Persist pip-package declarations to the metadata file so the
+    # startup self-heal (verify_pantry_pip_deps) can verify that the
+    # declared deps are actually present in the venv on every boot.
+    # Without this, the May-2026 beta-blocker case repeats: a Pantry
+    # install whose pip step silently fails leaves the package's
+    # metadata file claiming "installed" while the dep is missing,
+    # and the user only learns about it when they try to use the
+    # command at runtime ("music-assistant-client is not installed").
+    pip_packages = [
+        {"name": pkg.name, "version": pkg.version}
+        for pkg in manifest.packages
+    ]
     metadata = {
         "package_name": manifest.name,
         "package_type": manifest.package_type,
@@ -928,6 +957,7 @@ def _write_package_metadata(
         ],
         "component_dirs": component_dirs,
         "jarvis_dependencies": list(manifest.jarvis_dependencies),
+        "pip_packages": pip_packages,
     }
     meta_path = PACKAGES_DIR / f"{manifest.name}.json"
     with open(meta_path, "w") as f:
