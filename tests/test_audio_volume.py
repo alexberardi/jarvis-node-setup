@@ -356,3 +356,117 @@ class TestListBluezSinks:
     def test_empty_when_pactl_missing(self, monkeypatch):
         monkeypatch.setattr(audio_volume, "_run", lambda *a, **k: None)
         assert audio_volume._list_bluez_sinks() == []
+
+
+# `amixer cget` output for the ADC HPF Cut-off control. Format mirrors
+# what the seeed2micvoicec card returns; lines are intentionally indented
+# the way `amixer` outputs them so the parser regex is exercised.
+_HPF_CGET_TEMPLATE = (
+    "numid=36,iface=MIXER,name='ADC HPF Cut-off'\n"
+    "  ; type=ENUMERATED,access=rw------,values=2,items=4\n"
+    "  ; Item #0 'Disabled'\n"
+    "  ; Item #1 '0.0045xFs'\n"
+    "  ; Item #2 '0.0125xFs'\n"
+    "  ; Item #3 '0.025xFs'\n"
+    "  : values={value},{value}\n"
+)
+
+
+class TestEnsureAdcHpfEnabled:
+    """Codec self-heal for the TLV320AIC3104 ADC high-pass filter.
+
+    Without this, every recording carries a DC pedestal that buries
+    the AC voice signal and tricks Whisper into transcribing as music
+    — see the May-2026 kitchen-node beta blocker.
+    """
+
+    def test_enables_when_disabled(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"] and cmd[3] == "cget":
+                return _ok(_HPF_CGET_TEMPLATE.format(value=0))
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"] and cmd[3] == "cset":
+                return _ok()
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        audio_volume.ensure_adc_hpf_enabled()
+        # The self-heal must have issued a cset to flip the HPF from
+        # item 0 (Disabled) to item 1 (0.0045xFs).
+        cset_calls = [c for c in calls if len(c) > 3 and c[3] == "cset"]
+        assert len(cset_calls) == 1, f"expected one cset, got {cset_calls}"
+        assert cset_calls[0][-1] == "1"
+        assert "name=ADC HPF Cut-off" in cset_calls[0]
+
+    def test_no_op_when_already_enabled(self, monkeypatch):
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"] and cmd[3] == "cget":
+                return _ok(_HPF_CGET_TEMPLATE.format(value=1))
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        audio_volume.ensure_adc_hpf_enabled()
+        cset_calls = [c for c in calls if len(c) > 3 and c[3] == "cset"]
+        assert cset_calls == [], "must not downgrade an already-enabled HPF"
+
+    def test_no_op_when_user_picked_higher_cutoff(self, monkeypatch):
+        # A user (or future install.sh) might pick item 2 (0.0125xFs)
+        # for a noisier room. We should not downgrade them.
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"] and cmd[3] == "cget":
+                return _ok(_HPF_CGET_TEMPLATE.format(value=2))
+            return _fail()
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        audio_volume.ensure_adc_hpf_enabled()
+        cset_calls = [c for c in calls if len(c) > 3 and c[3] == "cset"]
+        assert cset_calls == []
+
+    def test_no_op_when_no_seeed_card(self, monkeypatch):
+        # Plain Pi without the ReSpeaker HAT (or macOS dev box) —
+        # aplay only reports the HDMI card. self-heal should skip silently.
+        only_hdmi = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM\n"
+        )
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(only_hdmi)
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        audio_volume.ensure_adc_hpf_enabled()
+        assert not any(c[:1] == ["amixer"] for c in calls)
+
+    def test_unreadable_cget_logs_and_returns(self, monkeypatch):
+        # If `amixer cget` fails (codec busy, missing control on a
+        # newer kernel), we log + return — don't crash, don't blindly
+        # set a control we couldn't read.
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"] and cmd[3] == "cget":
+                return _fail("unknown control")
+            return _ok()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        # Must not raise.
+        audio_volume.ensure_adc_hpf_enabled()
