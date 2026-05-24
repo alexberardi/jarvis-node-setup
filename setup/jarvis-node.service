@@ -5,15 +5,27 @@ Wants=network-online.target
 # Rate-limit settings live in [Unit] (since systemd v229) — having them
 # under [Service] is silently ignored AND logs "Unknown key" on every
 # daemon-reload.
-StartLimitBurst=5
-StartLimitIntervalSec=300
+#
+# Burst tuned for our connectivity-watchdog exit path: the watchdog
+# self-exits after ~5 min of CC unreachability, so back-to-back
+# restarts are expected during WiFi flaps. Allow 10 restarts per
+# 30 min before systemd gives up.
+StartLimitBurst=10
+StartLimitIntervalSec=1800
 
 [Service]
 User=__SERVICE_USER__
 Group=__SERVICE_USER__
 ExecStart=__VENV__/bin/python -m scripts.main
 WorkingDirectory=__PROJECT_DIR__
-Restart=on-failure
+# Restart=always (not on-failure): a clean exit from the connectivity
+# watchdog returns 0, but we still want systemd to bring us back —
+# that's the whole point of self-exiting on prolonged WiFi loss.
+# on-failure was the source of the "node disconnected overnight,
+# required forced reboot" beta blocker (May 2026): paho-mqtt's
+# reconnect loop kept the process alive forever with no network,
+# so systemd never triggered a restart.
+Restart=always
 RestartSec=5
 TimeoutStopSec=30
 KillSignal=SIGTERM

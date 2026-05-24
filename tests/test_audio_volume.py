@@ -212,17 +212,40 @@ class TestSetVolumePercent:
             for c in stub.calls
         )
 
-    def test_returns_false_when_default_sink_fails(self, monkeypatch):
-        # If the primary sink can't be set, the slider would lie to the user.
+    def test_falls_back_to_listed_sinks_when_default_fails(self, monkeypatch, isolate_config):
+        # Fresh-install case (issue surfaced in beta May 2026): PA's
+        # @DEFAULT_SINK@ resolves to HDMI but the user's speaker is on
+        # another sink. We enumerate non-monitor sinks and apply to
+        # each, returning True when any succeed.
         def stub(cmd, timeout=2.0):
             if cmd[:3] == ["pactl", "set-sink-volume", "@DEFAULT_SINK@"]:
                 return _fail()
-            return _ok(PACTL_SHORT_SINKS if cmd[:2] == ["pactl", "list"] else "")
+            if cmd[:2] == ["pactl", "list"]:
+                return _ok(PACTL_SHORT_SINKS)
+            return _ok()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.set_volume_percent(50) is True
+
+    def test_returns_false_when_every_sink_fails(self, monkeypatch):
+        # Every pactl set-sink-volume fails (PA daemon down). Volume is
+        # still persisted to config.json — but the live apply reports
+        # False so callers can log/diagnose.
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["pactl", "set-sink-volume"]:
+                return _fail()
+            if cmd[:2] == ["pactl", "list"]:
+                return _ok(PACTL_SHORT_SINKS)
+            return _ok()
 
         monkeypatch.setattr(audio_volume, "_run", stub)
         assert audio_volume.set_volume_percent(50) is False
 
-    def test_does_not_persist_on_failure(self, monkeypatch, isolate_config):
+    def test_persists_even_when_pactl_fails(self, monkeypatch, isolate_config):
+        # Critical for the fresh-install / boot-time case: PA may not
+        # have enumerated its sinks yet when the mobile-app push lands.
+        # config.json must still record the user's wish so the next
+        # boot picks it up.
         def stub(cmd, timeout=2.0):
             if cmd[:2] == ["pactl", "set-sink-volume"]:
                 return _fail()
@@ -230,7 +253,7 @@ class TestSetVolumePercent:
 
         monkeypatch.setattr(audio_volume, "_run", stub)
         audio_volume.set_volume_percent(50)
-        assert not isolate_config.exists()
+        assert json.loads(isolate_config.read_text())["volume_percent"] == 50
 
 
 class TestAdjustVolumePercent:
@@ -275,11 +298,25 @@ class TestSetMuted:
             for c in stub.calls
         )
 
-    def test_returns_false_when_default_sink_fails(self, monkeypatch):
+    def test_falls_back_to_listed_sinks_when_default_fails(self, monkeypatch):
+        # Same fresh-install resilience as set_volume_percent.
         def stub(cmd, timeout=2.0):
             if cmd[:3] == ["pactl", "set-sink-mute", "@DEFAULT_SINK@"]:
                 return _fail()
-            return _ok(PACTL_SHORT_SINKS if cmd[:2] == ["pactl", "list"] else "")
+            if cmd[:2] == ["pactl", "list"]:
+                return _ok(PACTL_SHORT_SINKS)
+            return _ok()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.set_muted(True) is True
+
+    def test_returns_false_when_every_sink_fails(self, monkeypatch):
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["pactl", "set-sink-mute"]:
+                return _fail()
+            if cmd[:2] == ["pactl", "list"]:
+                return _ok(PACTL_SHORT_SINKS)
+            return _ok()
 
         monkeypatch.setattr(audio_volume, "_run", stub)
         assert audio_volume.set_muted(True) is False
