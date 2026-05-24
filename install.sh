@@ -548,6 +548,16 @@ ASOUND
     amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
+    # Enable the codec's ADC high-pass filter at the lowest cutoff
+    # (0.0045 × Fs ≈ 216 Hz at 48 kHz). With HPF disabled, the ADC
+    # passes DC straight through and every recording carries a
+    # ~25% DC pedestal — the May 2026 kitchen-node beta saw Whisper
+    # transcribe every voice command as "*sad music*" because the
+    # DC bias dominated the actual AC voice content and the model
+    # interpreted the resulting near-DC waveform as a sustained
+    # musical drone. The runtime self-heal in utils.audio_volume
+    # mirrors this so a stale alsactl-store can't leave it off.
+    amixer -c seeed2micvoicec cset name='ADC HPF Cut-off' 1           2>/dev/null || true
     alsactl store 2>/dev/null || true
     success "TLV320AIC3104 mixer baseline applied"
   else

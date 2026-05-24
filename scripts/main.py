@@ -208,6 +208,19 @@ def main():
     except Exception as e:
         logger.warning("Audio volume apply failed", error=str(e))
 
+    # Codec self-heal: ensure the TLV320AIC3104's ADC HPF is enabled so
+    # captured audio doesn't carry a DC pedestal that buries voice
+    # signal under a constant bias and tricks Whisper into transcribing
+    # everything as music ("*sad music*" — see May-2026 beta blocker).
+    # install.sh sets this at install time and alsactl-stores it, but
+    # ENUMERATED controls don't always round-trip cleanly through
+    # alsactl restore — re-asserting at startup is cheap insurance.
+    try:
+        from utils.audio_volume import ensure_adc_hpf_enabled
+        ensure_adc_hpf_enabled()
+    except Exception as e:
+        logger.warning("ADC HPF self-heal failed (non-fatal)", error=str(e))
+
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 

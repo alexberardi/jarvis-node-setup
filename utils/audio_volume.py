@@ -65,6 +65,87 @@ def get_audio_card() -> str | None:
     return None
 
 
+# ── Codec self-heal (TLV320AIC3104 ADC HPF) ─────────────────────────────────
+
+# The TLV320AIC3104's internal ADC high-pass filter has four settings:
+# Disabled (0), 0.0045xFs (1), 0.0125xFs (2), 0.025xFs (3). The codec
+# powers on with the filter disabled — meaning every captured sample
+# carries the analog input's DC component, which produced the May-2026
+# beta-blocker where Whisper transcribed kitchen voice commands as
+# "*sad music*" (the DC pedestal looked like a sustained low-frequency
+# drone to the speech model).
+#
+# Item 1 (0.0045xFs ≈ 216 Hz at 48 kHz) is the gentlest setting that
+# still blocks DC; speech intelligibility is unaffected since voice
+# energy below 216 Hz is mostly fundamental rumble that telephone-band
+# wake-word + STT models discard anyway.
+#
+# install.sh applies this at install time AND alsactl-stores it, but
+# alsactl is unreliable for ENUMERATED controls across kernel updates,
+# so the node also runs this check on every startup as a self-heal.
+
+_TLV320_ADC_HPF_CONTROL = "ADC HPF Cut-off"
+_TLV320_ADC_HPF_TARGET_ITEM = 1  # 0.0045xFs
+
+
+def _get_adc_hpf_setting(card: str) -> int | None:
+    """Return the current ADC HPF item index (0-3), or None if unreadable."""
+    result = _run([
+        "amixer", "-c", card, "cget", f"name={_TLV320_ADC_HPF_CONTROL}",
+    ])
+    if result is None or result.returncode != 0:
+        return None
+    # cget output ends with a line like ``  : values=0,0`` — both channels
+    # share a value on this codec, so reading either is fine. Use a regex
+    # to be lenient about whitespace + comma variations.
+    match = re.search(r"^\s*:\s*values=(\d+)", result.stdout, re.MULTILINE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def ensure_adc_hpf_enabled() -> None:
+    """If the TLV320AIC3104 is present and its ADC HPF is disabled, enable it.
+
+    Idempotent and safe to call on every startup. No-op when the codec
+    is missing (macOS dev nodes, Pi without the ReSpeaker HAT) or the
+    HPF is already at a non-disabled item. Logs the action it takes.
+    """
+    card = get_audio_card()
+    if card != "seeed2micvoicec":
+        return
+    current = _get_adc_hpf_setting(card)
+    if current is None:
+        logger.info(
+            "ADC HPF state unreadable, skipping self-heal (codec may be busy)",
+            card=card,
+        )
+        return
+    if current >= 1:
+        # Already enabled at a usable cutoff. Don't downgrade higher
+        # cutoffs that a user might have deliberately picked.
+        return
+    logger.warning(
+        "ADC HPF was disabled — enabling to remove DC bias from recordings",
+        card=card,
+        previous_item=current,
+        target_item=_TLV320_ADC_HPF_TARGET_ITEM,
+    )
+    result = _run([
+        "amixer", "-c", card, "cset",
+        f"name={_TLV320_ADC_HPF_CONTROL}",
+        str(_TLV320_ADC_HPF_TARGET_ITEM),
+    ])
+    if result is None or result.returncode != 0:
+        logger.error(
+            "amixer cset for ADC HPF failed",
+            stderr=(result.stderr if result else None),
+        )
+
+
 # ── Persistence (config.json) ───────────────────────────────────────────────
 
 
