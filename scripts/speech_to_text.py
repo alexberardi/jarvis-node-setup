@@ -121,7 +121,7 @@ def _normalize_frames_to_target_rms(
     max_gain_db: float,
     min_gain_db: float = 0.5,
 ) -> tuple[List[bytes], float, float]:
-    """Apply a single static gain so the joined RMS sits near ``target_rms_db``.
+    """Apply a single static gain so the joined AC-RMS sits near ``target_rms_db``.
 
     Whisper performs best on speech at roughly -18 to -14 dB FS. Faint
     far-field kitchen-mic recordings come in at -25 to -30 dB FS and
@@ -131,30 +131,43 @@ def _normalize_frames_to_target_rms(
     sweet spot reduces the model's freedom to hallucinate without
     altering the recording's relative shape.
 
+    **DC-aware:** the per-buffer mean (DC component) is subtracted
+    before measuring RMS, so we operate on the actual AC signal rather
+    than total power. v0.1.65 used total RMS and ended up under-
+    boosting voice when a DC pedestal (TLV320 ADC with HPF disabled,
+    pre-v0.1.66) made the signal look louder than it actually was.
+    The DC is also removed from the saved samples — if the codec's
+    HPF was off, this catches the pedestal before it reaches Whisper.
+
     Capped at ``max_gain_db`` so a purely-silent recording doesn't get
     amplified to clipping noise. Skips application when the needed
     boost is less than ``min_gain_db`` (already loud enough).
 
     Returns ``(new_frames, current_rms_db, applied_gain_db)`` — both
     diagnostics are reported back so the caller can log the decision.
+    ``current_rms_db`` reflects the AC level (post-DC-removal).
     """
     if not frames:
         return frames, 0.0, 0.0
     samples = np.frombuffer(b"".join(frames), dtype=np.int16)
     if samples.size == 0:
         return frames, 0.0, 0.0
-    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    # Center the signal — subtract DC mean. Float64 so we don't lose
+    # the bias to int truncation before measuring.
+    centered = samples.astype(np.float64) - float(np.mean(samples))
+    rms = float(np.sqrt(np.mean(centered ** 2)))
     if rms < 1.0:  # essentially silent — nothing to normalize toward
         return frames, -120.0, 0.0
     current_db = 20.0 * float(np.log10(rms / 32768.0))
     needed_db = target_rms_db - current_db
     if needed_db < min_gain_db:
-        return frames, current_db, 0.0
+        # Already at target — still strip DC so downstream STT doesn't
+        # see a biased waveform.
+        clean = np.clip(centered, -32768, 32767).astype(np.int16)
+        return [clean.tobytes()], current_db, 0.0
     gain_db = min(needed_db, max_gain_db)
     gain_linear = 10 ** (gain_db / 20.0)
-    boosted = np.clip(
-        samples.astype(np.float64) * gain_linear, -32768, 32767
-    ).astype(np.int16)
+    boosted = np.clip(centered * gain_linear, -32768, 32767).astype(np.int16)
     return [boosted.tobytes()], current_db, gain_db
 
 
