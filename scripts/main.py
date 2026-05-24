@@ -72,6 +72,20 @@ def _handle_shutdown(signum: int, frame: Any) -> None:
     except Exception:
         pass
 
+    # The main thread is blocked inside start_voice_listener and the
+    # voice loop doesn't actively poll _shutdown_event, so without a
+    # forced exit systemd waits the full TimeoutStopSec=30 seconds and
+    # SIGKILLs us — every `systemctl stop jarvis-node` (including the
+    # one install.sh issues during upgrades) stalls for half a minute.
+    # Give scheduler + log batches a brief grace period to flush, then
+    # exit hard. systemd sees a clean stop and install.sh's stop step
+    # returns quickly.
+    def _force_exit() -> None:
+        time.sleep(3.0)
+        logger.info("Shutdown grace period elapsed — forcing exit")
+        os._exit(0)
+    threading.Thread(target=_force_exit, daemon=True).start()
+
 
 def _supervisor_loop(
     threads: Dict[str, Tuple[threading.Thread, Callable[[], threading.Thread]]],
@@ -404,6 +418,17 @@ def main():
     )
     supervisor_thread.start()
     logger.info("Thread supervisor started")
+
+    # Connectivity watchdog — exits the process when CC is unreachable
+    # for too long so systemd's Restart=always brings us back. Without
+    # this, paho-mqtt's reconnect loop keeps the process alive forever
+    # on WiFi loss and the node never recovers (the May-2026 beta
+    # blocker). Daemon thread; safe if it fails to start.
+    try:
+        from services.connectivity_watchdog import start_connectivity_watchdog
+        start_connectivity_watchdog(_shutdown_event)
+    except Exception as e:
+        logger.warning("Connectivity watchdog init failed (non-fatal)", error=str(e))
 
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This
