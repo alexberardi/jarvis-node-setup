@@ -221,6 +221,25 @@ def main():
     except Exception as e:
         logger.warning("ADC HPF self-heal failed (non-fatal)", error=str(e))
 
+    # Pantry pip-dep self-heal: walk installed-package metadata and
+    # verify each declared pip dep is present in the venv. Catches the
+    # May-2026 beta-blocker where the music package's apt step ran but
+    # its pip step (music-assistant-client) silently failed, leaving
+    # the command runtime-broken until the user tried to play music.
+    # Defaults to log-only (warning per missing dep); auto-repair is
+    # opt-in via ``pantry_pip_self_heal_enabled`` so the node doesn't
+    # silently pip-install at boot on installs the user might prefer
+    # to triage themselves.
+    try:
+        from services.pantry_pip_self_heal import verify_pantry_pip_deps
+        repaired = verify_pantry_pip_deps(
+            auto_repair=Config.get_bool("pantry_pip_self_heal_enabled", False),
+        )
+        if repaired:
+            logger.info("Pantry self-heal repaired packages", count=repaired)
+    except Exception as e:
+        logger.warning("Pantry pip self-heal failed (non-fatal)", error=str(e))
+
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 
