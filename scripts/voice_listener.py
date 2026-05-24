@@ -69,12 +69,32 @@ def _wake_threshold() -> float:
     Music coming out of the same speaker the mic is hearing reduces the
     model's confidence in "hey jarvis" — without AEC, the user's voice is
     competing with their own playback in the mic stream. Drop the threshold
-    in that case so detection succeeds (at the cost of more false positives,
-    which is acceptable because music context is short and explicit).
+    aggressively in that case (mirrors barge_in's 0.07) and pair it with
+    the energy gate in the wake loop so music alone can't trigger a wake
+    even though it scores 0.12-0.18 fairly often.
+
+    Was 0.25 before the May-2026 beta: 0.25 was almost never crossed
+    against typical music + voice combinations on the Pi Zero mic, so
+    "stop the music" verbally was unreliable. The 0.12 floor + energy
+    gate together produce both higher recall AND lower false-positive
+    rate than either alone.
     """
     if _music_is_playing():
-        return Config.get_float("wake_word_threshold_music", 0.25)
+        return Config.get_float("wake_word_threshold_music", 0.12)
     return Config.get_float("wake_word_threshold", 0.4)
+
+
+def _wake_music_energy_multiplier() -> float:
+    """How far current RMS must rise above the running baseline to fire
+    a wake during music playback.
+
+    Music alone occupies a fairly stable RMS band — a voice spoken over
+    it adds energy on top, producing a spike of ~1.5-2.5x the music
+    baseline at a normal speaking distance from the Pi Zero mic.
+    Tunable via the ``wake_word_music_energy_multiplier`` setting if
+    the room's speaker bleed profile is unusual.
+    """
+    return Config.get_float("wake_word_music_energy_multiplier", 1.5)
 
 
 def _music_is_playing() -> bool:
@@ -750,6 +770,69 @@ _VALID_FOLLOW_UP_WORDS: set[str] = {
 }
 
 
+_ECHO_STOPWORDS: set[str] = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "and", "or", "for", "in", "on", "at", "by", "with",
+    "i", "you", "it", "we", "they", "he", "she", "me", "us", "them",
+    "this", "that", "these", "those", "here", "there",
+    "do", "does", "did", "have", "has", "had", "will", "would", "can",
+    "could", "should", "may", "might", "must",
+    "what", "when", "where", "why", "how", "who",
+}
+
+
+def _looks_like_self_echo(text: str, last_assistant_text: str) -> bool:
+    """True if the follow-up transcript looks like the node hearing its
+    own TTS response instead of the user.
+
+    Secondary defense behind the post-TTS settle delay in ``_follow_up_loop``
+    — if PA buffer drain ran long, the mic still picks up the TTS tail and
+    Whisper transcribes it. Without this check, that transcript flows
+    straight back into CC and produces phantom follow-ups (the "Here is
+    sad music" beta blocker, May 2026).
+
+    Heuristic: compare significant (non-stopword) word sets.
+
+    * ≥3 significant user-side words and ≥85% overlap → echo.
+    * 2 significant user-side words and 100% overlap → echo (this is
+      what catches the "Here is sad music" canonical case: stopwords
+      strip to {sad, music}, both already in the assistant's reply).
+
+    The threshold is intentionally high so a legitimate user reply that
+    quotes part of the assistant ("yes, set it for 8 PM" against
+    "I'll set the alarm for 8 PM") doesn't get suppressed — that case
+    overlaps on {set, timer/alarm, pm} which is well below 85%.
+    """
+    if not text or not last_assistant_text:
+        return False
+    import re as _re
+    user_words = {w for w in _re.findall(r"[a-z']+", text.lower()) if len(w) >= 2}
+    user_words -= _ECHO_STOPWORDS
+    if len(user_words) < 2:
+        return False
+    assistant_words = {w for w in _re.findall(r"[a-z']+", last_assistant_text.lower()) if len(w) >= 2}
+    overlap = len(user_words & assistant_words)
+    if len(user_words) == 2:
+        return overlap == 2
+    return overlap / len(user_words) >= 0.85
+
+
+def _extract_assistant_text(result: dict | None) -> str:
+    """Best-effort extraction of the spoken text from a CC result dict.
+
+    CC's voice/command response shapes vary slightly between code paths;
+    we look at the most likely keys and fall back to empty. Empty means
+    the echo check sits dormant (no false positives) — graceful.
+    """
+    if not isinstance(result, dict):
+        return ""
+    for key in ("message", "text", "response", "spoken_text", "assistant_text"):
+        val = result.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
 def _is_follow_up_noise(text: str, prev_text: str | None) -> bool:
     """Detect ambient noise Whisper transcribed as speech during follow-up.
 
@@ -967,6 +1050,11 @@ def _follow_up_loop(
     max_iterations: int = Config.get_int("max_follow_up_iterations", MAX_FOLLOW_UP_ITERATIONS)
     consecutive_noise: int = 0
     prev_text: str | None = None
+    # Track the last thing the assistant said so the echo check can
+    # suppress follow-ups that look like the mic capturing the node's
+    # own TTS tail. Seeded from the initial result so the first
+    # follow-up iteration is already protected.
+    last_assistant_text: str = _extract_assistant_text(initial_result)
 
     while True:
         iteration += 1
@@ -985,7 +1073,28 @@ def _follow_up_loop(
             follow_up_seconds - (iteration - 1) * FOLLOW_UP_TIMEOUT_DECAY,
         )
 
+        # TTS-drain settle. ``speak_result`` returns the moment our
+        # internal player finishes feeding bytes to PulseAudio, but
+        # PA's sink buffer plus the speaker hardware still hold the
+        # tail of the TTS response for ~400-700 ms. If we open the
+        # follow-up listener inside that window, the mic picks up the
+        # TTS tail, Whisper transcribes it, and CC re-routes it as a
+        # new user utterance — which is what produced the phantom
+        # "Here is sad music" follow-ups during beta testing. Waiting
+        # past the drain window means new audio AND ring-buffer
+        # history both start from a clean post-TTS point.
+        settle_secs = Config.get_float("follow_up_tts_settle_secs", 0.6)
         elapsed = time.monotonic() - tts_end_ts
+        if elapsed < settle_secs:
+            time.sleep(settle_secs - elapsed)
+            # Re-anchor so history_secs computes from a clean point.
+            tts_end_ts = time.monotonic()
+            elapsed = 0.0
+
+        # history_secs trails tts_end_ts so the listener replays whatever
+        # the user said in the gap between TTS-end and listener-attach,
+        # capped at the ring buffer's 2 s capacity. Settling above means
+        # the first 0-600 ms of that gap is the TTS tail we want to skip.
         history_secs = max(0.0, min(2.0, elapsed))
         logger.info(
             "Follow-up iteration begin",
@@ -995,6 +1104,7 @@ def _follow_up_loop(
             history_secs=round(history_secs, 3),
             timeout=round(iter_timeout, 1),
             consecutive_noise=consecutive_noise,
+            settle_secs=settle_secs,
         )
         # Re-pause any player processes before listening. The conversation's
         # outer pause/restore wrapping (in start_voice_listener) only catches
@@ -1071,6 +1181,22 @@ def _follow_up_loop(
             tts_end_ts = time.monotonic()
             continue
 
+        # Layer 4: Self-echo detection — secondary defense behind the
+        # TTS-drain settle at the top of the loop. If the captured
+        # transcript ≥85% overlaps the assistant's most recent reply,
+        # treat it as the mic re-hearing the TTS tail and exit follow-up
+        # rather than feeding it back into CC (the phantom "Here is sad
+        # music" loop). Hard exit, not consecutive_noise — a single
+        # confirmed echo is enough; we'd rather end follow-up early than
+        # risk another fake command.
+        if _looks_like_self_echo(text, last_assistant_text):
+            logger.info(
+                "Follow-up self-echo detected, ending follow-up",
+                text=text,
+                last_assistant_excerpt=last_assistant_text[:120],
+            )
+            break
+
         # Real speech — reset noise counter
         consecutive_noise = 0
         prev_text = text
@@ -1094,6 +1220,7 @@ def _follow_up_loop(
             pre_result = command_service.try_pre_route(text, conversation_id or "")
             if pre_result is not None:
                 command_service.speak_result(pre_result)
+                last_assistant_text = _extract_assistant_text(pre_result) or last_assistant_text
                 # Pre-routed commands break the CC conversation context
                 conversation_id = None
             elif conversation_id:
@@ -1102,6 +1229,7 @@ def _follow_up_loop(
                     conversation_id, text, validation_handler
                 )
                 command_service.speak_result(result)
+                last_assistant_text = _extract_assistant_text(result) or last_assistant_text
                 conversation_id = result.get("conversation_id", conversation_id)
                 if result.get("clear_history"):
                     logger.info("Conversation complete (clear_history), ending follow-up")
@@ -1112,6 +1240,7 @@ def _follow_up_loop(
                     text, validation_handler, speaker_user_id=speaker_user_id
                 )
                 command_service.speak_result(result)
+                last_assistant_text = _extract_assistant_text(result) or last_assistant_text
                 conversation_id = result.get("conversation_id") if result.get("success") else None
                 if result.get("clear_history"):
                     logger.info("Conversation complete (clear_history), ending follow-up")
@@ -1370,6 +1499,13 @@ def start_voice_listener(ma_service):
             # updates apply without a service restart. Using a local also
             # keeps the inner loop hot path off the disk.
             wake_threshold = _wake_threshold()
+            # Snapshot music state alongside the threshold so the energy
+            # gate below matches the threshold's assumption. _music_is_playing
+            # round-trips to pactl (~ms) so we don't want to call it per
+            # chunk; we only need it to be coherent with the threshold
+            # used for the current outer iteration.
+            music_mode = _music_is_playing()
+            music_energy_multiplier = _wake_music_energy_multiplier()
 
             wake_q = bus.subscribe("wake")
             score = 0.0
@@ -1462,8 +1598,38 @@ def start_voice_listener(ma_service):
                             "oww-score",
                             score=round(float(score), 3),
                             threshold=wake_threshold,
+                            music_mode=music_mode,
                         )
-                    if score > wake_threshold:
+                    fire_wake = score > wake_threshold
+                    if fire_wake and music_mode:
+                        # Music-mode energy gate: require current RMS to
+                        # spike above the running baseline (voice ON TOP
+                        # of music). Without this, the lowered music
+                        # threshold (~0.12) trips on music alone — the
+                        # OWW model regularly hits 0.10-0.18 against
+                        # speaker bleed even when nobody's speaking.
+                        # Mirrors barge_in's two-tier (low OWW + energy
+                        # above baseline) approach.
+                        if len(pre_wake_rms_values) >= 6:
+                            sorted_rms = sorted(pre_wake_rms_values)
+                            baseline_rms = sorted_rms[len(sorted_rms) // 2]
+                            energy_floor = baseline_rms * music_energy_multiplier
+                            if rms <= energy_floor:
+                                fire_wake = False
+                                if score > 0.08:
+                                    logger.info(
+                                        "wake-suppressed-music-bleed",
+                                        score=round(float(score), 3),
+                                        rms=round(rms, 1),
+                                        baseline_rms=round(baseline_rms, 1),
+                                        energy_floor=round(energy_floor, 1),
+                                    )
+                        else:
+                            # Not enough history yet — be conservative
+                            # and don't fire on the music-mode threshold
+                            # until we've sampled ~480 ms of baseline.
+                            fire_wake = False
+                    if fire_wake:
                         t_wake_fired = time.monotonic()
                         speech_frames = sum(pre_wake_speech_frames)
                         pre_wake_speech_seconds = round(
