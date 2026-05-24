@@ -67,6 +67,97 @@ def calculate_rms(audio_data: bytes) -> float:
     return float(rms)
 
 
+def _drain_until_quiet(
+    q: "queue.Queue[bytes]",
+    *,
+    chunk_secs: float,
+    max_wait_secs: float,
+    quiet_rms_threshold: float,
+    consecutive_quiet_secs: float,
+) -> tuple[int, float, bool]:
+    """Pop frames off ``q`` until the room has been quiet for
+    ``consecutive_quiet_secs``, OR ``max_wait_secs`` has elapsed.
+
+    Replaces the v0.1.64-and-earlier fixed-time ``skip_secs`` hack —
+    instead of guessing 0.3 s and hoping the room is quiet by then, we
+    watch the mic and proceed the moment it actually goes quiet. The
+    kitchen-node beta-test reproduced 400-700 ms of TTS tail bleeding
+    into the listen window through cabinet reverb; this loop adapts to
+    that per-room without any tuning knob.
+
+    Returns ``(frames_drained, max_rms_observed, reached_quiet)`` for
+    diagnostics. Frames are intentionally discarded — they're the TTS
+    tail we wanted to skip.
+    """
+    needed_quiet_frames = max(1, int(consecutive_quiet_secs / chunk_secs))
+    max_frames = max(1, int(max_wait_secs / chunk_secs))
+    consecutive_below = 0
+    drained = 0
+    max_rms = 0.0
+    reached_quiet = False
+    for _ in range(max_frames):
+        try:
+            data = q.get(timeout=max(chunk_secs * 10, 1.0))
+        except queue.Empty:
+            break
+        drained += 1
+        rms = calculate_rms(data)
+        if rms > max_rms:
+            max_rms = rms
+        if rms < quiet_rms_threshold:
+            consecutive_below += 1
+            if consecutive_below >= needed_quiet_frames:
+                reached_quiet = True
+                break
+        else:
+            consecutive_below = 0
+    return drained, max_rms, reached_quiet
+
+
+def _normalize_frames_to_target_rms(
+    frames: List[bytes],
+    *,
+    target_rms_db: float,
+    max_gain_db: float,
+    min_gain_db: float = 0.5,
+) -> tuple[List[bytes], float, float]:
+    """Apply a single static gain so the joined RMS sits near ``target_rms_db``.
+
+    Whisper performs best on speech at roughly -18 to -14 dB FS. Faint
+    far-field kitchen-mic recordings come in at -25 to -30 dB FS and
+    the model starts hallucinating to fill the dynamic-range gap (the
+    May-2026 beta saw "play kiss from a rose" transcribed as "Thank
+    you for our rooms"). Bringing the captured audio up to Whisper's
+    sweet spot reduces the model's freedom to hallucinate without
+    altering the recording's relative shape.
+
+    Capped at ``max_gain_db`` so a purely-silent recording doesn't get
+    amplified to clipping noise. Skips application when the needed
+    boost is less than ``min_gain_db`` (already loud enough).
+
+    Returns ``(new_frames, current_rms_db, applied_gain_db)`` — both
+    diagnostics are reported back so the caller can log the decision.
+    """
+    if not frames:
+        return frames, 0.0, 0.0
+    samples = np.frombuffer(b"".join(frames), dtype=np.int16)
+    if samples.size == 0:
+        return frames, 0.0, 0.0
+    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+    if rms < 1.0:  # essentially silent — nothing to normalize toward
+        return frames, -120.0, 0.0
+    current_db = 20.0 * float(np.log10(rms / 32768.0))
+    needed_db = target_rms_db - current_db
+    if needed_db < min_gain_db:
+        return frames, current_db, 0.0
+    gain_db = min(needed_db, max_gain_db)
+    gain_linear = 10 ** (gain_db / 20.0)
+    boosted = np.clip(
+        samples.astype(np.float64) * gain_linear, -32768, 32767
+    ).astype(np.int16)
+    return [boosted.tobytes()], current_db, gain_db
+
+
 def _write_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
     with wave.open(path, "wb") as wf:
         wf.setnchannels(bus.channels)
@@ -75,12 +166,37 @@ def _write_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
         wf.writeframes(b"".join(frames))
 
 
+def _maybe_normalize(frames: List[bytes]) -> List[bytes]:
+    """Apply audio normalization to ``frames`` if enabled in Config.
+
+    Wraps ``_normalize_frames_to_target_rms`` with the Config-driven
+    on/off + target RMS + max gain knobs. Logs the decision so per-
+    recording behavior can be inspected without re-running.
+    """
+    if not Config.get_bool("audio_normalize_enabled", True):
+        return frames
+    target_db = Config.get_float("audio_normalize_target_rms_db", -18.0)
+    max_gain_db = Config.get_float("audio_normalize_max_gain_db", 18.0)
+    new_frames, current_db, applied_db = _normalize_frames_to_target_rms(
+        frames, target_rms_db=target_db, max_gain_db=max_gain_db,
+    )
+    if applied_db > 0:
+        logger.info(
+            "Audio normalized",
+            original_rms_db=round(current_db, 1),
+            target_rms_db=target_db,
+            applied_gain_db=round(applied_db, 1),
+        )
+    return new_frames
+
+
 def listen(
     bus: AudioBus,
     *,
     subscriber_name: str = "listen",
     history_secs: float = 0.0,
-    skip_secs: float = 0.3,
+    skip_secs: float = 0.0,
+    quiet_wait_secs: Optional[float] = None,
     silence_threshold: Optional[int] = None,
     silence_duration: Optional[float] = None,
     min_record_secs: Optional[float] = None,
@@ -94,15 +210,29 @@ def listen(
     been reached. Writes the captured audio to ``command.wav`` and
     returns metadata.
 
-    All four timing knobs fall back to live Config if not overridden —
-    so the state machine can pass longer silence windows for command
-    capture without hard-coding them.
+    Two pre-recording phases ahead of the main loop:
+
+    * **quiet-wait** (when ``quiet_wait_secs > 0``): drains chunks until
+      the bus has been below ``listen_quiet_rms_threshold`` for
+      ``listen_quiet_consecutive_secs``, OR ``quiet_wait_secs`` elapses.
+      Replaces the v0.1.64 fixed-time ``skip_secs=0.3`` hack — instead of
+      guessing how long the TTS-response tail takes to fade, we measure
+      it. Defaults pulled from Config when None.
+    * **skip_secs** (when ``skip_secs > 0``): legacy fixed-time drain on
+      top of quiet-wait. Default 0 now that quiet-wait does the job per-
+      room. Kept for callers that explicitly want a fixed offset.
+
+    All timing knobs fall back to live Config if not overridden — so the
+    state machine can pass longer silence windows for command capture
+    without hard-coding them.
     """
     defaults = _audio_defaults()
     silence_threshold = silence_threshold if silence_threshold is not None else defaults["silence_threshold"]
     silence_duration = silence_duration if silence_duration is not None else defaults["silence_duration"]
     min_record_secs = min_record_secs if min_record_secs is not None else defaults["min_record_seconds"]
     max_record_secs = max_record_secs if max_record_secs is not None else defaults["max_record_seconds"]
+    if quiet_wait_secs is None:
+        quiet_wait_secs = Config.get_float("listen_quiet_max_wait_secs", 0.8)
 
     output_filename = str(_cache_dir / "command.wav")
     chunk_secs = bus.chunk_samples / bus.rate
@@ -113,6 +243,8 @@ def listen(
     logger.info(
         "Listening for speech",
         history_secs=history_secs,
+        quiet_wait_secs=quiet_wait_secs,
+        skip_secs=skip_secs,
         silence_threshold=silence_threshold,
         silence_duration=silence_duration,
         min_seconds=min_record_secs,
@@ -123,12 +255,41 @@ def listen(
     frames: List[bytes] = []
     silence_frames = 0
     hit_max = False
-    # Discard the first ``skip_secs`` worth of chunks to dodge TTS tail
-    # bleed / AEC recovery after the wake-response playback. Without this,
-    # the mic still captures residual speaker output as "audio", Whisper
-    # transcribes it, and the node ends up responding to itself.
-    skip_chunks = max(0, int(skip_secs / chunk_secs)) if skip_secs > 0 else 0
     try:
+        # Phase 1: wait for the room to actually go quiet before recording
+        # starts. Kitchen-node beta test (May 2026) showed TTS reverb tail
+        # of 400-700 ms causing Whisper to transcribe the speaker's own
+        # response back as a "user" command. This phase measures the
+        # actual mic energy and proceeds the moment it dips below the
+        # quiet threshold — per-room adaptive, no tuning required.
+        if quiet_wait_secs > 0:
+            quiet_rms = Config.get_float(
+                "listen_quiet_rms_threshold",
+                float(silence_threshold) * 1.5,
+            )
+            quiet_consec = Config.get_float(
+                "listen_quiet_consecutive_secs", 0.16,
+            )
+            drained, max_rms, reached_quiet = _drain_until_quiet(
+                q,
+                chunk_secs=chunk_secs,
+                max_wait_secs=quiet_wait_secs,
+                quiet_rms_threshold=quiet_rms,
+                consecutive_quiet_secs=quiet_consec,
+            )
+            logger.info(
+                "Speaker-quiet wait complete",
+                drained_frames=drained,
+                drained_ms=int(drained * chunk_secs * 1000),
+                max_rms_during_wait=round(max_rms, 1),
+                quiet_threshold=round(quiet_rms, 1),
+                reached_quiet=reached_quiet,
+            )
+
+        # Phase 2: legacy fixed-time skip on top, for callers that want
+        # a deterministic extra pad. Default 0 — most callers should
+        # rely on the quiet-wait above instead.
+        skip_chunks = max(0, int(skip_secs / chunk_secs)) if skip_secs > 0 else 0
         for _ in range(skip_chunks):
             try:
                 q.get(timeout=max(chunk_secs * 10, 1.0))
@@ -171,6 +332,7 @@ def listen(
     actual_duration = len(frames) * chunk_secs
     logger.info("Recording complete", duration=f"{actual_duration:.2f}s", hit_max=hit_max)
 
+    frames = _maybe_normalize(frames)
     _write_wav(output_filename, frames, bus)
     return RecordingResult(output_filename, actual_duration, hit_max)
 
@@ -229,6 +391,7 @@ def listen_for_follow_up(
     subscriber_name: str = "follow_up",
     timeout_seconds: float = 5.0,
     history_secs: float = 0.0,
+    quiet_wait_secs: Optional[float] = None,
     silence_threshold: Optional[int] = None,
     silence_duration: Optional[float] = None,
     max_record_secs: Optional[float] = None,
@@ -237,8 +400,10 @@ def listen_for_follow_up(
 ) -> str | None:
     """Listen for follow-up speech within a timeout window.
 
-    Subscribes to the bus, waits up to ``timeout_seconds`` for speech
-    onset (consecutive frames with RMS >= silence_threshold). If
+    Subscribes to the bus, optionally drains chunks until the room goes
+    quiet (replaces the v0.1.64 ``follow_up_tts_settle_secs`` sleep —
+    same fix as ``listen()``), then waits up to ``timeout_seconds`` for
+    speech onset (consecutive frames with RMS >= silence_threshold). If
     detected, switches to normal recording mode until silence. If the
     timeout expires without speech, returns None.
 
@@ -273,6 +438,12 @@ def listen_for_follow_up(
         # [BLANK_AUDIO]/[silence] hallucinations. Settable via
         # ``follow_up_min_speech_secs`` if a room turns out to be noisier.
         min_speech_secs = Config.get_float("follow_up_min_speech_secs", 0.3)
+    if quiet_wait_secs is None:
+        # Smaller default than the initial-listen quiet-wait (0.8) because
+        # the post-TTS gap before a follow-up is typically shorter — the
+        # response TTS tends to be brief ("OK, done.") so the speaker
+        # tail decays faster. Tunable via ``follow_up_quiet_wait_secs``.
+        quiet_wait_secs = Config.get_float("follow_up_quiet_wait_secs", 0.5)
 
     output_filename = str(_cache_dir / "follow_up.wav")
     chunk_secs = bus.chunk_samples / bus.rate
@@ -288,7 +459,11 @@ def listen_for_follow_up(
     base_onset = 3
     onset_required = min(15, base_onset + (follow_up_iteration - 1) * 3)
 
-    logger.debug("Follow-up listening window opened", timeout_seconds=timeout_seconds)
+    logger.debug(
+        "Follow-up listening window opened",
+        timeout_seconds=timeout_seconds,
+        quiet_wait_secs=quiet_wait_secs,
+    )
 
     q = bus.subscribe(subscriber_name, history_secs=history_secs)
     frames: List[bytes] = []
@@ -301,6 +476,35 @@ def listen_for_follow_up(
     chunks_seen = 0
     onset_deadline = time.monotonic() + timeout_seconds
     try:
+        # Quiet-wait phase — drain the speaker tail before onset detection
+        # starts. Replaces the v0.1.64 follow_up_tts_settle_secs sleep with
+        # an adaptive measurement: proceed the moment the room is actually
+        # quiet, instead of guessing 0.6 s. The onset_deadline is NOT
+        # extended; the timeout budget includes any quiet-wait time the
+        # caller's deadline already accounted for.
+        if quiet_wait_secs > 0:
+            quiet_rms = Config.get_float(
+                "listen_quiet_rms_threshold",
+                float(silence_threshold) * 1.5,
+            )
+            quiet_consec = Config.get_float(
+                "listen_quiet_consecutive_secs", 0.16,
+            )
+            drained, qwait_max_rms, reached_quiet = _drain_until_quiet(
+                q,
+                chunk_secs=chunk_secs,
+                max_wait_secs=quiet_wait_secs,
+                quiet_rms_threshold=quiet_rms,
+                consecutive_quiet_secs=quiet_consec,
+            )
+            logger.info(
+                "Follow-up speaker-quiet wait complete",
+                drained_frames=drained,
+                drained_ms=int(drained * chunk_secs * 1000),
+                max_rms_during_wait=round(qwait_max_rms, 1),
+                quiet_threshold=round(quiet_rms, 1),
+                reached_quiet=reached_quiet,
+            )
         while time.monotonic() < onset_deadline:
             remaining = max(0.05, onset_deadline - time.monotonic())
             try:
@@ -386,5 +590,6 @@ def listen_for_follow_up(
         return None
 
     logger.info("Follow-up recording complete", duration=f"{actual_duration:.2f}s")
+    frames = _maybe_normalize(frames)
     _write_wav(output_filename, frames, bus)
     return output_filename

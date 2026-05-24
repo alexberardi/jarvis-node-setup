@@ -62,6 +62,81 @@ _PROCESSING_ACK_POOL: list[str] = [
 # read fresh on each wake / follow-up cycle so mobile-app updates apply live.
 WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis"
 
+# Wake-threshold auto-calibration state ---------------------------------------
+# Tracks OWW scores at wake-fire for wakes that resulted in a legitimate
+# (non not_for_me) interaction. When wake_word_threshold_auto is enabled,
+# _wake_threshold() uses these to set a per-node threshold instead of a
+# static default. Persisted to disk so the threshold survives restarts.
+_WAKE_SCORE_HISTORY_FILE = _cache_dir / "wake_scores.json"
+_WAKE_SCORE_HISTORY_MAX = 20
+_WAKE_SCORE_HISTORY_MIN_SAMPLES = 5
+_wake_score_history: deque[float] = deque(maxlen=_WAKE_SCORE_HISTORY_MAX)
+_wake_score_history_lock = threading.Lock()
+_wake_score_history_loaded = False
+
+
+def _load_wake_score_history() -> None:
+    """Load persisted wake-score history into the in-memory deque (idempotent)."""
+    global _wake_score_history_loaded
+    if _wake_score_history_loaded:
+        return
+    try:
+        if _WAKE_SCORE_HISTORY_FILE.exists():
+            import json as _json
+            data = _json.loads(_WAKE_SCORE_HISTORY_FILE.read_text())
+            if isinstance(data, list):
+                with _wake_score_history_lock:
+                    _wake_score_history.clear()
+                    for s in data[-_WAKE_SCORE_HISTORY_MAX:]:
+                        if isinstance(s, (int, float)) and 0.0 <= float(s) <= 1.0:
+                            _wake_score_history.append(float(s))
+    except (OSError, ValueError) as e:
+        logger.warning("Failed to load wake score history", error=str(e))
+    finally:
+        _wake_score_history_loaded = True
+
+
+def _record_legitimate_wake_score(score: float) -> None:
+    """Track a wake-fire score that produced a non-not_for_me interaction.
+
+    Each legitimate wake is one data point telling the calibrator "this is
+    what 'hey jarvis' from the user sounds like in this room." After enough
+    samples, _auto_calibrated_wake_threshold puts the threshold just under
+    the lowest-scoring real wake — meaning real wakes always fire on the
+    first attempt without enlarging the false-positive window for ambient
+    noise. Persisted to disk so the calibration survives restarts.
+    """
+    if not (0.0 <= score <= 1.0):
+        return
+    with _wake_score_history_lock:
+        _wake_score_history.append(float(score))
+        snapshot = list(_wake_score_history)
+    try:
+        import json as _json
+        _WAKE_SCORE_HISTORY_FILE.write_text(_json.dumps(snapshot))
+    except OSError as e:
+        logger.warning("Failed to persist wake score history", error=str(e))
+
+
+def _auto_calibrated_wake_threshold(fallback: float) -> float:
+    """Return a dynamic wake threshold based on recent legitimate-wake scores.
+
+    Uses the 20th-percentile of recent scores discounted by 15%, clamped
+    to [0.10, 0.50]. The p20 anchor gives us a number 80% of real wakes
+    exceed; the 15% discount provides margin for normal variability.
+    Falls back to ``fallback`` until we have ``_WAKE_SCORE_HISTORY_MIN_SAMPLES``
+    data points (no calibration on a fresh node).
+    """
+    _load_wake_score_history()
+    with _wake_score_history_lock:
+        scores = sorted(_wake_score_history)
+    if len(scores) < _WAKE_SCORE_HISTORY_MIN_SAMPLES:
+        return fallback
+    idx = int(len(scores) * 0.20)
+    p20 = scores[idx]
+    calibrated = p20 * 0.85
+    return max(0.10, min(0.50, calibrated))
+
 
 def _wake_threshold() -> float:
     """Wake-word detection threshold, lowered while music is playing.
@@ -78,10 +153,18 @@ def _wake_threshold() -> float:
     "stop the music" verbally was unreliable. The 0.12 floor + energy
     gate together produce both higher recall AND lower false-positive
     rate than either alone.
+
+    When ``wake_word_threshold_auto`` is enabled, the non-music threshold
+    is derived from observed wake scores via ``_auto_calibrated_wake_threshold``
+    — per-node, per-mic, per-room. Default off so existing nodes' static
+    threshold isn't silently replaced.
     """
     if _music_is_playing():
         return Config.get_float("wake_word_threshold_music", 0.12)
-    return Config.get_float("wake_word_threshold", 0.4)
+    static_default = Config.get_float("wake_word_threshold", 0.4)
+    if Config.get_bool("wake_word_threshold_auto", False):
+        return _auto_calibrated_wake_threshold(static_default)
+    return static_default
 
 
 def _wake_music_energy_multiplier() -> float:
@@ -700,7 +783,7 @@ def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[Validatio
         tts_provider_instance.speak(False, question)
 
         logger.debug("Listening for validation response")
-        validation_recording = listen(bus, history_secs=0.0, skip_secs=0.3)
+        validation_recording = listen(bus, history_secs=0.0)
 
         validation_transcription = stt_provider.transcribe(validation_recording.audio_file)
 
@@ -1073,28 +1156,11 @@ def _follow_up_loop(
             follow_up_seconds - (iteration - 1) * FOLLOW_UP_TIMEOUT_DECAY,
         )
 
-        # TTS-drain settle. ``speak_result`` returns the moment our
-        # internal player finishes feeding bytes to PulseAudio, but
-        # PA's sink buffer plus the speaker hardware still hold the
-        # tail of the TTS response for ~400-700 ms. If we open the
-        # follow-up listener inside that window, the mic picks up the
-        # TTS tail, Whisper transcribes it, and CC re-routes it as a
-        # new user utterance — which is what produced the phantom
-        # "Here is sad music" follow-ups during beta testing. Waiting
-        # past the drain window means new audio AND ring-buffer
-        # history both start from a clean post-TTS point.
-        settle_secs = Config.get_float("follow_up_tts_settle_secs", 0.6)
+        # TTS-tail drain is now handled inside listen_for_follow_up() via
+        # the adaptive quiet-wait phase (v0.1.65) — proceed the moment
+        # the room is actually quiet instead of guessing a fixed sleep.
+        # Replaced the v0.1.64 follow_up_tts_settle_secs hack.
         elapsed = time.monotonic() - tts_end_ts
-        if elapsed < settle_secs:
-            time.sleep(settle_secs - elapsed)
-            # Re-anchor so history_secs computes from a clean point.
-            tts_end_ts = time.monotonic()
-            elapsed = 0.0
-
-        # history_secs trails tts_end_ts so the listener replays whatever
-        # the user said in the gap between TTS-end and listener-attach,
-        # capped at the ring buffer's 2 s capacity. Settling above means
-        # the first 0-600 ms of that gap is the TTS tail we want to skip.
         history_secs = max(0.0, min(2.0, elapsed))
         logger.info(
             "Follow-up iteration begin",
@@ -1104,7 +1170,6 @@ def _follow_up_loop(
             history_secs=round(history_secs, 3),
             timeout=round(iter_timeout, 1),
             consecutive_noise=consecutive_noise,
-            settle_secs=settle_secs,
         )
         # Re-pause any player processes before listening. The conversation's
         # outer pause/restore wrapping (in start_voice_listener) only catches
@@ -1376,7 +1441,7 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
             )
             warmup_thread.start()
 
-            recording = listen(bus, history_secs=0.0, skip_secs=0.3)
+            recording = listen(bus, history_secs=0.0)
 
             ack_played = _play_processing_ack()
 
@@ -1421,7 +1486,8 @@ def start_voice_listener(ma_service):
       3. On wake, unsubscribe ``wake`` so the wake detector doesn't
          fight the command listener for the queue.
       4. Play wake response (blocking TTS).
-      5. Record the command via ``listen(bus, history_secs=0.0, skip_secs=0.3)`` —
+      5. Record the command via ``listen(bus, history_secs=0.0)`` —
+         quiet-wait inside listen() drains the wake-response TTS tail —
          the 0.3s skip dodges TTS-tail bleed / AEC recovery without
          replaying the tail of the wake response into the recording
          (which would otherwise cause the node to transcribe its own
@@ -1631,6 +1697,12 @@ def start_voice_listener(ma_service):
                             fire_wake = False
                     if fire_wake:
                         t_wake_fired = time.monotonic()
+                        # Snapshot the score for the auto-calibrator. The
+                        # ``score`` variable will be overwritten when the
+                        # outer loop iterates again; we need it later
+                        # (after CC's not_for_me verdict) to decide whether
+                        # this wake counts as a "legitimate" data point.
+                        score_at_wake = float(score)
                         speech_frames = sum(pre_wake_speech_frames)
                         pre_wake_speech_seconds = round(
                             speech_frames * _CHUNK_SECONDS, 2,
@@ -1743,10 +1815,11 @@ def start_voice_listener(ma_service):
                 result = None
                 _t_listen_start = time.monotonic()
                 try:
-                    # history_secs=0 + skip_secs=0.3: do NOT replay the
-                    # wake-response TTS tail (that bug made the node
-                    # transcribe and respond to itself).
-                    recording = listen(bus, history_secs=0.0, skip_secs=0.3)
+                    # history_secs=0 + adaptive quiet-wait (v0.1.65) inside
+                    # listen(): do NOT replay the wake-response TTS tail
+                    # (that bug made the node transcribe and respond to
+                    # itself). Quiet-wait drains the speaker tail per-room.
+                    recording = listen(bus, history_secs=0.0)
                     _t_listen_end = time.monotonic()
                     logger.info(
                         f"⏱️ wake-step | listen() took "
@@ -1774,6 +1847,15 @@ def start_voice_listener(ma_service):
                         skip_ack=ack_played,
                         pre_wake_speech_seconds=pre_wake_speech_seconds,
                     )
+                    # Feed the auto-calibrator: wake scores that produced a
+                    # real interaction (not the not_for_me silent abort)
+                    # become anchors for the threshold. Failures are NOT
+                    # recorded, biasing the calibrator toward conservatism
+                    # — a wake that CC rejected might have been a real
+                    # false-positive and including it would lower the bar
+                    # for genuine false positives.
+                    if isinstance(result, dict) and not result.get("not_for_me"):
+                        _record_legitimate_wake_score(score_at_wake)
                     # Capture TTS-end time RIGHT after send_for_transcription
                     # returns (which is right after speak_result completes).
                     # The follow-up loop uses this to know how far back to look
