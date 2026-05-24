@@ -16,6 +16,7 @@ comparison flow. We auto-confirm by writing ``yes`` to bluetoothctl's
 stdin whenever it prompts.
 """
 
+import errno
 import os
 import pty
 import re
@@ -52,7 +53,14 @@ def _read_pty(fd: int) -> None:
             try:
                 data = os.read(fd, 4096)
             except OSError as e:
-                logger.error("BT agent PTY read failed", error=str(e))
+                # EIO on the master end means the bluetoothctl subprocess
+                # closed its slave fd — happens every shutdown when the
+                # bluez agent tears down. Not a failure; the reader thread
+                # just exits cleanly.
+                if e.errno == errno.EIO:
+                    logger.debug("BT agent PTY closed (subprocess exited)")
+                else:
+                    logger.error("BT agent PTY read failed", error=str(e))
                 return
             if not data:
                 return
