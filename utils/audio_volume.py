@@ -129,6 +129,26 @@ def _list_bluez_sinks() -> list[str]:
     return sinks
 
 
+def _list_all_output_sinks() -> list[str]:
+    """Return every non-monitor PulseAudio sink. Empty if none / pactl missing.
+
+    On a fresh-install Pi (issue surfaced in beta May 2026), the audio
+    driver enumerates `vc4-hdmi` first and PA picks that as
+    ``@DEFAULT_SINK@`` even when the user's speaker is the ReSpeaker
+    HAT — so setting volume on `@DEFAULT_SINK@` succeeds but the user
+    hears no change. Apply to every output sink as a fallback.
+    """
+    result = _run(["pactl", "list", "short", "sinks"])
+    if result is None or result.returncode != 0:
+        return []
+    sinks: list[str] = []
+    for line in result.stdout.splitlines():
+        cols = line.split("\t")
+        if len(cols) >= 2 and not cols[1].endswith(".monitor"):
+            sinks.append(cols[1])
+    return sinks
+
+
 def _pactl_set_sink_volume(sink: str, pct: int) -> bool:
     result = _run(["pactl", "set-sink-volume", sink, f"{pct}%"])
     return result is not None and result.returncode == 0
@@ -190,23 +210,53 @@ def is_muted() -> bool | None:
 
 
 def set_volume_percent(pct: int) -> bool:
-    """Clamp to [0, 100] and apply across PA's default sink + every BT sink.
+    """Clamp to [0, 100] and apply across every output sink we can see.
 
-    Returns True if @DEFAULT_SINK@ was set; BT sinks are best-effort
-    (no-op when none are paired).
+    Persists to config.json first so the requested level survives reboot
+    even when PulseAudio hasn't enumerated the audio card yet (the
+    fresh-install case — PA daemon isn't up on first boot until the
+    first sink-using process triggers it). After persisting, applies
+    live to @DEFAULT_SINK@; if that fails, falls back to enumerating
+    every non-monitor sink and applying to each (covers the case where
+    HDMI ended up as the default sink but the user's speaker is on
+    another sink).
+
+    Returns True if any sink was successfully updated; persistence
+    happens unconditionally so the next boot picks up the right value.
     """
     pct = max(0, min(100, int(pct)))
 
+    # Persist first — even if PA is still warming up, the value sticks
+    # for next boot. The MQTT handler also writes config.json after
+    # this call, but doing it here makes set_volume_percent self-
+    # contained for voice-driven adjustments ("volume up").
+    persist_volume_percent(pct)
+
     default_ok = _pactl_set_sink_volume("@DEFAULT_SINK@", pct)
+
+    fallback_sinks: list[str] = []
+    if not default_ok:
+        for sink in _list_all_output_sinks():
+            if _pactl_set_sink_volume(sink, pct):
+                fallback_sinks.append(sink)
+
     for sink in _list_bluez_sinks():
         _pactl_set_sink_volume(sink, pct)
 
-    if default_ok:
-        persist_volume_percent(pct)
-        logger.info("Volume set", percent=pct)
-    else:
-        logger.warning("pactl set-sink-volume @DEFAULT_SINK@ failed")
-    return default_ok
+    if default_ok or fallback_sinks:
+        logger.info(
+            "Volume set",
+            percent=pct,
+            default_sink_ok=default_ok,
+            fallback_sinks=fallback_sinks,
+        )
+        return True
+
+    logger.warning(
+        "pactl set-sink-volume failed for every sink — persisted only",
+        percent=pct,
+    )
+    return False
 
 
 def adjust_volume_percent(delta: int) -> int | None:
@@ -221,13 +271,32 @@ def adjust_volume_percent(delta: int) -> int | None:
 
 
 def set_muted(muted: bool) -> bool:
-    """Mute/unmute PA's default sink + every BT sink. True if default sink succeeded."""
+    """Mute/unmute every output sink we can see.
+
+    Same fresh-install resilience as ``set_volume_percent``: if
+    @DEFAULT_SINK@ fails or points at the wrong sink (e.g. HDMI on a
+    first-boot Pi), fall back to enumerating every non-monitor sink.
+    Returns True if any sink was updated.
+    """
     default_ok = _pactl_set_sink_mute("@DEFAULT_SINK@", muted)
+
+    fallback_sinks: list[str] = []
+    if not default_ok:
+        for sink in _list_all_output_sinks():
+            if _pactl_set_sink_mute(sink, muted):
+                fallback_sinks.append(sink)
+
     for sink in _list_bluez_sinks():
         _pactl_set_sink_mute(sink, muted)
 
-    if default_ok:
-        logger.info("Mute set", muted=muted)
-    else:
-        logger.warning("pactl set-sink-mute @DEFAULT_SINK@ failed")
-    return default_ok
+    if default_ok or fallback_sinks:
+        logger.info(
+            "Mute set",
+            muted=muted,
+            default_sink_ok=default_ok,
+            fallback_sinks=fallback_sinks,
+        )
+        return True
+
+    logger.warning("pactl set-sink-mute failed for every sink", muted=muted)
+    return False
