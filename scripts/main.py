@@ -27,6 +27,30 @@ if not os.environ.get("JARVIS_CONFIG_URL"):
     except (json.JSONDecodeError, KeyError) as _e:
         print(f"WARNING: Config parse error: {_e}", file=sys.stderr)
 
+# Initialize service discovery (jarvis-config-client) BEFORE importing
+# any jarvis_log_client consumers. JarvisLogger resolves its server URL
+# at __init__ time via ``_get_logs_url()`` — which queries
+# ``jarvis_config_client.get_service_url("logs")``. If config-client
+# isn't initialised, the call returns None and the URL falls back to
+# the hard-coded ``http://localhost:7702`` default. Nothing listens on
+# 7702 on a Pi, so every log batch silently fails and the client
+# falls back to console-only mode.
+#
+# Subtle race: ``from scripts.voice_listener import start_voice_listener``
+# below transitively imports jarvis_log_client AND instantiates
+# ``logger = JarvisLogger(service="jarvis-node")`` at module level —
+# so by the time main.py's own ``logger = JarvisLogger(...)`` runs the
+# cached instance already has the wrong URL. Doing the init here, before
+# any of the dependent imports, fixes the entire process tree.
+#
+# Failure mode for this discovery call is graceful: it logs a warning
+# via stdlib logging and leaves config-client uninitialised, in which
+# case JarvisLogger still falls through to its env-var → default
+# fallback. Network outage at boot is the only realistic cause and
+# systemd ``After=network-online.target`` keeps that window small.
+from utils.service_discovery import init as init_service_discovery
+init_service_discovery()
+
 from jarvis_log_client import init as init_logging, init_node as init_logging_node, JarvisLogger
 
 from scripts.mqtt_tts_listener import start_mqtt_listener
@@ -36,7 +60,6 @@ from services.agent_scheduler_service import initialize_agent_scheduler
 from services.timer_service import initialize_timer_service
 from utils.config_service import Config
 from utils.music_assistant_service import DummyMusicAssistantService, MusicAssistantService
-from utils.service_discovery import init as init_service_discovery
 
 # Initialize logging.
 # Prefer node-mode auth using the node credentials we already have in
@@ -257,8 +280,13 @@ def main():
             logger.warning("Node not provisioned or cannot reach command center")
             _run_provisioning_and_restart()
             return  # Should not reach here due to os.execv
-    # Initialize service discovery (config service → JSON config fallback)
-    if init_service_discovery():
+    # Service discovery was already initialised at module-import time
+    # (above the jarvis_log_client import so the log-client picks up
+    # the correct logs URL on first instantiation — see comment block
+    # at the top of this file). Just report the status here for the
+    # remote log so operators can confirm at a glance.
+    from utils.service_discovery import is_initialized as _service_discovery_initialized
+    if _service_discovery_initialized():
         logger.info("Service discovery initialized")
     else:
         logger.info("Using JSON config for service URLs")
