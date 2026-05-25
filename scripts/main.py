@@ -479,16 +479,25 @@ def main():
     supervisor_thread.start()
     logger.info("Thread supervisor started")
 
-    # Connectivity watchdog — exits the process when CC is unreachable
-    # for too long so systemd's Restart=always brings us back. Without
-    # this, paho-mqtt's reconnect loop keeps the process alive forever
-    # on WiFi loss and the node never recovers (the May-2026 beta
-    # blocker). Daemon thread; safe if it fails to start.
-    try:
-        from services.connectivity_watchdog import start_connectivity_watchdog
-        start_connectivity_watchdog(_shutdown_event)
-    except Exception as e:
-        logger.warning("Connectivity watchdog init failed (non-fatal)", error=str(e))
+    # NOTE (v0.1.69): the v0.1.64-introduced ``connectivity_watchdog``
+    # was removed here. It exited the process when CC was unreachable
+    # for 5+ minutes, triggering a systemd restart — but the restarted
+    # process then re-ran ``is_provisioned()``, which conflates "CC
+    # unreachable" with "not provisioned" and drops the node into AP
+    # mode. So on every transient CC blip the node tore down its WiFi
+    # client and broadcast as ``jarvis-XXXX``, stuck offline until a
+    # physical reboot. paho-mqtt's auto-reconnect already rides
+    # transient outages correctly without any of this; the watchdog
+    # was a misguided fix that actively created the very failure mode
+    # it claimed to repair.
+    #
+    # The legitimate "CC unreachable so re-provisioning is needed
+    # (WiFi changed)" case is still handled by the existing
+    # is_provisioned() retry-then-AP-mode flow. AP mode itself runs
+    # a recovery watcher (provisioning.recovery_watcher) that polls
+    # the saved CC URL and reboots the node if CC comes back — so a
+    # transient outage that DID happen to land during boot self-heals
+    # without manual intervention.
 
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This
