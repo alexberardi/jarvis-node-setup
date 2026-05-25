@@ -141,9 +141,21 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     if auto_shutdown:
         logger.info("Auto-shutdown enabled")
 
+    # AP-mode recovery watcher (v0.1.69): poll the saved CC URL and
+    # reboot when it comes back, so a transient CC outage that pushed
+    # us into AP mode self-heals without a physical reboot. See
+    # provisioning/recovery_watcher.py for full rationale.
+    recovery_shutdown_event = threading.Event()
+    try:
+        from provisioning.recovery_watcher import start_recovery_watcher
+        start_recovery_watcher(recovery_shutdown_event)
+    except Exception as e:
+        logger.warning("Recovery watcher failed to start (non-fatal)", error=str(e))
+
     try:
         uvicorn.run(app, host="0.0.0.0", port=port)
     finally:
+        recovery_shutdown_event.set()
         if captive_server:
             captive_server.shutdown()
 
