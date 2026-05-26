@@ -15,6 +15,7 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    FastPathPattern,
     IJarvisCommand,
     PreRouteResult,
 )
@@ -88,7 +89,27 @@ class WhatsUpCommand(IJarvisCommand):
     # Pre-routing
     # ------------------------------------------------------------------
 
-    def pre_route(self, voice_command: str) -> PreRouteResult | None:
+    _FAST_PATH_ID = "check_alerts.greeting"
+
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id=self._FAST_PATH_ID,
+                description="Bypass the LLM when greeting phrases ('what's up', 'any alerts') are spoken with pending alerts in the queue",
+                example="what's up",
+            ),
+        ]
+
+    def pre_route(
+        self,
+        voice_command: str,
+        *,
+        disabled_pattern_ids: "set[str] | frozenset[str]" = frozenset(),
+    ) -> PreRouteResult | None:
+        if self._FAST_PATH_ID in disabled_pattern_ids:
+            return None
+
         text = voice_command.strip().lower()
         if not text:
             return None

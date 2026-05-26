@@ -13,7 +13,9 @@ from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
 from db import SessionLocal
+from repositories.agent_registry_repository import AgentRegistryRepository
 from repositories.command_registry_repository import CommandRegistryRepository
+from repositories.disabled_fast_path_repository import DisabledFastPathRepository
 from utils.config_service import Config
 from utils.encryption_utils import get_k2
 from utils.service_discovery import get_command_center_url
@@ -150,6 +152,10 @@ def _dispatch_config(config_type: str, config_data: dict[str, str]) -> None:
         _dispatch_auth(provider, config_data)
     elif config_type == "command_registry":
         _dispatch_command_registry(config_data)
+    elif config_type == "agent_registry":
+        _dispatch_agent_registry(config_data)
+    elif config_type == "fast_path_registry":
+        _dispatch_fast_path_registry(config_data)
     else:
         _dispatch_secrets(config_data)
 
@@ -176,6 +182,71 @@ def _dispatch_command_registry(config_data: dict[str, str]) -> None:
     # Refresh discovery cache so the change takes effect immediately
     from utils.command_discovery_service import get_command_discovery_service
     get_command_discovery_service().refresh_now()
+
+
+def _dispatch_agent_registry(config_data: dict[str, str]) -> None:
+    """Update agent enabled/disabled state in the registry.
+
+    The scheduler reads is_enabled() on every tick, so no discovery refresh
+    is needed — the next scheduled check naturally picks up the new state.
+    """
+    agent_name = config_data.get("agent_name", "")
+    enabled_str = config_data.get("enabled", "true")
+    enabled = enabled_str.lower() in ("true", "1", "yes")
+
+    if not agent_name:
+        logger.warning("agent_registry push missing agent_name")
+        return
+
+    db = SessionLocal()
+    try:
+        repo = AgentRegistryRepository(db)
+        repo.set_enabled(agent_name, enabled)
+    finally:
+        db.close()
+
+    logger.info("Agent registry updated", agent=agent_name, enabled=enabled)
+
+
+def _dispatch_fast_path_registry(config_data: dict[str, str]) -> None:
+    """Update a single fast-path pattern's enabled/disabled state.
+
+    Payload shape: {"command_name": "set_timer", "pattern_id": "timer.set",
+                    "enabled": "true" | "false"}
+
+    Enabled=true removes the pattern from the disabled-list table (sparse
+    storage — enabled is the default). Enabled=false inserts a row. The
+    next call to try_pre_route() picks up the new state via the single-pass
+    repository read at the top of that method, so no cache refresh needed.
+    """
+    command_name = config_data.get("command_name", "")
+    pattern_id = config_data.get("pattern_id", "")
+    enabled_str = config_data.get("enabled", "true")
+    enabled = enabled_str.lower() in ("true", "1", "yes")
+
+    if not command_name or not pattern_id:
+        logger.warning(
+            "fast_path_registry push missing command_name or pattern_id",
+            command_name=command_name,
+            pattern_id=pattern_id,
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        repo = DisabledFastPathRepository(db)
+        # set_disabled flips it the right way: enabled=True deletes any row,
+        # enabled=False inserts one (idempotent both ways).
+        repo.set_disabled(command_name, pattern_id, not enabled)
+    finally:
+        db.close()
+
+    logger.info(
+        "Fast-path registry updated",
+        command_name=command_name,
+        pattern_id=pattern_id,
+        enabled=enabled,
+    )
 
 
 def _dispatch_auth(provider: str, config_data: dict[str, str]) -> None:
