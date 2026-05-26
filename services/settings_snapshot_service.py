@@ -310,6 +310,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "min_record_seconds": Config.get_float("min_record_seconds", 1.0),
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
+        "wake_ack_audio_enabled": Config.get_bool("wake_ack_audio_enabled", True),
         "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 10),
         "follow_up_silence_duration": Config.get_float("follow_up_silence_duration", 0.5),
         "follow_up_min_record_after_onset_secs": Config.get_float(
