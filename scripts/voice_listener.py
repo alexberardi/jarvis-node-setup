@@ -651,6 +651,11 @@ def handle_keyword_detected():
     # slow path's latency instead of front-loading dead air on fast paths).
     if Config.get_bool("wake_ack_audio_enabled", True):
         play_wake_ack()
+    else:
+        # No audio = no natural duration for the purple LED. Sleep briefly
+        # so the wake-detected color reads as a single visible flash before
+        # we transition to the listening color.
+        time.sleep(0.2)
 
     # Fetch the next wake response in the background if provider is configured
     _bg_executor.submit(fetch_next_wake_response)
@@ -1147,14 +1152,10 @@ def send_for_transcription(
             logger.info("Transcription received", text=transcription)
 
         # Command processing with specific error handling.
-        # on_llm_fallback fires the wake-ack audio if and only if pre-route
-        # didn't claim the utterance (LLM path). When the user has set
-        # wake_ack_audio_enabled=False, this is the only place the audio
-        # cue plays — fast-path queries stay silent.
-        def _deferred_wake_ack() -> None:
-            if not Config.get_bool("wake_ack_audio_enabled", True):
-                play_wake_ack()
-
+        # When wake_ack_audio_enabled=False the user has opted out of audio
+        # acks entirely — no wake-time ack, no post-listen processing-ack,
+        # no LLM-side "let me look into that" ack. The LED still flashes.
+        audio_acks_disabled = not Config.get_bool("wake_ack_audio_enabled", True)
         try:
             result = command_service.process_voice_command(
                 transcription, validation_handler,
@@ -1162,9 +1163,8 @@ def send_for_transcription(
                 conversation_id=conversation_id,
                 warmup_thread=warmup_thread,
                 warmup_result=warmup_result,
-                skip_ack=skip_ack,
+                skip_ack=skip_ack or audio_acks_disabled,
                 pre_wake_speech_seconds=pre_wake_speech_seconds,
-                on_llm_fallback=_deferred_wake_ack,
             )
         except (ConnectionError, OSError, TimeoutError) as e:
             logger.error("Command center unreachable", error=str(e))
@@ -2049,13 +2049,20 @@ def start_voice_listener(ma_service):
                         f"(T+{int((_t_listen_end - t_wake_fired) * 1000)}ms total)"
                     )
 
-                    _t_ack_start = time.monotonic()
-                    ack_played = _play_processing_ack()
-                    logger.info(
-                        f"⏱️ wake-step | processing-ack took "
-                        f"{int((time.monotonic() - _t_ack_start) * 1000)}ms "
-                        f"(played={ack_played})"
-                    )
+                    # Suppress the post-listen processing-ack when audio
+                    # acks are disabled — the deferred wake-ack (played by
+                    # on_llm_fallback inside process_voice_command) covers
+                    # the same job without stacking two back-to-back acks.
+                    if Config.get_bool("wake_ack_audio_enabled", True):
+                        _t_ack_start = time.monotonic()
+                        ack_played = _play_processing_ack()
+                        logger.info(
+                            f"⏱️ wake-step | processing-ack took "
+                            f"{int((time.monotonic() - _t_ack_start) * 1000)}ms "
+                            f"(played={ack_played})"
+                        )
+                    else:
+                        ack_played = False
 
                     if barge_in:
                         barge_in.start()
