@@ -288,7 +288,7 @@ from ha_shared.entity_resolver import resolve_entity_id
 **Why not `services/` or `utils/`?**
 
 Community packages installed from the Pantry scatter components to type-specific
-directories and install shared code to `~/.jarvis/packages/<name>/lib/`. If a
+directories and install shared code to `~/.jarvis/packages/<name>/<name>_lib/`. If a
 package ships a `services/` directory, it shadows the node's built-in `services/`
 package. The Pantry static analysis pipeline flags this with a warning.
 
@@ -330,7 +330,7 @@ Bundles scatter components to type-specific directories:
 | `device_manager` | `device_managers/custom_managers/{name}/` |
 | `routine` | `routines/custom_routines/{name}/` |
 
-Shared code → `~/.jarvis/packages/{name}/lib/`
+Shared code → `~/.jarvis/packages/{name}/{name}_lib/`
 Package metadata → `~/.jarvis/packages/{name}.json`
 
 ### Convention Directory Structure (for repos)
