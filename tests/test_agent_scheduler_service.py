@@ -312,3 +312,100 @@ class TestGlobalAccessor:
         # Cleanup
         AgentSchedulerService._instance = None
         module._scheduler_service = None
+
+
+class TestEnabledGate:
+    """Verify the agent_registry gate skips disabled agents at scheduler tick time."""
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_disabled_agent_skipped_in_check_loop(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        """An agent with enabled=False in the registry must not run on its tick."""
+        mock_repo = MagicMock()
+        mock_repo.get_all.return_value = {"noisy_agent": False, "happy_agent": True}
+        mock_repo_cls.return_value = mock_repo
+
+        noisy = MockAgent(name="noisy_agent", interval=1, run_on_startup=False)
+        happy = MockAgent(name="happy_agent", interval=1, run_on_startup=False)
+        fresh_scheduler._agents = {"noisy_agent": noisy, "happy_agent": happy}
+
+        async def run_one_tick():
+            # Make both agents due
+            fresh_scheduler._last_run = {"noisy_agent": 0, "happy_agent": 0}
+            await fresh_scheduler._check_and_run_agents()
+
+        asyncio.run(run_one_tick())
+
+        assert noisy._run_count == 0
+        assert happy._run_count == 1
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_db_error_treats_all_as_enabled(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        """A DB read failure must not silently kill every agent — fail open."""
+        mock_session_local.side_effect = RuntimeError("db gone")
+
+        agent = MockAgent(name="resilient_agent", interval=1, run_on_startup=False)
+        fresh_scheduler._agents = {"resilient_agent": agent}
+        fresh_scheduler._last_run = {"resilient_agent": 0}
+
+        asyncio.run(fresh_scheduler._check_and_run_agents())
+
+        assert agent._run_count == 1
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_disabled_agent_skipped_in_startup_run(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        """run_on_startup agents must also respect the disable flag."""
+        mock_repo = MagicMock()
+        mock_repo.get_all.return_value = {"startup_off": False}
+        mock_repo_cls.return_value = mock_repo
+
+        agent = MockAgent(name="startup_off", interval=60, run_on_startup=True)
+        fresh_scheduler._agents = {"startup_off": agent}
+
+        asyncio.run(fresh_scheduler._run_startup_agents())
+
+        assert agent._run_count == 0
+
+
+class TestEnsureAgentsRegistered:
+    """Verify newly discovered agents get inserted with default-enabled state."""
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_start_registers_discovered_agents(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        agent = MockAgent(name="brand_new_agent")
+
+        with patch(
+            "services.agent_scheduler_service.get_agent_discovery_service"
+        ) as mock_discovery:
+            mock_discovery.return_value.get_all_agents.return_value = {"brand_new_agent": agent}
+            fresh_scheduler.start()
+
+        mock_repo.ensure_registered.assert_called_once_with(["brand_new_agent"])
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_update_agents_registers_new_agents(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        """Package install path: update_agents must register newly installed agents."""
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+
+        fresh_scheduler._agents = {}
+        new_agents = {"installed_agent": MockAgent(name="installed_agent")}
+        fresh_scheduler.update_agents(new_agents)
+
+        mock_repo.ensure_registered.assert_called_once_with(["installed_agent"])

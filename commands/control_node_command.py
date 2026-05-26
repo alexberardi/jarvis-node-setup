@@ -13,7 +13,12 @@ intent than asking the LLM to pick the right action enum.
 import re
 from typing import List
 
-from jarvis_command_sdk import CommandExample, IJarvisCommand, PreRouteResult
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 
 from core.command_response import CommandResponse
 from core.ijarvis_parameter import JarvisParameter
@@ -203,40 +208,82 @@ class ControlNodeCommand(IJarvisCommand):
 
     # ------------------------------------------------------------------
     # Pre-routing — bypasses LLM for the common verb+phrasing intents.
+    # Migrated to declarative fast_path_patterns; the SDK's default
+    # pre_route() iterates these in order and dispatches to the handler.
     # ------------------------------------------------------------------
-    def pre_route(self, voice_command: str) -> PreRouteResult | None:
-        text = voice_command.strip()
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        # Order matters — set-with-verb runs before bare so "set volume to 5"
+        # doesn't get caught by the bare-number pattern, and up/down run
+        # before bare so "volume up" can't be misread as a digit.
+        return [
+            FastPathPattern(
+                id="control_node.mute",
+                description="Bypass LLM for 'mute' / 'mute the speaker'",
+                example="mute",
+                regex=_MUTE_RE.pattern,
+                handler="_fp_mute",
+            ),
+            FastPathPattern(
+                id="control_node.unmute",
+                description="Bypass LLM for 'unmute' / 'unmute the speaker'",
+                example="unmute",
+                regex=_UNMUTE_RE.pattern,
+                handler="_fp_unmute",
+            ),
+            FastPathPattern(
+                id="control_node.volume_set",
+                description="Bypass LLM for 'set volume to N' / 'change volume to N%'",
+                example="set the volume to 50%",
+                regex=_VOLUME_SET_RE.pattern,
+                handler="_fp_volume_set",
+            ),
+            FastPathPattern(
+                id="control_node.volume_up",
+                description="Bypass LLM for 'volume up' / 'louder' / 'turn it up'",
+                example="volume up",
+                regex=_VOLUME_UP_RE.pattern,
+                handler="_fp_volume_up",
+            ),
+            FastPathPattern(
+                id="control_node.volume_down",
+                description="Bypass LLM for 'volume down' / 'quieter' / 'turn it down'",
+                example="volume down",
+                regex=_VOLUME_DOWN_RE.pattern,
+                handler="_fp_volume_down",
+            ),
+            FastPathPattern(
+                id="control_node.volume_bare",
+                description="Bypass LLM for bare 'volume N' / 'volume N%' (no verb)",
+                example="volume 7",
+                regex=_VOLUME_BARE_RE.pattern,
+                handler="_fp_volume_bare",
+            ),
+        ]
 
-        if _MUTE_RE.match(text):
-            return PreRouteResult(arguments={"action": "mute"})
-        if _UNMUTE_RE.match(text):
-            return PreRouteResult(arguments={"action": "unmute"})
+    def _fp_mute(self, match, voice_command):
+        return PreRouteResult(arguments={"action": "mute"})
 
-        # "set/change/make/put the volume to N(%)" — match before bare so
-        # "set volume to 5" doesn't get bare-matched and the verb anchors
-        # the intent.
-        match = _VOLUME_SET_RE.search(text)
-        if match:
-            target = _interpret_target(int(match.group(1)), bool(match.group(2)))
-            return PreRouteResult(
-                arguments={"action": "set_volume", "target_percent": target}
-            )
+    def _fp_unmute(self, match, voice_command):
+        return PreRouteResult(arguments={"action": "unmute"})
 
-        # Up / down before "volume \d+" so "volume up" can't fall into
-        # the digit branch.
-        if _VOLUME_UP_RE.search(text):
-            return PreRouteResult(arguments={"action": "volume_up"})
-        if _VOLUME_DOWN_RE.search(text):
-            return PreRouteResult(arguments={"action": "volume_down"})
+    def _fp_volume_set(self, match, voice_command):
+        target = _interpret_target(int(match.group(1)), bool(match.group(2)))
+        return PreRouteResult(
+            arguments={"action": "set_volume", "target_percent": target}
+        )
 
-        match = _VOLUME_BARE_RE.search(text)
-        if match:
-            target = _interpret_target(int(match.group(1)), bool(match.group(2)))
-            return PreRouteResult(
-                arguments={"action": "set_volume", "target_percent": target}
-            )
+    def _fp_volume_up(self, match, voice_command):
+        return PreRouteResult(arguments={"action": "volume_up"})
 
-        return None
+    def _fp_volume_down(self, match, voice_command):
+        return PreRouteResult(arguments={"action": "volume_down"})
+
+    def _fp_volume_bare(self, match, voice_command):
+        target = _interpret_target(int(match.group(1)), bool(match.group(2)))
+        return PreRouteResult(
+            arguments={"action": "set_volume", "target_percent": target}
+        )
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         action = (kwargs.get("action") or "").strip().lower()

@@ -16,6 +16,7 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    FastPathPattern,
     IJarvisCommand,
     PreRouteResult,
 )
@@ -204,7 +205,38 @@ class RoutineCommand(IJarvisCommand):
     # Pre-routing — deterministic trigger phrase matching
     # ------------------------------------------------------------------
 
-    def pre_route(self, voice_command: str) -> PreRouteResult | None:
+    @staticmethod
+    def _pattern_id_for(routine_name: str) -> str:
+        return f"routine.{routine_name}"
+
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        """One pattern per installed routine, so users can disable a specific
+        routine's trigger phrases (e.g. when a community package later claims
+        'good morning' for something else) without affecting the others."""
+        patterns: List[FastPathPattern] = []
+        try:
+            for routine_name, routine_def in _load_routines().items():
+                phrases = routine_def.get("trigger_phrases", [])
+                if not phrases:
+                    continue
+                patterns.append(
+                    FastPathPattern(
+                        id=self._pattern_id_for(routine_name),
+                        description=f"Run the '{routine_name}' routine without the LLM",
+                        example=phrases[0],
+                    )
+                )
+        except Exception as e:
+            logger.warning("Failed to enumerate routine fast-path patterns", error=str(e))
+        return patterns
+
+    def pre_route(
+        self,
+        voice_command: str,
+        *,
+        disabled_pattern_ids: "set[str] | frozenset[str]" = frozenset(),
+    ) -> PreRouteResult | None:
         text = voice_command.strip().lower()
         if not text:
             return None
@@ -212,6 +244,8 @@ class RoutineCommand(IJarvisCommand):
         routines = _load_routines()
 
         for routine_name, routine_def in routines.items():
+            if self._pattern_id_for(routine_name) in disabled_pattern_ids:
+                continue
             phrases = routine_def.get("trigger_phrases", [])
             if self._matches(text, phrases):
                 logger.info("Routine pre-routed", routine=routine_name, voice_command=voice_command)

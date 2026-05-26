@@ -4,11 +4,17 @@ Timezone command for Jarvis.
 Returns the current time in a specified location/timezone.
 """
 
-from typing import List
+from typing import Any, List
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from jarvis_command_sdk import IJarvisCommand, CommandExample, CommandAntipattern
+from jarvis_command_sdk import (
+    CommandAntipattern,
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -221,6 +227,40 @@ class TimezoneCommand(IJarvisCommand):
     # Generic/placeholder values the LLM might pass instead of omitting
     _LOCAL_PLACEHOLDERS = {"here", "local", "current", "now", "default", "none", "null", "my location", ""}
 
+    # ------------------------------------------------------------------
+    # Fast-path patterns — deterministic regex bypasses the LLM entirely.
+    # The SDK's default pre_route() iterates these in order; first match wins.
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            # Order matters: try "time in X" first so "what time is it in Tokyo"
+            # doesn't get caught by the local-time pattern.
+            FastPathPattern(
+                id="get_current_time.in_location",
+                description="Bypass LLM for 'what time is it in <city>' / 'time in <country>'",
+                example="what time is it in Tokyo",
+                regex=r"\b(?:what(?:'?s|\s+is)?\s+the\s+time|what\s+time\s+is\s+it|current\s+time|time)\s+in\s+(?P<location>[a-zA-Z][a-zA-Z\s]+?)\s*[?.!]*$",
+                handler="_fp_time_in_location",
+            ),
+            FastPathPattern(
+                id="get_current_time.local",
+                description="Bypass LLM for local time / date queries ('what time is it', 'what's today's date')",
+                example="what time is it",
+                regex=r"^\s*(?:what(?:'?s|\s+is)?\s+the\s+time|what\s+time\s+is\s+it|current\s+time|the\s+time|what\s+day\s+is\s+(?:it|today)|what(?:'?s|\s+is)?\s+(?:the\s+)?date|what(?:'?s|\s+is)?\s+today(?:'?s)?\s+date|what\s+day\s+(?:is|are)\s+we)\s*[?.!]*$",
+                handler="_fp_time_local",
+            ),
+        ]
+
+    def _fp_time_in_location(self, match, voice_command: str) -> PreRouteResult | None:
+        location = match.group("location").strip()
+        if not location or location.lower() in self._LOCAL_PLACEHOLDERS:
+            return PreRouteResult(arguments={})
+        return PreRouteResult(arguments={"location": location})
+
+    def _fp_time_local(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={})
+
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the timezone command"""
         try:
@@ -256,18 +296,29 @@ class TimezoneCommand(IJarvisCommand):
                 current_time = datetime.now(tz)
 
             # Format time for display
-            time_str = current_time.strftime("%I:%M %p")  # e.g., "3:45 PM"
+            time_str = current_time.strftime("%I:%M %p").lstrip("0")  # "3:45 PM" / "11:05 AM"
             date_str = current_time.strftime("%A, %B %d")  # e.g., "Monday, January 28"
 
-            return CommandResponse.follow_up_response(
-                context_data={
-                    "location": location,
-                    "timezone": timezone_str,
-                    "current_time": time_str,
-                    "current_date": date_str,
-                    "iso_datetime": current_time.isoformat()
-                }
-            )
+            context_data: dict[str, Any] = {
+                "location": location,
+                "timezone": timezone_str,
+                "current_time": time_str,
+                "current_date": date_str,
+                "iso_datetime": current_time.isoformat(),
+            }
+
+            # Fast-path callers have no LLM downstream, so pre-compose the
+            # spoken sentence here. The LLM path keeps composing from
+            # structured fields as before.
+            if request_info.is_pre_routed:
+                if location == "local":
+                    context_data["message"] = f"It's {time_str}, {date_str}."
+                else:
+                    context_data["message"] = (
+                        f"It's {time_str} in {location.title()}, {date_str}."
+                    )
+
+            return CommandResponse.follow_up_response(context_data=context_data)
 
         except Exception as e:
             return CommandResponse.error_response(

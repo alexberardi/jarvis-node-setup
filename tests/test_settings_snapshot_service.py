@@ -131,7 +131,7 @@ class TestBuildSnapshot:
             "API_KEY", "integration", "API key", "string", True
         )
         location_secret = _make_mock_secret(
-            "LOCATION", "node", "Location", "string", False
+            "LOCATION", "integration", "Location", "string", False
         )
         cmd = _make_mock_command("get_weather", "Weather", [api_key_secret, location_secret])
 
@@ -266,6 +266,175 @@ class TestBuildSnapshot:
 
         snapshot = build_snapshot()
         assert snapshot["commands"] == []
+
+    @patch("services.settings_snapshot_service.DisabledFastPathRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_includes_fast_paths_when_command_declares_patterns(
+        self, mock_discovery, mock_get_secret, mock_family_discovery,
+        mock_session_local, mock_disabled_repo_cls,
+    ):
+        from jarvis_command_sdk import FastPathPattern
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        cmd = _make_mock_command("set_timer", "Set a timer", secrets=[])
+        cmd.fast_path_patterns = [
+            FastPathPattern(
+                id="timer.set",
+                description="Set a timer from 'timer' phrases",
+                example="set a 5 minute timer",
+            ),
+            FastPathPattern(
+                id="timer.wake_me",
+                description="Wake-me variant",
+                example="wake me in 20 minutes",
+            ),
+        ]
+
+        mock_service = MagicMock()
+        mock_service.get_all_commands.return_value = {"set_timer": cmd}
+        mock_discovery.return_value = mock_service
+        mock_get_secret.return_value = None
+
+        # Disabled list: timer.wake_me is opted out, timer.set is still on.
+        mock_repo = MagicMock()
+        mock_repo.get_all_disabled.return_value = {"set_timer": {"timer.wake_me"}}
+        mock_disabled_repo_cls.return_value = mock_repo
+
+        snapshot = build_snapshot()
+        entry = snapshot["commands"][0]
+        assert "fast_paths" in entry
+        assert len(entry["fast_paths"]) == 2
+
+        by_id = {fp["id"]: fp for fp in entry["fast_paths"]}
+        assert by_id["timer.set"]["enabled"] is True
+        assert by_id["timer.set"]["description"].startswith("Set a timer")
+        assert by_id["timer.wake_me"]["enabled"] is False
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_omits_fast_paths_when_command_declares_none(
+        self, mock_discovery, mock_get_secret, mock_family_discovery,
+    ):
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        cmd = _make_mock_command("plain", "Plain command", secrets=[])
+        cmd.fast_path_patterns = []
+
+        mock_service = MagicMock()
+        mock_service.get_all_commands.return_value = {"plain": cmd}
+        mock_discovery.return_value = mock_service
+        mock_get_secret.return_value = None
+
+        snapshot = build_snapshot()
+        assert "fast_paths" not in snapshot["commands"][0]
+
+
+def _make_mock_agent(
+    name: str,
+    description: str,
+    interval_seconds: int = 300,
+    run_on_startup: bool = True,
+) -> MagicMock:
+    """Create a mock IJarvisAgent for snapshot tests."""
+    agent = MagicMock()
+    agent.name = name
+    agent.description = description
+    agent.schedule.interval_seconds = interval_seconds
+    agent.schedule.run_on_startup = run_on_startup
+    return agent
+
+
+class TestAgentsInSnapshot:
+    """Tests for the agents key in build_snapshot()."""
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_snapshot_includes_agents(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+        mock_session_local,
+        mock_repo_cls,
+        mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        cal = _make_mock_agent("calendar_alerts", "Calendar reminders", interval_seconds=300)
+        ha = _make_mock_agent("ha_snapshot", "Home Assistant state", interval_seconds=60)
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = {"calendar_alerts": cal, "ha_snapshot": ha}
+        mock_agent_discovery.return_value = agent_service
+
+        mock_repo = MagicMock()
+        mock_repo.get_all.return_value = {"ha_snapshot": False}  # one disabled
+        mock_repo_cls.return_value = mock_repo
+
+        mock_service_map.return_value = {"ha_snapshot": "Home Assistant"}
+
+        snapshot = build_snapshot()
+
+        assert "agents" in snapshot
+        agents_by_name = {a["agent_name"]: a for a in snapshot["agents"]}
+        assert set(agents_by_name) == {"calendar_alerts", "ha_snapshot"}
+
+        cal_entry = agents_by_name["calendar_alerts"]
+        assert cal_entry["description"] == "Calendar reminders"
+        assert cal_entry["enabled"] is True  # not in registry → default enabled
+        assert cal_entry["schedule"] == {"interval_seconds": 300, "run_on_startup": True}
+        assert "associated_service" not in cal_entry  # no parent package
+
+        ha_entry = agents_by_name["ha_snapshot"]
+        assert ha_entry["enabled"] is False
+        assert ha_entry["associated_service"] == "Home Assistant"
+
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_snapshot_agents_key_always_present(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+    ):
+        """Even when no agents are discovered, the agents key must exist (as empty list)."""
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = {}
+        mock_agent_discovery.return_value = agent_service
+
+        snapshot = build_snapshot()
+        assert snapshot["agents"] == []
 
 
 class TestDeviceFamiliesInSnapshot:

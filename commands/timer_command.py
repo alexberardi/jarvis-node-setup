@@ -8,7 +8,12 @@ import re
 from typing import List
 
 from core.command_response import CommandResponse
-from jarvis_command_sdk import CommandExample, IJarvisCommand, PreRouteResult
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
@@ -26,8 +31,6 @@ _TIME_CHUNK_RE = re.compile(
     r'(\d+)\s*(?:and\s+)?(' + '|'.join(sorted(_TIME_UNITS, key=len, reverse=True)) + r')',
     re.IGNORECASE,
 )
-
-_TIMER_TRIGGERS = ('timer', 'wake me', 'let me know', 'notify me')
 
 _LABEL_STRIP_WORDS = frozenset({
     'set', 'a', 'an', 'the', 'timer', 'for', 'remind', 'me', 'in',
@@ -173,11 +176,52 @@ class TimerCommand(IJarvisCommand):
     # Pre-routing (deterministic, bypass LLM)
     # ------------------------------------------------------------------
 
-    def pre_route(self, voice_command: str) -> PreRouteResult | None:
+    _FAST_PATH_BY_TRIGGER: dict[str, str] = {
+        "timer": "timer.set",
+        "wake me": "timer.wake_me",
+        "let me know": "timer.notify_me",
+        "notify me": "timer.notify_me",
+    }
+
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="timer.set",
+                description="Set a timer from phrases containing 'timer' (e.g. 'set a 5 minute timer', 'egg timer 10 minutes')",
+                example="set a timer for 5 minutes",
+            ),
+            FastPathPattern(
+                id="timer.wake_me",
+                description="Set a timer from 'wake me' phrases (e.g. 'wake me in 20 minutes')",
+                example="wake me in 20 minutes",
+            ),
+            FastPathPattern(
+                id="timer.notify_me",
+                description="Set a timer from 'notify me' / 'let me know' phrases",
+                example="let me know in 30 minutes",
+            ),
+        ]
+
+    def _trigger_pattern_id(self, text: str) -> str | None:
+        """Return the fast-path pattern ID for the first trigger found in the text."""
+        for trigger, pattern_id in self._FAST_PATH_BY_TRIGGER.items():
+            if trigger in text:
+                return pattern_id
+        return None
+
+    def pre_route(
+        self,
+        voice_command: str,
+        *,
+        disabled_pattern_ids: "set[str] | frozenset[str]" = frozenset(),
+    ) -> PreRouteResult | None:
         text = voice_command.lower().strip()
 
-        # Must contain a timer trigger keyword
-        if not any(trigger in text for trigger in _TIMER_TRIGGERS):
+        pattern_id = self._trigger_pattern_id(text)
+        if pattern_id is None:
+            return None
+        if pattern_id in disabled_pattern_ids:
             return None
 
         # Pre-process informal durations ("half an hour" → "30 minutes")
