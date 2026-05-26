@@ -1810,80 +1810,103 @@ def _handle_device_scan_notification(raw_payload: bytes) -> None:
     _task_executor.submit(run_scan_and_upload, request_id)
 
 
+def _offload(handler: Callable[..., Any], *args: Any) -> None:
+    """Submit a handler to the task executor, wrapped to log + swallow errors.
+
+    Everything dispatched here MUST be offloaded — running handlers
+    synchronously on the MQTT loop thread blocks PINGREQ and triggers
+    broker-side keepalive disconnects under any sustained workload.
+    Settings snapshots, bluetooth scans, package installs all routinely
+    take seconds; the loop thread can't afford that.
+    """
+    def _run() -> None:
+        try:
+            handler(*args)
+        except Exception as e:
+            logger.error(
+                "MQTT topic handler failed",
+                handler=getattr(handler, "__name__", str(handler)),
+                error=str(e),
+            )
+    _task_executor.submit(_run)
+
+
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
     print(f"[MQTT] message on {msg.topic}", flush=True)
-    # Route by topic — auth-ready notifications from JCC OAuth flow
+    # All topic-based dispatch goes through _offload — handlers run on
+    # the shared task executor, on_message returns immediately so the
+    # MQTT loop thread can keep PINGREQ-ing on time.
+
     if msg.topic.startswith("jarvis/auth/") and msg.topic.endswith("/ready"):
-        _handle_auth_ready(msg.payload)
+        _offload(_handle_auth_ready, msg.payload)
         return
 
-    # Route by topic suffix — config push notifications are plain objects, not arrays
     if msg.topic.endswith("/k2/provision"):
-        _handle_k2_provision(msg.payload)
+        _offload(_handle_k2_provision, msg.payload)
         return
 
     if msg.topic.endswith("/config/push"):
-        _handle_config_push_notification(msg.payload)
+        _offload(_handle_config_push_notification, msg.payload)
         return
 
     if msg.topic.endswith("/settings/request"):
-        _handle_settings_request_notification(msg.payload)
+        _offload(_handle_settings_request_notification, msg.payload)
         return
 
     if msg.topic.endswith("/device-list"):
-        _handle_device_list_notification(msg.payload)
+        _offload(_handle_device_list_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-scan"):
-        _handle_bluetooth_scan_notification(msg.payload)
+        _offload(_handle_bluetooth_scan_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-pair"):
-        _handle_bluetooth_pair_notification(msg.payload)
+        _offload(_handle_bluetooth_pair_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-disconnect"):
-        _handle_bluetooth_disconnect_notification(msg.payload)
+        _offload(_handle_bluetooth_disconnect_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-discoverable"):
-        _handle_bluetooth_discoverable_notification(msg.payload)
+        _offload(_handle_bluetooth_discoverable_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-release"):
-        _handle_bluetooth_release_notification(msg.payload)
+        _offload(_handle_bluetooth_release_notification, msg.payload)
         return
 
     if msg.topic.endswith("/bluetooth-auto-connect"):
-        _handle_bluetooth_auto_connect_notification(msg.payload)
+        _offload(_handle_bluetooth_auto_connect_notification, msg.payload)
         return
 
     if msg.topic.endswith("/device-scan"):
-        _handle_device_scan_notification(msg.payload)
+        _offload(_handle_device_scan_notification, msg.payload)
         return
 
     if msg.topic.endswith("/device-state"):
-        _handle_device_state_notification(msg.payload)
+        _offload(_handle_device_state_notification, msg.payload)
         return
 
     if msg.topic.endswith("/camera-credentials"):
-        _handle_camera_credentials_notification(msg.payload)
+        _offload(_handle_camera_credentials_notification, msg.payload)
         return
 
     if msg.topic.endswith("/test-install"):
-        _handle_test_install_notification(msg.payload)
+        _offload(_handle_test_install_notification, msg.payload)
         return
 
     if msg.topic.endswith("/package-install"):
-        _handle_package_install_notification(msg.payload)
+        _offload(_handle_package_install_notification, msg.payload)
         return
 
     if msg.topic.endswith("/package-uninstall"):
-        _handle_package_uninstall_notification(msg.payload)
+        _offload(_handle_package_uninstall_notification, msg.payload)
         return
 
     if msg.topic.endswith("/factory-reset"):
-        _handle_factory_reset(msg.payload)
+        _offload(_handle_factory_reset, msg.payload)
         return
 
     try:
@@ -1908,12 +1931,33 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
         handler: Optional[Callable[[Dict[str, Any]], None]] = command_handlers.get(command)
 
         if handler:
-            try:
-                handler(details)
-            except Exception as e:
-                logger.error("Error running MQTT handler", command=command, error=str(e))
+            # Offload to the task executor so the MQTT loop thread returns
+            # immediately and stays available for PINGREQ. Running heavy
+            # handlers (report_tools does discovery + HTTP POST, package-
+            # install spawns subprocesses) inline blocked the loop thread
+            # for long enough that the broker timed the client out under
+            # the prior 60s keepalive — manifesting as CONN_LOST drops
+            # every 1-3 minutes during active sessions.
+            _task_executor.submit(_run_command_handler, command, handler, details)
         else:
             logger.warning("Unknown MQTT command", command=command)
+
+
+def _run_command_handler(
+    command: str,
+    handler: Callable[[Dict[str, Any]], None],
+    details: Dict[str, Any],
+) -> None:
+    """Wrapper that runs an MQTT command handler in a background thread.
+
+    Keeps the MQTT loop thread free to send PINGREQs and process new
+    messages. Errors are logged but never raised — the executor's pool
+    workers must stay healthy to handle future commands.
+    """
+    try:
+        handler(details)
+    except Exception as e:
+        logger.error("Error running MQTT handler", command=command, error=str(e))
 
 
 _HEARTBEAT_INTERVAL_SECONDS = 300  # 5 minutes
@@ -2075,6 +2119,13 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     # Enable paho-mqtt's built-in reconnect with exponential backoff
     client.reconnect_delay_set(min_delay=1, max_delay=60)
 
+    # NOTE: do NOT call client.enable_logger(jarvis_logger) — paho expects a
+    # stdlib logging.Logger with .log(level, msg, *args) semantics; our
+    # JarvisLogger has a kwargs-style API, and the mismatch raises inside
+    # paho's connect path → MQTT thread crashes → supervisor restart loop.
+    # If we need PINGREQ visibility later, route through a real
+    # logging.Logger (logging.getLogger("paho-mqtt")) instead.
+
     logger.info(
         "MQTT listener starting",
         scheme=scheme,
@@ -2083,11 +2134,17 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
         transport=transport,
     )
 
-    # Retry initial connection with exponential backoff
+    # Retry initial connection with exponential backoff.
+    # Keepalive of 120s (was 60s): the Pi sometimes goes silent for >60s
+    # under heavy GIL contention (wake-word inference + audio capture).
+    # 120s gives the broker a 180s silence tolerance (1.5x keepalive),
+    # which is empirically enough margin even under load. Combined with
+    # offloading on_message handlers, drops should be a network issue
+    # only.
     max_attempts: int = 5
     for attempt in range(1, max_attempts + 1):
         try:
-            client.connect(config["broker"], config["port"], 60)
+            client.connect(config["broker"], config["port"], 120)
             break
         except (ConnectionRefusedError, OSError) as e:
             if attempt == max_attempts:
