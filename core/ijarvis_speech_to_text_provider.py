@@ -23,11 +23,23 @@ class IJarvisSpeechToTextProvider(ABC):
         """Transcribe speech from the given audio path"""
         pass
 
-    def transcribe_with_speaker(self, audio_path: str) -> TranscriptionResult:
+    def transcribe_with_speaker(
+        self,
+        audio_path: str,
+        *,
+        speaker_audio_path: Optional[str] = None,
+    ) -> TranscriptionResult:
         """Transcribe audio and return speaker identity if available.
 
-        Default implementation wraps transcribe() with no speaker data.
-        Providers that support speaker identification should override this.
+        ``speaker_audio_path`` (optional) lets callers send a separate
+        audio file for the speaker pass while ``audio_path`` is used for
+        transcription. The wake-word concat path uses this to feed ECAPA
+        a longer clip (wake-word + command) without polluting Whisper's
+        text output with the wake phrase.
+
+        Default implementation wraps transcribe() with no speaker data
+        and ignores ``speaker_audio_path``. Providers that support
+        speaker identification should override this.
         """
         text = self.transcribe(audio_path)
         return TranscriptionResult(text=text or "")

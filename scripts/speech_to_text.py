@@ -179,6 +179,48 @@ def _write_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
         wf.writeframes(b"".join(frames))
 
 
+def snapshot_bus_to_wav(bus: AudioBus, seconds: float, out_path: str) -> bool:
+    """Snapshot the last ``seconds`` of bus audio and write a WAV.
+
+    Used for the wake-word concat (Phase 2d): at wake-fire time we grab
+    the wake-word phrase that's still in the bus ring buffer so it can
+    be sent to whisper as the speaker-recognition audio without ever
+    appearing in the transcription pass. Returns True if a non-empty
+    snapshot was captured and written.
+    """
+    chunks = bus.snapshot_history(seconds)
+    if not chunks:
+        return False
+    _write_wav(out_path, chunks, bus)
+    return True
+
+
+def concat_wav_files(path_a: str, path_b: str, out_path: str) -> None:
+    """Concat two WAVs of identical format (rate / channels / sample
+    width) into a single output. Used to prepend the cached wake-word
+    audio to a short follow-up so ECAPA has enough signal to score.
+
+    Format mismatch raises wave.Error from the underlying lib — callers
+    should treat that as "skip the concat" and fall back to single-file
+    speaker pass.
+    """
+    with wave.open(path_a, "rb") as a:
+        params = a.getparams()
+        a_frames = a.readframes(a.getnframes())
+    with wave.open(path_b, "rb") as b:
+        b_params = b.getparams()
+        if (b_params.nchannels, b_params.sampwidth, b_params.framerate) != (
+            params.nchannels, params.sampwidth, params.framerate,
+        ):
+            raise wave.Error(
+                f"concat format mismatch: {params} vs {b_params}"
+            )
+        b_frames = b.readframes(b.getnframes())
+    with wave.open(out_path, "wb") as out:
+        out.setparams(params)
+        out.writeframes(a_frames + b_frames)
+
+
 def _maybe_normalize(frames: List[bytes]) -> List[bytes]:
     """Apply audio normalization to ``frames`` if enabled in Config.
 

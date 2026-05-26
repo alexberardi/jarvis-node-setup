@@ -218,3 +218,39 @@ class TestLifecycle:
             assert "input_device_index" not in kwargs
         finally:
             bus.stop()
+
+
+class TestSnapshotHistory:
+    """Coverage for the wake-word concat path (Phase 2d) — lets callers
+    grab the ring contents without registering a subscriber."""
+
+    def test_returns_last_n_seconds(self) -> None:
+        bus = _bus()
+        for i in range(10):
+            bus.push(bytes([i]))
+        # rate=16000, chunk_samples=320 → 50 chunks/sec → 0.2s = 10 chunks
+        snap = bus.snapshot_history(0.2)
+        assert snap == [bytes([i]) for i in range(10)]
+
+    def test_truncated_to_ring_capacity(self) -> None:
+        bus = _bus(history_secs=0.1)  # 5 chunks
+        for i in range(20):
+            bus.push(bytes([i]))
+        snap = bus.snapshot_history(10.0)  # ask for more than ring holds
+        assert snap == [bytes([i]) for i in range(15, 20)]
+
+    def test_zero_seconds_returns_empty(self) -> None:
+        bus = _bus()
+        bus.push(b"a")
+        assert bus.snapshot_history(0.0) == []
+
+    def test_negative_seconds_returns_empty(self) -> None:
+        bus = _bus()
+        bus.push(b"a")
+        assert bus.snapshot_history(-1.0) == []
+
+    def test_does_not_register_subscriber(self) -> None:
+        bus = _bus()
+        bus.push(b"a")
+        bus.snapshot_history(1.0)
+        assert bus.subscribers() == []

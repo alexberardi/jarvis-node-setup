@@ -26,7 +26,13 @@ from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
-from scripts.speech_to_text import RecordingResult, listen, listen_for_follow_up
+from scripts.speech_to_text import (
+    RecordingResult,
+    concat_wav_files,
+    listen,
+    listen_for_follow_up,
+    snapshot_bus_to_wav,
+)
 from services.alert_queue_service import get_alert_queue_service
 from utils.config_service import Config
 from utils.command_execution_service import CommandExecutionService
@@ -435,9 +441,11 @@ def _pre_wake_vad_threshold() -> float:
 
 _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
 
-# Track the last identified speaker so parallel warmup can load their memories.
+# Track the last identified speaker so parallel warmup can load their memories
+# and CC can use it for per-node stickiness on short follow-up utterances.
 # Updated after every successful transcription with speaker identification.
 _last_speaker_user_id: int | None = None
+_last_speaker_confidence: float | None = None
 
 # Shared AudioBus, set when start_voice_listener() initializes its bus.
 # Other subsystems (e.g. enrollment-via-MQTT) need a way to consume mic
@@ -522,6 +530,7 @@ def _run_warmup(
     command_service: CommandExecutionService,
     conversation_id: str,
     speaker_user_id: int | None,
+    speaker_confidence: float | None,
     result: dict,
 ) -> None:
     """Run conversation warmup in a background thread (during recording).
@@ -531,7 +540,9 @@ def _run_warmup(
     """
     try:
         success = command_service.register_tools_for_conversation(
-            conversation_id, speaker_user_id=speaker_user_id,
+            conversation_id,
+            speaker_user_id=speaker_user_id,
+            speaker_confidence=speaker_confidence,
         )
         result["success"] = success
     except Exception as e:
@@ -555,16 +566,15 @@ def _set_led_transient(pattern: str | None) -> None:
         pass
 
 
-def handle_keyword_detected():
-    t_enter = time.perf_counter()
-    logger.info("Wake word detected, listening for command")
-    print("Wake word detected! Listening...")
-    _set_led_transient("wake_detected")
+def play_wake_ack():
+    """Play the wake acknowledgment audio (cached LLM > bundled WAV > TTS).
 
-    # Priority order:
-    # 1. WAKE_AUDIO_FILE (LLM-generated variety, cached on prior wake)
-    # 2. Random pick from bundled sounds/wake/*.wav (always-present fallback)
-    # 3. TTS speak (last-resort, requires network)
+    Extracted so it can be called either immediately at wake-time (legacy
+    behavior) or deferred to fire only on the LLM-fallback path (when
+    `wake_ack_audio_enabled` is False, the immediate playback is skipped
+    and this is invoked later by `process_voice_command`).
+    """
+    t_enter = time.perf_counter()
     played = False
     source = "none"
     file_size = 0
@@ -628,6 +638,19 @@ def handle_keyword_detected():
         else:
             wake_text = "Yes?"
         tts_provider.speak(False, wake_text)
+
+
+def handle_keyword_detected():
+    logger.info("Wake word detected, listening for command")
+    print("Wake word detected! Listening...")
+    _set_led_transient("wake_detected")
+
+    # Audio ack is optional. When wake_ack_audio_enabled=False, the LED
+    # alone signals "I heard you" at wake-time, and the wake-ack audio is
+    # deferred until we know we're going to hit the LLM (so it covers the
+    # slow path's latency instead of front-loading dead air on fast paths).
+    if Config.get_bool("wake_ack_audio_enabled", True):
+        play_wake_ack()
 
     # Fetch the next wake response in the background if provider is configured
     _bg_executor.submit(fetch_next_wake_response)
@@ -992,6 +1015,61 @@ def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
 _ERRORS_DIR = Path(__file__).resolve().parent.parent / "sounds" / "errors"
 
 
+# --- Wake-word concat (Phase 2d) ---
+#
+# At wake-fire time we snapshot the bus ring buffer to capture the
+# wake-word audio that's about to be discarded (listen() runs with
+# history_secs=0 so Whisper's transcription stays clean). That snapshot
+# is then concatenated with the just-recorded command audio and sent as
+# the `speaker_audio` field to whisper-api — ECAPA scores the longer
+# combined clip while Whisper still transcribes the command-only file.
+# The same wake snapshot is reused for every follow-up in the same
+# conversation since follow-ups have no wake word of their own.
+_WAKE_AUDIO_PATH = _cache_dir / "wake.wav"
+_SPEAKER_AUDIO_PATH = _cache_dir / "speaker.wav"
+_WAKE_SNAPSHOT_SECONDS = 2.0
+
+
+def _try_capture_wake_audio(bus: AudioBus) -> str | None:
+    """Snapshot the wake-word audio from the bus ring buffer.
+
+    Returns the wake WAV path on success, None if nothing was captured
+    or the write failed (callers proceed without speaker_audio in that
+    case — recognition still works, just on the command-only clip).
+    """
+    try:
+        captured = snapshot_bus_to_wav(
+            bus, _WAKE_SNAPSHOT_SECONDS, str(_WAKE_AUDIO_PATH),
+        )
+    except Exception as e:
+        logger.warning("Wake-audio snapshot failed (continuing without)", error=str(e))
+        return None
+    return str(_WAKE_AUDIO_PATH) if captured else None
+
+
+def _try_build_speaker_audio(
+    wake_audio_path: str | None, command_audio_path: str,
+) -> str | None:
+    """Concat wake-word audio with the command audio for the speaker pass.
+
+    Returns the concat WAV path, or None if there's no wake audio to
+    prepend or the concat failed (STT falls back to single-file pass).
+    """
+    if not wake_audio_path:
+        return None
+    try:
+        concat_wav_files(
+            wake_audio_path, command_audio_path, str(_SPEAKER_AUDIO_PATH),
+        )
+    except Exception as e:
+        logger.warning(
+            "Speaker-audio concat failed (using command-only)",
+            error=str(e),
+        )
+        return None
+    return str(_SPEAKER_AUDIO_PATH)
+
+
 def _speak_error(message: str) -> None:
     """Speak an error message, falling back to a bundled sound if TTS fails."""
     _set_led_transient("error")
@@ -1016,15 +1094,25 @@ def send_for_transcription(
     warmup_result: dict | None = None,
     skip_ack: bool = False,
     pre_wake_speech_seconds: float | None = None,
+    wake_audio_path: str | None = None,
 ) -> Dict[str, Any] | None:
-    global _last_speaker_user_id
+    global _last_speaker_user_id, _last_speaker_confidence
 
     logger.info("Sending audio to transcription server")
     _set_led_transient("thinking")
 
+    # Build a longer speaker-pass clip (wake-word + command) when we
+    # have the wake audio captured. Whisper still transcribes the
+    # command-only file at recording.audio_file. See _try_build_speaker_audio.
+    speaker_audio_path = _try_build_speaker_audio(
+        wake_audio_path, recording.audio_file,
+    )
+
     # STT with specific error handling
     try:
-        result = stt_provider.transcribe_with_speaker(recording.audio_file)
+        result = stt_provider.transcribe_with_speaker(
+            recording.audio_file, speaker_audio_path=speaker_audio_path,
+        )
     except (ConnectionError, OSError, TimeoutError) as e:
         logger.error("STT connection failed", error=str(e))
         _speak_error("I'm having trouble connecting right now.")
@@ -1052,12 +1140,21 @@ def send_for_transcription(
         speaker_user_id = result.speaker_user_id
         if speaker_user_id:
             _last_speaker_user_id = speaker_user_id
+            _last_speaker_confidence = result.speaker_confidence
             logger.info("Transcription received", text=transcription,
                         speaker_user_id=speaker_user_id, speaker_confidence=result.speaker_confidence)
         else:
             logger.info("Transcription received", text=transcription)
 
-        # Command processing with specific error handling
+        # Command processing with specific error handling.
+        # on_llm_fallback fires the wake-ack audio if and only if pre-route
+        # didn't claim the utterance (LLM path). When the user has set
+        # wake_ack_audio_enabled=False, this is the only place the audio
+        # cue plays — fast-path queries stay silent.
+        def _deferred_wake_ack() -> None:
+            if not Config.get_bool("wake_ack_audio_enabled", True):
+                play_wake_ack()
+
         try:
             result = command_service.process_voice_command(
                 transcription, validation_handler,
@@ -1067,6 +1164,7 @@ def send_for_transcription(
                 warmup_result=warmup_result,
                 skip_ack=skip_ack,
                 pre_wake_speech_seconds=pre_wake_speech_seconds,
+                on_llm_fallback=_deferred_wake_ack,
             )
         except (ConnectionError, OSError, TimeoutError) as e:
             logger.error("Command center unreachable", error=str(e))
@@ -1092,6 +1190,7 @@ def _follow_up_loop(
     validation_handler: Callable[[ValidationRequest], str],
     oww=None,
     tts_end_ts: float | None = None,
+    wake_audio_path: str | None = None,
 ) -> None:
     """Listen for follow-up speech after TTS completes.
 
@@ -1216,7 +1315,15 @@ def _follow_up_loop(
         # over the eventual response.
         _set_led_transient("thinking")
         try:
-            transcription_result = stt_provider.transcribe_with_speaker(audio_file)
+            # Prepend the (cached) wake-word audio for the speaker pass —
+            # short follow-ups like "delete it" don't have enough material
+            # for ECAPA to score reliably on their own.
+            speaker_audio_path = _try_build_speaker_audio(
+                wake_audio_path, audio_file,
+            )
+            transcription_result = stt_provider.transcribe_with_speaker(
+                audio_file, speaker_audio_path=speaker_audio_path,
+            )
         except Exception as e:
             logger.warning("Follow-up transcription failed", error=str(e))
             _set_led_transient(None)
@@ -1339,6 +1446,16 @@ def _follow_up_loop(
             platform_audio.reset_cancel()
             break
 
+    # Wake cycle is done — notify CC so it can clear per-node speaker
+    # stickiness (and any future lifecycle state). Best-effort: failures
+    # are non-fatal, the next wake will just see a stale stickiness entry
+    # bounded by the TTL.
+    if conversation_id:
+        try:
+            command_service.client.end_conversation(conversation_id)
+        except Exception as e:
+            logger.warning("conversation/end raised after follow-up loop", error=str(e))
+
 
 ALERT_ANNOUNCE_PRIORITY = 3  # Only announce priority >= this (reminders, urgent)
 INLINE_LISTEN_TIMEOUT = 8.0  # Seconds to wait for snooze/dismiss after announcement
@@ -1442,7 +1559,7 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
             warmup_result: dict = {"success": False}
             warmup_thread = threading.Thread(
                 target=_run_warmup,
-                args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                args=(command_service, conversation_id, _last_speaker_user_id, _last_speaker_confidence, warmup_result),
                 daemon=True,
             )
             warmup_thread.start()
@@ -1603,7 +1720,16 @@ def start_voice_listener(ma_service):
             # round-trips to pactl (~ms) so we don't want to call it per
             # chunk; we only need it to be coherent with the threshold
             # used for the current outer iteration.
-            music_mode = _music_is_playing()
+            #
+            # Secondary check via AEC's reference reader: pactl detection
+            # is fragile (misses stuck playback after a failed stop-music
+            # command, briefly-corked sink-inputs, unrecognized player
+            # binaries). ref_rms reflects what's actually being sent to
+            # the speaker, so it catches the cases pactl misses.
+            music_mode = _music_is_playing() or (
+                aec_pipeline is not None
+                and aec_pipeline.has_recent_reference_signal()
+            )
             music_energy_multiplier = _wake_music_energy_multiplier()
 
             wake_q = bus.subscribe("wake")
@@ -1703,6 +1829,22 @@ def start_voice_listener(ma_service):
                     # the 80 ms real-time budget) — that's a known
                     # property of openWakeWord on this hardware, not
                     # something logging per chunk can help with.
+                    # Per-frame re-check: music_mode set at outer-loop entry
+                    # goes stale the moment playback starts/stops mid-iteration.
+                    # AEC's ref_rms window tracks the speaker sink in real time;
+                    # if it sees signal NOW, flip into music_mode and use the
+                    # lower music threshold even though the outer-loop value
+                    # was False. This is what unsticks "music kept playing
+                    # after a failed stop command — and now I can't wake it".
+                    effective_music_mode = music_mode or (
+                        aec_pipeline is not None
+                        and aec_pipeline.has_recent_reference_signal()
+                    )
+                    effective_threshold = (
+                        Config.get_float("wake_word_threshold_music", 0.12)
+                        if effective_music_mode
+                        else wake_threshold
+                    )
                     if score > 0.05:
                         # Bounded: only fires when oww sees something
                         # meaningful (someone actually talking). Useful
@@ -1711,11 +1853,11 @@ def start_voice_listener(ma_service):
                         logger.info(
                             "oww-score",
                             score=round(float(score), 3),
-                            threshold=wake_threshold,
-                            music_mode=music_mode,
+                            threshold=effective_threshold,
+                            music_mode=effective_music_mode,
                         )
-                    fire_wake = score > wake_threshold
-                    if fire_wake and music_mode:
+                    fire_wake = score > effective_threshold
+                    if fire_wake and effective_music_mode:
                         # If AEC is consistently cancelling well, the
                         # post-cancellation OWW score is the right signal
                         # to trust — the energy gate (designed pre-AEC)
@@ -1849,6 +1991,14 @@ def start_voice_listener(ma_service):
                 f"⏱️ wake-step | duck submit took "
                 f"{int((time.monotonic() - _t_duck_start) * 1000)}ms"
             )
+
+            # Snapshot the wake-word audio from the bus *now* — before
+            # handle_keyword_detected plays the TTS ack which can take
+            # 500-1500ms. The bus only holds ~2s of history so any later
+            # snapshot risks falling outside that window. The same
+            # snapshot is reused for every follow-up in this conversation.
+            wake_audio_path = _try_capture_wake_audio(bus)
+
             try:
                 _t_handle_start = time.monotonic()
                 logger.info(
@@ -1871,7 +2021,7 @@ def start_voice_listener(ma_service):
                 warmup_result: dict = {"success": False}
                 warmup_thread = threading.Thread(
                     target=_run_warmup,
-                    args=(command_service, conversation_id, _last_speaker_user_id, warmup_result),
+                    args=(command_service, conversation_id, _last_speaker_user_id, _last_speaker_confidence, warmup_result),
                     daemon=True,
                 )
                 warmup_thread.start()
@@ -1918,6 +2068,7 @@ def start_voice_listener(ma_service):
                         warmup_result=warmup_result,
                         skip_ack=ack_played,
                         pre_wake_speech_seconds=pre_wake_speech_seconds,
+                        wake_audio_path=wake_audio_path,
                     )
                     # Feed the auto-calibrator: wake scores that produced a
                     # real interaction (not the not_for_me silent abort)
@@ -1964,7 +2115,11 @@ def start_voice_listener(ma_service):
                     # wake word again when they're ready.
                 else:
                     try:
-                        _follow_up_loop(bus, result, command_service, stt_provider, validation_handler, oww=oww, tts_end_ts=tts_end_ts)
+                        _follow_up_loop(
+                            bus, result, command_service, stt_provider, validation_handler,
+                            oww=oww, tts_end_ts=tts_end_ts,
+                            wake_audio_path=wake_audio_path,
+                        )
                     except Exception as e:
                         logger.warning("Follow-up loop error, resuming wake word", error=str(e))
             finally:
