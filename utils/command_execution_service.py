@@ -26,14 +26,21 @@ def _build_secrets(command) -> Dict[str, str]:
     Returns key → value for every required secret that's present. Absent
     required secrets surface via MissingSecretsError when execute() runs.
 
+    User-scoped secrets are resolved via the per-request user_id ContextVar
+    set by the caller before command.execute(); without it, user-scope rows
+    would always resolve as missing.
+
     Secret service is imported lazily so test environments without the
     encrypted SQLite driver (sqlcipher3) can still import this module.
     """
     from services.secret_service import get_secret_value  # lazy — avoids sqlcipher at import time
+    from jarvis_command_sdk.context import get_current_user_id
 
+    user_id = get_current_user_id()
     secrets: Dict[str, str] = {}
     for s in command.required_secrets:
-        value = get_secret_value(s.key, s.scope)
+        scoped_user_id = user_id if s.scope == "user" else None
+        value = get_secret_value(s.key, s.scope, user_id=scoped_user_id)
         if value is not None:
             secrets[s.key] = value
     return secrets
@@ -89,6 +96,7 @@ class CommandExecutionService:
         self,
         conversation_id: str,
         speaker_user_id: Optional[int] = None,
+        speaker_confidence: Optional[float] = None,
         agents: Optional[Dict[str, Any]] = None,
         adapter_settings: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -98,6 +106,7 @@ class CommandExecutionService:
         Args:
             conversation_id: The conversation identifier
             speaker_user_id: Optional speaker identity from voice recognition
+            speaker_confidence: Optional confidence (0-1) for the identification
             agents: Optional agent context to inject (e.g., Home Assistant data)
             adapter_settings: Optional test-mode override for the server-side
                               adapter (hash/scale/enabled). Honored only when
@@ -123,7 +132,9 @@ class CommandExecutionService:
             # Start conversation with available commands
             success = self.client.start_conversation(
                 conversation_id, commands, date_context,
-                speaker_user_id=speaker_user_id, agents=agents,
+                speaker_user_id=speaker_user_id,
+                speaker_confidence=speaker_confidence,
+                agents=agents,
                 adapter_settings=adapter_settings,
             )
 
@@ -164,9 +175,11 @@ class CommandExecutionService:
         conversation_id = self._generate_conversation_id()
 
         # Step 1: Try pre-routing (classification only — no execution)
+        disabled_by_cmd = self._load_disabled_fast_paths()
         commands = self.command_discovery.get_all_commands()
         for command in commands.values():
-            pre = command.pre_route(voice_command)
+            disabled_ids = disabled_by_cmd.get(command.command_name, set())
+            pre = self._safe_pre_route(command, voice_command, disabled_ids)
             if pre is not None:
                 logger.info(
                     "Pre-routed to command (parse only)",
@@ -332,6 +345,7 @@ class CommandExecutionService:
         warmup_result: Optional[Dict[str, Any]] = None,
         skip_ack: bool = False,
         pre_wake_speech_seconds: Optional[float] = None,
+        on_llm_fallback: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -363,6 +377,16 @@ class CommandExecutionService:
         pre_result = self.try_pre_route(voice_command, conversation_id, speaker_user_id=speaker_user_id)
         if pre_result is not None:
             return pre_result
+
+        # Pre-route didn't claim this — we're committed to the LLM path now.
+        # Fire the LLM-fallback hook (used by the caller to play a deferred
+        # wake-ack audio cue, so the user gets feedback while the network
+        # round-trip happens). Fast-path queries skip this entirely.
+        if on_llm_fallback is not None:
+            try:
+                on_llm_fallback()
+            except Exception as e:
+                logger.warning("on_llm_fallback hook raised", error=str(e))
 
         logger.info("Starting conversation", conversation_id=conversation_id, command=voice_command)
 
@@ -786,6 +810,40 @@ class CommandExecutionService:
                 return f"Sorry, that didn't work: {output['error']}"
         return ""
 
+    def _load_disabled_fast_paths(self) -> dict[str, set[str]]:
+        """Load the user's disabled fast-path pattern set in one DB pass.
+
+        Returns command_name -> set of disabled pattern_ids. Empty dict on
+        any DB error -- fail-open so a transient hiccup never blocks the
+        fast path (the latency win is the whole point of this code path).
+        """
+        try:
+            from db import SessionLocal
+            from repositories.disabled_fast_path_repository import (
+                DisabledFastPathRepository,
+            )
+            db = SessionLocal()
+            try:
+                return DisabledFastPathRepository(db).get_all_disabled()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to load disabled fast paths", error=str(e))
+            return {}
+
+    @staticmethod
+    def _safe_pre_route(command, voice_command: str, disabled_ids: set[str]):
+        """Call command.pre_route() honoring the disabled set, with a
+        graceful fallback for any override that pre-dates the kwarg."""
+        try:
+            return command.pre_route(
+                voice_command, disabled_pattern_ids=disabled_ids
+            )
+        except TypeError as e:
+            if "disabled_pattern_ids" not in str(e):
+                raise
+            return command.pre_route(voice_command)
+
     def try_pre_route(self, voice_command: str, conversation_id: str, speaker_user_id: int | None = None) -> Dict[str, Any] | None:
         """Try node-side pre-routing across all discovered commands.
 
@@ -793,13 +851,21 @@ class CommandExecutionService:
         If matched, executes the command directly and returns the result
         dict — no CC contact at all.
 
+        Per-pattern disable: loads the user's `disabled_fast_paths` set in
+        one query, then passes the per-command subset into `pre_route()` so
+        each command can skip patterns the user opted out of from the mobile
+        inspect UI.
+
         Returns:
             Result dict (same shape as process_voice_command), or None to
             fall through to the normal LLM path.
         """
+        disabled_by_cmd = self._load_disabled_fast_paths()
+
         commands = self.command_discovery.get_all_commands()
         for command in commands.values():
-            pre = command.pre_route(voice_command)
+            disabled_ids = disabled_by_cmd.get(command.command_name, set())
+            pre = self._safe_pre_route(command, voice_command, disabled_ids)
             if pre is None:
                 continue
 
@@ -815,6 +881,7 @@ class CommandExecutionService:
                     conversation_id=conversation_id,
                     is_validation_response=False,
                     user_id=speaker_user_id,
+                    is_pre_routed=True,
                 )
 
                 from jarvis_command_sdk.context import set_current_user_id
@@ -826,26 +893,36 @@ class CommandExecutionService:
                 finally:
                     set_current_user_id(None)
 
+                if not command_response.success:
+                    # Silent fall-through: when the pre-routed command
+                    # returns an error, don't speak that error. Return None
+                    # so the caller hits the LLM path, which can either
+                    # retry the command or compose a more natural reply.
+                    # Otherwise the user would hear the error AND then the
+                    # LLM's response — two failures stacked.
+                    logger.info(
+                        "Pre-routed command failed, falling through to LLM path",
+                        command=command.command_name,
+                        error_details=command_response.error_details,
+                    )
+                    return None
+
                 message = pre.spoken_response
                 if not message:
                     ctx = command_response.context_data or {}
                     message = ctx.get("message")
                 if not message:
-                    # error_response() puts the user-facing string in
-                    # error_details (not context_data.message). Without
-                    # this fallback every error in a pre-routed command
-                    # spoke as "Done." and the actual reason was hidden.
-                    message = command_response.error_details or "Done."
-                if not command_response.success:
-                    logger.warning(
-                        "Pre-routed command returned an error",
+                    # The command didn't pre-compose a spoken response.
+                    # Rather than emit a misleading "Done.", fall through
+                    # to the LLM path so it can compose from context_data.
+                    logger.info(
+                        "Pre-routed command succeeded but produced no spoken message; falling through to LLM",
                         command=command.command_name,
-                        error_details=command_response.error_details,
-                        context_data=command_response.context_data,
                     )
+                    return None
 
                 return {
-                    "success": command_response.success,
+                    "success": True,
                     "message": message,
                     "conversation_id": conversation_id,
                     "wait_for_input": False,
