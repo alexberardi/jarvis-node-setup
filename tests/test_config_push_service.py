@@ -203,6 +203,104 @@ class TestDispatchConfig:
         mock_set_secret.assert_any_call("volume", "75", "integration")
         mock_set_secret.assert_any_call("led_brightness", "50", "integration")
 
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.AgentRegistryRepository")
+    def test_dispatch_agent_registry_updates_repo(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        """agent_registry config_type routes to AgentRegistryRepository.set_enabled."""
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+
+        _dispatch_config("agent_registry", {"agent_name": "calendar_alerts", "enabled": "false"})
+
+        mock_repo_cls.assert_called_once_with(mock_db)
+        mock_repo.set_enabled.assert_called_once_with("calendar_alerts", False)
+        mock_db.close.assert_called_once()
+
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.AgentRegistryRepository")
+    def test_dispatch_agent_registry_enables(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+
+        _dispatch_config("agent_registry", {"agent_name": "ha_snapshot", "enabled": "true"})
+
+        mock_repo.set_enabled.assert_called_once_with("ha_snapshot", True)
+
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.AgentRegistryRepository")
+    def test_dispatch_agent_registry_missing_name_noop(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        """Missing agent_name should warn and skip without touching the DB."""
+        _dispatch_config("agent_registry", {"enabled": "false"})
+        mock_repo_cls.assert_not_called()
+        mock_session_local.assert_not_called()
+
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.DisabledFastPathRepository")
+    def test_dispatch_fast_path_registry_disables(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        """enabled=false on a fast_path_registry push must call set_disabled(..., True)."""
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+
+        _dispatch_config(
+            "fast_path_registry",
+            {"command_name": "set_timer", "pattern_id": "timer.set", "enabled": "false"},
+        )
+
+        mock_repo_cls.assert_called_once_with(mock_db)
+        mock_repo.set_disabled.assert_called_once_with("set_timer", "timer.set", True)
+        mock_db.close.assert_called_once()
+
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.DisabledFastPathRepository")
+    def test_dispatch_fast_path_registry_enables(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        """enabled=true must call set_disabled(..., False) (delete the disabled row)."""
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+
+        _dispatch_config(
+            "fast_path_registry",
+            {"command_name": "pandora", "pattern_id": "pandora.play", "enabled": "true"},
+        )
+
+        mock_repo.set_disabled.assert_called_once_with("pandora", "pandora.play", False)
+
+    @patch("services.config_push_service.SessionLocal")
+    @patch("services.config_push_service.DisabledFastPathRepository")
+    def test_dispatch_fast_path_registry_missing_fields_noop(
+        self,
+        mock_repo_cls: MagicMock,
+        mock_session_local: MagicMock,
+    ) -> None:
+        """Missing command_name or pattern_id must warn and skip the DB write."""
+        _dispatch_config("fast_path_registry", {"pattern_id": "x.y", "enabled": "false"})
+        _dispatch_config("fast_path_registry", {"command_name": "x", "enabled": "false"})
+        mock_repo_cls.assert_not_called()
+        mock_session_local.assert_not_called()
+
 
 class TestProcessPendingConfigs:
     """Test end-to-end process_pending_configs with mocked dependencies."""

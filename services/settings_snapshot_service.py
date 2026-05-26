@@ -18,8 +18,11 @@ from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
 from db import SessionLocal
+from repositories.agent_registry_repository import AgentRegistryRepository
 from repositories.command_registry_repository import CommandRegistryRepository
+from repositories.disabled_fast_path_repository import DisabledFastPathRepository
 from services.secret_service import get_secret_value
+from utils.agent_discovery_service import get_agent_discovery_service
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
 from utils.device_family_discovery_service import get_device_family_discovery_service
@@ -68,6 +71,18 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         logger.warning("Failed to read command registry", error=str(e))
         registry = {}
 
+    # Load disabled fast-path pattern IDs in one query so we can mark each
+    # pattern's enabled state in the snapshot without a per-command DB hit.
+    disabled_fp_by_cmd: dict[str, set[str]] = {}
+    try:
+        db = SessionLocal()
+        try:
+            disabled_fp_by_cmd = DisabledFastPathRepository(db).get_all_disabled()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("Failed to read disabled fast paths", error=str(e))
+
     command_entries: list[dict[str, Any]] = []
     for cmd in commands.values():
         secrets_list: list[dict[str, Any]] = []
@@ -109,6 +124,31 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         params = cmd.parameters
         if params:
             cmd_entry["parameters"] = [p.to_dict() for p in params]
+
+        # Fast-path patterns: per-pattern metadata + enabled state from the
+        # sparse disabled-list table. Mobile renders these in the "Inspect
+        # fast-paths" screen for granular per-pattern opt-out when two
+        # commands' patterns collide.
+        try:
+            fp_patterns = getattr(cmd, "fast_path_patterns", []) or []
+        except Exception as e:
+            logger.warning(
+                "Failed to read fast_path_patterns",
+                command=cmd.command_name,
+                error=str(e),
+            )
+            fp_patterns = []
+        if fp_patterns:
+            disabled_ids = disabled_fp_by_cmd.get(cmd.command_name, set())
+            cmd_entry["fast_paths"] = [
+                {
+                    "id": p.id,
+                    "description": p.description,
+                    "example": p.example,
+                    "enabled": p.id not in disabled_ids,
+                }
+                for p in fp_patterns
+            ]
         command_entries.append(cmd_entry)
 
     # Build device family entries (per-family isolation so one bad protocol
@@ -217,6 +257,50 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
     except Exception as e:
         logger.warning("Failed to discover device managers", error=str(e))
 
+    # Agent entries — surfaced so the mobile Agents tab can list and toggle
+    # background agents. Agents not yet in agent_registry are treated as
+    # enabled (matches AgentRegistryRepository.is_enabled fallback).
+    agent_entries: list[dict[str, Any]] = []
+    try:
+        agent_service = get_agent_discovery_service()
+        agents = agent_service.get_all_agents()
+
+        try:
+            db = SessionLocal()
+            try:
+                agent_registry = AgentRegistryRepository(db).get_all()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to read agent registry", error=str(e))
+            agent_registry = {}
+
+        agent_to_service = _build_agent_to_service_map()
+
+        for agent in agents.values():
+            try:
+                entry_a: dict[str, Any] = {
+                    "agent_name": agent.name,
+                    "description": agent.description,
+                    "enabled": agent_registry.get(agent.name, True),
+                    "schedule": {
+                        "interval_seconds": agent.schedule.interval_seconds,
+                        "run_on_startup": agent.schedule.run_on_startup,
+                    },
+                }
+                service_label = agent_to_service.get(agent.name)
+                if service_label:
+                    entry_a["associated_service"] = service_label
+                agent_entries.append(entry_a)
+            except Exception as e:
+                logger.warning(
+                    "Skipping agent in snapshot",
+                    agent=getattr(agent, "name", "<unknown>"),
+                    error=str(e),
+                )
+    except Exception as e:
+        logger.warning("Failed to discover agents", error=str(e))
+
     set_current_user_id(None)  # reset context
 
     node_config: dict[str, Any] = {
@@ -272,10 +356,42 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "schema_version": SCHEMA_VERSION,
         "commands_schema_version": COMMANDS_SCHEMA_VERSION,
         "commands": command_entries,
+        "agents": agent_entries,
         "device_families": family_entries,
         "device_managers": manager_entries,
         "node_config": node_config,
     }
+
+
+def _build_agent_to_service_map() -> dict[str, str]:
+    """Map agent_name -> package display_name by walking ~/.jarvis/packages/*.json.
+
+    Used to label agents in the mobile snapshot with their parent integration
+    (e.g., "ha_snapshot" -> "Home Assistant"). Agents that don't come from a
+    Pantry package (e.g., built-in agents) are omitted from the map.
+    """
+    from pathlib import Path
+
+    packages_dir = Path.home() / ".jarvis" / "packages"
+    if not packages_dir.exists():
+        return {}
+
+    mapping: dict[str, str] = {}
+    for meta_path in packages_dir.glob("*.json"):
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            display_name = meta.get("display_name") or meta.get("package_name")
+            if not display_name:
+                continue
+            for component in meta.get("components", []):
+                if component.get("type") == "agent":
+                    agent_name = component.get("name")
+                    if agent_name:
+                        mapping[agent_name] = display_name
+        except Exception as e:
+            logger.debug("Skipping unreadable package metadata", path=str(meta_path), error=str(e))
+    return mapping
 
 
 def encrypt_snapshot(snapshot: dict[str, Any], node_id: str) -> dict[str, str]:
@@ -372,6 +488,7 @@ def handle_snapshot_request(request_id: str, include_values: bool = False, user_
         "Snapshot built",
         request_id=request_id[:8],
         command_count=len(snapshot["commands"]),
+        agent_count=len(snapshot.get("agents", [])),
         family_count=len(snapshot.get("device_families", [])),
         manager_count=len(snapshot.get("device_managers", [])),
         node_config_keys=len(snapshot.get("node_config", {})),

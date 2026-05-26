@@ -18,6 +18,8 @@ from typing import Any, Dict, Optional
 from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_agent import IJarvisAgent
+from db import SessionLocal
+from repositories.agent_registry_repository import AgentRegistryRepository
 from services.alert_queue_service import AlertQueueService
 from utils.agent_discovery_service import get_agent_discovery_service
 
@@ -104,6 +106,11 @@ class AgentSchedulerService:
             logger.info("No agents discovered, scheduler not starting")
             return
 
+        # Ensure every discovered agent has a registry row (default enabled).
+        # New agents from a fresh package install land here too, so the mobile
+        # app's Agents tab can toggle them right away.
+        self._ensure_agents_registered(list(self._agents.keys()))
+
         logger.info("Starting agent scheduler", agent_count=len(self._agents))
 
         # Create and start the scheduler thread
@@ -173,9 +180,10 @@ class AgentSchedulerService:
 
     async def _run_startup_agents(self) -> None:
         """Run all agents with run_on_startup=True."""
+        enabled = self._enabled_map()
         startup_agents = [
             agent for agent in self._agents.values()
-            if agent.schedule.run_on_startup
+            if agent.schedule.run_on_startup and enabled.get(agent.name, True)
         ]
 
         if not startup_agents:
@@ -190,13 +198,44 @@ class AgentSchedulerService:
     async def _check_and_run_agents(self) -> None:
         """Check schedules and run any agents that are due."""
         now = time.time()
+        enabled = self._enabled_map()
 
         for agent in self._agents.values():
+            if not enabled.get(agent.name, True):
+                continue
+
             last_run = self._last_run.get(agent.name, 0)
             interval = agent.schedule.interval_seconds
 
             if now - last_run >= interval:
                 await self._run_agent_safe(agent)
+
+    def _enabled_map(self) -> Dict[str, bool]:
+        """Read the agent_registry once and return a name -> enabled snapshot.
+
+        Falls back to {} (all agents treated as enabled) if the DB read fails,
+        so a transient DB issue doesn't silently stop every agent.
+        """
+        try:
+            db = SessionLocal()
+            try:
+                return AgentRegistryRepository(db).get_all()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to read agent registry, treating all as enabled", error=str(e))
+            return {}
+
+    def _ensure_agents_registered(self, agent_names: list[str]) -> None:
+        """Insert default-enabled rows for any agents not yet in the registry."""
+        try:
+            db = SessionLocal()
+            try:
+                AgentRegistryRepository(db).ensure_registered(agent_names)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Failed to ensure agents registered", error=str(e))
 
     async def _run_agent_safe(self, agent: IJarvisAgent) -> None:
         """Run an agent with error handling and context caching."""
@@ -290,6 +329,10 @@ class AgentSchedulerService:
                 self._context_cache.pop(name, None)
                 logger.info("Removed stale agent context", agent=name)
             self._agents = new_agents
+
+        # Newly installed agents (e.g., from a Pantry package) need registry
+        # rows so the mobile snapshot shows them with default-enabled state.
+        self._ensure_agents_registered(list(new_agents.keys()))
 
     def restart(self) -> None:
         """Stop and restart the scheduler for a clean agent reload."""
