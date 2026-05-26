@@ -237,10 +237,15 @@ def _music_is_playing() -> bool:
 # Spotify's cloud, again no local protocol waiting on it.
 _SIGSTOP_PLAYER_BINARIES: tuple[str, ...] = (
     "mpv", "ffplay", "cvlc", "vlc",
-    "spotifyd",   # jarvis-cmd-spotify (pre-v0.1.3, kept for backwards compat
-                  # — pkill of a missing binary is a harmless no-op)
-    "librespot",  # jarvis-cmd-spotify v0.1.3+ — switched from spotifyd to
-                  # apt-installed librespot via the raspotify package
+    "spotifyd",      # jarvis-cmd-spotify (pre-v0.1.3, kept for backwards
+                     # compat — pkill of a missing binary is a no-op)
+    "librespot",     # jarvis-cmd-spotify v0.1.3–v1.x (apt-installed via
+                     # the raspotify package)
+    "go-librespot",  # jarvis-cmd-spotify v2.x+ — bundled binary controlled
+                     # via its localhost HTTP API; same Connect protocol,
+                     # different process name. Without this entry the wake-
+                     # word ducking misses Spotify entirely and music
+                     # bleeds into the user's voice capture.
 )
 
 # Binaries that must NOT be SIGSTOP'd because they participate in a

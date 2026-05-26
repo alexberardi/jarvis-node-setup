@@ -63,10 +63,16 @@ def register_package_lib_paths() -> None:
         sys.path.append(str(PACKAGES_DIR))
 
     for meta_file in PACKAGES_DIR.glob("*.json"):
-        lib_dir = meta_file.parent / meta_file.stem / "lib"
-        if lib_dir.is_dir() and str(lib_dir) not in sys.path:
-            sys.path.append(str(lib_dir))
-            logger.debug("Added package lib to path", package=meta_file.stem, lib=str(lib_dir))
+        package_name = meta_file.stem
+        # New convention: ~/.jarvis/packages/<name>/<name>_lib/.
+        # Legacy installs (pre-rename) have shared code at ~/.jarvis/packages/<name>/lib/;
+        # keep scanning both so an existing install isn't silently broken
+        # the next time the node restarts after the convention change.
+        for candidate_name in (f"{package_name}_lib", "lib"):
+            lib_dir = meta_file.parent / package_name / candidate_name
+            if lib_dir.is_dir() and str(lib_dir) not in sys.path:
+                sys.path.append(str(lib_dir))
+                logger.debug("Added package lib to path", package=package_name, lib=str(lib_dir))
 
 
 class CommandStoreError(Exception):
@@ -840,8 +846,11 @@ def _install_shared_code(
 ) -> Path:
     """Install shared code to a package-specific lib directory.
 
-    Shared code lives at ~/.jarvis/packages/<name>/lib/ and is added to
-    sys.path at node startup so all scattered components can import from it.
+    Shared code lives at ~/.jarvis/packages/<name>/<name>_lib/ and is added
+    to sys.path at node startup so all scattered components can import from
+    it. The package-name prefix on the lib dir (vs a bare "lib") makes the
+    namespace distinct per package, which matters for diagnostics and for
+    any tooling that walks ~/.jarvis/packages.
 
     Args:
         package_name: The package name.
@@ -851,7 +860,7 @@ def _install_shared_code(
     Returns:
         The shared lib directory.
     """
-    lib_dir = PACKAGES_DIR / package_name / "lib"
+    lib_dir = PACKAGES_DIR / package_name / f"{package_name}_lib"
     if lib_dir.exists():
         shutil.rmtree(lib_dir)
     lib_dir.mkdir(parents=True, exist_ok=True)
@@ -1452,9 +1461,13 @@ def remove(package_name: str, component_type: str | None = None) -> None:
 
         # Remove shared lib dir and auto-generated namespace
         pkg_dir = PACKAGES_DIR / package_name
-        lib_dir = pkg_dir / "lib"
+        lib_dir = pkg_dir / f"{package_name}_lib"
         if lib_dir.exists():
             shutil.rmtree(lib_dir)
+        # Backwards compat: older installs used a bare "lib" dir name.
+        legacy_lib_dir = pkg_dir / "lib"
+        if legacy_lib_dir.exists():
+            shutil.rmtree(legacy_lib_dir)
         namespace_init = pkg_dir / "__init__.py"
         if namespace_init.exists():
             namespace_init.unlink()
