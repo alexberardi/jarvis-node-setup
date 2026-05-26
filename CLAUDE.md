@@ -416,7 +416,7 @@ jarvis_dependencies:             # depend on other Jarvis packages
 
 secrets:
   - key: MY_API_KEY
-    scope: integration          # or: node, user
+    scope: integration          # or: user
     value_type: string
     description: "API key for the service"
     sensitive: true
