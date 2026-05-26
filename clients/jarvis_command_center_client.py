@@ -527,6 +527,7 @@ class JarvisCommandCenterClient:
         commands: dict[str, IJarvisCommand],
         date_context: Optional[DateContext] = None,
         speaker_user_id: Optional[int] = None,
+        speaker_confidence: Optional[float] = None,
         agents: Optional[dict] = None,
         adapter_settings: Optional[dict] = None,
     ) -> bool:
@@ -538,6 +539,10 @@ class JarvisCommandCenterClient:
             commands: Dictionary of available commands to send to the command center
             date_context: Optional date context to use for tool schemas
             speaker_user_id: Optional speaker identity from voice recognition
+            speaker_confidence: Optional confidence score (0-1) for the identification.
+                                CC uses this to gate the per-node speaker stickiness
+                                cache — only high-confidence IDs are remembered for
+                                short follow-up inheritance.
             agents: Optional agent context to inject (e.g., Home Assistant data).
                     If provided, overrides auto-discovered agent context.
             adapter_settings: Optional dict with {hash, scale, enabled} to override
@@ -562,6 +567,8 @@ class JarvisCommandCenterClient:
         # Add speaker identity from voice recognition
         if speaker_user_id is not None:
             node_context["speaker_user_id"] = speaker_user_id
+        if speaker_confidence is not None:
+            node_context["speaker_confidence"] = float(speaker_confidence)
 
         # Add agent context (Home Assistant, etc.)
         if agents:
@@ -611,5 +618,27 @@ class JarvisCommandCenterClient:
             logger.error("Failed to start conversation", error=str(e))
             return False
 
+    def end_conversation(self, conversation_id: str) -> bool:
+        """Notify CC that this wake-cycle is complete.
+
+        Best-effort fire-and-forget. Currently the only server-side effect
+        is clearing this node's speaker stickiness so a later wake event by
+        a different speaker doesn't inherit the previous speaker. Failures
+        log a warning but don't surface to the caller — the wake-cycle has
+        already finished, there's nothing to fall back to.
+        """
+        try:
+            response = RestClient.post(
+                f"{self.base_url}/api/v0/conversation/end",
+                timeout=5,
+                data={"conversation_id": conversation_id},
+            )
+            if not response:
+                logger.warning("conversation/end returned no body", conversation_id=conversation_id)
+                return False
+            return True
+        except Exception as e:
+            logger.warning("Failed to end conversation", error=str(e), conversation_id=conversation_id)
+            return False
 
 

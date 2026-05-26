@@ -38,16 +38,24 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
             return result.get("text", "")
         return None
 
-    def transcribe_with_speaker(self, audio_path: str) -> TranscriptionResult:
+    def transcribe_with_speaker(
+        self,
+        audio_path: str,
+        *,
+        speaker_audio_path: Optional[str] = None,
+    ) -> TranscriptionResult:
         """Transcribe audio and return speaker identity if available.
 
         Args:
-            audio_path: Path to the audio file to transcribe
+            audio_path: Path to the audio file used for transcription.
+            speaker_audio_path: Optional separate file used for the
+                speaker-recognition pass (wake-word concat). If omitted,
+                ``audio_path`` is used for both passes.
 
         Returns:
             TranscriptionResult with text and optional speaker data
         """
-        result = self._call_whisper(audio_path)
+        result = self._call_whisper(audio_path, speaker_audio_path=speaker_audio_path)
         if result and isinstance(result, dict):
             text = result.get("text", "")
             speaker = result.get("speaker")
@@ -60,11 +68,18 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
             return TranscriptionResult(text=text)
         return TranscriptionResult(text="")
 
-    def _call_whisper(self, audio_path: str) -> Optional[Dict[str, Any]]:
+    def _call_whisper(
+        self,
+        audio_path: str,
+        *,
+        speaker_audio_path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Call the whisper transcription endpoint.
 
         Args:
-            audio_path: Path to the audio file to transcribe
+            audio_path: Path to the audio file to transcribe.
+            speaker_audio_path: Optional separate file used for the
+                speaker pass (uploaded as the ``speaker_audio`` field).
 
         Returns:
             Raw JSON response dict, or None on error
@@ -76,12 +91,30 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
 
         url = f"{command_center_url}/api/v0/media/whisper/transcribe"
 
-        with open(audio_path, "rb") as f:
+        speaker_file = None
+        try:
+            f = open(audio_path, "rb")
             files: Dict[str, Any] = {"file": (audio_path, f, "audio/wav")}
-            response: Optional[Dict[str, Any]] = RestClient.post(
-                url,
-                files=files,
-                timeout=60,
-            )
+            if speaker_audio_path:
+                try:
+                    speaker_file = open(speaker_audio_path, "rb")
+                    files["speaker_audio"] = (speaker_audio_path, speaker_file, "audio/wav")
+                except OSError as e:
+                    logger.warning(
+                        "Could not open speaker_audio_path, falling back to single-file pass",
+                        path=speaker_audio_path,
+                        error=str(e),
+                    )
+            try:
+                response: Optional[Dict[str, Any]] = RestClient.post(
+                    url,
+                    files=files,
+                    timeout=60,
+                )
+            finally:
+                f.close()
+        finally:
+            if speaker_file is not None:
+                speaker_file.close()
 
         return response
