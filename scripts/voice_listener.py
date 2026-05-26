@@ -21,6 +21,7 @@ from scipy.signal import resample_poly
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
+from core.aec_pipeline import AecPipeline
 from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
@@ -1560,6 +1561,33 @@ def start_voice_listener(ma_service):
     alert_check_interval = 60             # ~every 5s at 80 ms chunks
     alert_check_counter = 0
 
+    # Inline AEC: pulls a reference frame from PA's monitor source per
+    # mic chunk, subtracts speaker bleed via Speex. Disabled by default
+    # (gated on aec_enabled); any startup failure falls back to a
+    # passthrough so wake detection stays alive.
+    aec_pipeline: AecPipeline | None = None
+    if Config.get_bool("aec_enabled", False):
+        try:
+            aec_filter_ms = Config.get_float("aec_filter_length_ms", 100.0)
+            aec_delay_ms = Config.get_float("aec_reference_delay_ms", 80.0)
+            aec_pipeline = AecPipeline(
+                rate=OWW_RATE,
+                frame_size=160,
+                filter_length=int(aec_filter_ms * OWW_RATE / 1000),
+                reference_delay_samples=int(aec_delay_ms * OWW_RATE / 1000),
+                reference_buffer_secs=Config.get_float("aec_buffer_secs", 2.0),
+                monitor_source=Config.get_str("aec_monitor_source"),
+            )
+            aec_pipeline.start()
+            if Config.get_bool("aec_calibrate_on_startup", True):
+                try:
+                    aec_pipeline.calibrate_delay(bus)
+                except Exception as e:
+                    logger.warning("AEC calibration raised; keeping configured delay", error=str(e))
+        except Exception as e:
+            logger.error("AEC pipeline init failed, continuing without AEC", error=str(e))
+            aec_pipeline = None
+
     try:
         while True:
             # Safety net: ensure no stale cancel state from a prior
@@ -1647,6 +1675,21 @@ def start_voice_listener(ma_service):
                         resampled = resample_poly(samples, up=1, down=resample_down)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
+                    if aec_pipeline is not None:
+                        samples = aec_pipeline.process(samples)
+                        # The pre-wake RMS readings (used by the music
+                        # energy gate below) were taken from the raw mic
+                        # above — that signal is still dominated by music
+                        # bleed even when AEC has cleaned the voice into
+                        # a strong OWW score. Re-measure on the cleaned
+                        # signal so the gate's baseline and current-frame
+                        # RMS are both post-cancellation and comparable.
+                        # Without this, AEC-cleaned wakes score 0.5-0.8
+                        # but get suppressed because raw mic bleed > raw
+                        # mic-with-voice in RMS terms.
+                        rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                        pre_wake_rms_values[-1] = rms
+
                     with _oww_lock:
                         predictions = oww.predict(samples)
                     score = predictions.get(WAKE_WORD_MODEL, 0)
@@ -1673,15 +1716,39 @@ def start_voice_listener(ma_service):
                         )
                     fire_wake = score > wake_threshold
                     if fire_wake and music_mode:
-                        # Music-mode energy gate: require current RMS to
-                        # spike above the running baseline (voice ON TOP
-                        # of music). Without this, the lowered music
-                        # threshold (~0.12) trips on music alone — the
-                        # OWW model regularly hits 0.10-0.18 against
-                        # speaker bleed even when nobody's speaking.
-                        # Mirrors barge_in's two-tier (low OWW + energy
-                        # above baseline) approach.
-                        if len(pre_wake_rms_values) >= 6:
+                        # If AEC is consistently cancelling well, the
+                        # post-cancellation OWW score is the right signal
+                        # to trust — the energy gate (designed pre-AEC)
+                        # becomes redundant and just adds a failure mode.
+                        # The gate stays in place whenever AEC is weak or
+                        # unavailable (no playback path, low suppression,
+                        # adaptation still ramping).
+                        aec_trusted = (
+                            aec_pipeline is not None
+                            and aec_pipeline.is_strongly_active(
+                                threshold_db=Config.get_float(
+                                    "aec_trust_threshold_db", 5.0
+                                ),
+                            )
+                        )
+                        if aec_trusted:
+                            if score > 0.4:
+                                logger.info(
+                                    "wake-aec-trusted-skip-gate",
+                                    score=round(float(score), 3),
+                                    suppression_db=round(
+                                        aec_pipeline.recent_suppression_db() or 0.0, 1
+                                    ),
+                                )
+                        elif len(pre_wake_rms_values) >= 6:
+                            # Music-mode energy gate: require current RMS to
+                            # spike above the running baseline (voice ON TOP
+                            # of music). Without this, the lowered music
+                            # threshold (~0.12) trips on music alone — the
+                            # OWW model regularly hits 0.10-0.18 against
+                            # speaker bleed even when nobody's speaking.
+                            # Mirrors barge_in's two-tier (low OWW + energy
+                            # above baseline) approach.
                             sorted_rms = sorted(pre_wake_rms_values)
                             baseline_rms = sorted_rms[len(sorted_rms) // 2]
                             energy_floor = baseline_rms * music_energy_multiplier
@@ -1923,6 +1990,8 @@ def start_voice_listener(ma_service):
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
     finally:
+        if aec_pipeline is not None:
+            aec_pipeline.stop()
         bus.stop()
         pa.terminate()
         del oww
