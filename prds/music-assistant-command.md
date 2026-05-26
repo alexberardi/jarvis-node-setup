@@ -601,7 +601,7 @@ The LLM sees this in the tool result and generates a clarifying question. User r
 9. [ ] Create `commands/control_music_command.py`
 10. [ ] Implement `init_data()` in PlayMusicCommand for device sync
 11. [ ] Add `MUSIC_ASSISTANT_URL` to secrets (integration scope)
-12. [ ] Add `MUSIC_QUEUE_BEHAVIOR` to secrets (node scope, optional)
+12. [ ] Add `MUSIC_QUEUE_BEHAVIOR` to secrets (integration scope, optional)
 
 ### Testing
 13. [ ] Add adapter training examples for both commands
