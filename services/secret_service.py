@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 def set_secret(key: str, value: str, scope: str, value_type: str = "string", user_id: int | None = None):
     # Validate scope
-    allowed_scopes = {"integration", "node", "user"}
+    allowed_scopes = {"integration", "user"}
     if scope not in allowed_scopes:
         raise ValueError(f"Invalid scope '{scope}'. Must be one of {allowed_scopes}.")
 
@@ -97,7 +97,7 @@ def get_secret_scope(key: str) -> str | None:
     """Look up the scope of a secret by key.
 
     Checks user scope first (any user_id) since it's the most specific,
-    then integration and node. Returns the scope string or None if not found.
+    then integration. Returns the scope string or None if not found.
     """
     with SessionLocal() as session:
         # Check user scope (any user_id — we just need to know the scope exists)
@@ -105,10 +105,9 @@ def get_secret_scope(key: str) -> str | None:
         if user_secret is not None:
             return "user"
         repo = SecretRepository(session)
-        for scope in ("node", "integration"):
-            secret = repo.get(key, scope)
-            if secret is not None:
-                return scope
+        integration_secret = repo.get(key, "integration")
+        if integration_secret is not None:
+            return "integration"
     return None
 
 
