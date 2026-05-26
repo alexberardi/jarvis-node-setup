@@ -17,7 +17,7 @@ from clients.responses.jarvis_command_center import (
 )
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
-from utils.command_execution_service import CommandExecutionService, ToolExecutionResult
+from utils.command_execution_service import CommandExecutionService, ToolExecutionResult, _build_secrets
 
 
 # ---------- ToolExecutionResult tests ----------
@@ -457,3 +457,54 @@ class TestNotForMeSilentAbort:
         assert result["not_for_me"] is True
         validation_handler.assert_not_called()
         mock_deps["discovery"].get_command.assert_not_called()
+
+
+# ---------- _build_secrets tests ----------
+
+
+class TestBuildSecrets:
+    """Regression coverage for the ContextVar wiring in _build_secrets.
+
+    Bug history: this helper used to call get_secret_value(key, scope) with no
+    user_id, silently dropping every scope='user' value because the repo
+    requires user_id to match the stored row. Only callers that bypass this
+    helper (via JarvisStorage, which reads the ContextVar internally) worked.
+    """
+
+    def test_user_scope_passes_contextvar_user_id(self):
+        from jarvis_command_sdk import JarvisSecret
+        from jarvis_command_sdk.context import set_current_user_id
+
+        command = MagicMock()
+        command.required_secrets = [
+            JarvisSecret("USER_TOKEN", "User token", "user", "string"),
+            JarvisSecret("SHARED_KEY", "Shared key", "integration", "string"),
+        ]
+
+        set_current_user_id(42)
+        try:
+            with patch("services.secret_service.get_secret_value") as mock_get:
+                mock_get.side_effect = lambda key, scope, user_id=None: f"{key}:{user_id}"
+                result = _build_secrets(command)
+
+                mock_get.assert_any_call("USER_TOKEN", "user", user_id=42)
+                mock_get.assert_any_call("SHARED_KEY", "integration", user_id=None)
+                assert result == {"USER_TOKEN": "USER_TOKEN:42", "SHARED_KEY": "SHARED_KEY:None"}
+        finally:
+            set_current_user_id(None)
+
+    def test_user_scope_with_unset_context_passes_none(self):
+        from jarvis_command_sdk import JarvisSecret
+        from jarvis_command_sdk.context import set_current_user_id
+
+        command = MagicMock()
+        command.required_secrets = [
+            JarvisSecret("USER_TOKEN", "User token", "user", "string"),
+        ]
+
+        set_current_user_id(None)
+        with patch("services.secret_service.get_secret_value", return_value=None) as mock_get:
+            result = _build_secrets(command)
+
+            mock_get.assert_called_once_with("USER_TOKEN", "user", user_id=None)
+            assert result == {}
