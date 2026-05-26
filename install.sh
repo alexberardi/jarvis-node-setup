@@ -216,6 +216,7 @@ install_apt_deps() {
     # the difference is opaque enough that we just prefer mpv).
     wanted+=(alsa-utils portaudio19-dev sox ffmpeg mpv espeak
              pulseaudio pulseaudio-module-bluetooth
+             libspeexdsp1 libwebrtc-audio-processing-1-3
              device-tree-compiler
              python3-lgpio)
   fi
