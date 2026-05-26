@@ -57,7 +57,7 @@ def calibrate_speaker_mic_delay(
     capture_duration_ms: int = 600,
     min_delay_ms: float = 5.0,
     max_delay_ms: float = 300.0,
-    min_peak_snr: float = 3.0,
+    min_peak_snr: float = 500.0,
 ) -> int | None:
     """Play a chirp, cross-correlate mic vs reference, return delay in AEC samples.
 
