@@ -162,7 +162,9 @@ else
         hostapd \
         dnsmasq \
         pulseaudio \
-        pulseaudio-module-bluetooth
+        pulseaudio-module-bluetooth \
+        libspeexdsp1 \
+        libwebrtc-audio-processing-1-3
 
     # Disable system services - we manage hostapd/dnsmasq ourselves
     log_info "Disabling system hostapd/dnsmasq services..."
