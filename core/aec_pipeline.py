@@ -96,6 +96,14 @@ class AecPipeline:
         # cancel against). ~5 s at 80 ms chunks = 62 entries.
         self._suppression_window: deque[float] = deque(maxlen=62)
 
+        # Rolling window of recent reference RMS values. Used as a secondary
+        # "is music playing?" signal — pactl-based detection in voice_listener
+        # is fragile (can fail intermittently when a sink-input gets briefly
+        # corked or when a stop-music command races with playback teardown).
+        # ref_rms reflects what's ACTUALLY being sent to the speaker, so it
+        # catches stuck-music cases that pactl misses. ~1 s window.
+        self._ref_rms_window: deque[float] = deque(maxlen=12)
+
     def start(self) -> None:
         self._reference.start()
         logger.info(
@@ -130,6 +138,9 @@ class AecPipeline:
         mic_rms = float(np.sqrt(np.mean(mic.astype(np.float64) ** 2)))
         if ref is None:
             self._bypass_count += 1
+            # Track zero so the "music playing?" check goes False when
+            # the reference stops being fresh (stale → playback stopped).
+            self._ref_rms_window.append(0.0)
             self._maybe_log_stats(mic_rms=mic_rms, ref_rms=None, cleaned_rms=mic_rms)
             return mic
         try:
@@ -137,6 +148,7 @@ class AecPipeline:
             self._aec_count += 1
             ref_rms = float(np.sqrt(np.mean(ref.astype(np.float64) ** 2)))
             cleaned_rms = float(np.sqrt(np.mean(cleaned.astype(np.float64) ** 2)))
+            self._ref_rms_window.append(ref_rms)
             # Only record suppression when reference actually contained signal —
             # silence-vs-silence gives nonsense ratios and would poison the window.
             if ref_rms > 100.0 and mic_rms > 0 and cleaned_rms > 0:
@@ -202,6 +214,23 @@ class AecPipeline:
         """
         median = self.recent_suppression_db(min_samples=min_samples)
         return median is not None and median >= threshold_db
+
+    def has_recent_reference_signal(
+        self, threshold_rms: float = 100.0, min_samples: int = 6
+    ) -> bool:
+        """True if recent reference frames carried audio (playback active).
+
+        Use as a secondary "music playing?" signal alongside whatever
+        pactl-based check the caller is doing — pactl detection misses
+        cases like stuck playback after a failed stop-music command,
+        but the reference reader sees the audio as long as PA is
+        actually sending samples to the speaker sink.
+        """
+        if len(self._ref_rms_window) < min_samples:
+            return False
+        sorted_vals = sorted(self._ref_rms_window)
+        median = sorted_vals[len(sorted_vals) // 2]
+        return median > threshold_rms
 
     def calibrate_delay(self, bus) -> bool:
         """Measure the speaker→mic delay via a startup chirp.
