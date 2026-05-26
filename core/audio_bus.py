@@ -202,6 +202,27 @@ class AudioBus:
         with self._subs_lock:
             return list(self._subscribers.keys())
 
+    def snapshot_history(self, seconds: float) -> list[bytes]:
+        """Return the last ``seconds`` of audio chunks from the ring buffer
+        without registering a subscriber.
+
+        Used by wake-handler code that wants to capture the wake-word audio
+        (still sitting in the ring) at the moment of detection so it can be
+        sent as the speaker-recognition pass — independent of the listen()
+        recording which deliberately discards pre-wake audio so Whisper's
+        text output isn't polluted by the wake-word phrase.
+
+        Returns an empty list if ``seconds <= 0`` or the ring is empty.
+        Chunks are returned oldest-first.
+        """
+        if seconds <= 0:
+            return []
+        chunks = int(seconds * self.rate / self.chunk_samples)
+        if chunks <= 0:
+            return []
+        with self._ring_lock:
+            return list(self._ring)[-chunks:]
+
     def push(self, data: bytes) -> None:
         """Inject a chunk directly (test/alternate-source hook).
 
