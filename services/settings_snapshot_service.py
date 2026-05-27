@@ -36,9 +36,91 @@ SCHEMA_VERSION: int = 1
 COMMANDS_SCHEMA_VERSION: int = 2
 
 
+class _EntryGuard:
+    """Isolates third-party property/method failures while building a snapshot entry.
+
+    Pantry-installed commands, agents, device families, and device managers can
+    raise from any property access (a stale `scope="node"` JarvisSecret took the
+    whole snapshot down on 2026-05-26). `_EntryGuard.get()` swallows the failure,
+    logs a warning with the component name, and records a tag in `self.errors`
+    so the snapshot entry can surface a "configuration error" badge in the
+    mobile UI without dropping the whole entry.
+    """
+
+    def __init__(self, log_ctx: dict[str, Any]):
+        self.errors: list[str] = []
+        self._log_ctx = log_ctx
+
+    def get(self, fn, default, tag: str):
+        try:
+            return fn()
+        except Exception as e:
+            logger.warning(
+                f"Snapshot field failed: {tag}", **self._log_ctx, error=str(e)
+            )
+            self.errors.append(tag)
+            return default
+
+
 def _b64url_encode(data: bytes) -> str:
     """Base64url encode without padding."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _build_secrets_list(
+    secrets,
+    *,
+    include_values: bool,
+    user_id: int | None,
+    log_ctx: dict[str, Any],
+    errors: list[str],
+    honor_include_values: bool = True,
+) -> list[dict[str, Any]]:
+    """Build a snapshot `secrets` array from a component's required_secrets.
+
+    Each secret is processed in isolation; a single misbehaved JarvisSecret
+    only loses its own entry rather than killing the whole list. The
+    `honor_include_values=False` mode preserves the pre-existing device-manager
+    behavior of never returning sensitive values, even when the caller asked
+    for include_values=True.
+    """
+    result: list[dict[str, Any]] = []
+    for secret in secrets:
+        try:
+            secret_user_id = user_id if secret.scope == "user" else None
+            value: str | None = get_secret_value(
+                secret.key, secret.scope, user_id=secret_user_id
+            )
+            entry: dict[str, Any] = {
+                "key": secret.key,
+                "scope": secret.scope,
+                "description": secret.description,
+                "value_type": secret.value_type,
+                "required": secret.required,
+                "is_sensitive": secret.is_sensitive,
+                "is_set": bool(value),
+            }
+            if secret.friendly_name:
+                entry["friendly_name"] = secret.friendly_name
+            if getattr(secret, "enum_values", None):
+                entry["enum_values"] = secret.enum_values
+            if getattr(secret, "presets", None):
+                entry["presets"] = secret.presets
+            if value:
+                if honor_include_values:
+                    if not secret.is_sensitive or include_values:
+                        entry["value"] = value
+                else:
+                    if not secret.is_sensitive:
+                        entry["value"] = value
+            result.append(entry)
+        except Exception as e:
+            key = getattr(secret, "key", "<unknown>")
+            logger.warning(
+                "Skipping bad secret entry", **log_ctx, secret=key, error=str(e)
+            )
+            errors.append(f"secret:{key}")
+    return result
 
 
 def build_snapshot(include_values: bool = False, user_id: int | None = None) -> dict[str, Any]:
@@ -85,71 +167,102 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
     command_entries: list[dict[str, Any]] = []
     for cmd in commands.values():
-        secrets_list: list[dict[str, Any]] = []
-        for secret in cmd.required_secrets:
-            secret_user_id = user_id if secret.scope == "user" else None
-            value: str | None = get_secret_value(secret.key, secret.scope, user_id=secret_user_id)
-            entry: dict[str, Any] = {
-                "key": secret.key,
-                "scope": secret.scope,
-                "description": secret.description,
-                "value_type": secret.value_type,
-                "required": secret.required,
-                "is_sensitive": secret.is_sensitive,
-                "is_set": bool(value),  # empty string = not set
-            }
-            if secret.friendly_name:
-                entry["friendly_name"] = secret.friendly_name
-            if getattr(secret, "enum_values", None):
-                entry["enum_values"] = secret.enum_values
-            if getattr(secret, "presets", None):
-                entry["presets"] = secret.presets
-            # Include value: always for non-sensitive, only with include_values for sensitive
-            if value and (not secret.is_sensitive or include_values):
-                entry["value"] = value
-            secrets_list.append(entry)
-
-        cmd_entry: dict[str, Any] = {
-            "command_name": cmd.command_name,
-            "description": cmd.description,
-            "secrets": secrets_list,
-            "enabled": registry.get(cmd.command_name, True),
-        }
-        if cmd.associated_service:
-            cmd_entry["associated_service"] = cmd.associated_service
-        if hasattr(cmd, "setup_guide") and cmd.setup_guide:
-            cmd_entry["setup_guide"] = cmd.setup_guide
-        if cmd.authentication:
-            cmd_entry["authentication"] = cmd.authentication.to_dict()
-        params = cmd.parameters
-        if params:
-            cmd_entry["parameters"] = [p.to_dict() for p in params]
-
-        # Fast-path patterns: per-pattern metadata + enabled state from the
-        # sparse disabled-list table. Mobile renders these in the "Inspect
-        # fast-paths" screen for granular per-pattern opt-out when two
-        # commands' patterns collide.
+        # command_name is the entry's primary key — if it can't be read, we
+        # can't render the row at all, so skip and log.
         try:
-            fp_patterns = getattr(cmd, "fast_path_patterns", []) or []
+            cmd_name: str = cmd.command_name
         except Exception as e:
+            logger.warning("Skipping command with unreadable command_name", error=str(e))
+            continue
+
+        try:
+            g = _EntryGuard({"command": cmd_name})
+
+            secrets_list = _build_secrets_list(
+                g.get(lambda: cmd.required_secrets, [], "required_secrets"),
+                include_values=include_values,
+                user_id=user_id,
+                log_ctx={"command": cmd_name},
+                errors=g.errors,
+            )
+
+            cmd_entry: dict[str, Any] = {
+                "command_name": cmd_name,
+                "description": g.get(lambda: cmd.description, "", "description"),
+                "secrets": secrets_list,
+                "enabled": registry.get(cmd_name, True),
+            }
+
+            associated = g.get(lambda: cmd.associated_service, None, "associated_service")
+            if associated:
+                cmd_entry["associated_service"] = associated
+
+            setup_guide = g.get(lambda: getattr(cmd, "setup_guide", None), None, "setup_guide")
+            if setup_guide:
+                cmd_entry["setup_guide"] = setup_guide
+
+            auth_obj = g.get(lambda: cmd.authentication, None, "authentication")
+            if auth_obj:
+                auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
+                if auth_dict:
+                    cmd_entry["authentication"] = auth_dict
+
+            params = g.get(lambda: cmd.parameters, [], "parameters")
+            if params:
+                serialized = g.get(
+                    lambda: [p.to_dict() for p in params], None, "parameters"
+                )
+                if serialized:
+                    cmd_entry["parameters"] = serialized
+
+            # Fast-path patterns: per-pattern metadata + enabled state from the
+            # sparse disabled-list table. Mobile renders these in the "Inspect
+            # fast-paths" screen for granular per-pattern opt-out when two
+            # commands' patterns collide.
+            fp_patterns = g.get(
+                lambda: getattr(cmd, "fast_path_patterns", []) or [],
+                [],
+                "fast_path_patterns",
+            )
+            if fp_patterns:
+                fp_serialized = g.get(
+                    lambda: [
+                        {
+                            "id": p.id,
+                            "description": p.description,
+                            "example": p.example,
+                            "enabled": p.id
+                            not in disabled_fp_by_cmd.get(cmd_name, set()),
+                        }
+                        for p in fp_patterns
+                    ],
+                    None,
+                    "fast_path_patterns",
+                )
+                if fp_serialized:
+                    cmd_entry["fast_paths"] = fp_serialized
+
+            if g.errors:
+                cmd_entry["_errors"] = g.errors
+            command_entries.append(cmd_entry)
+        except Exception as e:
+            # Last-resort catch: emit a stub entry so the mobile UI can still
+            # render the command name with a configuration-error badge instead
+            # of the command silently vanishing from the list.
             logger.warning(
-                "Failed to read fast_path_patterns",
-                command=cmd.command_name,
+                "Command entry build failed entirely",
+                command=cmd_name,
                 error=str(e),
             )
-            fp_patterns = []
-        if fp_patterns:
-            disabled_ids = disabled_fp_by_cmd.get(cmd.command_name, set())
-            cmd_entry["fast_paths"] = [
+            command_entries.append(
                 {
-                    "id": p.id,
-                    "description": p.description,
-                    "example": p.example,
-                    "enabled": p.id not in disabled_ids,
+                    "command_name": cmd_name,
+                    "description": "",
+                    "secrets": [],
+                    "enabled": registry.get(cmd_name, True),
+                    "_errors": ["entry_build_failed"],
                 }
-                for p in fp_patterns
-            ]
-        command_entries.append(cmd_entry)
+            )
 
     # Build device family entries (per-family isolation so one bad protocol
     # doesn't prevent all families from appearing in the snapshot)
@@ -160,49 +273,80 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
         for family in families.values():
             try:
-                secrets_list_f: list[dict[str, Any]] = []
-                for secret in family.required_secrets:
-                    value_f: str | None = get_secret_value(secret.key, secret.scope)
-                    entry_f: dict[str, Any] = {
-                        "key": secret.key,
-                        "scope": secret.scope,
-                        "description": secret.description,
-                        "value_type": secret.value_type,
-                        "required": secret.required,
-                        "is_sensitive": secret.is_sensitive,
-                        "is_set": bool(value_f),
-                    }
-                    if secret.friendly_name:
-                        entry_f["friendly_name"] = secret.friendly_name
-                    if getattr(secret, "enum_values", None):
-                        entry_f["enum_values"] = secret.enum_values
-                    if getattr(secret, "presets", None):
-                        entry_f["presets"] = secret.presets
-                    if value_f and (not secret.is_sensitive or include_values):
-                        entry_f["value"] = value_f
-                    secrets_list_f.append(entry_f)
+                family_name: str = family.protocol_name
+            except Exception as e:
+                logger.warning("Skipping family with unreadable protocol_name", error=str(e))
+                continue
+
+            try:
+                g = _EntryGuard({"family": family_name})
+
+                secrets_list_f = _build_secrets_list(
+                    g.get(lambda: family.required_secrets, [], "required_secrets"),
+                    include_values=include_values,
+                    user_id=None,
+                    log_ctx={"family": family_name},
+                    errors=g.errors,
+                )
+
+                actions = g.get(lambda: family.supported_actions, [], "supported_actions")
+                actions_serialized = g.get(
+                    lambda: [a.to_dict() for a in actions], [], "supported_actions"
+                )
 
                 family_entry: dict[str, Any] = {
-                    "family_name": family.protocol_name,
-                    "friendly_name": family.friendly_name,
-                    "description": family.description,
-                    "connection_type": family.connection_type,
-                    "supported_domains": family.supported_domains,
-                    "supported_actions": [a.to_dict() for a in family.supported_actions],
+                    "family_name": family_name,
+                    "friendly_name": g.get(lambda: family.friendly_name, "", "friendly_name"),
+                    "description": g.get(lambda: family.description, "", "description"),
+                    "connection_type": g.get(lambda: family.connection_type, "", "connection_type"),
+                    "supported_domains": g.get(lambda: family.supported_domains, [], "supported_domains"),
+                    "supported_actions": actions_serialized,
                     "secrets": secrets_list_f,
-                    "is_configured": len(family.validate_secrets()) == 0 if hasattr(family, 'validate_secrets') else True,
-                    "is_custom": "device_families.custom_families" in (type(family).__module__ or ""),
+                    "is_configured": g.get(
+                        lambda: (
+                            len(family.validate_secrets()) == 0
+                            if hasattr(family, "validate_secrets")
+                            else True
+                        ),
+                        True,
+                        "validate_secrets",
+                    ),
+                    "is_custom": "device_families.custom_families"
+                    in (type(family).__module__ or ""),
                 }
-                if family.authentication:
-                    family_entry["authentication"] = family.authentication.to_dict()
-                if hasattr(family, "setup_guide") and family.setup_guide:
-                    family_entry["setup_guide"] = family.setup_guide
+                auth_obj = g.get(lambda: family.authentication, None, "authentication")
+                if auth_obj:
+                    auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
+                    if auth_dict:
+                        family_entry["authentication"] = auth_dict
+                setup_guide = g.get(
+                    lambda: getattr(family, "setup_guide", None), None, "setup_guide"
+                )
+                if setup_guide:
+                    family_entry["setup_guide"] = setup_guide
+
+                if g.errors:
+                    family_entry["_errors"] = g.errors
                 family_entries.append(family_entry)
             except Exception as e:
                 logger.warning(
-                    "Skipping device family in snapshot",
-                    family=family.protocol_name,
+                    "Device family entry build failed entirely",
+                    family=family_name,
                     error=str(e),
+                )
+                family_entries.append(
+                    {
+                        "family_name": family_name,
+                        "friendly_name": family_name,
+                        "description": "",
+                        "connection_type": "",
+                        "supported_domains": [],
+                        "supported_actions": [],
+                        "secrets": [],
+                        "is_configured": False,
+                        "is_custom": False,
+                        "_errors": ["entry_build_failed"],
+                    }
                 )
     except Exception as e:
         logger.warning("Failed to discover device families", error=str(e))
@@ -215,44 +359,58 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
         for mgr in managers.values():
             try:
-                secrets_list_m: list[dict[str, Any]] = []
-                for secret in mgr.required_secrets:
-                    value_m: str | None = get_secret_value(secret.key, secret.scope)
-                    entry_m: dict[str, Any] = {
-                        "key": secret.key,
-                        "scope": secret.scope,
-                        "description": secret.description,
-                        "value_type": secret.value_type,
-                        "required": secret.required,
-                        "is_sensitive": secret.is_sensitive,
-                        "is_set": bool(value_m),
-                    }
-                    if secret.friendly_name:
-                        entry_m["friendly_name"] = secret.friendly_name
-                    if getattr(secret, "enum_values", None):
-                        entry_m["enum_values"] = secret.enum_values
-                    if getattr(secret, "presets", None):
-                        entry_m["presets"] = secret.presets
-                    if not secret.is_sensitive and value_m:
-                        entry_m["value"] = value_m
-                    secrets_list_m.append(entry_m)
+                manager_name: str = mgr.name
+            except Exception as e:
+                logger.warning("Skipping manager with unreadable name", error=str(e))
+                continue
+
+            try:
+                g = _EntryGuard({"manager": manager_name})
+
+                secrets_list_m = _build_secrets_list(
+                    g.get(lambda: mgr.required_secrets, [], "required_secrets"),
+                    include_values=include_values,
+                    user_id=None,
+                    log_ctx={"manager": manager_name},
+                    errors=g.errors,
+                    honor_include_values=False,  # preserves pre-existing manager behavior
+                )
 
                 mgr_entry: dict[str, Any] = {
-                    "manager_name": mgr.name,
-                    "friendly_name": mgr.friendly_name,
-                    "description": mgr.description,
-                    "can_edit_devices": mgr.can_edit_devices,
-                    "is_available": mgr.is_available(),
+                    "manager_name": manager_name,
+                    "friendly_name": g.get(lambda: mgr.friendly_name, "", "friendly_name"),
+                    "description": g.get(lambda: mgr.description, "", "description"),
+                    "can_edit_devices": g.get(
+                        lambda: mgr.can_edit_devices, False, "can_edit_devices"
+                    ),
+                    "is_available": g.get(lambda: mgr.is_available(), False, "is_available"),
                     "secrets": secrets_list_m,
                 }
-                if mgr.authentication:
-                    mgr_entry["authentication"] = mgr.authentication.to_dict()
+                auth_obj = g.get(lambda: mgr.authentication, None, "authentication")
+                if auth_obj:
+                    auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
+                    if auth_dict:
+                        mgr_entry["authentication"] = auth_dict
+
+                if g.errors:
+                    mgr_entry["_errors"] = g.errors
                 manager_entries.append(mgr_entry)
             except Exception as e:
                 logger.warning(
-                    "Skipping device manager in snapshot",
-                    manager=mgr.name,
+                    "Device manager entry build failed entirely",
+                    manager=manager_name,
                     error=str(e),
+                )
+                manager_entries.append(
+                    {
+                        "manager_name": manager_name,
+                        "friendly_name": manager_name,
+                        "description": "",
+                        "can_edit_devices": False,
+                        "is_available": False,
+                        "secrets": [],
+                        "_errors": ["entry_build_failed"],
+                    }
                 )
     except Exception as e:
         logger.warning("Failed to discover device managers", error=str(e))
@@ -275,28 +433,69 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
             logger.warning("Failed to read agent registry", error=str(e))
             agent_registry = {}
 
+        # In-memory map of agents the scheduler tripped after 3 failures.
+        # Imported lazily so the snapshot service stays usable in tests that
+        # don't bootstrap the scheduler singleton.
+        auto_disabled_reasons: dict[str, str] = {}
+        try:
+            from services.agent_scheduler_service import AgentSchedulerService
+            auto_disabled_reasons = AgentSchedulerService().get_auto_disabled_reasons()
+        except Exception as e:
+            logger.debug("Could not read auto-disabled reasons from scheduler", error=str(e))
+
         agent_to_service = _build_agent_to_service_map()
 
         for agent in agents.values():
             try:
-                entry_a: dict[str, Any] = {
-                    "agent_name": agent.name,
-                    "description": agent.description,
-                    "enabled": agent_registry.get(agent.name, True),
-                    "schedule": {
-                        "interval_seconds": agent.schedule.interval_seconds,
-                        "run_on_startup": agent.schedule.run_on_startup,
-                    },
+                agent_name: str = agent.name
+            except Exception as e:
+                logger.warning("Skipping agent with unreadable name", error=str(e))
+                continue
+
+            try:
+                g = _EntryGuard({"agent": agent_name})
+
+                schedule_obj = g.get(lambda: agent.schedule, None, "schedule")
+                schedule_dict = {
+                    "interval_seconds": g.get(
+                        lambda: schedule_obj.interval_seconds, 0, "schedule.interval_seconds"
+                    ) if schedule_obj else 0,
+                    "run_on_startup": g.get(
+                        lambda: schedule_obj.run_on_startup, False, "schedule.run_on_startup"
+                    ) if schedule_obj else False,
                 }
-                service_label = agent_to_service.get(agent.name)
+
+                entry_a: dict[str, Any] = {
+                    "agent_name": agent_name,
+                    "description": g.get(lambda: agent.description, "", "description"),
+                    "enabled": agent_registry.get(agent_name, True),
+                    "schedule": schedule_dict,
+                }
+                service_label = agent_to_service.get(agent_name)
                 if service_label:
                     entry_a["associated_service"] = service_label
+
+                auto_reason = auto_disabled_reasons.get(agent_name)
+                if auto_reason:
+                    entry_a["auto_disabled_reason"] = auto_reason
+
+                if g.errors:
+                    entry_a["_errors"] = g.errors
                 agent_entries.append(entry_a)
             except Exception as e:
                 logger.warning(
-                    "Skipping agent in snapshot",
-                    agent=getattr(agent, "name", "<unknown>"),
+                    "Agent entry build failed entirely",
+                    agent=agent_name,
                     error=str(e),
+                )
+                agent_entries.append(
+                    {
+                        "agent_name": agent_name,
+                        "description": "",
+                        "enabled": agent_registry.get(agent_name, True),
+                        "schedule": {"interval_seconds": 0, "run_on_startup": False},
+                        "_errors": ["entry_build_failed"],
+                    }
                 )
     except Exception as e:
         logger.warning("Failed to discover agents", error=str(e))
