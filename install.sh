@@ -846,7 +846,11 @@ setup_database() {
 register_commands() {
   info "Registering built-in commands..."
   cd "$INSTALL_DIR"
-  if "${INSTALL_DIR}/.venv/bin/python" -m scripts.install_command --all --skip-deps 2>/dev/null; then
+  # Point at the service user's secret dir — install_command.py runs its
+  # own alembic check internally, and without this the encrypted DB read
+  # fails with "file is not a database" (looks at /root/.jarvis instead).
+  if JARVIS_SECRET_DIRECTORY="${SERVICE_HOME}/.jarvis" \
+       "${INSTALL_DIR}/.venv/bin/python" -m scripts.install_command --all --skip-deps 2>/dev/null; then
     success "Commands registered"
   else
     warn "Command registration failed (non-fatal, will retry on first boot)"
