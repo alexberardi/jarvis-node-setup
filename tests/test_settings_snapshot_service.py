@@ -338,6 +338,124 @@ class TestBuildSnapshot:
         assert "fast_paths" not in snapshot["commands"][0]
 
 
+class TestSnapshotResilience:
+    """Third-party components (Pantry packages) can raise from any property
+    access. The snapshot must isolate failures so one bad component doesn't
+    drop the whole snapshot, and it must surface a `_errors` field so the
+    mobile UI can render a configuration-error badge.
+    """
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_broken_required_secrets_emits_entry_with_errors_field(
+        self, mock_discovery, mock_get_secret, mock_family_discovery
+    ):
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        broken = MagicMock()
+        broken.command_name = "broken_cmd"
+        broken.description = "Broken"
+        type(broken).required_secrets = property(
+            lambda self: (_ for _ in ()).throw(ValueError("scope must be integration"))
+        )
+        broken.parameters = []
+        broken.associated_service = None
+        broken.authentication = None
+
+        mock_service = MagicMock()
+        mock_service.get_all_commands.return_value = {"broken_cmd": broken}
+        mock_discovery.return_value = mock_service
+        mock_get_secret.return_value = None
+
+        snapshot = build_snapshot()
+
+        assert len(snapshot["commands"]) == 1
+        entry = snapshot["commands"][0]
+        assert entry["command_name"] == "broken_cmd"
+        assert entry["secrets"] == []
+        assert "_errors" in entry
+        assert "required_secrets" in entry["_errors"]
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_one_bad_command_does_not_drop_other_commands(
+        self, mock_discovery, mock_get_secret, mock_family_discovery
+    ):
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        good_secret = _make_mock_secret("OK_KEY", "integration", "ok", "string", True)
+        good = _make_mock_command("good_cmd", "Good", [good_secret])
+
+        broken = MagicMock()
+        broken.command_name = "broken_cmd"
+        broken.description = "Broken"
+        type(broken).required_secrets = property(
+            lambda self: (_ for _ in ()).throw(ValueError("boom"))
+        )
+        broken.parameters = []
+        broken.associated_service = None
+        broken.authentication = None
+
+        mock_service = MagicMock()
+        mock_service.get_all_commands.return_value = {
+            "good_cmd": good,
+            "broken_cmd": broken,
+        }
+        mock_discovery.return_value = mock_service
+        mock_get_secret.side_effect = lambda key, scope, user_id=None: (
+            "value" if key == "OK_KEY" else None
+        )
+
+        snapshot = build_snapshot()
+
+        names = {c["command_name"] for c in snapshot["commands"]}
+        assert names == {"good_cmd", "broken_cmd"}
+        good_entry = next(c for c in snapshot["commands"] if c["command_name"] == "good_cmd")
+        broken_entry = next(c for c in snapshot["commands"] if c["command_name"] == "broken_cmd")
+        assert "_errors" not in good_entry
+        assert len(good_entry["secrets"]) == 1
+        assert "_errors" in broken_entry
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_broken_parameters_does_not_lose_secrets(
+        self, mock_discovery, mock_get_secret, mock_family_discovery
+    ):
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        secret = _make_mock_secret("KEY", "integration", "k", "string", True)
+        cmd = MagicMock()
+        cmd.command_name = "partial_cmd"
+        cmd.description = "Partial"
+        cmd.required_secrets = [secret]
+        type(cmd).parameters = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("parameter explosion"))
+        )
+        cmd.associated_service = None
+        cmd.authentication = None
+
+        mock_service = MagicMock()
+        mock_service.get_all_commands.return_value = {"partial_cmd": cmd}
+        mock_discovery.return_value = mock_service
+        mock_get_secret.side_effect = lambda key, scope, user_id=None: "hello"
+
+        snapshot = build_snapshot()
+
+        entry = snapshot["commands"][0]
+        assert len(entry["secrets"]) == 1
+        assert "_errors" in entry
+        assert "parameters" in entry["_errors"]
+
+
 def _make_mock_agent(
     name: str,
     description: str,

@@ -409,3 +409,87 @@ class TestEnsureAgentsRegistered:
         fresh_scheduler.update_agents(new_agents)
 
         mock_repo.ensure_registered.assert_called_once_with(["installed_agent"])
+
+
+class _BoomAgent(MockAgent):
+    """Agent that always raises during run() — used to test the auto-disable
+    circuit breaker."""
+
+    async def run(self) -> None:
+        raise RuntimeError("boom")
+
+
+class TestAutoDisableOnConsecutiveFailures:
+    """The scheduler trips an agent's enabled flag to 0 after 3 consecutive
+    failed runs. The reason is exposed via `get_auto_disabled_reasons` so the
+    settings snapshot can surface it to the mobile UI.
+    """
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_auto_disables_after_three_failures(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        mock_repo = MagicMock()
+        mock_repo.is_enabled.return_value = True
+        mock_repo_cls.return_value = mock_repo
+
+        agent = _BoomAgent(name="cranky")
+
+        async def run_three():
+            for _ in range(3):
+                await fresh_scheduler._run_agent_safe(agent)
+
+        asyncio.run(run_three())
+
+        # set_enabled(name, False) called exactly once on the third failure
+        mock_repo.set_enabled.assert_called_once_with("cranky", False)
+        reasons = fresh_scheduler.get_auto_disabled_reasons()
+        assert "cranky" in reasons
+        assert "3 consecutive failures" in reasons["cranky"]
+        assert "boom" in reasons["cranky"]
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_two_failures_then_success_resets_streak(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        mock_repo = MagicMock()
+        mock_repo.is_enabled.return_value = True
+        mock_repo_cls.return_value = mock_repo
+
+        crashy = _BoomAgent(name="crashy")
+        steady = MockAgent(name="crashy")  # same name, succeeds
+
+        async def two_fails_then_succeed():
+            await fresh_scheduler._run_agent_safe(crashy)
+            await fresh_scheduler._run_agent_safe(crashy)
+            await fresh_scheduler._run_agent_safe(steady)
+            await fresh_scheduler._run_agent_safe(crashy)  # 1st failure post-reset
+
+        asyncio.run(two_fails_then_succeed())
+
+        # Counter reset on success — only 1 failure after that, so no auto-disable
+        mock_repo.set_enabled.assert_not_called()
+        assert fresh_scheduler.get_auto_disabled_reasons() == {}
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_only_disables_when_currently_enabled(
+        self, mock_session_local, mock_repo_cls, fresh_scheduler
+    ):
+        # User already turned this agent off — auto-disable should be a no-op
+        # on the DB side (still records reason in memory for visibility).
+        mock_repo = MagicMock()
+        mock_repo.is_enabled.return_value = False
+        mock_repo_cls.return_value = mock_repo
+
+        agent = _BoomAgent(name="already_off")
+
+        async def run_three():
+            for _ in range(3):
+                await fresh_scheduler._run_agent_safe(agent)
+
+        asyncio.run(run_three())
+
+        mock_repo.set_enabled.assert_not_called()
