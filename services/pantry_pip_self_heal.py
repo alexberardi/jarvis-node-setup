@@ -1,26 +1,31 @@
-"""Verify (and optionally repair) pip dependencies declared by installed
-Pantry packages.
+"""Verify and repair pip dependencies declared by installed Pantry packages.
 
 Why this exists
 ---------------
-The kitchen-node beta-test (May 2026) surfaced a silent failure mode in
-the Pantry install pipeline: a package's apt step ran successfully but
-its pip step skipped/failed, leaving the package's metadata file
-claiming "installed" while the declared pip dep was missing from the
-venv. The first symptom was the user trying to play music and hearing
-TTS say nothing while the log quietly carried
+The kitchen-node beta-test (May 2026) surfaced two ways a Pantry
+package's declared pip deps can go missing from the venv:
+
+  1. Original install: the package's apt step ran successfully but its
+     pip step skipped/failed, leaving metadata claiming "installed"
+     while the dep was actually missing.
+  2. Node self-update: ``install.sh:rebuild_venv()`` blows away
+     ``/opt/jarvis-node/.venv`` and rebuilds from
+     ``requirements-pi.txt`` only — Pantry-installed pip deps aren't
+     in any requirements file, so every node update silently wipes
+     them.
+
+Either way the first symptom is the user trying to play music and
+hearing TTS say nothing while the log quietly carries
 
   Music play failed | error='music-assistant-client is not installed.
                              Install it with: pip install music-assistant-client'
 
 The self-heal walks ``~/.jarvis/packages/*.json`` on every node
-startup. Each metadata file now carries a ``pip_packages`` field
+startup. Each metadata file carries a ``pip_packages`` field
 (populated by ``command_store_service._write_package_metadata`` starting
 in v0.1.67). For each declared dep, we verify the distribution exists
-in the running venv. Missing deps are logged as warnings; if the
-``pantry_pip_self_heal_enabled`` config key is true, we also pip-install
-them and (when any install succeeded) schedule a service restart so the
-fresh imports actually load.
+in the running venv and pip-install anything that's missing. On a
+healthy node this is a one-shot ``pip list`` and nothing else.
 
 Legacy installs (pre-v0.1.67 metadata without ``pip_packages``) are
 skipped with a single info log — re-installing the package via the
@@ -124,16 +129,14 @@ def _format_spec(pkg: dict) -> str:
     return name
 
 
-def verify_pantry_pip_deps(*, auto_repair: bool = False) -> int:
-    """Verify pip deps for every installed Pantry package.
+def verify_pantry_pip_deps() -> int:
+    """Verify pip deps for every installed Pantry package and reinstall
+    any that are missing.
 
     Walks ``~/.jarvis/packages/*.json``. For each package with a
     ``pip_packages`` field, checks that each declared dep is present
-    in the running venv. Logs a warning per missing dep.
-
-    When ``auto_repair`` is true, also attempts to pip-install the
-    missing deps. Returns the count of packages that needed repair
-    (zero on a healthy install).
+    in the running venv and pip-installs anything that isn't. Returns
+    the count of packages that needed repair (zero on a healthy node).
 
     No-op on a node with no installed Pantry packages.
     """
@@ -173,10 +176,7 @@ def verify_pantry_pip_deps(*, auto_repair: bool = False) -> int:
             "Pantry package missing declared pip dependencies",
             package=package_name,
             missing=specs,
-            auto_repair=auto_repair,
         )
-        if not auto_repair:
-            continue
         if _pip_install(specs):
             packages_repaired += 1
             logger.info(

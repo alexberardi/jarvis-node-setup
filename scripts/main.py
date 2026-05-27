@@ -244,20 +244,29 @@ def main():
     except Exception as e:
         logger.warning("ADC HPF self-heal failed (non-fatal)", error=str(e))
 
-    # Pantry pip-dep self-heal: walk installed-package metadata and
-    # verify each declared pip dep is present in the venv. Catches the
-    # May-2026 beta-blocker where the music package's apt step ran but
-    # its pip step (music-assistant-client) silently failed, leaving
-    # the command runtime-broken until the user tried to play music.
-    # Defaults to log-only (warning per missing dep); auto-repair is
-    # opt-in via ``pantry_pip_self_heal_enabled`` so the node doesn't
-    # silently pip-install at boot on installs the user might prefer
-    # to triage themselves.
+    # Pantry pip-dep self-heal: walk installed-package metadata, verify
+    # each declared pip dep is present in the venv, reinstall anything
+    # missing. Catches the May-2026 beta-blocker (a Pantry install's
+    # pip step silently failing) AND the broader case where a node
+    # self-update rebuilds the venv from requirements-pi.txt only —
+    # Pantry-installed deps aren't in any requirements file, so every
+    # node update wipes them. There's no manual-triage UX on a headless
+    # Pi; always heal.
+    #
+    # ORDERING: must run before any code path that imports a Pantry
+    # command module. Command modules use `try: from <pkg> import X /
+    # except ImportError: <stub>` for their pip deps, so an import
+    # attempt before self-heal binds the names to stubs for the lifetime
+    # of the process — even after a successful pip install. Today the
+    # only command-import path is the lazy CommandDiscoveryService
+    # singleton (instantiated via get_command_discovery_service() much
+    # later in boot), which keeps us safe. If you reorder boot and move
+    # any command-loading work above this point, you must either move
+    # self-heal with it or have the self-heal trigger a respawn when it
+    # actually installed something.
     try:
         from services.pantry_pip_self_heal import verify_pantry_pip_deps
-        repaired = verify_pantry_pip_deps(
-            auto_repair=Config.get_bool("pantry_pip_self_heal_enabled", False),
-        )
+        repaired = verify_pantry_pip_deps()
         if repaired:
             logger.info("Pantry self-heal repaired packages", count=repaired)
     except Exception as e:
