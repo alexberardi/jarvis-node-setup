@@ -754,6 +754,66 @@ rebuild_venv() {
   success "Venv rebuilt with system Python ($(${INSTALL_DIR}/.venv/bin/python --version 2>&1))"
 }
 
+# --- Reinstall Pantry-package pip deps after a venv rebuild ---
+# Pantry packages (installed via the mobile app) declare their pip
+# dependencies per-package in ~/.jarvis/packages/<name>.json. They are
+# NOT in requirements-pi.txt, so rebuild_venv silently loses every
+# Pantry pip dep on each node update. May-2026: the kitchen node lost
+# music-assistant-client this way, and every "play music" command
+# failed for a day with "music-assistant-client is not installed".
+#
+# Runs every install (cheap when nothing's missing — pip-installing an
+# already-satisfied spec is a no-op). Best-effort: a failure here logs
+# a warning but doesn't abort the install, since a partially-broken
+# command is still better than no service.
+restore_pantry_pip_deps() {
+  local packages_dir="${SERVICE_HOME}/.jarvis/packages"
+  if [ ! -d "$packages_dir" ]; then
+    return 0
+  fi
+
+  local specs
+  specs=$("${INSTALL_DIR}/.venv/bin/python" - "${packages_dir}" <<'PY'
+import glob, json, os, sys
+packages_dir = sys.argv[1]
+out = []
+for path in sorted(glob.glob(os.path.join(packages_dir, "*.json"))):
+    try:
+        with open(path) as f:
+            meta = json.load(f)
+    except Exception:
+        continue
+    for pkg in meta.get("pip_packages") or []:
+        name = (pkg.get("name") or "").strip()
+        if not name:
+            continue
+        ver = (pkg.get("version") or "").strip()
+        if not ver:
+            out.append(name)
+        elif ver[0].isdigit():
+            out.append(f"{name}=={ver}")
+        else:
+            out.append(f"{name}{ver}")
+print(" ".join(out))
+PY
+)
+  if [ -z "$specs" ]; then
+    return 0
+  fi
+
+  info "Reinstalling Pantry pip deps ($(echo "$specs" | wc -w | tr -d ' ') specs)..."
+  # --prefer-binary mirrors _install_pip_deps so we don't compile lxml
+  # etc. from source on Pi Zero. No timeout flag — bash's `command`
+  # has no built-in; the systemd-run cgroup install.sh runs under has
+  # plenty of headroom and pip itself surfaces hangs in its own logs.
+  if "${INSTALL_DIR}/.venv/bin/python" -m pip install \
+       --prefer-binary $specs; then
+    success "Pantry pip deps restored"
+  else
+    warn "Some Pantry pip deps failed to reinstall (affected commands may not work until reinstalled via the mobile app)"
+  fi
+}
+
 # --- Run database migrations ---
 setup_database() {
   info "Running database migrations..."
@@ -1222,6 +1282,7 @@ main() {
   configure_audio
   setup_config
   rebuild_venv
+  restore_pantry_pip_deps
   setup_database
   register_commands
   migrate_to_pi_home
