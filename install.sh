@@ -1124,12 +1124,14 @@ EOF
 # again is a node stuck in "in_progress" until the CC sweeper gives up.
 start_service() {
   info "Starting ${SERVICE_NAME}..."
-  # NRestarts before the restart so we can detect a post-start crash
-  # loop: Restart=always respawns failing units automatically, but the
-  # NRestarts counter climbs each time and we can spot it.
+  systemctl restart "${SERVICE_NAME}.service"
+  # Capture NRestarts AFTER the restart: systemctl restart (and the
+  # daemon-reload in create_service just before this) can zero the
+  # counter, so a pre-restart snapshot locks in a stale value and the
+  # equality check below would never pass — guaranteeing a rollback on
+  # any node that had accumulated restarts before the upgrade.
   local nrestarts_before
   nrestarts_before=$(systemctl show -p NRestarts --value "${SERVICE_NAME}.service" 2>/dev/null || echo 0)
-  systemctl restart "${SERVICE_NAME}.service"
 
   local unit_path="/etc/systemd/system/${SERVICE_NAME}.service"
   local upgrade_backup="${unit_path}.upgrade-backup"
