@@ -63,6 +63,17 @@ class AgentSchedulerService:
             self._context_cache: Dict[str, Dict[str, Any]] = {}
             self._context_lock = threading.Lock()
 
+            # Consecutive failure tracking — when an agent throws three runs
+            # in a row, the scheduler trips the registry's `enabled` flag to
+            # 0 and records a reason so the snapshot can surface a clear UI
+            # signal ("this agent was auto-disabled because of X"). The
+            # reason map is in-memory; on node restart we lose the reason
+            # but the disabled state persists (enabled=0 in the registry).
+            # If the underlying issue is fixed and the user re-enables, the
+            # counter starts fresh and the agent gets another chance.
+            self._consecutive_failures: Dict[str, int] = {}
+            self._auto_disabled_reasons: Dict[str, str] = {}
+
             self._loop: Optional[asyncio.AbstractEventLoop] = None
             self._thread: Optional[threading.Thread] = None
             self._running_event = threading.Event()  # Thread-safe running flag
@@ -70,6 +81,8 @@ class AgentSchedulerService:
             self._alert_queue: Optional[AlertQueueService] = None
 
             self._initialized = True
+
+    AUTO_DISABLE_AFTER_FAILURES: int = 3
 
     def set_alert_queue(self, queue: AlertQueueService) -> None:
         """Wire the alert queue so agent alerts are collected after each run."""
@@ -248,6 +261,11 @@ class AgentSchedulerService:
             # Update last run time
             self._last_run[agent.name] = time.time()
 
+            # Successful run resets the consecutive-failure counter so a
+            # transient hiccup doesn't add up to auto-disable over hours.
+            with self._context_lock:
+                self._consecutive_failures.pop(agent.name, None)
+
             # Cache context data (thread-safe)
             if agent.include_in_context:
                 context = agent.get_context_data()
@@ -277,6 +295,63 @@ class AgentSchedulerService:
                     "last_error": str(e),
                     "error_time": datetime.now(timezone.utc).isoformat()
                 }
+                streak = self._consecutive_failures.get(agent.name, 0) + 1
+                self._consecutive_failures[agent.name] = streak
+
+            if streak >= self.AUTO_DISABLE_AFTER_FAILURES:
+                self._auto_disable_agent(agent.name, last_error=str(e), streak=streak)
+
+    def _auto_disable_agent(self, agent_name: str, *, last_error: str, streak: int) -> None:
+        """Trip the registry's enabled flag to 0 after a failure streak.
+
+        Records the reason in `_auto_disabled_reasons` so the snapshot
+        service can render a "Auto-disabled after N failures" badge in the
+        mobile UI. Counter is cleared so re-enabling restarts the streak
+        from zero rather than insta-disabling on the next failure.
+        """
+        reason = f"Auto-disabled after {streak} consecutive failures: {last_error}"
+        try:
+            db = SessionLocal()
+            try:
+                repo = AgentRegistryRepository(db)
+                if repo.is_enabled(agent_name):
+                    repo.set_enabled(agent_name, False)
+                    logger.error(
+                        "Agent auto-disabled — repeated failures",
+                        agent=agent_name,
+                        streak=streak,
+                        last_error=last_error,
+                    )
+                else:
+                    # Already disabled (user-flipped). Don't double-log.
+                    logger.warning(
+                        "Auto-disable triggered on already-disabled agent",
+                        agent=agent_name,
+                        streak=streak,
+                    )
+            finally:
+                db.close()
+        except Exception as repo_err:
+            logger.error(
+                "Auto-disable DB write failed; agent remains enabled",
+                agent=agent_name,
+                error=str(repo_err),
+            )
+            return
+
+        with self._context_lock:
+            self._auto_disabled_reasons[agent_name] = reason
+            self._consecutive_failures.pop(agent_name, None)
+
+    def get_auto_disabled_reasons(self) -> Dict[str, str]:
+        """Snapshot of agents that were auto-disabled this process lifetime.
+
+        Maps agent_name → human-readable reason. Read by the settings
+        snapshot service so the mobile UI can render a circuit-breaker
+        badge separate from a user-toggled disable.
+        """
+        with self._context_lock:
+            return dict(self._auto_disabled_reasons)
 
     def get_aggregated_context(self) -> Dict[str, Dict[str, Any]]:
         """Get aggregated context data from all agents.
