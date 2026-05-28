@@ -29,6 +29,12 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=30
 KillSignal=SIGTERM
+# Raise mlock cap so jarvis-node can pin hot pages in RAM and avoid
+# SD-card swap stalls. Pi Zero 2W has 416 MiB usable; node's working
+# set after warmup is ~120-150 MiB, well under that. Without this, the
+# default 64 KiB ulimit blocks mlockall and oww predict can fall many
+# seconds behind real-time when the kernel pages it to disk.
+LimitMEMLOCK=infinity
 Environment=HOME=__SERVICE_HOME__
 Environment=XDG_RUNTIME_DIR=/run/user/__SERVICE_UID__
 Environment=PYTHONUNBUFFERED=1
