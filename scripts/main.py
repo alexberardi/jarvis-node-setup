@@ -194,6 +194,74 @@ def _validate_config() -> None:
                        config_path=os.environ.get("CONFIG_PATH", "config.json"))
 
 
+def _lock_pages_in_ram() -> None:
+    """Pin pages-on-fault so accessed pages never get swapped to SD.
+
+    Calls ``mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)``:
+
+    - ``MCL_CURRENT``: lock all pages currently resident in RAM
+    - ``MCL_FUTURE``:  lock pages newly faulted in (libraries loaded
+      later, lazy module imports, etc.)
+    - ``MCL_ONFAULT``: don't pre-fault — only lock pages once they're
+      actually accessed, so cold code paths never enter RAM at all
+
+    Net effect on Pi Zero: peak RAM caps at our actual working set
+    (~120-150 MiB) instead of the committed VM size (~280 MiB), and
+    the oww/AEC/audio path stays in RAM regardless of overall memory
+    pressure — eliminating the wake-detection-lag-from-swap-stall
+    pattern. Non-Linux hosts and dev macOS no-op cleanly.
+
+    The systemd unit must set ``LimitMEMLOCK=infinity`` for this to
+    work as a non-root user; otherwise the default 64 KiB cap blocks
+    mlockall and we log a warning and continue (no swap-locking, but
+    process keeps running).
+    """
+    if sys.platform != "linux":
+        return  # mlockall is Linux-specific; mac dev runs degrade cleanly
+
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_path = ctypes.util.find_library("c")
+        if not libc_path:
+            logger.warning("Could not find libc; skipping mlock")
+            return
+        libc = ctypes.CDLL(libc_path, use_errno=True)
+    except Exception as e:
+        logger.warning("mlock setup failed (libc load)", error=str(e))
+        return
+
+    MCL_CURRENT = 1
+    MCL_FUTURE = 2
+    MCL_ONFAULT = 4
+
+    # First try with ONFAULT (Linux 4.4+). On older kernels this returns
+    # EINVAL — fall back to the classic MCL_CURRENT | MCL_FUTURE which
+    # pre-faults everything (larger RAM footprint but still avoids swap).
+    for flags, label in (
+        (MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT, "current+future+onfault"),
+        (MCL_CURRENT | MCL_FUTURE, "current+future"),
+    ):
+        if libc.mlockall(flags) == 0:
+            logger.info("Memory locked into RAM", mode=label)
+            return
+        err = ctypes.get_errno()
+        # EINVAL on the onfault attempt → try the fallback. Other errors
+        # (EPERM, ENOMEM) are terminal — log and move on without locking.
+        if err == 22:  # EINVAL
+            continue
+        logger.warning(
+            "mlockall failed — wake detection may lag under memory pressure",
+            errno=err,
+            error=os.strerror(err),
+            hint="check systemd LimitMEMLOCK=infinity",
+        )
+        return
+
+    logger.warning("mlockall not supported on this kernel; skipping")
+
+
 def main():
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, _handle_shutdown)
@@ -209,6 +277,17 @@ def main():
                 config_path=os.environ.get("CONFIG_PATH", "config.json"),
                 node_id=Config.get_str("node_id", "unknown"),
                 room=Config.get_str("room", "unknown"))
+
+    # Pin pages we actually use into RAM. On Pi Zero (416 MiB usable +
+    # 415 MiB swap-to-SD-card), the kernel routinely pages cold parts of
+    # the process out, and every later access faults back in from the SD
+    # card. A single fault costs 50-500 ms; stack a few during oww.predict
+    # and wake detection lags multiple seconds behind real-time. mlockall
+    # with MCL_ONFAULT locks pages on first access — hot paths stay in
+    # RAM, cold code is never faulted in, peak memory caps at our actual
+    # working set instead of the full committed VM size. Requires the
+    # systemd unit to set LimitMEMLOCK=infinity (see setup/jarvis-node.service).
+    _lock_pages_in_ram()
 
     # Validate config keys (warnings only — provisioning may resolve them)
     _validate_config()
