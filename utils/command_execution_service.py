@@ -986,7 +986,13 @@ class CommandExecutionService:
         entirely — no "Let me look into that." in front of a 1-second
         answer. If the window expires, we proceed with the ack so the
         user hears something while a slow tool loop grinds.
+
+        Honors ``wake_ack_audio_enabled``: when false, the LED already
+        signals "I heard you" + "thinking" without spoken filler. Stays
+        silent regardless of how slow the LLM is.
         """
+        if not Config.get_bool("wake_ack_audio_enabled", True):
+            return
         if main_response_ready.wait(timeout=self.ACK_TIMER_SECONDS):
             logger.debug("Main response arrived before ack timer, skipping ack")
             return
