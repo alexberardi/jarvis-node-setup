@@ -104,13 +104,20 @@ def _refresh_discovery_after_install(command_name: str) -> None:
     """Refresh in-process caches so a newly installed component is usable.
 
     Skipped when the install triggers a restart — boot does full discovery.
+
+    The four discovery services are independent (different modules, different
+    target dirs), so we refresh them in parallel. On Pi Zero this is the bulk
+    of the post-install wait when there are no new pip deps to trigger a
+    restart — each one invalidates Python's import caches and re-imports a
+    pile of modules.
     """
-    # Re-discover commands so the new package is available immediately
-    # without requiring a node restart.
-    try:
+    from concurrent.futures import ThreadPoolExecutor
+
+    added_agents: set[str] = set()
+
+    def _refresh_commands() -> None:
         from utils.command_discovery_service import get_command_discovery_service
         get_command_discovery_service().refresh_now()
-
         discovered = get_command_discovery_service().get_all_commands(include_disabled=True)
         if command_name in discovered:
             logger.info("Verified: command discoverable after install", command=command_name)
@@ -120,59 +127,67 @@ def _refresh_discovery_after_install(command_name: str) -> None:
                 command=command_name,
                 discovered_count=len(discovered),
             )
-    except Exception as e:
-        logger.warning("Command discovery refresh failed (non-fatal)", error=str(e))
 
-    # Re-discover agents and run any new ones immediately so their
-    # context (e.g., HA devices) is cached before the first voice command.
-    try:
+    def _refresh_agents() -> None:
+        nonlocal added_agents
         from utils.agent_discovery_service import get_agent_discovery_service
-        from services.agent_scheduler_service import get_agent_scheduler_service
 
         discovery = get_agent_discovery_service()
         old_agents = set(discovery.get_all_agents().keys())
         discovery.refresh()
-        new_agents = discovery.get_all_agents()
-        added = set(new_agents.keys()) - old_agents
+        added_agents = set(discovery.get_all_agents().keys()) - old_agents
 
-        if added:
-            scheduler = get_agent_scheduler_service()
-            scheduler.update_agents(new_agents)
-            for name in added:
-                logger.info("Running newly installed agent", agent=name)
-                scheduler.run_agent_now(name)
-    except Exception as e:
-        logger.warning("Agent refresh after install failed (non-fatal)", error=str(e))
-
-    # Re-discover device protocol families so a newly installed
-    # device_protocol component (e.g. govee, lifx) is usable without a
-    # service restart. Without this, scan handlers still see the cached
-    # "no families" snapshot from startup and return zero devices.
-    try:
+    def _refresh_device_families() -> None:
         from utils.device_family_discovery_service import get_device_family_discovery_service
-
         dfd = get_device_family_discovery_service()
         dfd.refresh()
         logger.info(
             "Device family cache refreshed after install",
             families=sorted(dfd.get_all_families().keys()),
         )
-    except Exception as e:
-        logger.warning("Device family refresh after install failed (non-fatal)", error=str(e))
 
-    # Re-discover device managers so a newly installed device_manager
-    # component is usable without a service restart.
-    try:
+    def _refresh_device_managers() -> None:
         from utils.device_manager_discovery_service import get_device_manager_discovery_service
-
         dmd = get_device_manager_discovery_service()
         dmd.refresh()
         logger.info(
             "Device manager cache refreshed after install",
             managers=sorted(dmd.get_all_managers().keys()),
         )
-    except Exception as e:
-        logger.warning("Device manager refresh after install failed (non-fatal)", error=str(e))
+
+    refresh_jobs: dict[str, Any] = {
+        "commands": _refresh_commands,
+        "agents": _refresh_agents,
+        "device_families": _refresh_device_families,
+        "device_managers": _refresh_device_managers,
+    }
+
+    with ThreadPoolExecutor(max_workers=len(refresh_jobs), thread_name_prefix="pkg-discovery") as pool:
+        futures = {pool.submit(fn): name for name, fn in refresh_jobs.items()}
+        for fut, name in futures.items():
+            try:
+                fut.result()
+            except Exception as e:
+                logger.warning(
+                    f"{name} discovery refresh after install failed (non-fatal)",
+                    error=str(e),
+                )
+
+    # Agent scheduler update + run_agent_now MUST happen after agent
+    # discovery — keep it serial here. run_agent_now is non-blocking
+    # (asyncio.run_coroutine_threadsafe) so it doesn't add latency.
+    if added_agents:
+        try:
+            from services.agent_scheduler_service import get_agent_scheduler_service
+            from utils.agent_discovery_service import get_agent_discovery_service
+
+            scheduler = get_agent_scheduler_service()
+            scheduler.update_agents(get_agent_discovery_service().get_all_agents())
+            for name in added_agents:
+                logger.info("Running newly installed agent", agent=name)
+                scheduler.run_agent_now(name)
+        except Exception as e:
+            logger.warning("Agent scheduler update after install failed (non-fatal)", error=str(e))
 
 
 def _defer_result_and_restart(
