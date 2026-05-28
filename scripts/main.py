@@ -278,16 +278,15 @@ def main():
                 node_id=Config.get_str("node_id", "unknown"),
                 room=Config.get_str("room", "unknown"))
 
-    # Pin pages we actually use into RAM. On Pi Zero (416 MiB usable +
-    # 415 MiB swap-to-SD-card), the kernel routinely pages cold parts of
-    # the process out, and every later access faults back in from the SD
-    # card. A single fault costs 50-500 ms; stack a few during oww.predict
-    # and wake detection lags multiple seconds behind real-time. mlockall
-    # with MCL_ONFAULT locks pages on first access — hot paths stay in
-    # RAM, cold code is never faulted in, peak memory caps at our actual
-    # working set instead of the full committed VM size. Requires the
-    # systemd unit to set LimitMEMLOCK=infinity (see setup/jarvis-node.service).
-    _lock_pages_in_ram()
+    # DISABLED 2026-05-28 (v0.1.81): mlockall(MCL_CURRENT|FUTURE|ONFAULT)
+    # consistently OOM-killed jarvis-node (and sshd / wpa_supplicant in
+    # the cascade) on Pi Zero 2W. MCL_FUTURE means every faulted page
+    # gets permanently locked, so the working set grows past the
+    # ~300 MiB usable RAM and the kernel can't reclaim. Reverting to
+    # the swap-thrash trade-off until a more surgical mlock (specific
+    # pages: oww model + AEC buffers only, not the whole process) lands.
+    # The _lock_pages_in_ram helper is kept for that future work.
+    # _lock_pages_in_ram()
 
     # Validate config keys (warnings only — provisioning may resolve them)
     _validate_config()
