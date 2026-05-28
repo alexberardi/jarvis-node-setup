@@ -374,6 +374,30 @@ def main():
     else:
         logger.info("MQTT disabled in config, skipping MQTT listener")
 
+    # If the previous process restarted to load new pip imports, post
+    # the deferred install result to CC as soon as we have a network-
+    # capable process. The flush is HTTP-only (doesn't need MQTT to be
+    # connected, just available), and doing it here — before the BT
+    # pair agent, supervisor thread, and LLM warmup — shaves seconds
+    # off the mobile-perceived install time. The voice listener still
+    # starts only after this point, so the wake-word-during-restart
+    # invariant is preserved.
+    #
+    # We capture `_install_restart` BEFORE flushing because the flush
+    # clears the marker file, and we still need to suppress the LLM
+    # warmup TTS reply ("hello" out the speaker) later in boot.
+    _install_restart: bool = False
+    try:
+        from services.package_install_handler import (
+            flush_post_restart_install_result,
+            has_pending_install_result,
+        )
+        _install_restart = has_pending_install_result()
+        if _install_restart:
+            flush_post_restart_install_result()
+    except Exception as e:
+        logger.warning("Early install-result flush failed (non-fatal)", error=str(e))
+
     # Device scanning is now user-driven via MQTT (mobile → CC → node).
     # See services/device_scan_handler.py and mqtt_tts_listener.py.
 
@@ -487,11 +511,9 @@ def main():
     # TTS reply back through the speaker, which is fine to hear once at
     # boot but annoying on every package install. The first voice command
     # after install will be a beat slower; acceptable trade-off.
-    from services.package_install_handler import (
-        flush_post_restart_install_result,
-        has_pending_install_result,
-    )
-    _install_restart = has_pending_install_result()
+    # (The deferred install-result flush already happened earlier in boot,
+    # right after MQTT came up — see the block above the BT pair agent.
+    # `_install_restart` was captured there before the marker was cleared.)
     if _install_restart:
         logger.info("Skipping LLM warmup — install-triggered restart, staying silent")
     else:
@@ -503,16 +525,6 @@ def main():
             logger.info("LLM warmup complete")
         except Exception as e:
             logger.warning("LLM warmup failed (non-fatal)", error=str(e))
-
-    # Flush any install result the previous process deferred when it
-    # restarted to load new pip imports. Done after MQTT + warmup so the
-    # node is fully ready, and BEFORE the voice listener starts so the
-    # wake-word path doesn't engage during the install→restart window.
-    # Mobile only sees "Done" once this POST lands.
-    try:
-        flush_post_restart_install_result()
-    except Exception as e:
-        logger.warning("Post-restart install result flush failed (non-fatal)", error=str(e))
 
     # Start voice listener with retry (blocks until KeyboardInterrupt or audio failure)
     max_voice_retries: int = 3

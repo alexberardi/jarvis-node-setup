@@ -234,34 +234,51 @@ def _check_name_conflicts(manifest: CommandManifest) -> None:
         # device_manager — no built-in conflict check needed yet
 
 
-def _check_command_name_conflict(command_name: str) -> None:
-    """Check if the command name conflicts with a built-in command."""
+# Built-in names never change during a process lifetime. The first
+# install on a fresh Pi was spending several seconds re-importing every
+# command module just to read its `command_name` attribute, so cache it.
+_BUILTIN_COMMAND_NAMES: set[str] | None = None
+
+
+def _get_builtin_command_names() -> set[str]:
+    global _BUILTIN_COMMAND_NAMES
+    if _BUILTIN_COMMAND_NAMES is not None:
+        return _BUILTIN_COMMAND_NAMES
+
+    names: set[str] = set()
     try:
         import commands
         import importlib
         import pkgutil
+        from jarvis_command_sdk import IJarvisCommand
 
         for _, mod_name, _ in pkgutil.iter_modules(commands.__path__):
             try:
                 module = importlib.import_module(f"commands.{mod_name}")
-                from jarvis_command_sdk import IJarvisCommand
-                for attr in dir(module):
-                    cls = getattr(module, attr)
-                    if (isinstance(cls, type)
-                            and issubclass(cls, IJarvisCommand)
-                            and cls is not IJarvisCommand):
-                        instance = cls()
-                        if instance.command_name == command_name:
-                            raise InstallError(
-                                f"Command name '{command_name}' conflicts with "
-                                f"built-in command in commands/{mod_name}.py"
-                            )
-            except InstallError:
-                raise
             except Exception:
                 continue
+            for attr in dir(module):
+                cls = getattr(module, attr)
+                if (isinstance(cls, type)
+                        and issubclass(cls, IJarvisCommand)
+                        and cls is not IJarvisCommand):
+                    try:
+                        names.add(cls().command_name)
+                    except Exception:
+                        continue
     except ImportError:
         pass  # Not in node context
+
+    _BUILTIN_COMMAND_NAMES = names
+    return names
+
+
+def _check_command_name_conflict(command_name: str) -> None:
+    """Check if the command name conflicts with a built-in command."""
+    if command_name in _get_builtin_command_names():
+        raise InstallError(
+            f"Command name '{command_name}' conflicts with a built-in command"
+        )
 
 
 def _check_agent_name_conflict(agent_name: str) -> None:
@@ -602,14 +619,37 @@ def _remove_post_install_dropins(package_name: str) -> None:
         logger.info("post_install dropins removed", package=package_name, detail=out)
 
 
+def _snapshot_installed_dists() -> set[tuple[str, str]]:
+    """Snapshot every installed dist as (name, version) tuples.
+
+    Used around `_install_pip_deps` to detect whether pip actually changed
+    anything. importlib.metadata reads from .dist-info/ on disk, so the
+    second call sees newly written dist-infos even though the long-running
+    process hasn't imported them yet.
+    """
+    try:
+        from importlib.metadata import distributions
+        return {
+            ((d.metadata["Name"] or "").lower(), d.version or "")
+            for d in distributions()
+        }
+    except Exception:
+        return set()
+
+
 def _install_pip_deps(manifest: CommandManifest, *, state: dict | None = None) -> None:
     """Install pip dependencies declared in the manifest.
 
-    When ``state`` is provided, the keys actually pip-installed are recorded
-    at ``state["pip_deps_installed"]``. The MQTT install handler uses this
-    to schedule a service restart — newly installed top-level imports won't
-    be picked up by the long-running Python process otherwise (a failed
-    ``ImportError`` at boot caches ``None`` for the import target).
+    When ``state`` is provided, the names of packages that pip actually
+    installed or upgraded are recorded at ``state["pip_deps_installed"]``.
+    The MQTT install handler uses this to schedule a service restart —
+    newly installed top-level imports won't be picked up by the long-running
+    Python process otherwise (a failed ``ImportError`` at boot caches
+    ``None`` for the import target).
+
+    We diff installed-dist snapshots before/after rather than trusting the
+    manifest list, so a reinstall where every dep is already at the
+    requested version skips the restart entirely.
     """
     deps: list[str] = []
 
@@ -627,6 +667,7 @@ def _install_pip_deps(manifest: CommandManifest, *, state: dict | None = None) -
         return
 
     logger.info("Installing pip dependencies", packages=deps)
+    before = _snapshot_installed_dists()
     # --prefer-binary: grab pre-built wheels instead of compiling C
     # extensions from source (lxml, etc.). ARM64 wheels exist for most
     # packages and avoid the 100% CPU + swap thrashing that kills the
@@ -661,7 +702,18 @@ def _install_pip_deps(manifest: CommandManifest, *, state: dict | None = None) -
         raise InstallError(f"pip install failed: {result.stderr.strip()}")
 
     if state is not None:
-        state["pip_deps_installed"] = deps
+        after = _snapshot_installed_dists()
+        changed = sorted({name for (name, _ver) in (after - before)})
+        if changed:
+            state["pip_deps_installed"] = changed
+            logger.info("pip install changed dists", changed=changed)
+        else:
+            # All declared deps were already at the requested version —
+            # skip the restart and the ~30-60s of post-restart boot.
+            logger.info(
+                "pip install completed with no dist changes — skipping restart",
+                declared=deps,
+            )
 
 
 def _check_jarvis_dependencies(deps: list[str]) -> None:
