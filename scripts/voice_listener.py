@@ -439,6 +439,49 @@ def _pre_wake_vad_threshold() -> float:
     """
     return Config.get_float("pre_wake_vad_rms_threshold", 2500.0)
 
+
+def _adaptive_silence_threshold(rms_stats: dict[str, float]) -> int | None:
+    """Derive a per-cycle silence_threshold from the pre-wake noise floor.
+
+    The 5 s pre-wake RMS window is overwhelmingly ambient (the wake word
+    itself is only the last ~0.25 s), so its median is a clean read of
+    room noise at the instant of wake. We lift the threshold to a
+    multiple of that floor so normal speech (typically RMS 1000-3000+)
+    easily clears it but breath/HVAC/fridge-hum bursts don't — without
+    forcing the operator to hand-tune a static value that's right for
+    one time of day and wrong for another (the kitchen-Pi failure mode
+    that motivated this).
+
+    Returns ``None`` to mean "fall back to the static config value":
+    either auto-mode is disabled, the stats deque was empty, or the
+    multiplier produced something obviously wrong.
+
+    Bounds: ``[200, 1500]``. Below 200 the recorder treats sub-baseline
+    HVAC ticks as silence-breaks and never stops; above 1500 it starts
+    cutting into normal speech amplitude.
+    """
+    if not Config.get_bool("silence_threshold_auto", True):
+        return None
+    if not isinstance(rms_stats, dict):
+        return None
+    median = rms_stats.get("median")
+    if not isinstance(median, (int, float)) or median <= 0:
+        return None
+    # Multiplier 2.0 (was 3.0) and ceiling 1000 (was 1500): the original
+    # 3× was tuned on quiet-room data (median 130-170 → threshold 400-500),
+    # but in a loud room (median 470, kitchen with fan/TV) 3× produces
+    # 1410 — above typical command-speech amplitude (1000-2500). That
+    # clipped multi-syllable commands mid-sentence; Whisper got fragments
+    # and hallucinated short words like "Bye." that then hit the filter.
+    # Bias is toward NOT clipping the user: a too-low threshold lengthens
+    # the recording (recoverable), a too-high one drops the command
+    # (not recoverable).
+    multiplier = Config.get_float("silence_threshold_auto_multiplier", 2.0)
+    floor = Config.get_int("silence_threshold_auto_floor", 200)
+    ceiling = Config.get_int("silence_threshold_auto_ceiling", 1000)
+    return max(floor, min(ceiling, int(median * multiplier)))
+
+
 _WAKE_CHIMES_DIR = Path(__file__).resolve().parent.parent / "sounds" / "wake"
 
 # Track the last identified speaker so parallel warmup can load their memories
@@ -832,55 +875,40 @@ def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[Validatio
 
 
 def _is_non_speech(text: str | None) -> bool:
-    """True if Whisper output is a non-speech annotation like [BLANK_AUDIO]
-    or (wind blowing) rather than an actual utterance. Whisper emits these
-    for silence/noise, and treating them as commands keeps the follow-up
-    loop alive forever when the node is near a fan or other constant noise.
+    """True if Whisper output is a non-transcript — empty, whitespace, or
+    a bracketed annotation like [BLANK_AUDIO] / (wind blowing) that Whisper
+    emits for silence and noise rather than user speech.
 
-    Also catches common Whisper hallucinations on low-signal audio — short
-    phantom phrases the model produces when fed near-silence or ambient
-    noise (fan hum, HVAC, etc.).
+    This NO LONGER filters "hallucination phrases" (single-word fillers,
+    YouTube artifacts, etc.). That blocklist was eating real commands
+    like "okay" / "bye" / "yes". The right place to decide "is this a
+    real command" is CC's LLM ``<not_for_me/>`` classifier, which has
+    full context — speaker, prior turns, available tools — that a static
+    word list never will. We only drop things that aren't transcripts at
+    all here; anything that looks like words goes to CC.
     """
     if not text:
         return True
     stripped = text.strip()
     if not stripped:
         return True
+    # Whisper-emitted metadata: [BLANK_AUDIO], (silence), [music], etc.
+    # These are annotations, not utterances; sending them to the LLM
+    # wastes a round-trip for no possible useful outcome.
     if (
         (stripped.startswith("[") and stripped.endswith("]"))
         or (stripped.startswith("(") and stripped.endswith(")"))
     ):
         return True
-    # Whisper hallucinates short stock phrases on low-energy audio.
-    # These are never real voice commands.
-    lowered = stripped.lower().rstrip(".!,")
-    if lowered in _WHISPER_HALLUCINATIONS:
+    # "..." is a Whisper non-speech marker, not an utterance.
+    if stripped.strip(".") == "":
         return True
     return False
 
 
-# Common Whisper hallucinations on near-silence / ambient noise.
-_WHISPER_HALLUCINATIONS: set[str] = {
-    # YouTube/podcast artifacts
-    "thank you", "thanks", "thanks for watching",
-    "thank you for watching", "thanks for listening",
-    "thank you for listening", "please subscribe",
-    "like and subscribe", "subscribe",
-    "see you next time", "bye bye",
-    # Single-word filler / function words
-    "you", "i", "the", "bye", "okay", "ok",
-    "hmm", "um", "uh", "ah", "oh",
-    "so", "yeah", "yes", "no", "and", "but",
-    "right", "well", "huh", "it", "is",
-    "a", "an", "or", "that", "this",
-    # Silence/noise markers Whisper sometimes emits
-    "...",
-}
-
-
-# Words that are valid as standalone single-word follow-ups.
-# Other isolated words that slip past _WHISPER_HALLUCINATIONS are
-# treated as noise in the follow-up loop.
+# Words that are valid as standalone single-word follow-ups (control
+# verbs the LLM doesn't need to disambiguate). Used by the follow-up
+# loop's local noise gate, not by _is_non_speech.
 _VALID_FOLLOW_UP_WORDS: set[str] = {
     "stop", "pause", "resume", "help", "repeat",
     "louder", "quieter", "cancel", "continue",
@@ -1191,6 +1219,8 @@ def _follow_up_loop(
     oww=None,
     tts_end_ts: float | None = None,
     wake_audio_path: str | None = None,
+    silence_threshold: int | None = None,
+    silence_duration: float | None = None,
 ) -> None:
     """Listen for follow-up speech after TTS completes.
 
@@ -1300,6 +1330,8 @@ def _follow_up_loop(
             audio_file = listen_for_follow_up(
                 bus, timeout_seconds=iter_timeout, history_secs=history_secs,
                 follow_up_iteration=iteration,
+                silence_threshold=silence_threshold,
+                silence_duration=silence_duration,
             )
         finally:
             _set_led_transient(None)
@@ -1943,6 +1975,18 @@ def start_voice_listener(ma_service):
                             vad_threshold=pre_wake_vad_threshold,
                             rms_stats=rms_stats,
                         )
+                        # Lock the per-cycle silence threshold to the ambient
+                        # noise floor observed RIGHT before wake. Used below
+                        # for the command listen() (and follow-up listens),
+                        # so a static config value can't be wrong for the
+                        # current room state.
+                        adaptive_silence_threshold = _adaptive_silence_threshold(rms_stats)
+                        if adaptive_silence_threshold is not None:
+                            logger.info(
+                                "Adaptive silence threshold",
+                                silence_threshold=adaptive_silence_threshold,
+                                ambient_median_rms=rms_stats.get("median"),
+                            )
                         break
             finally:
                 _t_unsub_start = time.monotonic()
@@ -2041,7 +2085,41 @@ def start_voice_listener(ma_service):
                     # listen(): do NOT replay the wake-response TTS tail
                     # (that bug made the node transcribe and respond to
                     # itself). Quiet-wait drains the speaker tail per-room.
-                    recording = listen(bus, history_secs=0.0)
+                    #
+                    # silence_threshold passed explicitly when adaptive mode
+                    # produced one — calibrated to the room's ambient floor
+                    # at the moment of wake (see _adaptive_silence_threshold).
+                    # When None, listen() falls back to its static config
+                    # value, preserving prior behavior.
+                    #
+                    # quiet_wait gated on actual speaker activity: with
+                    # wake_ack_audio_enabled=False AND no music playing,
+                    # the speaker is silent — running the drain would
+                    # misidentify the user's own command (4000+ RMS) as
+                    # speaker echo and discard the first 400 ms of speech.
+                    # That's the "cut off mid-sentence" pattern from prod.
+                    # AEC reference-signal is the right signal: True only
+                    # when the speaker actually had recent output.
+                    speaker_recently_active = (
+                        aec_pipeline is not None
+                        and aec_pipeline.has_recent_reference_signal()
+                    )
+                    listen_quiet_wait_secs = None if speaker_recently_active else 0.0
+                    # silence_duration override (default 0.8 s): natural
+                    # mid-sentence pauses (between clauses, taking a breath)
+                    # commonly run 250-400 ms. The historical 0.3 s default
+                    # was chopping multi-clause commands. 0.8 s tolerates a
+                    # normal pause without dragging out silence detection on
+                    # actual end-of-utterance.
+                    listen_silence_duration = Config.get_float(
+                        "listen_silence_duration_secs", 0.8,
+                    )
+                    recording = listen(
+                        bus, history_secs=0.0,
+                        silence_threshold=adaptive_silence_threshold,
+                        silence_duration=listen_silence_duration,
+                        quiet_wait_secs=listen_quiet_wait_secs,
+                    )
                     _t_listen_end = time.monotonic()
                     logger.info(
                         f"⏱️ wake-step | listen() took "
@@ -2126,6 +2204,8 @@ def start_voice_listener(ma_service):
                             bus, result, command_service, stt_provider, validation_handler,
                             oww=oww, tts_end_ts=tts_end_ts,
                             wake_audio_path=wake_audio_path,
+                            silence_threshold=adaptive_silence_threshold,
+                            silence_duration=listen_silence_duration,
                         )
                     except Exception as e:
                         logger.warning("Follow-up loop error, resuming wake word", error=str(e))
