@@ -1100,6 +1100,11 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=30
 KillSignal=SIGTERM
+# Raise mlock cap — jarvis-node pins hot pages (oww model, AEC, audio
+# bus) in RAM to avoid SD-card swap stalls on Pi Zero. Default 64 KiB
+# ulimit blocks mlockall; "infinity" lets us pin our ~150 MiB working
+# set comfortably under the 416 MiB usable on a Pi Zero 2W.
+LimitMEMLOCK=infinity
 Environment=HOME=${SERVICE_HOME}
 Environment=XDG_RUNTIME_DIR=/run/user/${service_uid}
 Environment=PYTHONUNBUFFERED=1

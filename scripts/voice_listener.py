@@ -17,8 +17,23 @@ import numpy as np
 import openwakeword
 from openwakeword.model import Model as OWWModel
 import pyaudio
-from scipy.signal import resample_poly
+# scipy.signal is lazy-imported below — pulling it in at module top
+# eagerly loads scipy + sklearn + ~50 MB of compiled extensions even
+# when MCL_ONFAULT is in play (the import itself touches every page).
+# Deferring to first call keeps those pages cold until/unless wake
+# detection actually runs (which it always does, but only after all
+# other startup state has settled, smoothing the boot RSS curve).
+_resample_poly = None
 from jarvis_log_client import JarvisLogger
+
+
+def _get_resample_poly():
+    """Lazy-import scipy.signal.resample_poly on first audio chunk."""
+    global _resample_poly
+    if _resample_poly is None:
+        from scipy.signal import resample_poly  # noqa: E402
+        _resample_poly = resample_poly
+    return _resample_poly
 
 from clients.rest_client import RestClient
 from core.aec_pipeline import AecPipeline
@@ -1830,7 +1845,7 @@ def start_voice_listener(ma_service):
                     pre_wake_rms_values.append(rms)
 
                     if resample_down > 1:
-                        resampled = resample_poly(samples, up=1, down=resample_down)
+                        resampled = _get_resample_poly()(samples, up=1, down=resample_down)
                         samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
                     if aec_pipeline is not None:
