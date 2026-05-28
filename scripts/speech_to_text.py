@@ -511,8 +511,16 @@ def listen_for_follow_up(
     # the counter and onset never confirmed within the 5 s window. 3 frames
     # (~240 ms) still rejects single sharp bursts (clap, door close) since
     # those are sub-frame events, but catches real speech faster.
+    #
+    # Escalation cap softened 3→1 per iteration on 2026-05-28: prior
+    # escalation (3→6→9→12→15) made the 3rd+ follow-up require 720+ ms of
+    # continuous loud audio before recording locked on, AND each dip
+    # cleared the buffer (see below). Users got "did the yankees win last
+    # night" → "to the '82 and last night" because the first words were
+    # being chewed up by onset gating. Iteration adds modest conservatism
+    # without eating leading speech.
     base_onset = 3
-    onset_required = min(15, base_onset + (follow_up_iteration - 1) * 3)
+    onset_required = min(8, base_onset + (follow_up_iteration - 1))
 
     logger.debug(
         "Follow-up listening window opened",
@@ -520,7 +528,14 @@ def listen_for_follow_up(
         quiet_wait_secs=quiet_wait_secs,
     )
 
-    q = bus.subscribe(subscriber_name, history_secs=history_secs)
+    # Subscribe with a history buffer so leading speech that arrives
+    # BEFORE we hit onset_required is still in the recording. Caller can
+    # pass 0 to opt out; otherwise default to 0.8 s — enough to include
+    # the start of an utterance that took 0.5-0.7 s to clear onset gating.
+    effective_history_secs = history_secs if history_secs > 0 else Config.get_float(
+        "listen_follow_up_history_secs", 0.8,
+    )
+    q = bus.subscribe(subscriber_name, history_secs=effective_history_secs)
     frames: List[bytes] = []
     speech_detected = False
     onset_count = 0
@@ -571,17 +586,31 @@ def listen_for_follow_up(
             chunks_seen += 1
             if rms > max_rms_seen:
                 max_rms_seen = rms
+            # Always append: don't lose audio on a single sub-threshold
+            # frame in the middle of speech. Brief inter-syllable dips
+            # (the "th" in "the", trailing fricatives, soft starts) used
+            # to reset onset_count AND wipe `frames`, so the first words
+            # of multi-syllable commands were getting deleted before
+            # recording was committed. onset_count still tracks for the
+            # detection decision; the buffer just accumulates.
+            frames.append(data)
             if rms >= silence_threshold:
                 onset_count += 1
-                frames.append(data)
                 if onset_count >= onset_required:
                     speech_detected = True
+                    # Trim leading silence: keep ~1.5 s of pre-onset audio
+                    # so the start of speech survives, but don't carry the
+                    # full onset-loop history (which can be many seconds of
+                    # ambient quiet before the user spoke).
+                    pre_onset_max_frames = max(1, int(1.5 / chunk_secs))
+                    if len(frames) > pre_onset_max_frames:
+                        frames = frames[-pre_onset_max_frames:]
                     logger.info("Follow-up speech detected", rms=f"{rms:.0f}",
-                                onset_required=onset_required)
+                                onset_required=onset_required,
+                                pre_onset_frames=len(frames))
                     break
             else:
                 onset_count = 0
-                frames.clear()
 
         if not speech_detected:
             logger.info(
