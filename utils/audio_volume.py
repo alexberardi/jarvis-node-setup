@@ -9,10 +9,13 @@ Used by:
   audio card in the snapshot so the mobile slider and Hardware tab
   reflect reality.
 
-All runtime control goes through PulseAudio (``pactl set-sink-volume`` /
-``set-sink-mute``). The codec mixer baseline (TLV320 PCM at full, Line
-at 0 dB, HP muted) is set once by install.sh — we never touch amixer
-at runtime.
+User-facing volume control flows through PulseAudio (``pactl
+set-sink-volume`` / ``set-sink-mute``). The codec mixer baseline (TLV320
+PCM at full, Line at +4 dB, Line DAC at -1.5 dB, HP/HPCOM muted) is set
+by install.sh and re-asserted on every node startup by
+``ensure_output_baseline()`` — the alsactl-restore round-trip isn't
+reliable enough to trust for the output mixer either, mirroring
+``ensure_adc_hpf_enabled()`` for the input HPF.
 
 Why two sink classes (@DEFAULT_SINK@ + bluez_sink.*)?
 @DEFAULT_SINK@ covers TTS, chimes, and music routed to the on-board
@@ -143,6 +146,173 @@ def ensure_adc_hpf_enabled() -> None:
         logger.error(
             "amixer cset for ADC HPF failed",
             stderr=(result.stderr if result else None),
+        )
+
+
+# ── Codec self-heal (TLV320AIC3104 output mixer baseline) ───────────────────
+
+# install.sh sets the codec's output mixer to a calibrated baseline at
+# install time (PCM at 0 dB, Line at +4 dB, Line DAC at -1.5 dB, HP/HPCOM
+# muted — see install.sh's configure_audio() for the full notes), and
+# alsactl-stores it so alsa-restore replays the values on every boot.
+#
+# Two failure modes still leave a node sitting at the codec's quiet
+# power-on defaults — ~26 dB below the calibrated level, user-perceived
+# as "100% volume is barely audible":
+#
+#   1. Fresh install: install.sh adds the dt-overlay to config.txt but
+#      the codec module isn't loaded until the post-install reboot, so
+#      configure_audio's amixer block sees no card and silently skips
+#      (logged but not fatal). install.sh's tail says "mixer baseline
+#      applies on next install run" — but most users never re-run it.
+#
+#   2. alsactl-restore round-trip: the kernel TLV320 driver doesn't
+#      always replay every control value cleanly. The May-2026 prod
+#      kitchen calibration session that motivated jarvis-alsa-store also
+#      saw the live mixer state diverge from what asound.state held after
+#      a boot — same root cause as the ADC HPF case above.
+#
+# Re-asserting at every node startup is cheap insurance, symmetric with
+# the ADC HPF self-heal. The persist step uses /usr/local/sbin/jarvis-
+# alsa-store (NOPASSWD via /etc/sudoers.d/jarvis-node) so the heal also
+# fixes asound.state for subsequent boots — without it the heal would
+# re-fire forever.
+
+# Target values mirror install.sh:553-575.
+_TLV320_OUTPUT_BASELINE_CMDS: tuple[tuple[str, ...], ...] = (
+    ("PCM", "100%", "unmute"),
+    ("Line", "4", "unmute"),
+    ("Line DAC", "115", "unmute"),
+    ("Left Line Mixer DACL1", "on"),
+    ("Right Line Mixer DACR1", "on"),
+    ("HP", "0", "mute"),
+    ("HP DAC", "0", "mute"),
+    ("HPCOM", "0", "mute"),
+    ("HPCOM DAC", "0", "mute"),
+)
+
+# Drift thresholds. Line at +3 dB is the floor (calibrated +4 dB, the
+# +3 cushion lets a power-user hand-tune one step down without us
+# overwriting). Line DAC at raw value 100 maps to roughly -9 dB — the
+# v0.1.51 → v0.1.59 calibration; anything at or above that is "loud
+# enough" and we leave it alone. The current v0.1.60+ baseline is 115
+# (-1.5 dB).
+_TLV320_LINE_MIN_VALUE = 3
+_TLV320_LINE_DAC_MIN_VALUE = 100
+
+_JARVIS_ALSA_STORE = "/usr/local/sbin/jarvis-alsa-store"
+
+
+def _read_playback_value_and_switch(
+    card: str, control: str
+) -> tuple[int | None, bool | None]:
+    """Return ``(raw_value, switch_on)`` for an amixer playback control.
+
+    ``switch_on`` is True when the pswitch reads ``[on]`` (signal passes,
+    unmuted), False when ``[off]`` (muted), None when the control has no
+    pswitch. Returns ``(None, None)`` when the control isn't readable.
+    """
+    result = _run(["amixer", "-c", card, "sget", control])
+    if result is None or result.returncode != 0:
+        return None, None
+    # The Playback line looks like:
+    #   Front Left: Playback 71 [60%] [-23.50dB]                (no switch)
+    #   Front Left: Playback 0 [0%] [0.00dB] [on]               (has switch)
+    # Mono variant:
+    #   Mono: Playback 127 [100%] [0.00dB] [on]
+    line = next(
+        (l for l in result.stdout.splitlines() if "Playback" in l and "%" in l),
+        None,
+    )
+    if line is None:
+        return None, None
+    val_match = re.search(r"Playback (\d+)", line)
+    if not val_match:
+        return None, None
+    # Switch token, if present, is the final ``[on]`` or ``[off]`` on the
+    # line — anchor to end-of-line so the dB column can't accidentally
+    # match.
+    switch_match = re.search(r"\[(on|off)\]\s*$", line)
+    switch_on = (switch_match.group(1) == "on") if switch_match else None
+    return int(val_match.group(1)), switch_on
+
+
+def ensure_output_baseline() -> None:
+    """Re-assert the TLV320AIC3104 output mixer baseline if it has drifted.
+
+    Idempotent and safe to call on every startup. No-op when:
+      - codec isn't present (macOS dev node, plain Pi without the HAT)
+      - Line and Line DAC are already at or above the calibrated floor
+        AND HP/HPCOM are already muted (the typical happy path)
+      - mixer state is unreadable (codec busy, ALSA glitch — logged,
+        retried on next startup)
+
+    When applied, persists via the jarvis-alsa-store sudo wrapper so
+    alsa-restore picks up the calibrated values on the next boot.
+    """
+    card = get_audio_card()
+    if card != "seeed2micvoicec":
+        return
+
+    line_value, _ = _read_playback_value_and_switch(card, "Line")
+    line_dac_value, _ = _read_playback_value_and_switch(card, "Line DAC")
+    _, hp_on = _read_playback_value_and_switch(card, "HP")
+    _, hpcom_on = _read_playback_value_and_switch(card, "HPCOM")
+
+    if (
+        line_value is None
+        or line_dac_value is None
+        or hp_on is None
+        or hpcom_on is None
+    ):
+        logger.info(
+            "Output mixer state unreadable, skipping self-heal (codec may be busy)",
+            card=card,
+            line=line_value,
+            line_dac=line_dac_value,
+            hp_on=hp_on,
+            hpcom_on=hpcom_on,
+        )
+        return
+
+    drift = (
+        line_value < _TLV320_LINE_MIN_VALUE
+        or line_dac_value < _TLV320_LINE_DAC_MIN_VALUE
+        or hp_on  # HP should be muted (switch off)
+        or hpcom_on  # HPCOM should be muted (switch off)
+    )
+    if not drift:
+        return
+
+    logger.warning(
+        "Output mixer below calibrated baseline — re-asserting",
+        card=card,
+        line=line_value,
+        line_dac=line_dac_value,
+        hp_unmuted=hp_on,
+        hpcom_unmuted=hpcom_on,
+        target_line=4,
+        target_line_dac=115,
+    )
+
+    for control_args in _TLV320_OUTPUT_BASELINE_CMDS:
+        cmd = ["amixer", "-c", card, "sset", *control_args]
+        result = _run(cmd)
+        if result is None or result.returncode != 0:
+            logger.error(
+                "Output baseline amixer command failed",
+                control=control_args[0],
+                stderr=(result.stderr if result else None),
+            )
+
+    # Persist so alsa-restore picks it up next boot — otherwise the heal
+    # re-fires forever (and the next boot's first playback before
+    # jarvis-node starts is still quiet).
+    persist = _run(["sudo", "-n", _JARVIS_ALSA_STORE])
+    if persist is None or persist.returncode != 0:
+        logger.warning(
+            "jarvis-alsa-store failed — output baseline won't survive reboot",
+            stderr=(persist.stderr if persist else None),
         )
 
 
