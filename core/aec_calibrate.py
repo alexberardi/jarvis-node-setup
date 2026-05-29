@@ -55,6 +55,7 @@ def calibrate_speaker_mic_delay(
     aec_rate: int = 16000,
     chirp_duration_ms: int = 200,
     capture_duration_ms: int = 600,
+    pre_silence_ms: int = 500,
     min_delay_ms: float = 5.0,
     max_delay_ms: float = 300.0,
     min_peak_snr: float = 500.0,
@@ -68,7 +69,31 @@ def calibrate_speaker_mic_delay(
         logger.warning("AEC calibration: paplay not on PATH; skipping")
         return None
 
+    # PipeWire-Pulse aggressively auto-suspends idle sinks. At startup
+    # nothing has played yet, so the sink hardware is cold-suspended and
+    # parec's monitor produces silence. paplay wakes the sink, but the
+    # resume path can drop short bursts entirely if the data looks like
+    # silence — so the warmup must be *audible* enough that PA actually
+    # routes it through the hardware. Low-amplitude white noise (~ -40
+    # dBFS) is inaudible at normal listening volumes but non-silent
+    # enough that PA keeps the hardware running through the chirp.
+    pre_noise_samples = int(aec_rate * pre_silence_ms / 1000)
+    rng = np.random.default_rng(0xA5C4115)
+    pre_noise = (rng.standard_normal(pre_noise_samples) * 200.0).astype(np.int16)
     chirp = _make_chirp(rate=aec_rate, duration_ms=chirp_duration_ms)
+    playback = np.concatenate([pre_noise, chirp])
+    capture_duration_ms = capture_duration_ms + pre_silence_ms
+
+    # Best-effort: tell PA the sink should not be suspended. No-op if
+    # already running; complements the noise warmup above.
+    if shutil.which("pactl"):
+        try:
+            subprocess.run(
+                ["pactl", "suspend-sink", "@DEFAULT_SINK@", "0"],
+                check=False, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     sub_name = "aec_calibrate"
     try:
@@ -106,7 +131,7 @@ def calibrate_speaker_mic_delay(
     chirp_started = time.monotonic()
     try:
         assert proc.stdin is not None
-        proc.stdin.write(chirp.tobytes())
+        proc.stdin.write(playback.tobytes())
         proc.stdin.close()
     except (BrokenPipeError, OSError) as exc:
         proc.kill()
@@ -172,6 +197,28 @@ def calibrate_speaker_mic_delay(
     # so the cross-correlation lags map cleanly.
     n_ref = min(len(mic), reference_reader.buffer_capacity_samples)
     ref = reference_reader.pull(n_samples=n_ref, delay_samples=0, max_stale_secs=2.0)
+
+    # Diagnostic: is the reference reader even producing samples? When
+    # parec on a cold-suspended sink's monitor has never received any
+    # audio, last_write_ts is 0 and pull() returns None. When parec is
+    # actively writing but the monitor source itself produces silence
+    # (sink hasn't woken up despite the chirp), pull() returns zeros.
+    secs_since_ref_write = (
+        time.monotonic() - reference_reader._last_write_ts
+        if reference_reader._last_write_ts > 0
+        else None
+    )
+    ref_rms = float(np.sqrt(np.mean(ref.astype(np.float64) ** 2))) if ref is not None else None
+    logger.info(
+        "AEC calibration capture",
+        mic_samples=len(mic),
+        mic_max=int(np.abs(mic).max()) if len(mic) else 0,
+        mic_rms=round(float(np.sqrt(np.mean(mic.astype(np.float64) ** 2))), 1) if len(mic) else 0,
+        ref_samples=len(ref) if ref is not None else 0,
+        ref_max=int(np.abs(ref).max()) if ref is not None else 0,
+        ref_rms=round(ref_rms, 1) if ref_rms is not None else None,
+        secs_since_ref_write=round(secs_since_ref_write, 3) if secs_since_ref_write is not None else None,
+    )
     if ref is None:
         logger.warning("AEC calibration: reference reader returned None (no fresh samples)")
         return None
@@ -240,6 +287,8 @@ def _correlate_for_delay(
             snr=round(snr, 2),
             best_lag=best_lag,
             best_lag_ms=round(best_lag * 1000.0 / aec_rate, 1),
+            mic_max=int(mic_norm),
+            ref_max=int(ref_norm),
         )
         return None
 
