@@ -470,3 +470,226 @@ class TestEnsureAdcHpfEnabled:
         monkeypatch.setattr(audio_volume, "_run", stub)
         # Must not raise.
         audio_volume.ensure_adc_hpf_enabled()
+
+
+# `amixer sget` output for the output-mixer controls. Mirrors the shape
+# the seeed2micvoicec card returns so the parser regex sees realistic
+# input (channel labels, [pct%], [dB], optional [on]/[off] switch).
+def _sget_volume(control: str, value: int, switch: str | None = None, max_value: int = 118) -> str:
+    pct = round(100 * value / max_value)
+    db = -0.5 * (max_value - value)
+    db_token = f"[{db:.2f}dB]"
+    switch_token = f" [{switch}]" if switch else ""
+    return (
+        f"Simple mixer control '{control}',0\n"
+        f"  Capabilities: pvolume{' pswitch' if switch else ''}\n"
+        f"  Playback channels: Front Left - Front Right\n"
+        f"  Limits: Playback 0 - {max_value}\n"
+        f"  Mono:\n"
+        f"  Front Left: Playback {value} [{pct}%] {db_token}{switch_token}\n"
+        f"  Front Right: Playback {value} [{pct}%] {db_token}{switch_token}\n"
+    )
+
+
+# Calibrated baseline as configured by install.sh.
+_CALIBRATED_LINE = 4
+_CALIBRATED_LINE_DAC = 115
+# The codec's quiet power-on defaults — what kitchen sat at after a
+# fresh v0.1.81 install where the install-time amixer block was skipped.
+_QUIET_LINE = 0
+_QUIET_LINE_DAC = 71
+
+
+def _output_stub_factory(
+    line: int,
+    line_dac: int,
+    hp_on: bool,
+    hpcom_on: bool,
+    persist_returns_ok: bool = True,
+):
+    """Build a `_run` stub that reports the given mixer state and
+    accepts every sset / sudo call as successful.
+    """
+    def stub(cmd, timeout=2.0):
+        if cmd[:2] == ["aplay", "-l"]:
+            return _ok(APLAY_L_OUTPUT)
+        if cmd[:4] == ["amixer", "-c", "seeed2micvoicec", "sget"]:
+            ctrl = cmd[4]
+            if ctrl == "Line":
+                return _ok(_sget_volume("Line", line, "on", max_value=9))
+            if ctrl == "Line DAC":
+                return _ok(_sget_volume("Line DAC", line_dac))
+            if ctrl == "HP":
+                return _ok(_sget_volume("HP", 0, "on" if hp_on else "off", max_value=9))
+            if ctrl == "HPCOM":
+                return _ok(_sget_volume("HPCOM", 0, "on" if hpcom_on else "off", max_value=9))
+            return _fail("unknown control")
+        if cmd[:4] == ["amixer", "-c", "seeed2micvoicec", "sset"]:
+            return _ok()
+        if cmd[:1] == ["sudo"] and cmd[-1].endswith("jarvis-alsa-store"):
+            return _ok() if persist_returns_ok else _fail("store failed")
+        return _fail(f"unstubbed: {cmd}")
+
+    return stub
+
+
+class TestEnsureOutputBaseline:
+    """Codec self-heal for the TLV320AIC3104 output mixer baseline.
+
+    Without this, a fresh-install or post-reboot Pi can sit at the
+    codec's quiet power-on defaults (~26 dB below the calibrated level)
+    — the prod-kitchen v0.1.81 fresh-install symptom that drove this
+    self-heal. Mirrors `ensure_adc_hpf_enabled` above.
+    """
+
+    def test_reasserts_when_below_calibrated_floor(self, monkeypatch):
+        # The kitchen-node bad state: Line=0, Line DAC=71, HP/HPCOM
+        # unmuted. Heal must run.
+        calls: list[list[str]] = []
+        stub = _output_stub_factory(
+            line=_QUIET_LINE,
+            line_dac=_QUIET_LINE_DAC,
+            hp_on=True,
+            hpcom_on=True,
+        )
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        audio_volume.ensure_output_baseline()
+
+        ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
+        # One sset per control in the baseline tuple — exact value
+        # asserted below so we'd catch a typo'd target.
+        sset_pairs = [(c[4], c[5]) for c in ssets]
+        assert ("Line", "4") in sset_pairs
+        assert ("Line DAC", "115") in sset_pairs
+        assert ("PCM", "100%") in sset_pairs
+        # HP / HPCOM must be re-muted (drives the JST speaker via Line
+        # path; unmuted HP is the "had to yank power" loud case from
+        # install.sh's calibration notes).
+        hp_mutes = [c for c in ssets if c[4] == "HP" and "mute" in c]
+        hpcom_mutes = [c for c in ssets if c[4] == "HPCOM" and "mute" in c]
+        assert hp_mutes, f"HP must be re-muted, got {ssets}"
+        assert hpcom_mutes, f"HPCOM must be re-muted, got {ssets}"
+        # And the heal must persist via the sudo wrapper so the next
+        # boot's alsa-restore picks up the calibrated values.
+        persist_calls = [c for c in calls if c[:1] == ["sudo"]]
+        assert len(persist_calls) == 1
+        assert persist_calls[0][-1].endswith("jarvis-alsa-store")
+
+    def test_no_op_when_already_calibrated(self, monkeypatch):
+        # Happy path — the baseline is in place. Self-heal must NOT
+        # touch the mixer or call the persist wrapper.
+        calls: list[list[str]] = []
+        stub = _output_stub_factory(
+            line=_CALIBRATED_LINE,
+            line_dac=_CALIBRATED_LINE_DAC,
+            hp_on=False,
+            hpcom_on=False,
+        )
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        audio_volume.ensure_output_baseline()
+
+        ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
+        assert ssets == [], f"must not re-assert a clean baseline, got {ssets}"
+        persist_calls = [c for c in calls if c[:1] == ["sudo"]]
+        assert persist_calls == [], "must not store when nothing changed"
+
+    def test_no_op_when_user_picked_higher_volume(self, monkeypatch):
+        # A power user (or future install.sh) may pick Line DAC=118
+        # (max, 0 dB). We respect anything at or above the floor.
+        calls: list[list[str]] = []
+        stub = _output_stub_factory(
+            line=9,           # max +9 dB
+            line_dac=118,     # max 0 dB
+            hp_on=False,
+            hpcom_on=False,
+        )
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        audio_volume.ensure_output_baseline()
+        ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
+        assert ssets == [], "must not downgrade a hand-tuned-higher baseline"
+
+    def test_reasserts_when_hp_unmuted_even_if_volumes_ok(self, monkeypatch):
+        # Volumes are calibrated but HP is unmuted — still a heal case
+        # since unmuted HP at the calibrated Line DAC is the dangerous
+        # loud state from install.sh's calibration notes.
+        calls: list[list[str]] = []
+        stub = _output_stub_factory(
+            line=_CALIBRATED_LINE,
+            line_dac=_CALIBRATED_LINE_DAC,
+            hp_on=True,   # the drift
+            hpcom_on=False,
+        )
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        audio_volume.ensure_output_baseline()
+        hp_mutes = [
+            c for c in calls
+            if len(c) > 5 and c[3] == "sset" and c[4] == "HP" and "mute" in c
+        ]
+        assert hp_mutes, "HP must be re-muted when it drifts to unmuted"
+
+    def test_no_op_when_no_seeed_card(self, monkeypatch):
+        # Plain Pi without the HAT (or macOS dev box). Skip silently.
+        only_hdmi = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM\n"
+        )
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(only_hdmi)
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        audio_volume.ensure_output_baseline()
+        # No amixer calls — we bailed before touching the codec.
+        assert not any(c[:1] == ["amixer"] for c in calls)
+
+    def test_unreadable_state_logs_and_returns(self, monkeypatch):
+        # `amixer sget` failing (codec busy, kernel-renamed control)
+        # must not crash and must not blindly set something we didn't
+        # read.
+        def stub(cmd, timeout=2.0):
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:4] == ["amixer", "-c", "seeed2micvoicec", "sget"]:
+                return _fail("unknown control")
+            return _ok()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        # Must not raise.
+        audio_volume.ensure_output_baseline()
+
+    def test_persist_failure_is_non_fatal(self, monkeypatch):
+        # jarvis-alsa-store missing or NOPASSWD-denied — heal still
+        # applies live, we just log a warning that it won't survive
+        # reboot.
+        calls: list[list[str]] = []
+        stub = _output_stub_factory(
+            line=_QUIET_LINE,
+            line_dac=_QUIET_LINE_DAC,
+            hp_on=True,
+            hpcom_on=True,
+            persist_returns_ok=False,
+        )
+        monkeypatch.setattr(
+            audio_volume, "_run",
+            lambda cmd, timeout=2.0: (calls.append(list(cmd)) or stub(cmd, timeout)),
+        )
+        # Must not raise.
+        audio_volume.ensure_output_baseline()
+        ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
+        assert ssets, "live heal still happens even if persist fails"
