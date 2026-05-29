@@ -214,58 +214,97 @@ else
 options snd-soc-tlv320aic3x index=0
 EOF
 
+    # Hybrid PA/ALSA: playback through PulseAudio, capture direct via
+    # dsnoop. Mirrors install.sh's configure_audio() — keep these in sync.
+    # PA is needed for concurrent playback (wake response + mpv + tts)
+    # because the TLV320AIC3104 exposes only a single playback substream,
+    # so softvol-direct gave the second opener ENOSPC ("busy"); dmix on
+    # this codec also fails ("unable to initialize sum ring buffer").
+    # Capture stays on dsnoop to avoid PA's input-side resampling /
+    # noise-suppression degrading wake-word scores.
+    #
     # Aliases `output` and `dsnoopmic` are referenced from the app code
     # (config.example.json `mic_device_name="dsnoopmic"`, platform_abstraction
     # uses `aplay -D output`). Keep these stable across hardware changes.
-    sudo tee /etc/asound.conf > /dev/null <<EOF
-pcm.softvol {
-  type softvol
-  slave.pcm "plughw:CARD=seeed2micvoicec,DEV=0"
-  control {
-    name "SoftMaster"
-    card seeed2micvoicec
-  }
-}
-
+    sudo tee /etc/asound.conf > /dev/null <<'EOF'
+# --- Playback -----------------------------------------------------------
 pcm.output {
-  type plug
-  slave.pcm "softvol"
+    type pulse
 }
 
+# --- Capture ------------------------------------------------------------
 pcm.dsnoopmic_hw {
-  type dsnoop
-  ipc_key 87654321
-  slave {
-    pcm "hw:CARD=seeed2micvoicec,DEV=0"
-    channels 2
-    rate 48000
-    format S16_LE
-  }
+    type dsnoop
+    ipc_key 87654321
+    slave {
+        pcm "hw:CARD=seeed2micvoicec,DEV=0"
+        channels 2
+        rate 48000
+        format S16_LE
+        # Cap dsnoop's ring buffer at ~85ms so the wake-word loop can never
+        # be scoring stale audio (period_size 1024 × buffer 4 = 4096 samples
+        # at 48kHz). See install.sh for the full reasoning.
+        period_size 1024
+        buffer_size 4096
+    }
 }
 
 pcm.dsnoopmic {
-  type plug
-  slave.pcm "dsnoopmic_hw"
+    type plug
+    slave.pcm "dsnoopmic_hw"
 }
 
+# --- Default split: playback via PA, capture direct --------------------
 pcm.!default {
-  type asym
-  playback.pcm "softvol"
-  capture.pcm "dsnoopmic"
+    type asym
+    playback.pcm "output"
+    capture.pcm "dsnoopmic"
+}
+
+ctl.!default {
+    type pulse
 }
 EOF
 
     log_success "ALSA system config created"
 
-    # Mixer baseline — JST speaker is wired to HP path; defaults leave it muted.
+    # Try to runtime-load the overlay so the mixer baseline can apply
+    # NOW instead of waiting for the post-install reboot. Best-effort —
+    # falls through to the existing skip path if dtoverlay isn't
+    # available or the kernel rejects runtime-apply; in that case the
+    # node-side ensure_output_baseline() self-heal catches it on first
+    # startup. Mirrors install.sh's logic.
+    if ! aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+        if command -v dtoverlay >/dev/null 2>&1; then
+            log_info "Loading respeaker-2mic-v2_0-overlay live so the mixer baseline applies now"
+            if sudo dtoverlay respeaker-2mic-v2_0-overlay 2>/dev/null; then
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    if aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+                        log_success "Overlay loaded, seeed2micvoicec card enumerated"
+                        break
+                    fi
+                    sleep 0.5
+                done
+            else
+                log_info "dtoverlay runtime-load failed (non-fatal) — baseline applies on next boot via node-side self-heal"
+            fi
+        fi
+    fi
+
+    # Mixer baseline — install.sh's configure_audio() is the authoritative
+    # source for these values; keep this block in sync. On the ReSpeaker
+    # v2.0 the JST speaker is wired to the codec's LLOUT/RLOUT (Line Out)
+    # path — NOT HPLOUT/HPROUT. HP path kept muted (HP at full would be
+    # dangerously loud — "had to yank Pi power" loud).
     if command -v amixer >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
         log_info "Applying TLV320AIC3104 mixer baseline..."
-        # JST speaker on v2.0 is wired to LLOUT/RLOUT, not HP. Use Line
-        # path at conservative levels; HP paths kept muted. See
-        # install.sh's configure_audio() for the calibration notes.
+        # PCM (DAC digital) at full scale — gives PA headroom.
+        # Line (analog gain) at +4 dB (control value 4/9).
+        # Line DAC (digital mixer level) at -1.5 dB (control value 115/118).
+        # HP / HPCOM kept muted (unused, prevents crosstalk).
         amixer -c seeed2micvoicec sset 'PCM' '100%' unmute               2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Line' '0' unmute                 2>/dev/null || true
-        amixer -c seeed2micvoicec sset 'Line DAC' '78' unmute            2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Line' '4' unmute                 2>/dev/null || true
+        amixer -c seeed2micvoicec sset 'Line DAC' '115' unmute           2>/dev/null || true
         amixer -c seeed2micvoicec sset 'Left Line Mixer DACL1' on        2>/dev/null || true
         amixer -c seeed2micvoicec sset 'Right Line Mixer DACR1' on       2>/dev/null || true
         amixer -c seeed2micvoicec sset 'HP' '0' mute                     2>/dev/null || true
@@ -275,10 +314,13 @@ EOF
         amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
         amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
         amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
+        # Enable the codec's ADC HPF so captured audio doesn't carry a
+        # DC pedestal — see the May-2026 Whisper "*sad music*" beta blocker.
+        amixer -c seeed2micvoicec cset name='ADC HPF Cut-off' 1           2>/dev/null || true
         sudo alsactl store 2>/dev/null || true
         log_success "TLV320AIC3104 mixer baseline applied"
     else
-        log_info "Card not present yet (overlay loads on reboot) — re-run setup after reboot to apply mixer baseline"
+        log_info "Card not present yet (overlay loads on reboot) — node-side ensure_output_baseline() will apply the baseline on first startup"
     fi
 
     # Group memberships for SPI (APA102) / GPIO (button) / I2C (Grove)

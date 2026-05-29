@@ -522,6 +522,39 @@ ASOUND
 
   success "ALSA configuration written"
 
+  # --- Runtime-load the overlay so the mixer baseline applies NOW ---
+  # On a fresh install the dtbo was just written and config.txt was just
+  # updated — but neither is in effect on the live kernel until the
+  # post-install reboot, so the mixer block below would see no card and
+  # skip silently (logged but not fatal). That used to leave fresh nodes
+  # at the codec's quiet power-on defaults until the user manually
+  # re-ran install.sh; the node-side ensure_output_baseline() now self-
+  # heals on first startup, but loading the overlay live here is better:
+  # the first post-install playback (which can happen before jarvis-node
+  # is fully up) is already at calibrated levels, and asound.state is
+  # correct from boot one rather than relying on the self-heal to fix it.
+  #
+  # Best-effort: dtoverlay isn't on every Pi OS variant and some kernels
+  # reject runtime-apply for I2S-touching overlays. The next-boot path
+  # (config.txt overlay + node-side self-heal) catches those cases.
+  if ! aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+    if command -v dtoverlay >/dev/null 2>&1; then
+      info "Loading respeaker-2mic-v2_0-overlay live so the mixer baseline applies now"
+      if dtoverlay respeaker-2mic-v2_0-overlay 2>/dev/null; then
+        # Codec power-up + driver probe is usually <1s; give 5s headroom.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          if aplay -l 2>/dev/null | grep -qi seeed2micvoicec; then
+            success "Overlay loaded, seeed2micvoicec card enumerated"
+            break
+          fi
+          sleep 0.5
+        done
+      else
+        info "dtoverlay runtime-load failed (non-fatal) — node-side self-heal will apply the baseline on first startup"
+      fi
+    fi
+  fi
+
   # --- TLV320AIC3104 mixer baseline ---
   # The codec defaults leave HP/speaker output muted (HP gain = 0) and PCM
   # at -23.5 dB — playback technically works but is inaudible. Set sensible
@@ -575,7 +608,7 @@ ASOUND
     alsactl store 2>/dev/null || true
     success "TLV320AIC3104 mixer baseline applied"
   else
-    info "seeed2micvoicec not detected yet (overlay loads on reboot) — mixer baseline applies on next install run"
+    info "seeed2micvoicec not detected yet (overlay loads on reboot) — node-side ensure_output_baseline() will apply the baseline on first startup"
   fi
 
   # --- Group membership for SPI / GPIO / I2C ---

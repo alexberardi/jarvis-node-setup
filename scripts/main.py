@@ -194,6 +194,82 @@ def _validate_config() -> None:
                        config_path=os.environ.get("CONFIG_PATH", "config.json"))
 
 
+def _start_tracemalloc_diagnostic() -> None:
+    """Opt-in allocation tracer for finding memory leaks in long-running paths.
+
+    Enabled when ``JARVIS_TRACEMALLOC=1`` is set in the unit environment.
+    Cheap when off (env check + return). When on:
+
+    - ``tracemalloc.start(25)`` traces every allocation with a 25-frame stack
+    - A background thread takes a snapshot every 5 min and appends to
+      ``/tmp/jarvis-tracemalloc.log``:
+        * Top 20 allocators by current size
+        * Diff vs. the previous snapshot (positive deltas = something grew)
+
+    Overhead is real (~10-15% CPU + 50-80 MB extra working-set for the
+    tracer itself), so don't leave it on in production. The point is to
+    tail the log during a known-leaky workload and read off which
+    file:line keeps appearing in the "growth since previous" section.
+
+    Must be called BEFORE any other code so tracemalloc sees the full
+    picture from process start.
+    """
+    if os.environ.get("JARVIS_TRACEMALLOC") != "1":
+        return
+    import tracemalloc
+    tracemalloc.start(25)
+    logger.info("tracemalloc enabled — top allocators will land in /tmp/jarvis-tracemalloc.log")
+
+    from pathlib import Path
+    out_path = Path("/tmp/jarvis-tracemalloc.log")
+    interval_secs = int(os.environ.get("JARVIS_TRACEMALLOC_INTERVAL", "300"))
+
+    def _snapshot_loop() -> None:
+        prev_snap = None
+        while True:
+            time.sleep(interval_secs)
+            try:
+                import datetime as _dt
+                snap = tracemalloc.take_snapshot()
+                # Filter out tracemalloc's own bookkeeping and unimportant noise
+                snap = snap.filter_traces((
+                    tracemalloc.Filter(False, tracemalloc.__file__),
+                    tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+                    tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+                ))
+                ts = _dt.datetime.now(_dt.timezone.utc).isoformat()
+                with out_path.open("a") as f:
+                    f.write(f"\n=== {ts} ===\n")
+                    f.write("Top 20 allocators (by current size):\n")
+                    for i, stat in enumerate(snap.statistics("lineno")[:20], 1):
+                        frame = stat.traceback[0]
+                        f.write(
+                            f"  {i:2}. {stat.size/1024:>9.1f} KB "
+                            f"({stat.count:>6d} blocks)  "
+                            f"{frame.filename}:{frame.lineno}\n"
+                        )
+                    if prev_snap is not None:
+                        diffs = snap.compare_to(prev_snap, "lineno")
+                        growth = [s for s in diffs if s.size_diff > 1024][:15]
+                        if growth:
+                            f.write("\nGrowth since previous snapshot:\n")
+                            for stat in growth:
+                                frame = stat.traceback[0]
+                                f.write(
+                                    f"  +{stat.size_diff/1024:>9.1f} KB "
+                                    f"({stat.count_diff:+d} blocks)  "
+                                    f"{frame.filename}:{frame.lineno}\n"
+                                )
+                prev_snap = snap
+            except Exception:
+                # Diagnostic must never take down the node.
+                pass
+
+    threading.Thread(
+        target=_snapshot_loop, daemon=True, name="tracemalloc-dump",
+    ).start()
+
+
 def _lock_pages_in_ram() -> None:
     """Pin pages-on-fault so accessed pages never get swapped to SD.
 
@@ -288,6 +364,14 @@ def main():
     # The _lock_pages_in_ram helper is kept for that future work.
     # _lock_pages_in_ram()
 
+    # Opt-in allocation tracing — set JARVIS_TRACEMALLOC=1 in the unit
+    # environment to dump top allocators + growth deltas to
+    # /tmp/jarvis-tracemalloc.log every 5 min. Used for leak hunting.
+    # Started here (after startup banner, before everything else) so
+    # tracemalloc sees the full allocation history from module imports
+    # onward.
+    _start_tracemalloc_diagnostic()
+
     # Validate config keys (warnings only — provisioning may resolve them)
     _validate_config()
 
@@ -321,6 +405,19 @@ def main():
         ensure_adc_hpf_enabled()
     except Exception as e:
         logger.warning("ADC HPF self-heal failed (non-fatal)", error=str(e))
+
+    # Output mixer self-heal: same alsactl-restore round-trip story as
+    # the ADC HPF above — install.sh sets a calibrated baseline (Line at
+    # +4 dB, Line DAC at -1.5 dB, HP/HPCOM muted) and stores it, but the
+    # kernel TLV320 driver can leave the live mixer at quiet defaults
+    # after boot. Without this, "100% volume" is ~26 dB below intended,
+    # which is the prod-kitchen v0.1.81 fresh-install symptom that drove
+    # this self-heal.
+    try:
+        from utils.audio_volume import ensure_output_baseline
+        ensure_output_baseline()
+    except Exception as e:
+        logger.warning("Output baseline self-heal failed (non-fatal)", error=str(e))
 
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
