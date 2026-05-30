@@ -4,9 +4,15 @@ Calculator command for Jarvis.
 Performs basic arithmetic operations on two numbers.
 """
 
+import re
 from typing import List
 from enum import Enum
-from jarvis_command_sdk import IJarvisCommand, CommandExample
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
@@ -19,6 +25,34 @@ class Operation(Enum):
     SUBTRACT = "subtract"
     MULTIPLY = "multiply"
     DIVIDE = "divide"
+
+
+# --- Pre-route patterns ---
+# Match deterministic two-number arithmetic phrasings the LLM doesn't need to
+# see. The verb word maps directly to one of the four supported operations.
+_ARITHMETIC_RE = re.compile(
+    r"^(?:what(?:'?s|\s+is)?\s+)?"
+    r"(?P<n1>-?\d+(?:\.\d+)?)\s+"
+    r"(?P<op>plus|\+|minus|\-|times|x|multiplied\s+by|\*|divided\s+by|over|/)\s+"
+    r"(?P<n2>-?\d+(?:\.\d+)?)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Imperative form: "add 5 and 3", "subtract 4 from 10", "multiply 6 by 7", "divide 20 by 5"
+_IMPERATIVE_RE = re.compile(
+    r"^(?P<verb>add|subtract|multiply|divide)\s+"
+    r"(?P<n1>-?\d+(?:\.\d+)?)\s+"
+    r"(?:and|by|from)\s+"
+    r"(?P<n2>-?\d+(?:\.\d+)?)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_OP_WORD_TO_OPERATION = {
+    "plus": "add", "+": "add",
+    "minus": "subtract", "-": "subtract",
+    "times": "multiply", "x": "multiply", "multiplied by": "multiply", "*": "multiply",
+    "divided by": "divide", "over": "divide", "/": "divide",
+}
 
 
 class CalculatorCommand(IJarvisCommand):
@@ -128,7 +162,59 @@ class CalculatorCommand(IJarvisCommand):
                 is_primary=(i == 0)
             ))
         return examples
-    
+
+    # ------------------------------------------------------------------
+    # Fast-path patterns — deterministic two-number arithmetic bypasses LLM.
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="calculate.infix",
+                description="Bypass LLM for 'N plus/minus/times/divided by M' phrasings",
+                example="what's 5 plus 3",
+                regex=_ARITHMETIC_RE.pattern,
+                handler="_fp_infix",
+            ),
+            FastPathPattern(
+                id="calculate.imperative",
+                description="Bypass LLM for 'add N and M' / 'divide N by M' / 'multiply N by M' / 'subtract N from M'",
+                example="add 5 and 3",
+                regex=_IMPERATIVE_RE.pattern,
+                handler="_fp_imperative",
+            ),
+        ]
+
+    def _fp_infix(self, match, voice_command: str) -> PreRouteResult | None:
+        op_word = match.group("op").lower().strip()
+        # Collapse internal whitespace ("multiplied  by" → "multiplied by")
+        op_word = re.sub(r"\s+", " ", op_word)
+        operation = _OP_WORD_TO_OPERATION.get(op_word)
+        if operation is None:
+            return None
+        return PreRouteResult(arguments={
+            "num1": float(match.group("n1")),
+            "num2": float(match.group("n2")),
+            "operation": operation,
+        })
+
+    def _fp_imperative(self, match, voice_command: str) -> PreRouteResult | None:
+        verb = match.group("verb").lower()
+        n1 = float(match.group("n1"))
+        n2 = float(match.group("n2"))
+        # "subtract 7 from 22" means 22 - 7, not 7 - 22
+        if verb == "subtract":
+            return PreRouteResult(arguments={
+                "num1": n2,
+                "num2": n1,
+                "operation": "subtract",
+            })
+        return PreRouteResult(arguments={
+            "num1": n1,
+            "num2": n2,
+            "operation": verb,
+        })
+
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the calculator command"""
         try:
