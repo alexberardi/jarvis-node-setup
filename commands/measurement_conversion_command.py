@@ -4,12 +4,101 @@ Measurement conversion command for Jarvis.
 Converts between various units using base unit conversion for maximum flexibility.
 """
 
+import re
 from typing import List, Optional
-from jarvis_command_sdk import IJarvisCommand, CommandExample, CommandAntipattern
+from jarvis_command_sdk import (
+    CommandAntipattern,
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
+
+
+# Map spoken/common unit names to canonical keys understood by run().
+# Includes singular forms ("mile") and casual aliases ("fl oz"). The canonical
+# keys are exactly the keys of BASE_CONVERSIONS in __init__.
+_UNIT_ALIASES: dict[str, str] = {
+    # Distance
+    "meter": "meters", "meters": "meters", "metre": "meters", "metres": "meters", "m": "meters",
+    "kilometer": "kilometers", "kilometers": "kilometers", "kilometre": "kilometers",
+    "kilometres": "kilometers", "km": "kilometers", "kms": "kilometers", "k": "kilometers",
+    "centimeter": "centimeters", "centimeters": "centimeters", "cm": "centimeters",
+    "millimeter": "millimeters", "millimeters": "millimeters", "mm": "millimeters",
+    "mile": "miles", "miles": "miles",
+    "yard": "yards", "yards": "yards", "yd": "yards",
+    "foot": "feet", "feet": "feet", "ft": "feet",
+    "inch": "inches", "inches": "inches", "in": "inches",
+    "league": "leagues", "leagues": "leagues",
+    # Volume
+    "liter": "liters", "liters": "liters", "litre": "liters", "litres": "liters", "l": "liters",
+    "milliliter": "milliliters", "milliliters": "milliliters", "ml": "milliliters",
+    "gallon": "gallons", "gallons": "gallons", "gal": "gallons",
+    "quart": "quarts", "quarts": "quarts", "qt": "quarts",
+    "pint": "pints", "pints": "pints", "pt": "pints",
+    "cup": "cups", "cups": "cups",
+    "tablespoon": "tablespoons", "tablespoons": "tablespoons", "tbsp": "tablespoons",
+    "teaspoon": "teaspoons", "teaspoons": "teaspoons", "tsp": "teaspoons",
+    "fluid ounce": "fluid_ounces", "fluid ounces": "fluid_ounces",
+    "fl oz": "fluid_ounces",
+    # Weight (note: ambiguous "ounce/ounces" defaults to weight, not fluid;
+    # "fluid ounce" must be explicit to mean volume)
+    "gram": "grams", "grams": "grams", "g": "grams",
+    "kilogram": "kilograms", "kilograms": "kilograms", "kg": "kilograms", "kgs": "kilograms",
+    "milligram": "milligrams", "milligrams": "milligrams", "mg": "milligrams",
+    "pound": "pounds", "pounds": "pounds", "lb": "pounds", "lbs": "pounds",
+    "ounce": "ounces", "ounces": "ounces", "oz": "ounces",
+    "ton": "tons", "tons": "tons",
+    "metric ton": "metric_tons", "metric tons": "metric_tons", "tonne": "metric_tons",
+    "tonnes": "metric_tons",
+    # Temperature
+    "celsius": "celsius", "centigrade": "celsius", "c": "celsius",
+    "fahrenheit": "fahrenheit", "f": "fahrenheit",
+    "kelvin": "kelvin", "k": "kelvin",
+}
+
+# Build a regex alternation over the multi-word aliases first so "fluid ounces"
+# matches before "ounces" can claim it. Single-token units fall through.
+_UNIT_TOKENS = sorted(_UNIT_ALIASES.keys(), key=len, reverse=True)
+_UNIT_GROUP = r"(?:" + "|".join(re.escape(u) for u in _UNIT_TOKENS) + r")"
+
+# "Convert N FROM to TO" — explicit imperative form.
+_CONVERT_RE = re.compile(
+    r"^\s*convert\s+(?P<value>-?\d+(?:\.\d+)?)\s+"
+    r"(?P<from>" + _UNIT_GROUP + r")\s+(?:to|into|in)\s+"
+    r"(?P<to>" + _UNIT_GROUP + r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# "How many X in a Y" / "how many X in N Y" — interrogative; the value
+# defaults to 1 when "a/an" is the determiner.
+_HOWMANY_RE = re.compile(
+    r"^\s*how\s+many\s+(?P<to>" + _UNIT_GROUP + r")\s+(?:are\s+)?in\s+"
+    r"(?:a\s+|an\s+|(?P<value>-?\d+(?:\.\d+)?)\s+)"
+    r"(?P<from>" + _UNIT_GROUP + r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# "What's N X in Y" — typically used for temperature ("what's 350 F in C")
+# but works for any pair.
+_WHATS_IN_RE = re.compile(
+    r"^\s*(?:what(?:'?s|\s+is))?\s*(?P<value>-?\d+(?:\.\d+)?)\s+"
+    r"(?:degrees?\s+)?(?P<from>" + _UNIT_GROUP + r")\s+in\s+"
+    r"(?:degrees?\s+)?(?P<to>" + _UNIT_GROUP + r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+
+def _canonical_unit(raw: str) -> str | None:
+    """Normalise spoken unit text → canonical key, or None if unknown."""
+    if not raw:
+        return None
+    norm = re.sub(r"\s+", " ", raw.lower().strip())
+    return _UNIT_ALIASES.get(norm)
 
 
 class MeasurementConversionCommand(IJarvisCommand):
@@ -170,6 +259,76 @@ class MeasurementConversionCommand(IJarvisCommand):
             ))
         return examples
     
+    # ------------------------------------------------------------------
+    # Fast-path patterns — bypass the LLM for stereotyped conversions.
+    # Order matters: the most specific shape ("convert N X to Y") runs
+    # before the more permissive "what's N X in Y", which would otherwise
+    # accidentally consume "convert 5 miles to km".
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="convert_measurement.convert",
+                description="Bypass LLM for 'convert N <unit> to <unit>'",
+                example="convert 5 miles to kilometers",
+                regex=_CONVERT_RE.pattern,
+                handler="_fp_convert",
+            ),
+            FastPathPattern(
+                id="convert_measurement.how_many",
+                description="Bypass LLM for 'how many X in a Y'",
+                example="how many cups in a gallon",
+                regex=_HOWMANY_RE.pattern,
+                handler="_fp_how_many",
+            ),
+            FastPathPattern(
+                id="convert_measurement.whats_in",
+                description="Bypass LLM for 'what's N <unit> in <unit>'",
+                example="what's 350 fahrenheit in celsius",
+                regex=_WHATS_IN_RE.pattern,
+                handler="_fp_whats_in",
+            ),
+        ]
+
+    def _fp_convert(self, match, voice_command: str) -> PreRouteResult | None:
+        from_unit = _canonical_unit(match.group("from"))
+        to_unit = _canonical_unit(match.group("to"))
+        if not from_unit or not to_unit:
+            return None
+        return PreRouteResult(arguments={
+            "value": float(match.group("value")),
+            "from_unit": from_unit,
+            "to_unit": to_unit,
+        })
+
+    def _fp_how_many(self, match, voice_command: str) -> PreRouteResult | None:
+        from_unit = _canonical_unit(match.group("from"))
+        to_unit = _canonical_unit(match.group("to"))
+        if not from_unit or not to_unit:
+            return None
+        value_raw = match.group("value")
+        value = float(value_raw) if value_raw else 1.0
+        return PreRouteResult(arguments={
+            "value": value,
+            "from_unit": from_unit,
+            "to_unit": to_unit,
+        })
+
+    def _fp_whats_in(self, match, voice_command: str) -> PreRouteResult | None:
+        from_unit = _canonical_unit(match.group("from"))
+        to_unit = _canonical_unit(match.group("to"))
+        if not from_unit or not to_unit:
+            return None
+        # Defensive: refuse if the two units aren't in the same category.
+        # The full validation lives in run(); a quick check here keeps us
+        # from pre-routing a nonsensical pairing (e.g. "5 miles in cups").
+        return PreRouteResult(arguments={
+            "value": float(match.group("value")),
+            "from_unit": from_unit,
+            "to_unit": to_unit,
+        })
+
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the measurement conversion command"""
         try:

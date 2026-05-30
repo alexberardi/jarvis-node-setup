@@ -5,12 +5,19 @@ Reminders persist across restarts and support recurrence (daily, weekly,
 weekdays, monthly).
 """
 
+import re
 from typing import Any, Dict, List
 
 from jarvis_log_client import JarvisLogger
 
 from core.command_response import CommandResponse
-from jarvis_command_sdk import CommandAntipattern, CommandExample, IJarvisCommand, PreRouteResult
+from jarvis_command_sdk import (
+    CommandAntipattern,
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
@@ -21,6 +28,61 @@ logger = JarvisLogger(service="jarvis-node")
 _ALL_ACTIONS = ["set", "list", "delete", "snooze"]
 
 _RECURRENCE_VALUES = ["daily", "weekly", "weekdays", "monthly"]
+
+
+# --- Pre-route patterns ---
+# Only the deterministic shapes get fast-paths. "Set" reminders need date
+# parsing the LLM is much better at, so they fall through. The shapes here
+# are unambiguous about action + (optional) numeric duration.
+
+_LIST_RE = re.compile(
+    r"^\s*(?:"
+    r"what\s+reminders?\s+do\s+i\s+have"
+    r"|list\s+(?:my\s+)?reminders?"
+    r"|show\s+(?:me\s+)?(?:my\s+)?reminders?"
+    r"|do\s+i\s+have\s+any\s+(?:upcoming\s+)?reminders?"
+    r"|any\s+reminders?(?:\s+(?:for|today))?"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_LIST_TODAY_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:any|what)\s+reminders?\s+(?:for|do\s+i\s+have)\s+today"
+    r"|reminders?\s+(?:for\s+)?today"
+    r"|do\s+i\s+have\s+(?:any\s+)?reminders?\s+today"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_LIST_RECURRING_RE = re.compile(
+    r"^\s*(?:"
+    r"show\s+(?:me\s+)?my\s+recurring\s+reminders?"
+    r"|(?:list\s+)?(?:my\s+)?recurring\s+reminders?"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_DELETE_ALL_RE = re.compile(
+    r"^\s*(?:delete|cancel|clear|remove)\s+all\s+(?:my\s+|of\s+my\s+)?reminders?\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# "Snooze" alone → use defaults (10 min, most recent). "Snooze for N minutes" /
+# "snooze for N hours" → set explicit minutes. Avoid claiming "snooze the X
+# reminder for N minutes" — the labelled form needs LLM fuzzy matching.
+_SNOOZE_BARE_RE = re.compile(
+    r"^\s*snooze(?:\s+(?:that|it|this|the\s+reminder))?\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+_SNOOZE_FOR_RE = re.compile(
+    r"^\s*snooze(?:\s+(?:that|it|this))?\s+for\s+"
+    r"(?P<n>\d+)\s+"
+    r"(?P<unit>minute|minutes|min|mins|hour|hours|hr|hrs)"
+    r"\s*[?.!]*$",
+    re.IGNORECASE,
+)
 
 
 class ReminderCommand(IJarvisCommand):
@@ -212,6 +274,77 @@ class ReminderCommand(IJarvisCommand):
         ]
 
     # ── Pre-route ─────────────────────────────────────────────────────
+    # Only the deterministic actions (list, delete-all, snooze) get
+    # fast-paths. Set/delete-by-label fall through to the LLM because
+    # they involve fuzzy text matching the LLM handles better.
+
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="reminder.list_today",
+                description="Bypass LLM for 'any reminders for today' / 'reminders for today'",
+                example="any reminders for today",
+                regex=_LIST_TODAY_RE.pattern,
+                handler="_fp_list_today",
+            ),
+            FastPathPattern(
+                id="reminder.list_recurring",
+                description="Bypass LLM for 'show my recurring reminders' / 'list recurring reminders'",
+                example="show my recurring reminders",
+                regex=_LIST_RECURRING_RE.pattern,
+                handler="_fp_list_recurring",
+            ),
+            FastPathPattern(
+                id="reminder.list",
+                description="Bypass LLM for 'list my reminders' / 'what reminders do I have'",
+                example="what reminders do I have",
+                regex=_LIST_RE.pattern,
+                handler="_fp_list_all",
+            ),
+            FastPathPattern(
+                id="reminder.delete_all",
+                description="Bypass LLM for 'delete all my reminders' / 'clear all reminders'",
+                example="delete all my reminders",
+                regex=_DELETE_ALL_RE.pattern,
+                handler="_fp_delete_all",
+            ),
+            FastPathPattern(
+                id="reminder.snooze_for",
+                description="Bypass LLM for 'snooze for N minutes/hours'",
+                example="snooze for 15 minutes",
+                regex=_SNOOZE_FOR_RE.pattern,
+                handler="_fp_snooze_for",
+            ),
+            FastPathPattern(
+                id="reminder.snooze",
+                description="Bypass LLM for bare 'snooze' / 'snooze that' (uses default 10 min)",
+                example="snooze",
+                regex=_SNOOZE_BARE_RE.pattern,
+                handler="_fp_snooze_bare",
+            ),
+        ]
+
+    def _fp_list_all(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"action": "list"})
+
+    def _fp_list_today(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"action": "list", "filter": "today"})
+
+    def _fp_list_recurring(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"action": "list", "filter": "recurring"})
+
+    def _fp_delete_all(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"action": "delete", "scope": "all"})
+
+    def _fp_snooze_bare(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"action": "snooze"})
+
+    def _fp_snooze_for(self, match, voice_command: str) -> PreRouteResult | None:
+        n = int(match.group("n"))
+        unit = match.group("unit").lower()
+        minutes = n * 60 if unit.startswith("hour") or unit.startswith("hr") else n
+        return PreRouteResult(arguments={"action": "snooze", "minutes": minutes})
 
     def post_process_tool_call(self, args: Dict[str, Any], voice_command: str) -> Dict[str, Any]:
         if not args.get("action"):

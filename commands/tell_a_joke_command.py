@@ -2,7 +2,12 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
-from jarvis_command_sdk import CommandExample, IJarvisCommand
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.command_response import CommandResponse
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -19,6 +24,47 @@ except ImportError:
         def debug(self, msg, **kw): self._log.debug(msg)
 
 logger = JarvisLogger(service="cmd.tell_joke")
+
+
+# --- Pre-route patterns ---
+
+# Bare "tell me a joke", "make me laugh", "say something funny", "got any jokes"
+# — no topic. The LLM tool-selection round-trip adds nothing.
+_BARE_JOKE_RE = re.compile(
+    r"^\s*(?:"
+    r"tell\s+me\s+(?:another\s+|a\s+)?joke"
+    r"|tell\s+me\s+a\s+(?:another\s+)?(?:clean\s+|family[\-\s]friendly\s+)?joke"
+    r"|make\s+me\s+laugh"
+    r"|say\s+something\s+funny"
+    r"|got\s+(?:any\s+|a\s+)?jokes?"
+    r"|i\s+want\s+a\s+joke"
+    r"|tell\s+me\s+a\s+dad\s+joke"
+    r"|give\s+me\s+(?:a\s+)?(?:dad\s+|knock[\s\-]?knock\s+)?joke"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# "Tell me a joke about X", "got any jokes about X", "make me laugh with a
+# joke about X". Captures topic in group `topic`.
+_TOPIC_JOKE_RE = re.compile(
+    r"^\s*(?:"
+    r"tell\s+me\s+(?:another\s+|a\s+)?joke\s+about"
+    r"|got\s+(?:any\s+|a\s+)?jokes?\s+about"
+    r"|make\s+me\s+laugh\s+with\s+(?:a\s+)?joke\s+about"
+    r"|i\s+want\s+a\s+joke\s+about"
+    r"|give\s+me\s+a\s+joke\s+about"
+    r")\s+(?P<topic>[a-zA-Z][a-zA-Z\s\-]+?)\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Specific style requests map to a fixed topic.
+_STYLE_RE = re.compile(
+    r"^\s*(?:"
+    r"tell\s+me\s+a\s+(?P<style>dad|knock[\s\-]?knock)\s+joke"
+    r"|give\s+me\s+a\s+(?P<style2>dad|knock[\s\-]?knock)\s+joke"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
 
 # Style anchors — chosen because each demonstrates a *generalizable structure*
 # the LLM can riff on for any topic:
@@ -223,6 +269,56 @@ class TellAJokeCommand(IJarvisCommand):
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
         return []
+
+    # ------------------------------------------------------------------
+    # Fast-path patterns — bypass the LLM for stereotyped joke requests.
+    # Note: the *joke generation* still hits an LLM via run(); this only
+    # skips the tool-selection round-trip.
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="tell_joke.style",
+                description="Bypass LLM for 'tell me a dad joke' / 'give me a knock-knock joke'",
+                example="tell me a dad joke",
+                regex=_STYLE_RE.pattern,
+                handler="_fp_style",
+            ),
+            FastPathPattern(
+                id="tell_joke.topic",
+                description="Bypass LLM for 'tell me a joke about <topic>'",
+                example="tell me a joke about cats",
+                regex=_TOPIC_JOKE_RE.pattern,
+                handler="_fp_topic",
+            ),
+            FastPathPattern(
+                id="tell_joke.bare",
+                description="Bypass LLM for bare joke requests ('tell me a joke', 'make me laugh')",
+                example="tell me a joke",
+                regex=_BARE_JOKE_RE.pattern,
+                handler="_fp_bare",
+            ),
+        ]
+
+    def _fp_bare(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={})
+
+    def _fp_topic(self, match, voice_command: str) -> PreRouteResult | None:
+        topic = match.group("topic").strip()
+        if not topic:
+            return None
+        return PreRouteResult(arguments={"topic": topic})
+
+    def _fp_style(self, match, voice_command: str) -> PreRouteResult | None:
+        style = match.group("style") or match.group("style2") or ""
+        style = style.lower().strip()
+        # "dad" → "dad jokes" tag; "knock-knock" / "knock knock" → "knock knock" tag
+        if "knock" in style:
+            return PreRouteResult(arguments={"topic": "knock knock"})
+        if "dad" in style:
+            return PreRouteResult(arguments={"topic": "dad jokes"})
+        return None
 
     def _generate_via_llm(self, prompt: str) -> Optional[str]:
         """Ask CC's chat_text for a riffed joke. Returns None on any failure."""
