@@ -1,38 +1,18 @@
-import re
 from typing import Any, List
 
 from core.command_response import CommandResponse
-from jarvis_command_sdk import (
-    CommandAntipattern,
-    CommandExample,
-    FastPathPattern,
-    IJarvisCommand,
-    PreRouteResult,
-)
+from jarvis_command_sdk import CommandAntipattern, CommandExample, IJarvisCommand
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 
 
-# Strong, unambiguous knowledge-question openers. These are deliberately
-# narrow — pre-route iteration order across commands is non-deterministic
-# (dict-of-commands iteration), so anything that could legitimately route to
-# another command (time, weather, devices, measurement conversion, calendar)
-# stays out of this list. "What is X" / "how many X in Y" / "where is X" are
-# all excluded for that reason — they fall through to the LLM. Phrasings here
-# unambiguously want a knowledge answer from the model's training data.
-_KNOWLEDGE_PREFIX_RE = re.compile(
-    r"^\s*("
-    r"tell\s+me\s+about\s+\S+"      # "tell me about Einstein"
-    r"|explain\s+\S+"                # "explain photosynthesis"
-    r"|define\s+\S+"                 # "define entropy"
-    r"|meaning\s+of\s+\S+"           # "meaning of ephemeral"
-    r"|what(?:'?s|\s+is|\s+does)?\s+\S+\s+stand\s+for"  # "what does DNA stand for"
-    r"|who\s+(?:is|was|were|are)\s+\S+"   # "who was Einstein"
-    r"|when\s+(?:was|did)\s+\S+"          # "when was the constitution signed"
-    r")\b",
-    re.IGNORECASE,
-)
+# Note: this command has NO pre-route. Pre-routing requires run() to return
+# a pre-composed spoken `message`, but answer_question's entire purpose is
+# to invoke the LLM to compose the answer — there's nothing the node can
+# emit locally. A pre-route that returns no message falls through to the
+# LLM path anyway, so adding one would add zero savings and one wasted
+# run() call. Leave routing to the LLM tool-selection step.
 
 
 class AnswerQuestionCommand(IJarvisCommand):
@@ -137,30 +117,6 @@ class AnswerQuestionCommand(IJarvisCommand):
             CommandExample(voice_command="Tell me about Albert Einstein", expected_parameters={"query": "Tell me about Albert Einstein"}),
             CommandExample(voice_command="Explain the theory of relativity", expected_parameters={"query": "Explain the theory of relativity"}),
         ]
-
-    # ------------------------------------------------------------------
-    # Fast-path patterns — unambiguous knowledge prefixes bypass the LLM.
-    # Pre-route iteration across commands is non-deterministic, so this
-    # only fires on prefixes that can't legitimately route elsewhere
-    # (no "what is", no "how many", no "where is").
-    # ------------------------------------------------------------------
-    @property
-    def fast_path_patterns(self) -> List[FastPathPattern]:
-        return [
-            FastPathPattern(
-                id="answer_question.knowledge_prefix",
-                description="Bypass LLM for 'tell me about X', 'explain X', 'define X', 'who is X', 'when was X', etc.",
-                example="tell me about Albert Einstein",
-                regex=_KNOWLEDGE_PREFIX_RE.pattern,
-                handler="_fp_knowledge",
-            ),
-        ]
-
-    def _fp_knowledge(self, match, voice_command: str) -> PreRouteResult | None:
-        # Pass the full voice command through as the query — run() forwards
-        # it unchanged so CC's downstream LLM call can answer the question
-        # in full context.
-        return PreRouteResult(arguments={"query": voice_command.strip()})
 
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
         query: str = kwargs.get("query", request_info.voice_command)
