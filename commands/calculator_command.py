@@ -289,17 +289,28 @@ class CalculatorCommand(IJarvisCommand):
             
             # Create the calculation message
             calculation_message = f"{num1} {operation_text} {num2} equals {result_text}"
-            
-            return CommandResponse.follow_up_response(
-                                context_data={
-                    "result": result,
-                    "calculation": f"{num1} {operation_text} {num2} = {result_text}",
-                    "operation": operation.value,
-                    "num1": num1,
-                    "num2": num2,
-                    "operation_text": operation_text
-                }
-            )
+
+            context_data: dict = {
+                "result": result,
+                "calculation": f"{num1} {operation_text} {num2} = {result_text}",
+                "operation": operation.value,
+                "num1": num1,
+                "num2": num2,
+                "operation_text": operation_text,
+            }
+            # Pre-route callers have no LLM downstream — pre-compose the spoken
+            # response (omit decimals on whole numbers, so "5 plus 3" doesn't
+            # become "five point zero plus three point zero equals eight point
+            # zero" in TTS).
+            if request_info.is_pre_routed:
+                def _fmt(n: float) -> str:
+                    return str(int(n)) if n == int(n) else f"{n:g}"
+                spoken_result = _fmt(result) if operation != Operation.DIVIDE or result == int(result) else f"{result:.2f}"
+                context_data["message"] = (
+                    f"{_fmt(num1)} {operation_text} {_fmt(num2)} equals {spoken_result}."
+                )
+
+            return CommandResponse.follow_up_response(context_data=context_data)
             
         except (ValueError, TypeError) as e:
             return CommandResponse.error_response(
