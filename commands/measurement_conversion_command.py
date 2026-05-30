@@ -397,17 +397,18 @@ class MeasurementConversionCommand(IJarvisCommand):
                     result_text = f"{result:.3f}"
                 
                 conversion_message = f"{value} {from_unit} equals {result_text}"
-                
-                return CommandResponse.follow_up_response(
-                                        context_data={
-                        "value": value,
-                        "from_unit": from_unit,
-                        "to_unit": to_unit,
-                        "result": result,
-                        "result_text": result_text,
-                        "conversion_type": "temperature"
-                    }
-                )
+
+                temp_context: dict = {
+                    "value": value,
+                    "from_unit": from_unit,
+                    "to_unit": to_unit,
+                    "result": result,
+                    "result_text": result_text,
+                    "conversion_type": "temperature",
+                }
+                if request_info.is_pre_routed:
+                    temp_context["message"] = f"{conversion_message}."
+                return CommandResponse.follow_up_response(context_data=temp_context)
             
             # Handle standard unit conversions through base units
             try:
@@ -442,17 +443,18 @@ class MeasurementConversionCommand(IJarvisCommand):
                 conversion_message = f"There are {result_text} {to_unit} in 1 {from_unit}"
             else:
                 conversion_message = f"{value} {from_unit} equals {result_text} {to_unit}"
-            
-            return CommandResponse.follow_up_response(
-                                context_data={
-                    "value": value,
-                    "from_unit": from_unit,
-                    "to_unit": to_unit,
-                    "result": result,
-                    "result_text": result_text,
-                    "conversion_type": "standard"
-                }
-            )
+
+            std_context: dict = {
+                "value": value,
+                "from_unit": from_unit,
+                "to_unit": to_unit,
+                "result": result,
+                "result_text": result_text,
+                "conversion_type": "standard",
+            }
+            if request_info.is_pre_routed:
+                std_context["message"] = f"{conversion_message}."
+            return CommandResponse.follow_up_response(context_data=std_context)
             
         except (ValueError, TypeError) as e:
             return CommandResponse.error_response(
