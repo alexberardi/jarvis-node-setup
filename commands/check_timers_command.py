@@ -4,14 +4,47 @@ Check timers command for Jarvis.
 Reports the status and remaining time of active timers.
 """
 
+import re
 from typing import List
 
 from core.command_response import CommandResponse
-from jarvis_command_sdk import CommandExample, IJarvisCommand
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 from services.timer_service import get_timer_service
+
+
+# --- Pre-route patterns ---
+
+# Global-status queries: "how much time is left", "what timers are running",
+# "check my timers", "timer status". No label → return status of all timers.
+_GLOBAL_STATUS_RE = re.compile(
+    r"^\s*(?:"
+    r"how\s+much\s+time(?:\s+is)?\s+left"
+    r"|how\s+long\s+(?:do\s+i\s+have|is\s+left)"
+    r"|time\s+(?:left|remaining)"
+    r"|what\s+timers?\s+(?:are\s+running|do\s+i\s+have)"
+    r"|check\s+(?:my\s+)?timers?"
+    r"|timer\s+status"
+    r")\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Specific-timer: "check the pasta timer", "how long until the egg timer",
+# "time left on my tea timer". Captures the label between the verb and the
+# word "timer".
+_LABELED_STATUS_RE = re.compile(
+    r"^\s*(?:how\s+(?:long|much)\s+(?:until|on|left)|check|what(?:'?s|\s+is)\s+(?:the\s+)?status\s+of|time\s+(?:left|remaining)\s+on|is)"
+    r"\s+(?:the\s+|my\s+)?(?P<label>[a-zA-Z][a-zA-Z\s\-]+?)\s+timer"
+    r"(?:\s+still\s+running)?\s*[?.!]*$",
+    re.IGNORECASE,
+)
 
 
 class CheckTimersCommand(IJarvisCommand):
@@ -111,6 +144,37 @@ class CheckTimersCommand(IJarvisCommand):
                 is_primary=(i == 0)
             ))
         return examples
+
+    # ------------------------------------------------------------------
+    # Fast-path patterns — bypass the LLM for the common status queries.
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="check_timers.labeled",
+                description="Bypass LLM for 'check the <label> timer' / 'how long until the <label> timer'",
+                example="check the pasta timer",
+                regex=_LABELED_STATUS_RE.pattern,
+                handler="_fp_labeled",
+            ),
+            FastPathPattern(
+                id="check_timers.global",
+                description="Bypass LLM for 'how much time is left' / 'what timers are running' / 'timer status'",
+                example="how much time is left",
+                regex=_GLOBAL_STATUS_RE.pattern,
+                handler="_fp_global",
+            ),
+        ]
+
+    def _fp_labeled(self, match, voice_command: str) -> PreRouteResult | None:
+        label = match.group("label").strip()
+        if not label:
+            return None
+        return PreRouteResult(arguments={"label": label})
+
+    def _fp_global(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={})
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the check timers command"""
