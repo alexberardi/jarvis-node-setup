@@ -4,14 +4,42 @@ Cancel timer command for Jarvis.
 Cancels active timers by label or cancels all timers.
 """
 
+import re
 from typing import List
 
 from core.command_response import CommandResponse
-from jarvis_command_sdk import CommandExample, IJarvisCommand
+from jarvis_command_sdk import (
+    CommandExample,
+    FastPathPattern,
+    IJarvisCommand,
+    PreRouteResult,
+)
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 from services.timer_service import get_timer_service
+
+
+# --- Pre-route patterns ---
+
+# Cancel-all: "cancel all timers", "stop all my timers", "clear all timers"
+_CANCEL_ALL_RE = re.compile(
+    r"^\s*(?:cancel|stop|clear|remove|delete)\s+all(?:\s+(?:my|the))?\s+timers?\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Cancel-by-label: "cancel the pasta timer", "stop the egg timer", "remove the nap timer"
+_CANCEL_LABELED_RE = re.compile(
+    r"^\s*(?:cancel|stop|remove|delete|never\s+mind)\s+"
+    r"(?:the\s+|my\s+)?(?P<label>[a-zA-Z][a-zA-Z\s\-]+?)\s+timer\s*[?.!]*$",
+    re.IGNORECASE,
+)
+
+# Cancel-no-label: "cancel my timer", "stop the timer", "cancel timer", "never mind the timer"
+_CANCEL_NONE_RE = re.compile(
+    r"^\s*(?:cancel|stop|never\s+mind)\s+(?:my\s+|the\s+)?timer\s*[?.!]*$",
+    re.IGNORECASE,
+)
 
 
 class CancelTimerCommand(IJarvisCommand):
@@ -116,6 +144,49 @@ class CancelTimerCommand(IJarvisCommand):
                 is_primary=(i == 0)
             ))
         return examples
+
+    # ------------------------------------------------------------------
+    # Fast-path patterns — bypass the LLM for the common cancel phrasings.
+    # Order matters: cancel-all and cancel-no-label run before cancel-labeled
+    # so "cancel timer" / "cancel all timers" aren't misread as labels.
+    # ------------------------------------------------------------------
+    @property
+    def fast_path_patterns(self) -> List[FastPathPattern]:
+        return [
+            FastPathPattern(
+                id="cancel_timer.all",
+                description="Bypass LLM for 'cancel all timers' / 'stop all my timers'",
+                example="cancel all timers",
+                regex=_CANCEL_ALL_RE.pattern,
+                handler="_fp_cancel_all",
+            ),
+            FastPathPattern(
+                id="cancel_timer.none",
+                description="Bypass LLM for 'cancel my timer' / 'stop the timer' (no specific label)",
+                example="cancel my timer",
+                regex=_CANCEL_NONE_RE.pattern,
+                handler="_fp_cancel_none",
+            ),
+            FastPathPattern(
+                id="cancel_timer.labeled",
+                description="Bypass LLM for 'cancel the <label> timer' / 'stop the <label> timer'",
+                example="cancel the pasta timer",
+                regex=_CANCEL_LABELED_RE.pattern,
+                handler="_fp_cancel_labeled",
+            ),
+        ]
+
+    def _fp_cancel_all(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={"label": "all"})
+
+    def _fp_cancel_none(self, match, voice_command: str) -> PreRouteResult | None:
+        return PreRouteResult(arguments={})
+
+    def _fp_cancel_labeled(self, match, voice_command: str) -> PreRouteResult | None:
+        label = match.group("label").strip()
+        if not label or label.lower() in ("all", "my", "the"):
+            return None
+        return PreRouteResult(arguments={"label": label})
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the cancel timer command"""
