@@ -382,12 +382,16 @@ def main():
     except Exception as e:
         logger.warning("Encryption key init failed", error=str(e))
 
-    # Apply persisted audio volume to PulseAudio. config.json is the
-    # source of truth for the user-facing volume; re-apply on every
-    # startup so a reboot doesn't reset the slider to PA's default.
+    # Apply audio volume to PulseAudio on every startup. config.json is
+    # the source of truth for the user-facing volume; re-apply on every
+    # startup so a reboot doesn't reset the slider to PA's default. The
+    # default 100% covers fresh installs where config.json has no
+    # ``volume_percent`` yet — without this, the mobile slider showed
+    # 100% but PA was at whatever the system default was, so users had
+    # to move the slider and save just to make the displayed value real.
     try:
         from utils.audio_volume import set_volume_percent
-        vol = Config.get_int("volume_percent", -1)
+        vol = Config.get_int("volume_percent", 100)
         if 0 <= vol <= 100:
             set_volume_percent(vol)
     except Exception as e:
