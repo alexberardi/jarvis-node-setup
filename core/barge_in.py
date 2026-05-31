@@ -75,13 +75,18 @@ _OWW_CHUNK = 1280
 # very quiet or silent during the baseline window.
 _DEFAULT_ENERGY_THRESHOLD = 500
 
-# OWW score threshold during barge-in.  Much lower than the normal 0.4
-# wake threshold because TTS bleed degrades the signal.  Empirically,
-# "Hey Jarvis" over TTS scores 0.08-0.12; TTS alone scores < 0.01.
-_DEFAULT_OWW_THRESHOLD = 0.07
+# OWW score threshold during barge-in. Much lower than the normal 0.4
+# wake threshold because TTS bleed degrades the signal. The May-2026
+# beta data showed scored peaks of 0.05-0.10 even when the user clearly
+# spoke "Hey Jarvis" over playback, so the prior 0.07 floor sat right at
+# the noise band — Tier 2 would fire on some attempts and miss others.
+# 0.04 catches the real attempts; the energy gate + confirm_chunks below
+# keep false positives in check.
+_DEFAULT_OWW_THRESHOLD = 0.04
 
 # How many consecutive chunks must satisfy BOTH energy + OWW gates
-# before we commit to a barge-in.  Prevents single-sample spikes.
+# before we commit to a barge-in. Prevents single-sample spikes from
+# a cough/clap/dish-clatter that happens to brush the OWW threshold.
 _DEFAULT_CONFIRM_CHUNKS = 2
 
 # Dynamic baseline: collect RMS samples during this window, then compute
@@ -137,6 +142,10 @@ class BargeInMonitor:
         self._stop_event = threading.Event()
         self._interrupted = False
         self._thread: threading.Thread | None = None
+        # Counter for the documented confirm_chunks gate — was declared
+        # in __init__ but never read by the loop, so a single qualifying
+        # chunk fired the interrupt. Reset per ``start()`` call.
+        self._consecutive_triggers = 0
 
     @property
     def was_interrupted(self) -> bool:
@@ -147,6 +156,7 @@ class BargeInMonitor:
         """Subscribe to the bus and begin scoring in a background thread."""
         self._stop_event.clear()
         self._interrupted = False
+        self._consecutive_triggers = 0
         self._thread = threading.Thread(
             target=self._monitor_loop, daemon=True, name="BargeInMonitor"
         )
@@ -287,21 +297,36 @@ class BargeInMonitor:
                 # Tier 1: Strong OWW (>0.5) + recent energy spike above
                 #         the dynamic baseline. OWW peaks after the voice
                 #         energy fades, so we check the trailing window.
-                # Tier 2: Weak OWW (>threshold) + current high energy
-                #         above the dynamic baseline.
+                # Tier 2: Weak OWW (>threshold) + a recent energy spike
+                #         above the dynamic baseline. Was ``rms >`` (the
+                #         current chunk) — but OWW scores lag the voice
+                #         energy by 0.5-1s (same lag Tier 1 already
+                #         accounts for), so the OWW peak typically lands
+                #         on a quiet chunk and the gate kept failing.
                 triggered = False
                 if score > 0.5 and recent_max_rms > effective_energy_threshold:
                     triggered = True
-                elif score > self._threshold and rms > effective_energy_threshold:
+                elif score > self._threshold and recent_max_rms > effective_energy_threshold:
                     triggered = True
 
+                # Require N consecutive qualifying chunks before firing.
+                # ``confirm_chunks`` was declared at __init__ but never
+                # enforced — a single noisy spike (cough, dish clatter)
+                # could trigger an interrupt. Lowering the OWW floor
+                # (0.07 → 0.04) made this gate necessary, not optional.
                 if triggered:
+                    self._consecutive_triggers += 1
+                else:
+                    self._consecutive_triggers = 0
+
+                if self._consecutive_triggers >= self._confirm_chunks:
                     logger.info(
                         "Barge-in detected",
                         score=round(float(score), 3),
                         rms=rms,
                         recent_max_rms=recent_max_rms,
                         energy_threshold=effective_energy_threshold,
+                        confirm_chunks=self._confirm_chunks,
                     )
                     self._interrupted = True
                     platform_audio.cancel_playback()
