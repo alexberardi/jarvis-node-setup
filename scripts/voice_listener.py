@@ -409,7 +409,11 @@ def _barge_in_enabled() -> bool:
 
 
 def _barge_in_threshold() -> float:
-    return Config.get_float("barge_in_threshold", 0.07)
+    # Matches BargeInMonitor's _DEFAULT_OWW_THRESHOLD — was 0.07, lowered
+    # to 0.04 after beta logs showed real "Hey Jarvis"-over-TTS scores
+    # peaking at 0.05-0.10 (right at the old floor). confirm_chunks=2
+    # plus the recent_max_rms energy gate keep false positives bounded.
+    return Config.get_float("barge_in_threshold", 0.04)
 
 
 def _barge_in_energy_threshold() -> float:
@@ -1247,12 +1251,12 @@ def _follow_up_loop(
     playback — the wake word interrupts the response and returns to the
     main wake detection loop.
     """
-    # Default bumped 5→10s on 2026-04-25: the window opens as soon as the
-    # caller returns from playing the response, but in practice the user
-    # often needs 2-3s to react. 5s often expired before the user could
-    # start speaking, making follow-ups feel "hit or miss". 10s gives
-    # comfortable headroom; users can override via config.
-    follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 10.0)
+    # Default 4s (was 10s): in beta deployments 10s felt overkill —
+    # users either follow up within 2-3s or have moved on entirely, and
+    # the long open window leaves the LED in "listening" too long after
+    # the response. 4s still covers the typical 2-3s reaction time.
+    # Users can override via config.
+    follow_up_seconds: float = Config.get_float("follow_up_listen_seconds", 4.0)
     if follow_up_seconds <= 0:
         return
 

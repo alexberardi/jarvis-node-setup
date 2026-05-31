@@ -23,6 +23,7 @@ from repositories.command_registry_repository import CommandRegistryRepository
 from repositories.disabled_fast_path_repository import DisabledFastPathRepository
 from services.secret_service import get_secret_value
 from utils.agent_discovery_service import get_agent_discovery_service
+from utils.audio_volume import get_volume_percent
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
 from utils.device_family_discovery_service import get_device_family_discovery_service
@@ -502,6 +503,11 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
 
     set_current_user_id(None)  # reset context
 
+    # Read PA volume once (subprocess call) — fallback to 100 when unreadable.
+    # Returning the live PA value keeps the mobile slider honest on a fresh
+    # node where config.json has no persisted volume_percent yet.
+    _live_volume = get_volume_percent()
+
     node_config: dict[str, Any] = {
         "wake_word_threshold": Config.get_float("wake_word_threshold", 0.5),
         "silence_threshold": Config.get_int("silence_threshold", 5000),
@@ -510,13 +516,18 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "max_record_seconds": Config.get_int("max_record_seconds", 7),
         "barge_in_enabled": Config.get_bool("barge_in_enabled", True),
         "wake_ack_audio_enabled": Config.get_bool("wake_ack_audio_enabled", True),
-        "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 10),
+        "follow_up_listen_seconds": Config.get_int("follow_up_listen_seconds", 4),
         "follow_up_silence_duration": Config.get_float("follow_up_silence_duration", 0.5),
         "follow_up_min_record_after_onset_secs": Config.get_float(
             "follow_up_min_record_after_onset_secs", 0.7
         ),
         "follow_up_min_speech_secs": Config.get_float("follow_up_min_speech_secs", 0.3),
-        "volume_percent": Config.get_int("volume_percent", 100),
+        # Live PA reading via audio_volume.get_volume_percent — was
+        # ``Config.get_int("volume_percent", 100)``, which lied on a fresh
+        # node: slider showed 100 while PA's actual sink was at the
+        # system default, so the displayed value only became real after
+        # the user moved the slider and tapped Save.
+        "volume_percent": _live_volume if _live_volume is not None else 100,
         "led_enabled": Config.get_bool("led_enabled", True),
         "led_brightness_percent": Config.get_int("led_brightness_percent", 100),
     }
