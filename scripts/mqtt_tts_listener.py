@@ -2100,9 +2100,33 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     scheme: str = config["scheme"]
     transport: str = "websockets" if scheme in ("ws", "wss") else "tcp"
 
+    # Stable client_id + persistent session so the broker queues QoS-1
+    # messages for us across disconnects. Without ``clean_session=False``
+    # (and a stable ID the broker can recognize), every flap drops the
+    # session and any in-flight settings_request / config_push / TTS
+    # message published while we were offline is gone forever — the
+    # ~30s of voice-settings-not-loading we hit during beta. If node_id
+    # isn't set yet (un-provisioned node), fall back to paho's random
+    # ID with clean_session=True; the MQTT spec rejects empty client_id
+    # with clean_session=False so we can't persist that case.
+    node_id_for_client: str = Config.get_str("node_id", "") or ""
+    if node_id_for_client:
+        client_id_arg: str = f"jarvis-node-{node_id_for_client}"
+        clean_session_arg: bool = False
+    else:
+        client_id_arg = ""  # paho generates a random one
+        clean_session_arg = True
+
     client: mqtt.Client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION1,
+        client_id=client_id_arg,
+        clean_session=clean_session_arg,
         transport=transport,
+    )
+    logger.info(
+        "MQTT client init",
+        client_id=client_id_arg or "<random>",
+        clean_session=clean_session_arg,
     )
 
     # TLS for wss (Cloudflare cert) and mqtts. Default system CA bundle.
