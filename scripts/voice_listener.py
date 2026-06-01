@@ -1495,6 +1495,11 @@ def _follow_up_loop(
         if barge_in and barge_in.was_interrupted:
             logger.info("Barge-in during follow-up, returning to wake word mode")
             platform_audio.reset_cancel()
+            # Same LED-reset as the main wake cycle — the follow-up's
+            # transient ("speaking" during the response, "thinking" during
+            # processing) must clear so the LED doesn't lie about state
+            # after the user interrupts.
+            _set_led_transient(None)
             break
 
     # Wake cycle is done — notify CC so it can clear per-node speaker
@@ -2214,6 +2219,11 @@ def start_voice_listener(ma_service):
                 if barge_in and barge_in.was_interrupted:
                     logger.info("Barge-in: TTS interrupted, returning to wake word")
                     platform_audio.reset_cancel()
+                    # Clear the LED transient overlay so the cyan "speaking"
+                    # pattern that was active during TTS doesn't linger after
+                    # the user cut us off — without this the LED stays at
+                    # whatever state TTS left it in until the next wake.
+                    _set_led_transient(None)
                     # Don't try to capture a new command here — the user
                     # interrupted to STOP the response.  They'll say the
                     # wake word again when they're ready.
