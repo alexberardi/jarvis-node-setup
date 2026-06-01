@@ -34,6 +34,17 @@ _agent_lock = threading.Lock()
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+# bluetoothctl emits `[CHG] Device <MAC> Paired: yes` after the SSP
+# handshake completes for an iPhone-initiated pair (the "discoverable"
+# flow that goes mobile app → MQTT → bluetoothctl `discoverable on`).
+# That path doesn't hit the scan-flow's provider.trust() call, so
+# without auto trust+connect here, the iPhone shows as Connected at
+# the BlueZ control level but the A2DP profile never fully negotiates
+# and the bond can drift out of sync with iOS.
+_PAIRED_RE = re.compile(
+    r"Device\s+([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5})\s+Paired:\s+yes"
+)
+
 
 def _read_pty(fd: int) -> None:
     """Watch bluetoothctl PTY output, auto-confirm any (yes/no) prompts.
@@ -86,6 +97,21 @@ def _read_pty(fd: int) -> None:
                     or "failed to" in lower
                     or "rejected" in lower):
                     logger.info("BT", line=clean[:200])
+
+                # On `Paired: yes`, send trust+connect through the same
+                # PTY so the iPhone-initiated discoverable flow gets the
+                # post-pair handling that the scan-initiated MQTT flow
+                # already does via provider.trust(). Both commands are
+                # idempotent against repeat events from bluetoothctl.
+                m = _PAIRED_RE.search(clean)
+                if m is not None:
+                    mac = m.group(1)
+                    logger.info("BT: trust+connect after pair", mac=mac)
+                    try:
+                        os.write(fd, f"trust {mac}\n".encode("ascii"))
+                        os.write(fd, f"connect {mac}\n".encode("ascii"))
+                    except OSError as e:
+                        logger.error("BT: trust/connect write failed", error=str(e))
 
             # Agent prompt has no newline — check the unterminated tail.
             # With NoInputNoOutput capability bluez doesn't normally
