@@ -214,8 +214,13 @@ install_apt_deps() {
     # path fails to open the device when spawned as a subprocess of the
     # systemd-managed jarvis-node service (works fine from a login shell —
     # the difference is opaque enough that we just prefer mpv).
+    # pulseaudio + pulseaudio-module-bluetooth are deliberately installed
+    # even though Pi OS Trixie's default audio server is PipeWire. See
+    # CLAUDE.md invariant #13 and switch_audio_to_pulseaudio() below —
+    # PipeWire's bluez5 plugin fails to register A2DP Sink endpoints,
+    # so Pi nodes mask the PipeWire stack and run real PulseAudio.
     wanted+=(alsa-utils portaudio19-dev sox ffmpeg mpv espeak
-             pulseaudio pulseaudio-module-bluetooth
+             pulseaudio pulseaudio-module-bluetooth rfkill
              libspeexdsp1 libwebrtc-audio-processing-1-3
              device-tree-compiler
              python3-lgpio)
@@ -266,6 +271,127 @@ install_apt_deps() {
   apt-get install -y --no-install-recommends -qq "${missing[@]}" > /dev/null
 
   success "System dependencies installed"
+}
+
+# --- Unblock Bluetooth radio ---
+# Pi OS ships Bluetooth soft-blocked via rfkill, which leaves the
+# adapter DOWN and bluetoothd unable to set advertising/discoverable
+# mode (`Failed to set mode: Failed (0x03)`). That's invisible to the
+# mobile pairing flow — the node looks alive but never shows up in
+# the phone's Bluetooth list. systemd-rfkill persists state under
+# /var/lib/systemd/rfkill/, so unblocking once at install time sticks
+# across reboots.
+unblock_bluetooth_radio() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  if ! command -v rfkill >/dev/null 2>&1; then
+    warn "rfkill not installed; skipping bluetooth unblock"
+    return
+  fi
+  if rfkill list bluetooth 2>/dev/null | grep -q "Soft blocked: yes"; then
+    info "Unblocking bluetooth radio (rfkill soft-block)"
+    rfkill unblock bluetooth || true
+    # Kick bluetoothd so it re-evaluates the adapter without waiting
+    # for the next AutoEnable cycle / reboot.
+    systemctl restart bluetooth 2>/dev/null || true
+    success "Bluetooth radio unblocked"
+  fi
+}
+
+# --- Configure BlueZ adapter Class of Device ---
+# Without this iOS classifies the Pi as "Computer" and either hides
+# it from the audio-output picker or refuses to route A2DP. Lifted
+# from the legacy setup/pi.sh:178-186 which had this fix but never
+# got migrated when the prod installer was forked off — that's why
+# phone→Pi A2DP stopped working after the move to install.sh.
+#
+# 0x240404 = Major Device Class: Audio/Video, Minor: Wearable headset.
+# The runtime Class will be OR'd with the adapter's intrinsic service
+# capability bits (typically yields 0x006c0404); what matters for iOS
+# classification is the lower 16 bits (the device class).
+configure_bluetooth_class() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  local conf="/etc/bluetooth/main.conf"
+  if [ ! -f "$conf" ]; then
+    warn "$conf missing — skipping Class fix"
+    return
+  fi
+  if grep -q "^Class = 0x240404$" "$conf"; then
+    return  # already correct
+  fi
+  # Three possible starting states on Pi OS:
+  # - commented-out default (Trixie ships `#Class = 0x000100`)
+  # - some other Class value already set
+  # - no Class line at all
+  if grep -q "^#Class = " "$conf"; then
+    sed -i 's/^#Class = .*/Class = 0x240404/' "$conf"
+  elif grep -q "^Class = " "$conf"; then
+    sed -i 's/^Class = .*/Class = 0x240404/' "$conf"
+  else
+    sed -i '/^\[General\]/a Class = 0x240404' "$conf"
+  fi
+  info "Set BlueZ Class to 0x240404 (audio device)"
+  systemctl restart bluetooth 2>/dev/null || true
+}
+
+# --- Switch audio stack from PipeWire to PulseAudio ---
+# Pi OS Trixie ships PipeWire 1.4.2 + pipewire-pulse + wireplumber as
+# the default audio server. PipeWire's libspa-bluez5 silently fails
+# to register A2DP Sink (UUID 0000110b) MediaEndpoints with BlueZ on
+# this stack — only Audio Source endpoints get registered, regardless
+# of what `bluez5.roles` lists in `bluez5.auto-connect`. Verified
+# via `dbus-send --system / GetManagedObjects | grep MediaEndpoint`:
+# every endpoint has UUID 0000110a. Net effect: no `a2dp-sink` card
+# profile is ever exposed, phone→Pi A2DP music routing is broken.
+#
+# Workaround: system-mask the PipeWire stack and run actual
+# PulseAudio 17 instead. PulseAudio's module-bluez5-device registers
+# both source AND sink endpoints. This is also the runtime that
+# services/bluetooth_scan_handler.py was originally written for
+# (its loopback wiring assumes PA naming:
+# `bluez_source.<mac>.a2dp_source` + `pactl load-module module-loopback`).
+#
+# See jarvis-node-setup/CLAUDE.md invariant #13 for full context.
+switch_audio_to_pulseaudio() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  if [ ! -f /usr/lib/systemd/user/pulseaudio.socket ]; then
+    warn "pulseaudio not installed — skipping audio-stack switch"
+    return
+  fi
+
+  local etc_user="/etc/systemd/user"
+  mkdir -p "$etc_user/sockets.target.wants" "$etc_user/default.target.wants"
+
+  local changed=0
+  for unit in pipewire.socket pipewire.service \
+              pipewire-pulse.socket pipewire-pulse.service \
+              wireplumber.service; do
+    if [ "$(readlink "$etc_user/$unit" 2>/dev/null)" != "/dev/null" ]; then
+      ln -sf /dev/null "$etc_user/$unit"
+      changed=1
+    fi
+  done
+
+  if [ ! -L "$etc_user/sockets.target.wants/pulseaudio.socket" ]; then
+    ln -sf /usr/lib/systemd/user/pulseaudio.socket \
+       "$etc_user/sockets.target.wants/pulseaudio.socket"
+    changed=1
+  fi
+  if [ ! -L "$etc_user/default.target.wants/pulseaudio.service" ]; then
+    ln -sf /usr/lib/systemd/user/pulseaudio.service \
+       "$etc_user/default.target.wants/pulseaudio.service"
+    changed=1
+  fi
+
+  if [ "$changed" -eq 1 ]; then
+    info "Audio stack switched: PipeWire masked, PulseAudio enabled"
+    NEEDS_REBOOT=1
+  fi
 }
 
 # --- Download and extract tarball ---
@@ -1293,6 +1419,9 @@ main() {
   preflight
   get_version
   install_apt_deps
+  unblock_bluetooth_radio
+  configure_bluetooth_class
+  switch_audio_to_pulseaudio
 
   # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
   # heavy steps so alembic + any other key-writing code in the install
