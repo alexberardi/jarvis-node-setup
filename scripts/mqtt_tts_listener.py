@@ -288,6 +288,158 @@ def _post_action_result(
         logger.warning("Failed to post action result", error=str(e))
 
 
+def handle_callback(details: Dict[str, Any]) -> None:
+    """Dispatch an interactive-notification callback to a command's @callback method.
+
+    Zero-trust delivery: MQTT carries only an opaque request_id (== job_id).
+    The full {command_name, callback_name, data, user_id} payload is fetched
+    from command-center over authenticated HTTPS (node X-API-Key). Result is
+    posted back to CC, which produces the follow-up inbox item.
+
+    Wire format matches every other node command: CC publishes via
+    NodeCommandService.publish_command_with_id, which puts the id in
+    ``details["request_id"]`` — same shape as the "action" command. We use
+    the GET endpoint as our verification step (it authenticates the node
+    and checks job ownership), so we don't call _verify_command here.
+    """
+    job_id: Optional[str] = details.get("request_id")
+    if not job_id:
+        logger.warning("callback: missing request_id, ignoring")
+        return
+
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("Cannot fetch callback payload: CC URL not resolved", job_id=job_id[:8])
+        return
+
+    fetch_url = f"{base_url.rstrip('/')}/api/v0/callbacks/{job_id}"
+    payload: Optional[Dict[str, Any]] = RestClient.get(fetch_url, timeout=10)
+    if payload is None:
+        logger.warning("Failed to fetch callback payload from CC", job_id=job_id[:8])
+        return
+
+    command_name: str = payload.get("command_name", "")
+    callback_name: str = payload.get("callback_name", "")
+    data: Dict[str, Any] = payload.get("data", {}) or {}
+    user_id: Optional[int] = payload.get("user_id")
+    conversation_id: str = payload.get("conversation_id") or f"callback:{job_id}"
+    voice_command: str = payload.get("voice_command") or f"cb:{callback_name}"
+
+    if not command_name or not callback_name:
+        logger.warning("callback: missing command_name or callback_name", payload=payload)
+        _post_callback_result(job_id, False, "missing command_name or callback_name")
+        return
+
+    from utils.command_discovery_service import get_command_discovery_service
+
+    cmd = get_command_discovery_service().get_command(command_name)
+    if cmd is None:
+        logger.warning("callback: unknown command", command_name=command_name)
+        _post_callback_result(job_id, False, f"Command '{command_name}' not found on this node")
+        return
+
+    # Older SDKs (pre-0.2.0) won't have get_callbacks — fail soft.
+    get_callbacks = getattr(cmd, "get_callbacks", None)
+    if not callable(get_callbacks):
+        logger.warning("callback: command predates @callback SDK", command_name=command_name)
+        _post_callback_result(job_id, False, f"Command '{command_name}' does not support callbacks")
+        return
+
+    try:
+        callbacks = get_callbacks()
+    except Exception as e:
+        logger.error("callback: get_callbacks raised", command_name=command_name, error=str(e))
+        _post_callback_result(job_id, False, f"get_callbacks failed: {e}")
+        return
+
+    callback_fn = callbacks.get(callback_name)
+    if callback_fn is None:
+        logger.warning(
+            "callback: unknown callback name",
+            command_name=command_name,
+            callback_name=callback_name,
+            available=list(callbacks.keys()),
+        )
+        _post_callback_result(
+            job_id, False,
+            f"Callback '{callback_name}' not registered on '{command_name}'",
+        )
+        return
+
+    from jarvis_command_sdk import RequestInformation, set_current_user_id
+
+    set_current_user_id(user_id)
+    try:
+        request_info = RequestInformation(
+            voice_command=voice_command,
+            conversation_id=conversation_id,
+            user_id=user_id,
+        )
+        response = callback_fn(data, request_info)
+
+        error_msg: Optional[str] = None
+        if response.context_data:
+            error_msg = response.context_data.get("error")
+        if not response.success and response.error_details:
+            error_msg = response.error_details
+
+        logger.info(
+            "Callback handled",
+            command=command_name,
+            callback=callback_name,
+            success=response.success,
+            error=error_msg,
+        )
+        _post_callback_result(
+            job_id,
+            response.success,
+            error_msg,
+            context_data=response.context_data,
+        )
+    except Exception as e:
+        logger.error(
+            "Callback handler error",
+            command=command_name,
+            callback=callback_name,
+            error=str(e),
+        )
+        _post_callback_result(job_id, False, str(e))
+    finally:
+        set_current_user_id(None)
+
+
+def _post_callback_result(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    context_data: Optional[Dict[str, Any]] = None,
+) -> None:
+    """POST callback execution result back to CC.
+
+    CC turns this into the follow-up inbox item the mobile app sees.
+    """
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    base_url: str = get_command_center_url() or ""
+    if not base_url:
+        logger.warning("Cannot post callback result: CC URL not resolved")
+        return
+
+    url = f"{base_url.rstrip('/')}/api/v0/callbacks/{job_id}/result"
+    payload: Dict[str, Any] = {"success": success, "error": error}
+    if context_data is not None:
+        payload["context_data"] = context_data
+    try:
+        RestClient.post(url, data=payload, timeout=10)
+        logger.debug("Posted callback result to CC", job_id=job_id[:8], success=success)
+    except Exception as e:
+        logger.warning("Failed to post callback result", error=str(e))
+
+
 def handle_report_tools(details: Dict[str, Any]) -> None:
     """Report this node's tool definitions back to CC.
 
@@ -1051,6 +1203,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "tts": handle_tts,
     "train_adapter": handle_train_adapter,
     "action": handle_action,
+    "callback": handle_callback,
     "report_tools": handle_report_tools,
     "tool_call": handle_tool_call,
     "toggle_command": handle_toggle_command,
@@ -1063,6 +1216,53 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
 }
 
 
+def _backstop_pending_settings_requests() -> None:
+    """Fetch any still-pending settings requests from CC and process them.
+
+    Backstops the QoS-1 + clean_session=False MQTT path for cases that
+    broker persistence can't cover: broker restart during the offline
+    window, or the first connect of a freshly-provisioned node (no
+    pre-existing persistent session for the broker to queue against).
+
+    Offloaded from on_connect because the paho callback expects fast
+    return and a slow HTTP roundtrip would block other on_connect work.
+    """
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+
+    node_id: str = Config.get_str("node_id", "") or ""
+    if not node_id:
+        return
+    cc_url: Optional[str] = get_command_center_url()
+    if not cc_url:
+        return
+
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/settings/requests"
+    try:
+        result = RestClient.get(url, timeout=10)
+    except Exception as e:
+        logger.warning("Pending-request backstop poll raised", error=str(e))
+        return
+
+    # CC returns a JSON array; RestClient.get may unwrap unexpectedly on
+    # error. Be defensive about shape and treat anything weird as empty.
+    if not isinstance(result, list) or not result:
+        return
+    logger.info("Pending settings requests found on reconnect", count=len(result))
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        req_id: str = item.get("request_id", "") or ""
+        if not req_id:
+            continue
+        # We don't have include_values / user_id from the DB — those
+        # only live in the original MQTT payload. Default to the
+        # common mobile case (include_values=False, user_id=None).
+        # The rare secret-sync flow that uses include_values=True
+        # would need to retry from the mobile side if it lands here.
+        _task_executor.submit(_process_settings_request, req_id, False, None)
+
+
 def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: int) -> None:
     logger.info("MQTT connected", result_code=rc)
     topic = get_mqtt_config()["topic"]
@@ -1072,6 +1272,12 @@ def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: in
     # Subscribe to auth-ready notifications from JCC OAuth flow
     client.subscribe("jarvis/auth/+/ready", qos=1)
     logger.info("MQTT subscribed", topic="jarvis/auth/+/ready")
+
+    # Backstop: pull any settings_requests that were created while we
+    # were offline beyond broker persistence. Offload so the paho
+    # callback returns immediately — the HTTP roundtrip is fine to
+    # run on the shared task executor.
+    _task_executor.submit(_backstop_pending_settings_requests)
 
 
 def _handle_auth_ready(raw_payload: bytes) -> None:
