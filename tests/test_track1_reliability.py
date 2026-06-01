@@ -350,6 +350,59 @@ class TestMQTTReconnect:
 
         mock_client.reconnect_delay_set.assert_called_once_with(min_delay=1, max_delay=60)
 
+    def test_persistent_session_when_node_id_set(self):
+        """With node_id set, client uses stable client_id + clean_session=False.
+
+        This is what lets Mosquitto queue QoS-1 messages for us across
+        disconnects — without it, the 1-2s flap we hit every few minutes
+        in beta silently drops every in-flight settings_request, which
+        is exactly the symptom that bit voice-settings-loading on May 31.
+        """
+        from scripts.mqtt_tts_listener import start_mqtt_listener
+
+        mock_client = MagicMock()
+        mock_client.connect.return_value = None
+        mock_client.loop_forever.return_value = None
+
+        with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client) as patched_client, \
+             patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt",
+                 "broker": "localhost", "port": 1883,
+                 "username": None, "password": None,
+                 "topic": "jarvis/nodes/test/#",
+             }), \
+             patch("scripts.mqtt_tts_listener.Config.get_str", return_value="test-node-id"):
+            start_mqtt_listener(MagicMock())
+
+        kwargs = patched_client.call_args.kwargs
+        assert kwargs.get("client_id") == "jarvis-node-test-node-id"
+        assert kwargs.get("clean_session") is False
+
+    def test_random_session_when_node_id_missing(self):
+        """Without a node_id (un-provisioned node), fall back to paho's
+        random client_id with clean_session=True — the MQTT spec rejects
+        empty client_id with clean_session=False, so we can't persist that case.
+        """
+        from scripts.mqtt_tts_listener import start_mqtt_listener
+
+        mock_client = MagicMock()
+        mock_client.connect.return_value = None
+        mock_client.loop_forever.return_value = None
+
+        with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client) as patched_client, \
+             patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt",
+                 "broker": "localhost", "port": 1883,
+                 "username": None, "password": None,
+                 "topic": "jarvis/nodes/test/#",
+             }), \
+             patch("scripts.mqtt_tts_listener.Config.get_str", return_value=""):
+            start_mqtt_listener(MagicMock())
+
+        kwargs = patched_client.call_args.kwargs
+        assert kwargs.get("client_id") == ""
+        assert kwargs.get("clean_session") is True
+
 
 # ---------------------------------------------------------------------------
 # 1E: Shutdown-aware background loops
