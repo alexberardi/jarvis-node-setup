@@ -96,15 +96,18 @@ class ReminderAgent(IJarvisAgent):
                 # Mark as announced (advances recurring reminders automatically)
                 service.mark_announced(reminder.reminder_id)
 
-                # Send push notification if enabled
+                # Send push notification if enabled. Route to the reminder
+                # owner's phone when we know who that is so a household
+                # member's reminders don't ping everyone.
                 if push_enabled:
-                    self._send_push_notification(reminder.text)
+                    self._send_push_notification(reminder.text, reminder.user_id)
 
                 logger.info(
                     "Reminder fired",
                     reminder_id=reminder.reminder_id,
                     text=reminder.text,
                     recurrence=reminder.recurrence,
+                    user_id=reminder.user_id,
                     push_sent=push_enabled,
                 )
 
@@ -115,8 +118,13 @@ class ReminderAgent(IJarvisAgent):
             logger.error("Reminder agent run failed", error=str(e))
             self._alerts = []
 
-    def _send_push_notification(self, text: str) -> None:
-        """Send a push notification via command-center → jarvis-notifications."""
+    def _send_push_notification(self, text: str, user_id: int | None = None) -> None:
+        """Send a push notification via command-center → jarvis-notifications.
+
+        user_id identifies the reminder's owner; CC currently broadcasts to
+        the household, but the field is passed through so per-user routing
+        can be enabled server-side without another node release.
+        """
         try:
             from clients.rest_client import RestClient
             from utils.service_discovery import get_command_center_url
@@ -126,21 +134,29 @@ class ReminderAgent(IJarvisAgent):
                 logger.warning("Cannot send push notification — command center URL not configured")
                 return
 
+            payload: dict = {
+                "title": "Reminder",
+                "body": text,
+                "priority": "high",
+                "category": "reminder",
+            }
+            if user_id is not None:
+                payload["user_id"] = user_id
+                # Reminders belong to their owner — push to just their
+                # phone, not every device in the household. Falls back
+                # to household when we don't know the owner.
+                payload["target_type"] = "user"
+
             result = RestClient.post(
                 f"{cc_url}/api/v0/node/push-notification",
-                data={
-                    "title": "Reminder",
-                    "body": text,
-                    "priority": "high",
-                    "category": "reminder",
-                },
+                data=payload,
                 timeout=5,
             )
 
             if result:
-                logger.debug("Push notification sent for reminder", text=text)
+                logger.debug("Push notification sent for reminder", text=text, user_id=user_id)
             else:
-                logger.warning("Push notification failed for reminder", text=text)
+                logger.warning("Push notification failed for reminder", text=text, user_id=user_id)
 
         except Exception as e:
             logger.warning("Push notification error", error=str(e))
