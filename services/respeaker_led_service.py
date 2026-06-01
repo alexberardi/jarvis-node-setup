@@ -6,7 +6,7 @@ Patterns:
 - "off"              — all LEDs off
 - "normal"           — dim white (idle, default)
 - "wake_detected"    — purple steady (wake word fired, before recording starts)
-- "listening"        — blue steady (recording user's voice)
+- "listening"        — green steady (recording user's voice)
 - "thinking"         — amber pinwheel: 1 LED lit, then 2, then 3, then loops
 - "speaking"         — cyan steady (TTS response playing)
 - "error"            — red steady (command failed; auto-clears with TTS)
@@ -78,7 +78,10 @@ def _p_wake_detected(_t: float) -> list[tuple[int, int, int, int]]:
 
 
 def _p_listening(_t: float) -> list[tuple[int, int, int, int]]:
-    return [(0, 80, 255, 40)] * NUM_LEDS
+    # Green steady — distinct from the cyan "speaking" (0,200,220) and the
+    # purple "wake_detected" (180,0,255). 40% brightness matches the rest
+    # of the command-flow palette.
+    return [(0, 255, 0, 40)] * NUM_LEDS
 
 
 def _p_thinking(t: float) -> list[tuple[int, int, int, int]]:

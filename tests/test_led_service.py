@@ -116,14 +116,14 @@ class TestRespeakerPatterns:
             assert (r, g, b) == (180, 0, 255)
             assert brt > 0
 
-    def test_listening_is_steady_blue(self) -> None:
-        """Listening should be steady (same on every frame) and blue."""
+    def test_listening_is_steady_green(self) -> None:
+        """Listening should be steady (same on every frame) and green."""
         frame_a = _PATTERNS["listening"](0.0)
         frame_b = _PATTERNS["listening"](0.5)
         frame_c = _PATTERNS["listening"](1.5)
         assert frame_a == frame_b == frame_c  # steady
         for r, g, b, _brt in frame_a:
-            assert b > r and b > g  # blue dominant
+            assert g > r and g > b  # green dominant
 
     def test_error_is_steady_red(self) -> None:
         pixels = _PATTERNS["error"](0.0)
