@@ -548,14 +548,45 @@ def get_audio_bus() -> AudioBus | None:
 # otherwise re-fire the wake detector and clash with the recording.
 _wake_paused = threading.Event()
 
-# Dedupe back-to-back wake fires for a single utterance.
-# openWakeWord can score >threshold on consecutive 80ms chunks for one
-# "Hey Jarvis", and the wake loop break can re-trigger before the
-# conversation flow takes the lock. This guard ignores any wake whose
-# previous trigger was less than _WAKE_DEBOUNCE_SEC ago.
+# Wake-acceptance gate. A single monotonic timestamp marks the earliest
+# moment a wake fire is allowed to be accepted; checks happen at the
+# wake-fire site in voice_listener and any caller can push the gate
+# forward via ``suppress_wake_for``. Two suppression sources today:
+#
+# 1. Same-utterance double-fire: openWakeWord can score >threshold on
+#    consecutive 80ms chunks for one "Hey Jarvis". On every accepted
+#    wake we push the gate to ``now + _WAKE_DEBOUNCE_SEC``.
+# 2. Post-not_for_me quiet period: when the server signals an ambient
+#    false-wake, side conversations cluster — the next sentence of the
+#    same conversation will likely re-trigger wake within seconds.
+#    The not_for_me handler calls ``suppress_wake_for`` with a longer
+#    cool-down (configurable via ``not_for_me_quiet_seconds``).
+#
+# Multiple suppressions don't stack — the later/longer one wins.
 _WAKE_DEBOUNCE_SEC = 8.0
-_last_wake_ts: float = 0.0
-_last_wake_lock = threading.Lock()
+_NOT_FOR_ME_QUIET_SEC_DEFAULT = 20.0
+_wake_min_next_ts: float = 0.0
+_wake_gate_lock = threading.Lock()
+
+
+def suppress_wake_for(seconds: float, reason: str = "") -> None:
+    """Push the wake-acceptance gate forward by ``seconds`` from now.
+
+    No-op if the gate is already further out. Logs the suppression so
+    the source is debuggable from journalctl.
+    """
+    global _wake_min_next_ts
+    if seconds <= 0:
+        return
+    target = time.monotonic() + seconds
+    with _wake_gate_lock:
+        if target > _wake_min_next_ts:
+            _wake_min_next_ts = target
+            logger.info(
+                "wake-gate-extended",
+                seconds=round(seconds, 1),
+                reason=reason or "unspecified",
+            )
 
 
 def pause_wake() -> None:
@@ -1966,7 +1997,23 @@ def start_voice_listener(ma_service):
                             # until we've sampled ~480 ms of baseline.
                             fire_wake = False
                     if fire_wake:
-                        t_wake_fired = time.monotonic()
+                        now_mono = time.monotonic()
+                        with _wake_gate_lock:
+                            cooldown_remaining = _wake_min_next_ts - now_mono
+                            if cooldown_remaining > 0:
+                                fire_wake = False
+                                if score > 0.3:
+                                    logger.info(
+                                        "wake-suppressed-gate",
+                                        score=round(float(score), 3),
+                                        cooldown_remaining_sec=round(
+                                            cooldown_remaining, 2,
+                                        ),
+                                    )
+                            else:
+                                _wake_min_next_ts = now_mono + _WAKE_DEBOUNCE_SEC
+                    if fire_wake:
+                        t_wake_fired = now_mono
                         # Snapshot the score for the auto-calibrator. The
                         # ``score`` variable will be overwritten when the
                         # outer loop iterates again; we need it later
@@ -2186,8 +2233,22 @@ def start_voice_listener(ma_service):
                     # — a wake that CC rejected might have been a real
                     # false-positive and including it would lower the bar
                     # for genuine false positives.
-                    if isinstance(result, dict) and not result.get("not_for_me"):
-                        _record_legitimate_wake_score(score_at_wake)
+                    #
+                    # On not_for_me, push the wake gate forward by a
+                    # configurable quiet period. Side conversations
+                    # cluster in time — the next sentence of the same
+                    # conversation will keep firing wake otherwise.
+                    if isinstance(result, dict):
+                        if result.get("not_for_me"):
+                            suppress_wake_for(
+                                Config.get_float(
+                                    "not_for_me_quiet_seconds",
+                                    _NOT_FOR_ME_QUIET_SEC_DEFAULT,
+                                ),
+                                reason="not_for_me",
+                            )
+                        else:
+                            _record_legitimate_wake_score(score_at_wake)
                     # Capture TTS-end time RIGHT after send_for_transcription
                     # returns (which is right after speak_result completes).
                     # The follow-up loop uses this to know how far back to look
