@@ -378,6 +378,59 @@ class TestMQTTReconnect:
         assert kwargs.get("client_id") == "jarvis-node-test-node-id"
         assert kwargs.get("clean_session") is False
 
+    def test_backstop_submits_each_pending_request(self):
+        """The on_connect backstop re-submits every pending request CC
+        returns to the existing _process_settings_request executor path.
+
+        Without this, settings_requests CC published while the node was
+        offline beyond Mosquitto's persistence window are lost — broker
+        restart and fresh-provision are the failure modes this catches.
+        """
+        from scripts import mqtt_tts_listener
+
+        with patch.object(mqtt_tts_listener.Config, "get_str", return_value="my-node-id"), \
+             patch("utils.service_discovery.get_command_center_url", return_value="http://cc:7703"), \
+             patch("clients.rest_client.RestClient.get", return_value=[
+                 {"request_id": "req-1", "status": "pending"},
+                 {"request_id": "req-2", "status": "pending"},
+             ]) as mock_get, \
+             patch.object(mqtt_tts_listener._task_executor, "submit") as mock_submit:
+            mqtt_tts_listener._backstop_pending_settings_requests()
+
+        # The poll hit the right URL
+        called_url = mock_get.call_args.args[0]
+        assert "/api/v0/nodes/my-node-id/settings/requests" in called_url
+
+        # Both pending IDs were submitted to the worker pool
+        submitted_ids = [c.args[1] for c in mock_submit.call_args_list]
+        assert submitted_ids == ["req-1", "req-2"]
+
+    def test_backstop_noop_when_node_unprovisioned(self):
+        """No node_id (un-provisioned) means we can't ask CC who we are —
+        skip silently instead of erroring on the URL build."""
+        from scripts import mqtt_tts_listener
+
+        with patch.object(mqtt_tts_listener.Config, "get_str", return_value=""), \
+             patch("clients.rest_client.RestClient.get") as mock_get:
+            mqtt_tts_listener._backstop_pending_settings_requests()
+
+        mock_get.assert_not_called()
+
+    def test_backstop_swallows_http_failure(self):
+        """A flaky CC must NOT crash the MQTT thread — log + return."""
+        from scripts import mqtt_tts_listener
+
+        with patch.object(mqtt_tts_listener.Config, "get_str", return_value="my-node-id"), \
+             patch("utils.service_discovery.get_command_center_url", return_value="http://cc:7703"), \
+             patch(
+                 "clients.rest_client.RestClient.get",
+                 side_effect=RuntimeError("CC unreachable"),
+             ), \
+             patch.object(mqtt_tts_listener._task_executor, "submit") as mock_submit:
+            mqtt_tts_listener._backstop_pending_settings_requests()  # must not raise
+
+        mock_submit.assert_not_called()
+
     def test_random_session_when_node_id_missing(self):
         """Without a node_id (un-provisioned node), fall back to paho's
         random client_id with clean_session=True — the MQTT spec rejects
