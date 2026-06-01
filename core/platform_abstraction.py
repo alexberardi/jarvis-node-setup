@@ -27,21 +27,87 @@ class AudioProvider(ABC):
         self._playback_lock = threading.Lock()
         self._playback_proc: subprocess.Popen | None = None
         self._cancel_event = threading.Event()
+        # Closeable handles (typically the in-flight streaming
+        # requests.Response) registered by callers that own
+        # cancellable I/O. cancel_playback closes them so any
+        # blocked iter_content / socket read raises promptly,
+        # rather than waiting for the next chunk that the
+        # subprocess kill alone doesn't preempt.
+        # Duck-typed: anything with a no-arg .close() method works.
+        self._cancel_closeables: list[Any] = []
+
+    def register_cancel_closeable(self, closeable: Any) -> None:
+        """Register an object whose ``close()`` should fire on cancel.
+
+        The caller MUST pair this with ``unregister_cancel_closeable``
+        in a ``finally`` block — otherwise stale handles accumulate and
+        the next cancel tries to close already-dead objects (harmless
+        but wasteful).
+        """
+        with self._playback_lock:
+            self._cancel_closeables.append(closeable)
+
+    def unregister_cancel_closeable(self, closeable: Any) -> None:
+        """Remove a previously-registered closeable. Idempotent."""
+        with self._playback_lock:
+            try:
+                self._cancel_closeables.remove(closeable)
+            except ValueError:
+                pass
 
     def cancel_playback(self) -> bool:
         """Cancel any active audio playback (barge-in support).
 
         Sets the cancel event (checked by playback loops and used to
-        pre-empt future playback calls) and kills the active subprocess.
-        Thread-safe — can be called from any thread.
+        pre-empt future playback calls), closes any registered
+        cancellable streaming handles so blocked iter_content unblocks,
+        and kills the active subprocess. Thread-safe — can be called
+        from any thread.
 
         Returns True if a process was cancelled.
         """
         self._cancel_event.set()
+        # Snapshot the closeables list inside the lock, then close
+        # outside — close() can be slow (TLS teardown) and we don't
+        # want to hold the lock during that.
+        with self._playback_lock:
+            to_close = list(self._cancel_closeables)
+        if to_close:
+            logger.info(
+                "Closing registered cancel closeables (barge-in)",
+                count=len(to_close),
+            )
+        for closeable in to_close:
+            try:
+                closeable.close()
+            except Exception as e:
+                logger.debug("Cancel closeable.close() raised", error=str(e))
+            # requests.Response.close() only releases the connection back
+            # to the pool — it doesn't reliably interrupt a blocked
+            # iter_content read in another thread. Reach into the raw
+            # urllib3 response and close the underlying file pointer too;
+            # that forces a socket.recv() in progress to raise instead of
+            # waiting for the next chunk that may never come. Best-effort,
+            # silently tolerates anything that isn't a requests.Response.
+            raw = getattr(closeable, "raw", None)
+            if raw is not None:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                fp = getattr(raw, "_fp", None)
+                if fp is not None:
+                    try:
+                        fp.close()
+                    except Exception:
+                        pass
         with self._playback_lock:
             proc = self._playback_proc
             if proc is None:
-                return False
+                # Even with no aplay running, closing the upstream
+                # response is the whole point of the call — report
+                # success when at least one closeable fired.
+                return bool(to_close)
             try:
                 proc.kill()
                 logger.info("Cancelled active audio playback (barge-in)")

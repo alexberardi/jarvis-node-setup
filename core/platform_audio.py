@@ -51,6 +51,16 @@ class PlatformAudio:
         """True if playback was cancelled."""
         return self.audio_provider.is_cancelled
 
+    def register_cancel_closeable(self, closeable) -> None:
+        """Register a closeable (e.g. streaming HTTP response) so that
+        ``cancel_playback`` closes it and any blocked iter_content
+        unblocks immediately instead of waiting for the next chunk."""
+        self.audio_provider.register_cancel_closeable(closeable)
+
+    def unregister_cancel_closeable(self, closeable) -> None:
+        """Remove a previously-registered closeable. Idempotent."""
+        self.audio_provider.unregister_cancel_closeable(closeable)
+
 
 # Global instance
 platform_audio = PlatformAudio() 

@@ -318,18 +318,75 @@ class CommandExecutionService:
         player_thread.start()
 
         has_audio = False
+        # Register the streaming response so cancel_playback() can close
+        # the socket from the barge-in monitor thread. Without this, the
+        # ``is_cancelled`` check below only fires when the next chunk
+        # arrives from the TTS server — and the server may keep sending
+        # for the full duration of the response (minutes for a news
+        # briefing). The wake-step then hangs waiting for iter_content
+        # to yield, the LED stays stuck, and the next wake can't fire.
+        platform_audio.register_cancel_closeable(response)
         try:
             for chunk in response.iter_content(chunk_size=4096):
-                if chunk:
-                    # Stop fetching if barge-in cancelled playback
+                if not chunk:
+                    continue
+                # Stop fetching if barge-in cancelled playback
+                if platform_audio.is_cancelled:
+                    logger.info("Streaming audio cancelled (barge-in)")
+                    break
+                has_audio = True
+                # Bounded put with cancel re-check: when barge-in fires,
+                # play_pcm_stream exits as soon as aplay is killed and
+                # stops draining audio_queue. A plain audio_queue.put()
+                # would then block forever once the queue fills to
+                # ``maxsize`` — that was the second source of the
+                # post-barge-in hang (the first being iter_content
+                # waiting on the next chunk). 200ms poll lets cancel
+                # interrupt us at worst one tick after it's set.
+                while True:
                     if platform_audio.is_cancelled:
-                        logger.info("Streaming audio cancelled (barge-in)")
                         break
-                    has_audio = True
-                    audio_queue.put(chunk)
+                    try:
+                        audio_queue.put(chunk, timeout=0.2)
+                        break
+                    except queue.Full:
+                        continue
+                if platform_audio.is_cancelled:
+                    logger.info("Streaming audio cancelled while queue full (barge-in)")
+                    break
+        except Exception as e:
+            # cancel_playback closed the response while we were blocked
+            # on iter_content — requests / urllib3 surface that as a
+            # ChunkedEncodingError or ProtocolError. Treat any exception
+            # paired with the cancel flag as a clean barge-in cancel;
+            # anything else is a real error and we re-raise.
+            if platform_audio.is_cancelled:
+                logger.info(
+                    "Streaming audio iter_content raised after cancel",
+                    error=str(e),
+                )
+            else:
+                raise
         finally:
-            audio_queue.put(None)
-            player_thread.join(timeout=30)
+            platform_audio.unregister_cancel_closeable(response)
+            # Signal the player to stop via the None sentinel — but
+            # use put_nowait so we never block. On the barge-in cancel
+            # path the queue is typically still at maxsize (the player
+            # exited as soon as aplay died and stopped draining), and
+            # a plain audio_queue.put(None) here would deadlock the
+            # wake-step exactly the way iter_content used to. The
+            # player thread either already exited or will exit when
+            # play_pcm_stream notices aplay is gone — the sentinel is
+            # belt-and-suspenders, not load-bearing.
+            try:
+                audio_queue.put_nowait(None)
+            except queue.Full:
+                pass
+            # 5s was the player_thread join timeout we relied on after
+            # cancel; was 30s but the player should exit within a few
+            # hundred ms once aplay is gone, and a long timeout here
+            # would hide bugs more than it'd help.
+            player_thread.join(timeout=5)
             response.close()
 
         return has_audio
