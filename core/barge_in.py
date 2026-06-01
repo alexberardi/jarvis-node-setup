@@ -330,6 +330,20 @@ class BargeInMonitor:
                     )
                     self._interrupted = True
                     platform_audio.cancel_playback()
+                    # Switch the LED to "thinking" the moment barge-in
+                    # fires, so the user sees the node is winding the
+                    # response down rather than the cyan "speaking"
+                    # pattern lingering. The wake-step's barge-in
+                    # handler clears the transient (back to idle) once
+                    # the unwind completes — typically a few hundred
+                    # ms after this fires now that the streaming
+                    # cancel path actually unblocks. Best-effort; LED
+                    # failures must never block the cancel itself.
+                    try:
+                        from services.led_service import get_led_service
+                        get_led_service().set_transient_pattern("thinking")
+                    except Exception as e:
+                        logger.debug("LED set-thinking on barge-in failed", error=str(e))
                     break
         except Exception as e:
             logger.warning("Barge-in monitor error", error=str(e))
