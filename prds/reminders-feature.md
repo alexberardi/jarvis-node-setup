@@ -102,11 +102,12 @@ class ReminderData:
     text: str                  # "call mom"
     due_at: str                # ISO 8601 with timezone: "2026-02-11T15:00:00-05:00"
     created_at: str            # ISO 8601
-    recurrence: str | None     # None, "daily", "weekly", "weekdays", "monthly"
+    recurrence: str | None     # None, "daily", "weekdays", "weekly", "biweekly", "monthly"
     announced: bool            # True after TTS fires, False when pending
     snooze_until: str | None   # ISO 8601 - if snoozed, don't re-announce until this time
     announce_count: int        # How many times this reminder has been announced
     last_announced_at: str | None  # ISO 8601 - when last announced (for snooze window)
+    user_id: int | None        # Speaker who owns this reminder (None = legacy/unscoped)
 ```
 
 Example:
@@ -134,9 +135,14 @@ When a recurring reminder fires:
 | Recurrence | Next Due Calculation |
 |-----------|---------------------|
 | `daily` | `due_at + 1 day` |
-| `weekly` | `due_at + 7 days` |
 | `weekdays` | Next weekday (skip Sat/Sun) |
+| `weekly` | `due_at + 7 days` (same weekday — "every Monday" = next_monday + weekly) |
+| `biweekly` | `due_at + 14 days` (same weekday — "every other Sunday" = next_sunday + biweekly) |
 | `monthly` | Same day next month (handle month-end) |
+
+**Specific weekdays** ("every Monday"): set `resolved_datetimes=["next_monday"]` plus `recurrence="weekly"`. The first occurrence lands on the right weekday and weekly recurrence keeps it there.
+
+**Every-other-week** ("every other Sunday"): set `resolved_datetimes=["next_sunday"]` plus `recurrence="biweekly"`.
 
 ---
 
@@ -175,10 +181,14 @@ Until relative time support is added, the `set_reminder` command also accepts a 
 
 **Resolution priority:**
 1. `date_keys` + `time` (if both provided)
-2. `date_keys` alone (uses default time from key, e.g., "morning" = 07:00)
+2. `date_keys` containing a time-of-day key (`morning`, `evening`, `tomorrow_morning`, …) — uses the key's default hour
 3. `time` alone (today or tomorrow if past)
 4. `relative_minutes` alone
-5. Error: "When should I remind you?"
+5. Otherwise the command re-prompts: "What time should I remind you to X?" — the LLM/voice listener captures the answer and re-issues the tool call.
+
+**Time-zone handling:** all date math runs in the system's local timezone (resolved via `datetime.now().astimezone()`), then converted to UTC for storage. A request for "3 PM tomorrow" lands at 3 PM on the user's clock regardless of where the node lives.
+
+**Re-prompt behavior:** when no time can be inferred (e.g., "remind me to call mom tomorrow"), the command returns `wait_for_input=True` with `error="missing_time"` and a `message` like `"What time should I remind you to call mom?"`. The voice listener keeps the conversation open so the user can answer without saying the wake word again.
 
 **Rules:**
 - Always extract the reminder text from the voice command
@@ -220,6 +230,8 @@ Until relative time support is added, the `set_reminder` command also accepts a 
   → {text: "take out the trash", date_keys: ["tonight"]}
 "Remind me every Monday at 9 AM to submit my timesheet"
   → {text: "submit my timesheet", date_keys: ["next_monday"], time: "09:00", recurrence: "weekly"}
+"Remind me every other Sunday at noon to call grandma"
+  → {text: "call grandma", date_keys: ["next_sunday"], time: "12:00", recurrence: "biweekly"}
 "Remind me at 6 PM to start dinner"
   → {text: "start dinner", time: "18:00"}
 "Remind me every day at 8 to take my medicine"
@@ -1097,6 +1109,28 @@ The date context is already fetched during `CommandExecutionService.register_too
 9. **Timer keyword cleanup** — remove "remind"/"reminder" from timer
 
 Steps 6 and 7 are tightly coupled and should be developed together. The inline listen support is a general-purpose enhancement — once wired up, any command or agent can use it.
+
+---
+
+## Per-User Scoping
+
+Reminders are personal — household members can't see, snooze, or cancel each other's reminders.
+
+**Gating point:** `RequestInformation.user_id`, populated by speaker recognition before the command runs. The `ReminderCommand` reads it from `request_info` and passes it through to every service call.
+
+**Behavior matrix:**
+
+| Action | When `user_id` is recognized | When `user_id` is `None` (unrecognized) |
+|---|---|---|
+| `set`   | Reminder is stored with `user_id` | Refused with `error="unknown_speaker"` and a friendly "train your voice" message |
+| `list`  | Only the speaker's reminders (plus any legacy `user_id=None` rows from before scoping) | Returns the full unscoped pool |
+| `delete one` | Fuzzy-match only against the speaker's own reminders | Searches all reminders |
+| `delete all` | Only deletes the speaker's reminders; other users' rows survive | Wipes everything |
+| `snooze` (bare) | Most recently announced reminder *owned by the speaker* | Most recently announced regardless of owner |
+
+**Background firing:** the `ReminderAgent` continues to fire whatever's due (it doesn't filter by user). Push notifications carry the reminder's `user_id` so command-center can route to that user's devices — when `user_id` is `None` it falls back to the household broadcast (legacy behavior).
+
+**Migration:** `ReminderData.user_id` defaults to `None` for records written before this change. Those reminders remain visible to everyone until they fire or get explicitly deleted.
 
 ---
 
