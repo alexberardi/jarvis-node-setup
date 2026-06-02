@@ -245,10 +245,17 @@ class TimezoneCommand(IJarvisCommand):
             ),
             FastPathPattern(
                 id="get_current_time.local",
-                description="Bypass LLM for local time / date queries ('what time is it', 'what's today's date')",
+                description="Bypass LLM for local time queries ('what time is it', 'current time')",
                 example="what time is it",
-                regex=r"^\s*(?:what(?:'?s|\s+is)?\s+the\s+time|what\s+time\s+is\s+it|current\s+time|the\s+time|what\s+day\s+is\s+(?:it|today)|what(?:'?s|\s+is)?\s+(?:the\s+)?date|what(?:'?s|\s+is)?\s+today(?:'?s)?\s+date|what\s+day\s+(?:is|are)\s+we)\s*[?.!]*$",
+                regex=r"^\s*(?:what(?:'?s|\s+is)?\s+the\s+time|what\s+time\s+is\s+it|current\s+time|the\s+time)\s*[?.!]*$",
                 handler="_fp_time_local",
+            ),
+            FastPathPattern(
+                id="get_current_time.local_date",
+                description="Bypass LLM for local date/day queries ('what day is it', 'what's today's date')",
+                example="what day is it",
+                regex=r"^\s*(?:what\s+day\s+is\s+(?:it|today)|what(?:'?s|\s+is)?\s+(?:the\s+)?date|what(?:'?s|\s+is)?\s+today(?:'?s)?\s+date|what\s+day\s+(?:is|are)\s+we)\s*[?.!]*$",
+                handler="_fp_date_local",
             ),
         ]
 
@@ -260,6 +267,15 @@ class TimezoneCommand(IJarvisCommand):
 
     def _fp_time_local(self, match, voice_command: str) -> PreRouteResult | None:
         return PreRouteResult(arguments={})
+
+    def _fp_date_local(self, match, voice_command: str) -> PreRouteResult | None:
+        # The local-time pattern composes its message in run(); date queries
+        # need a different shape ("It's Monday, January 28." vs "It's 3:45 PM.")
+        # so we override the spoken response here and let run() still compute
+        # structured fields for any downstream consumer.
+        now = datetime.now().astimezone()
+        date_str = f"{now.strftime('%A, %B')} {now.day}"
+        return PreRouteResult(arguments={}, spoken_response=f"It's {date_str}.")
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the timezone command"""
