@@ -1,14 +1,22 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 
 @dataclass
 class TranscriptionResult:
-    """Result from speech-to-text transcription, optionally including speaker identity."""
+    """Result from speech-to-text transcription, optionally including speaker identity.
+
+    ``segments`` carries the whisper.cpp segment boundaries (``t0_ms``,
+    ``t1_ms``, ``text``) when the upstream provider supports it. Empty
+    for providers that don't expose timing. Used by the wake-validation
+    heuristics to distinguish command shape (short / paused) from
+    narration shape (long single burst or gap-less multi-segment).
+    """
     text: str
     speaker_user_id: int | None = None
     speaker_confidence: float = 0.0
+    segments: list[dict[str, Any]] = field(default_factory=list)
 
 
 class IJarvisSpeechToTextProvider(ABC):

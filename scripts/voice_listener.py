@@ -565,8 +565,16 @@ _wake_paused = threading.Event()
 # Multiple suppressions don't stack — the later/longer one wins.
 _WAKE_DEBOUNCE_SEC = 8.0
 _NOT_FOR_ME_QUIET_SEC_DEFAULT = 20.0
+# Multi-fire escalation: side conversations cluster — if we see N
+# not_for_me events within a rolling window we lengthen the suppression
+# so the same conversation doesn't keep re-firing wake every few seconds.
+# A single misfire is a one-off; two in a row says the room is loud.
+_NOT_FOR_ME_HISTORY_WINDOW_SEC = 30.0
+_NOT_FOR_ME_ESCALATION_COUNT = 2
+_NOT_FOR_ME_ESCALATED_SEC_DEFAULT = 60.0
 _wake_min_next_ts: float = 0.0
 _wake_gate_lock = threading.Lock()
+_not_for_me_history: list[float] = []
 
 
 def suppress_wake_for(seconds: float, reason: str = "") -> None:
@@ -587,6 +595,41 @@ def suppress_wake_for(seconds: float, reason: str = "") -> None:
                 seconds=round(seconds, 1),
                 reason=reason or "unspecified",
             )
+
+
+def _record_not_for_me_event() -> float:
+    """Record a not_for_me fire and return the cool-down to apply.
+
+    Returns the standard ``not_for_me_quiet_seconds`` for an isolated
+    event, or the escalated ``not_for_me_escalated_quiet_seconds`` when
+    ``_NOT_FOR_ME_ESCALATION_COUNT`` events have fired within the rolling
+    ``_NOT_FOR_ME_HISTORY_WINDOW_SEC`` window. Side conversations cluster
+    — a second hit inside the window says the next wake is also likely
+    overheard speech, so we widen the gate instead of letting the same
+    cluster keep re-firing.
+    """
+    now = time.monotonic()
+    cutoff = now - _NOT_FOR_ME_HISTORY_WINDOW_SEC
+    with _wake_gate_lock:
+        _not_for_me_history[:] = [t for t in _not_for_me_history if t >= cutoff]
+        _not_for_me_history.append(now)
+        count = len(_not_for_me_history)
+    if count >= _NOT_FOR_ME_ESCALATION_COUNT:
+        cooldown = Config.get_float(
+            "not_for_me_escalated_quiet_seconds",
+            _NOT_FOR_ME_ESCALATED_SEC_DEFAULT,
+        )
+        logger.info(
+            "not-for-me cluster detected — escalating cool-down",
+            count=count,
+            window_seconds=_NOT_FOR_ME_HISTORY_WINDOW_SEC,
+            cooldown_seconds=round(cooldown, 1),
+        )
+        return cooldown
+    return Config.get_float(
+        "not_for_me_quiet_seconds",
+        _NOT_FOR_ME_QUIET_SEC_DEFAULT,
+    )
 
 
 def pause_wake() -> None:
@@ -926,8 +969,9 @@ def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[Validatio
 
 def _is_non_speech(text: str | None) -> bool:
     """True if Whisper output is a non-transcript — empty, whitespace, or
-    a bracketed annotation like [BLANK_AUDIO] / (wind blowing) that Whisper
-    emits for silence and noise rather than user speech.
+    a bracketed annotation like [BLANK_AUDIO] / (wind blowing) / *sniff* /
+    <inaudible> that Whisper emits for silence and noise rather than user
+    speech.
 
     This NO LONGER filters "hallucination phrases" (single-word fillers,
     YouTube artifacts, etc.). That blocklist was eating real commands
@@ -942,12 +986,19 @@ def _is_non_speech(text: str | None) -> bool:
     stripped = text.strip()
     if not stripped:
         return True
-    # Whisper-emitted metadata: [BLANK_AUDIO], (silence), [music], etc.
-    # These are annotations, not utterances; sending them to the LLM
-    # wastes a round-trip for no possible useful outcome.
-    if (
-        (stripped.startswith("[") and stripped.endswith("]"))
-        or (stripped.startswith("(") and stripped.endswith(")"))
+    # Whisper-emitted metadata: [BLANK_AUDIO], (silence), [music], *sniff*,
+    # *cough*, *sad noises*, *laughs*, *sighs*, <inaudible>, etc. These are
+    # annotations, not utterances; sending them to the LLM wastes a
+    # round-trip and risks the model interpreting them as user-spoken
+    # verbs (prod 2026-06-02 saw ``*sniff*`` trigger ``"I smell something
+    # burning."``). Trim trailing sentence punctuation Whisper sometimes
+    # appends so ``*sniff*.`` is treated the same as ``*sniff*``.
+    body = stripped.rstrip(".,!?")
+    if body and (
+        (body.startswith("[") and body.endswith("]"))
+        or (body.startswith("(") and body.endswith(")"))
+        or (body.startswith("*") and body.endswith("*") and len(body) > 1)
+        or (body.startswith("<") and body.endswith(">") and len(body) > 1)
     ):
         return True
     # "..." is a Whisper non-speech marker, not an utterance.
@@ -1067,12 +1118,67 @@ _ABORT_PHRASES: set[str] = {
 }
 
 
-def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
+_FALSE_WAKE_MULTI_SENTENCE_WORD_THRESHOLD = 8
+_FALSE_WAKE_NARRATION_SINGLE_SEGMENT_MIN_MS = 4000
+_FALSE_WAKE_NARRATION_MAX_GAP_MS = 300
+_SENTENCE_END_RE = re.compile(r"[.!?]+(?=\s|$)")
+
+
+def _count_sentences(raw: str) -> int:
+    """Count sentence-ending boundaries in a transcript.
+
+    Whisper punctuates fairly reliably in English mode. We count terminal
+    punctuation runs (``.``, ``!``, ``?``) anchored before whitespace or
+    end-of-string — ``...`` mid-string counts as one boundary, not three.
+    """
+    return len(_SENTENCE_END_RE.findall(raw))
+
+
+def _looks_like_narration_by_segments(
+    word_count: int, segments: list[dict] | None
+) -> bool:
+    """Whisper segment-timing check for run-on ambient speech.
+
+    Real commands tend to be either (a) a single short segment or
+    (b) multiple segments with real pauses between thoughts that
+    whisper.cpp picks up as boundaries. Continuous ambient narration
+    comes back as either one long segment or several segments stitched
+    with sub-300ms transitions. Returns True for either shape past the
+    word threshold.
+
+    Empty / missing segments → False (older whisper-api builds don't
+    expose timing; we don't penalize them).
+    """
+    if word_count <= _FALSE_WAKE_MULTI_SENTENCE_WORD_THRESHOLD:
+        return False
+    if not segments:
+        return False
+
+    if len(segments) == 1:
+        seg = segments[0]
+        duration_ms = int(seg.get("t1_ms", 0)) - int(seg.get("t0_ms", 0))
+        return duration_ms >= _FALSE_WAKE_NARRATION_SINGLE_SEGMENT_MIN_MS
+
+    max_gap = 0
+    for prev, nxt in zip(segments, segments[1:]):
+        gap = int(nxt.get("t0_ms", 0)) - int(prev.get("t1_ms", 0))
+        if gap > max_gap:
+            max_gap = gap
+    return max_gap < _FALSE_WAKE_NARRATION_MAX_GAP_MS
+
+
+def _is_false_wake(
+    transcription: str,
+    recording: RecordingResult,
+    segments: list[dict] | None = None,
+) -> bool:
     """Detect false wake word triggers from ambient conversation.
 
     Uses a combination of signals:
     1. Abort phrases — user heard the chime and wants to cancel
     2. Max recording duration + long/mid-sentence transcription — ambient speech
+    3. Multi-sentence + word count over threshold — narration shape, not a command
+    4. Whisper segment-timing shape (single long run-on or gap-less multi-segment)
     """
     raw = transcription.strip()
     text = raw.lower()
@@ -1091,6 +1197,27 @@ def _is_false_wake(transcription: str, recording: RecordingResult) -> bool:
         # Starts mid-sentence (lowercase in original, not "i" or "ok")
         if raw and raw[0].islower() and not text.startswith(("i ", "i'", "ok")):
             return True
+
+    # Direct addressing wins for both shape signals: a multi-sentence
+    # request that names Jarvis ("jarvis, set a timer. ten minutes.")
+    # is a real command even when it looks narrative.
+    if "jarvis" in text:
+        return False
+
+    word_count = len(text.split())
+
+    # Signal 3: narration shape — multiple sentences past the word threshold.
+    # Real commands are overwhelmingly single-sentence; multi-sentence past
+    # ~8 words almost always means we overheard someone talking nearby.
+    if (
+        _count_sentences(raw) >= 2
+        and word_count > _FALSE_WAKE_MULTI_SENTENCE_WORD_THRESHOLD
+    ):
+        return True
+
+    # Signal 4: whisper segment shape (PRD #3, segment-level variant).
+    if _looks_like_narration_by_segments(word_count, segments):
+        return True
 
     return False
 
@@ -1212,9 +1339,10 @@ def send_for_transcription(
         _set_led_transient(None)
         return None
 
-    if result.text and _is_false_wake(result.text, recording):
+    if result.text and _is_false_wake(result.text, recording, segments=result.segments):
         logger.info("False wake detected, aborting silently", text=result.text[:80],
-                     duration=recording.duration, hit_max=recording.hit_max_duration)
+                     duration=recording.duration, hit_max=recording.hit_max_duration,
+                     num_segments=len(result.segments))
         _set_led_transient(None)
         return None
 
@@ -2241,13 +2369,8 @@ def start_voice_listener(ma_service):
                     # conversation will keep firing wake otherwise.
                     if isinstance(result, dict):
                         if result.get("not_for_me"):
-                            suppress_wake_for(
-                                Config.get_float(
-                                    "not_for_me_quiet_seconds",
-                                    _NOT_FOR_ME_QUIET_SEC_DEFAULT,
-                                ),
-                                reason="not_for_me",
-                            )
+                            cooldown = _record_not_for_me_event()
+                            suppress_wake_for(cooldown, reason="not_for_me")
                         else:
                             _record_legitimate_wake_score(score_at_wake)
                     # Capture TTS-end time RIGHT after send_for_transcription

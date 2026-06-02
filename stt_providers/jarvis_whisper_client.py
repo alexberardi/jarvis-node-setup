@@ -58,14 +58,17 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
         result = self._call_whisper(audio_path, speaker_audio_path=speaker_audio_path)
         if result and isinstance(result, dict):
             text = result.get("text", "")
+            segments_raw = result.get("segments") or []
+            segments = segments_raw if isinstance(segments_raw, list) else []
             speaker = result.get("speaker")
             if speaker and isinstance(speaker, dict):
                 return TranscriptionResult(
                     text=text,
                     speaker_user_id=speaker.get("user_id"),
                     speaker_confidence=speaker.get("confidence", 0.0),
+                    segments=segments,
                 )
-            return TranscriptionResult(text=text)
+            return TranscriptionResult(text=text, segments=segments)
         return TranscriptionResult(text="")
 
     def _call_whisper(

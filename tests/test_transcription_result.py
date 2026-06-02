@@ -21,6 +21,18 @@ class TestTranscriptionResult:
         result = TranscriptionResult(text="")
         assert result.text == ""
 
+    def test_defaults_have_empty_segments(self):
+        result = TranscriptionResult(text="hello")
+        assert result.segments == []
+
+    def test_with_segments(self):
+        segs = [
+            {"t0_ms": 0, "t1_ms": 500, "text": "Hello "},
+            {"t0_ms": 600, "t1_ms": 900, "text": "world"},
+        ]
+        result = TranscriptionResult(text="Hello world", segments=segs)
+        assert result.segments == segs
+
 
 class _DummyProvider(IJarvisSpeechToTextProvider):
     """Minimal provider that returns fixed text."""
@@ -90,3 +102,30 @@ class TestJarvisWhisperClientTranscribeWithSpeaker:
             text = client.transcribe("audio.wav")
 
         assert text == "what time is it"
+
+    def test_segments_passed_through(self):
+        from stt_providers.jarvis_whisper_client import JarvisWhisperClient
+
+        client = JarvisWhisperClient()
+        segs = [
+            {"t0_ms": 0, "t1_ms": 400, "text": "Hey "},
+            {"t0_ms": 450, "t1_ms": 800, "text": "Jarvis"},
+        ]
+        with patch.object(client, "_call_whisper", return_value={
+            "text": "Hey Jarvis",
+            "segments": segs,
+            "speaker": {"user_id": 1, "confidence": 0.99},
+        }):
+            result = client.transcribe_with_speaker("audio.wav")
+
+        assert result.segments == segs
+        assert result.speaker_user_id == 1
+
+    def test_missing_segments_defaults_to_empty(self):
+        from stt_providers.jarvis_whisper_client import JarvisWhisperClient
+
+        client = JarvisWhisperClient()
+        with patch.object(client, "_call_whisper", return_value={"text": "ok"}):
+            result = client.transcribe_with_speaker("audio.wav")
+
+        assert result.segments == []
