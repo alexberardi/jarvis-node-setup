@@ -1707,6 +1707,7 @@ def start_voice_listener(ma_service):
       7. On barge-in OR normal completion, run the follow-up loop.
       8. Back to step 1 with a fresh ``wake`` subscription.
     """
+    global _wake_min_next_ts
     try:
         openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
         oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
@@ -2325,5 +2326,4 @@ def start_voice_listener(ma_service):
         if aec_pipeline is not None:
             aec_pipeline.stop()
         bus.stop()
-        pa.terminate()
         del oww
