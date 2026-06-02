@@ -21,13 +21,17 @@ from jarvis_command_sdk import (
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
-from services.reminder_service import get_reminder_service, ReminderService
+from services.reminder_service import (
+    get_reminder_service,
+    has_explicit_time,
+    ReminderService,
+)
 
 logger = JarvisLogger(service="jarvis-node")
 
 _ALL_ACTIONS = ["set", "list", "delete", "snooze"]
 
-_RECURRENCE_VALUES = ["daily", "weekly", "weekdays", "monthly"]
+_RECURRENCE_VALUES = ["daily", "weekdays", "weekly", "biweekly", "monthly"]
 
 
 # --- Pre-route patterns ---
@@ -175,6 +179,8 @@ class ReminderCommand(IJarvisCommand):
             "For 'at 3 PM', use time='15:00'",
             "For 'tomorrow at 3 PM', use resolved_datetimes=['tomorrow'] + time='15:00'",
             "For 'every day at 8 AM', use time='08:00' + recurrence='daily'",
+            "For 'every Monday', use resolved_datetimes=['next_monday'] + recurrence='weekly'",
+            "For 'every other Sunday', use resolved_datetimes=['next_sunday'] + recurrence='biweekly'",
             "The text parameter should capture WHAT to be reminded about, not WHEN",
             "'snooze' with no target snoozes the most recently fired reminder",
         ]
@@ -183,17 +189,17 @@ class ReminderCommand(IJarvisCommand):
     def critical_rules(self) -> List[str]:
         return [
             "text is ALWAYS required for action='set' — if unclear, ask 'What should I remind you about?'",
-            "At least one time parameter (resolved_datetimes, time, or relative_minutes) is required for 'set'",
+            "At least one time parameter (resolved_datetimes with a time-of-day key, time, or relative_minutes) is required for 'set'",
             "This is for reminders (absolute time), NOT timers (relative duration countdowns)",
         ]
 
     @property
     def antipatterns(self) -> List[CommandAntipattern]:
         return [
-            CommandAntipattern("Set a timer for 5 minutes", "set_timer"),
-            CommandAntipattern("Timer for 30 seconds", "set_timer"),
-            CommandAntipattern("Countdown from 10", "set_timer"),
-            CommandAntipattern("Wake me up in 5 minutes", "set_timer"),
+            CommandAntipattern(
+                command_name="set_timer",
+                description="Short relative-duration countdowns: 'set a timer for 5 minutes', 'timer for 30 seconds', 'countdown from 10', 'wake me up in 5 minutes'.",
+            ),
         ]
 
     # ── Examples ──────────────────────────────────────────────────────
@@ -212,6 +218,14 @@ class ReminderCommand(IJarvisCommand):
             CommandExample(
                 "Remind me every day at 8 AM to take my medicine",
                 {"action": "set", "text": "take my medicine", "time": "08:00", "recurrence": "daily"},
+            ),
+            CommandExample(
+                "Remind me every Monday at 9 AM to submit my timesheet",
+                {"action": "set", "text": "submit my timesheet", "resolved_datetimes": ["next_monday"], "time": "09:00", "recurrence": "weekly"},
+            ),
+            CommandExample(
+                "Remind me every other Sunday at noon to call grandma",
+                {"action": "set", "text": "call grandma", "resolved_datetimes": ["next_sunday"], "time": "12:00", "recurrence": "biweekly"},
             ),
             CommandExample(
                 "What reminders do I have?",
@@ -251,7 +265,11 @@ class ReminderCommand(IJarvisCommand):
             ("Set a daily reminder at 7 AM to exercise", {"action": "set", "text": "exercise", "time": "07:00", "recurrence": "daily"}, False),
             ("Remind me on weekdays at 8:30 to check email", {"action": "set", "text": "check email", "time": "08:30", "recurrence": "weekdays"}, False),
             ("Remind me every morning to make the bed", {"action": "set", "text": "make the bed", "resolved_datetimes": ["morning"], "recurrence": "daily"}, False),
-            ("Remind me every Monday at 9 AM to submit my timesheet", {"action": "set", "text": "submit my timesheet", "time": "09:00", "recurrence": "weekly"}, False),
+            ("Remind me every Monday at 9 AM to submit my timesheet", {"action": "set", "text": "submit my timesheet", "resolved_datetimes": ["next_monday"], "time": "09:00", "recurrence": "weekly"}, False),
+            ("Remind me every Tuesday at 7 PM to take out the trash", {"action": "set", "text": "take out the trash", "resolved_datetimes": ["next_tuesday"], "time": "19:00", "recurrence": "weekly"}, False),
+            ("Remind me every other Sunday at noon to call grandma", {"action": "set", "text": "call grandma", "resolved_datetimes": ["next_sunday"], "time": "12:00", "recurrence": "biweekly"}, False),
+            ("Set a biweekly reminder on Friday at 5 PM to do payroll", {"action": "set", "text": "do payroll", "resolved_datetimes": ["next_friday"], "time": "17:00", "recurrence": "biweekly"}, False),
+            ("Remind me on the 1st of every month to pay rent", {"action": "set", "text": "pay rent", "time": "09:00", "recurrence": "monthly"}, False),
             # List
             ("What reminders do I have?", {"action": "list"}, False),
             ("Any reminders for today?", {"action": "list", "filter": "today"}, False),
@@ -358,14 +376,20 @@ class ReminderCommand(IJarvisCommand):
         action: str = kwargs.get("action", "set")
         service = get_reminder_service()
 
+        # Reminders are scoped to the recognized speaker. `user_id` may be None
+        # for pre-routed calls without a recognized voice — list/delete/snooze
+        # tolerate that (search falls back to legacy unscoped reminders), but
+        # `set` requires identification so reminders can't bleed across users.
+        speaker_user_id = request_info.user_id if request_info is not None else None
+
         if action == "set":
-            return self._run_set(service, **kwargs)
+            return self._run_set(service, speaker_user_id, **kwargs)
         elif action == "list":
-            return self._run_list(service, **kwargs)
+            return self._run_list(service, speaker_user_id, **kwargs)
         elif action == "delete":
-            return self._run_delete(service, **kwargs)
+            return self._run_delete(service, speaker_user_id, **kwargs)
         elif action == "snooze":
-            return self._run_snooze(service, **kwargs)
+            return self._run_snooze(service, speaker_user_id, **kwargs)
         else:
             return CommandResponse.error_response(
                 error_details=f"Unknown reminder action: {action}",
@@ -373,18 +397,60 @@ class ReminderCommand(IJarvisCommand):
 
     # ── Set ───────────────────────────────────────────────────────────
 
-    def _run_set(self, service: ReminderService, **kwargs: Any) -> CommandResponse:
+    def _run_set(
+        self,
+        service: ReminderService,
+        user_id: int | None,
+        **kwargs: Any,
+    ) -> CommandResponse:
         text: str | None = kwargs.get("text")
         if not text:
             return CommandResponse.error_response(
                 error_details="What should I remind you about?",
-                context_data={"error": "missing_text"},
+                context_data={"error": "missing_text", "message": "What should I remind you about?"},
+                wait_for_input=True,
+            )
+
+        if user_id is None:
+            return CommandResponse.error_response(
+                error_details=(
+                    "I couldn't tell who's asking, so I can't save a personal "
+                    "reminder. Try again after Jarvis has recognized you."
+                ),
+                context_data={
+                    "error": "unknown_speaker",
+                    "message": (
+                        "I'm not sure who's speaking — try training your voice "
+                        "so I can save reminders for you."
+                    ),
+                },
             )
 
         date_keys: list[str] | None = kwargs.get("resolved_datetimes")
         time_str: str | None = kwargs.get("time")
         relative_minutes: int | None = kwargs.get("relative_minutes")
         recurrence: str | None = kwargs.get("recurrence")
+
+        # If nothing time-related came in, ask the user instead of silently
+        # defaulting to 9 AM. Pass wait_for_input=True so the voice listener
+        # stays open for the answer.
+        if not has_explicit_time(date_keys, time_str, relative_minutes):
+            question = (
+                f"What time should I remind you to {text}?"
+                if recurrence is None
+                else f"What time should I remind you to {text} {recurrence}?"
+            )
+            return CommandResponse.error_response(
+                error_details=question,
+                context_data={
+                    "error": "missing_time",
+                    "pending_text": text,
+                    "pending_recurrence": recurrence,
+                    "pending_date_keys": date_keys,
+                    "message": question,
+                },
+                wait_for_input=True,
+            )
 
         due_at = ReminderService.resolve_due_at(date_keys, time_str, relative_minutes)
         if due_at is None:
@@ -398,7 +464,7 @@ class ReminderCommand(IJarvisCommand):
                 error_details=f"Invalid recurrence: {recurrence}. Use: {', '.join(_RECURRENCE_VALUES)}",
             )
 
-        reminder = service.create_reminder(text, due_at, recurrence)
+        reminder = service.create_reminder(text, due_at, recurrence, user_id=user_id)
         due_human = ReminderService.format_due_at_human(reminder.due_at)
 
         recurrence_str = f" ({recurrence})" if recurrence else ""
@@ -418,16 +484,21 @@ class ReminderCommand(IJarvisCommand):
 
     # ── List ──────────────────────────────────────────────────────────
 
-    def _run_list(self, service: ReminderService, **kwargs: Any) -> CommandResponse:
+    def _run_list(
+        self,
+        service: ReminderService,
+        user_id: int | None,
+        **kwargs: Any,
+    ) -> CommandResponse:
         filter_type: str = kwargs.get("filter", "all")
-        reminders = service.get_all_reminders()
+        reminders = service.get_all_reminders(user_id=user_id)
 
         if filter_type == "today":
             from datetime import datetime, timezone
-            today = datetime.now(timezone.utc).date()
+            today_local = datetime.now().astimezone().date()
             reminders = [
                 r for r in reminders
-                if datetime.fromisoformat(r.due_at).date() == today
+                if datetime.fromisoformat(r.due_at).astimezone().date() == today_local
             ]
         elif filter_type == "recurring":
             reminders = [r for r in reminders if r.is_recurring]
@@ -464,12 +535,17 @@ class ReminderCommand(IJarvisCommand):
 
     # ── Delete ────────────────────────────────────────────────────────
 
-    def _run_delete(self, service: ReminderService, **kwargs: Any) -> CommandResponse:
+    def _run_delete(
+        self,
+        service: ReminderService,
+        user_id: int | None,
+        **kwargs: Any,
+    ) -> CommandResponse:
         scope: str = kwargs.get("scope", "one")
         text: str | None = kwargs.get("text")
 
         if scope == "all":
-            count = service.delete_all_reminders()
+            count = service.delete_all_reminders(user_id=user_id)
             return CommandResponse.success_response(
                 context_data={
                     "deleted_count": count,
@@ -484,7 +560,7 @@ class ReminderCommand(IJarvisCommand):
                 context_data={"error": "missing_text"},
             )
 
-        reminder = service.find_by_text(text)
+        reminder = service.find_by_text(text, user_id=user_id)
         if not reminder:
             return CommandResponse.error_response(
                 error_details=f"No reminder found matching '{text}'.",
@@ -503,14 +579,19 @@ class ReminderCommand(IJarvisCommand):
 
     # ── Snooze ────────────────────────────────────────────────────────
 
-    def _run_snooze(self, service: ReminderService, **kwargs: Any) -> CommandResponse:
+    def _run_snooze(
+        self,
+        service: ReminderService,
+        user_id: int | None,
+        **kwargs: Any,
+    ) -> CommandResponse:
         minutes: int = kwargs.get("minutes") or 10
         text: str | None = kwargs.get("text")
 
         if text:
-            reminder = service.find_by_text(text)
+            reminder = service.find_by_text(text, user_id=user_id)
         else:
-            reminder = service.find_most_recently_announced()
+            reminder = service.find_most_recently_announced(user_id=user_id)
 
         if not reminder:
             return CommandResponse.error_response(

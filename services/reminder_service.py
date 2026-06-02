@@ -6,7 +6,7 @@ Uses JarvisStorage for persistence (command_data table).
 
 import threading
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -50,6 +50,23 @@ _TOMORROW_TIME_KEYS: dict[str, int] = {
 }
 
 
+def has_explicit_time(
+    date_keys: list[str] | None,
+    time_str: str | None,
+    relative_minutes: int | None,
+) -> bool:
+    """Return True iff the user supplied a time (explicit, relative, or implied)."""
+    if time_str:
+        return True
+    if relative_minutes is not None and relative_minutes > 0:
+        return True
+    if date_keys:
+        for key in date_keys:
+            if key.lower().strip() in _DATE_KEY_DEFAULT_HOURS:
+                return True
+    return False
+
+
 @dataclass
 class ReminderData:
     """A single reminder record."""
@@ -58,11 +75,12 @@ class ReminderData:
     text: str
     due_at: str  # ISO 8601 with timezone
     created_at: str
-    recurrence: str | None = None  # None, "daily", "weekly", "weekdays", "monthly"
+    recurrence: str | None = None  # None, "daily", "weekdays", "weekly", "biweekly", "monthly"
     announced: bool = False
     snooze_until: str | None = None
     announce_count: int = 0
     last_announced_at: str | None = None
+    user_id: int | None = None  # speaker who created the reminder
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -79,6 +97,7 @@ class ReminderData:
             snooze_until=data.get("snooze_until"),
             announce_count=data.get("announce_count", 0),
             last_announced_at=data.get("last_announced_at"),
+            user_id=data.get("user_id"),
         )
 
     @property
@@ -105,6 +124,7 @@ class ReminderService:
         text: str,
         due_at: datetime,
         recurrence: str | None = None,
+        user_id: int | None = None,
     ) -> ReminderData:
         """Create and persist a new reminder."""
         reminder_id = f"rem_{uuid.uuid4().hex[:8]}"
@@ -112,7 +132,7 @@ class ReminderService:
 
         # Ensure due_at is timezone-aware
         if due_at.tzinfo is None:
-            due_at = due_at.replace(tzinfo=timezone.utc)
+            due_at = due_at.astimezone()
 
         reminder = ReminderData(
             reminder_id=reminder_id,
@@ -120,28 +140,48 @@ class ReminderService:
             due_at=due_at.isoformat(),
             created_at=now.isoformat(),
             recurrence=recurrence,
+            user_id=user_id,
         )
 
         with self._lock:
             self._reminders[reminder_id] = reminder
             self._persist(reminder)
 
-        logger.info("Reminder created", reminder_id=reminder_id, text=text, due_at=due_at.isoformat())
+        logger.info(
+            "Reminder created",
+            reminder_id=reminder_id, text=text, due_at=due_at.isoformat(), user_id=user_id,
+        )
         return reminder
 
-    def get_reminder(self, reminder_id: str) -> ReminderData | None:
+    def get_reminder(self, reminder_id: str, user_id: int | None = None) -> ReminderData | None:
+        """Return a reminder by id. When user_id is given, refuse cross-user access."""
         with self._lock:
-            return self._reminders.get(reminder_id)
+            reminder = self._reminders.get(reminder_id)
+        if reminder is None:
+            return None
+        if user_id is not None and reminder.user_id is not None and reminder.user_id != user_id:
+            return None
+        return reminder
 
-    def get_all_reminders(self, include_announced: bool = False) -> list[ReminderData]:
+    def get_all_reminders(
+        self,
+        include_announced: bool = False,
+        user_id: int | None = None,
+    ) -> list[ReminderData]:
         with self._lock:
             reminders = list(self._reminders.values())
+        if user_id is not None:
+            reminders = [r for r in reminders if r.user_id == user_id or r.user_id is None]
         if not include_announced:
             reminders = [r for r in reminders if not r.announced]
         return sorted(reminders, key=lambda r: r.due_at)
 
     def get_due_reminders(self) -> list[ReminderData]:
-        """Get reminders where due_at <= now, not announced, and not snoozed."""
+        """Get reminders where due_at <= now, not announced, and not snoozed.
+
+        Returns all users' due reminders — the agent fires them all; per-user
+        gating happens at the command layer.
+        """
         now = datetime.now(timezone.utc)
         with self._lock:
             due = []
@@ -207,32 +247,60 @@ class ReminderService:
         logger.info("Reminder deleted", reminder_id=reminder_id)
         return True
 
-    def delete_all_reminders(self) -> int:
+    def delete_all_reminders(self, user_id: int | None = None) -> int:
+        """Delete all reminders for the given user (or all reminders when user_id is None)."""
         with self._lock:
-            count = len(self._reminders)
-            self._reminders.clear()
-            self._storage.delete_all()
-        logger.info("All reminders deleted", count=count)
+            if user_id is None:
+                count = len(self._reminders)
+                self._reminders.clear()
+                self._storage.delete_all()
+            else:
+                to_delete = [
+                    rid for rid, r in self._reminders.items()
+                    if r.user_id == user_id or r.user_id is None
+                ]
+                for rid in to_delete:
+                    del self._reminders[rid]
+                    self._storage.delete(rid)
+                count = len(to_delete)
+        logger.info("Reminders deleted", count=count, user_id=user_id)
         return count
 
     # ── Search ────────────────────────────────────────────────────────
 
-    def find_by_text(self, text: str) -> ReminderData | None:
-        """Fuzzy match reminder by text (case-insensitive partial match)."""
+    def find_by_text(self, text: str, user_id: int | None = None) -> ReminderData | None:
+        """Fuzzy match reminder by text (case-insensitive partial match).
+
+        When user_id is given, only searches that user's reminders (plus
+        legacy reminders with user_id=None).
+        """
         text_lower = text.lower()
+
+        def visible(r: ReminderData) -> bool:
+            if user_id is None:
+                return True
+            return r.user_id == user_id or r.user_id is None
+
         with self._lock:
             # Exact match first
             for r in self._reminders.values():
-                if r.text.lower() == text_lower:
+                if visible(r) and r.text.lower() == text_lower:
                     return r
             # Partial match
             for r in self._reminders.values():
-                if text_lower in r.text.lower():
+                if visible(r) and text_lower in r.text.lower():
                     return r
         return None
 
-    def find_most_recently_announced(self, window_minutes: int = SNOOZE_WINDOW_MINUTES) -> ReminderData | None:
-        """Find the most recently announced reminder within the snooze window."""
+    def find_most_recently_announced(
+        self,
+        window_minutes: int = SNOOZE_WINDOW_MINUTES,
+        user_id: int | None = None,
+    ) -> ReminderData | None:
+        """Find the most recently announced reminder within the snooze window.
+
+        When user_id is given, only searches that user's reminders.
+        """
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(minutes=window_minutes)
 
@@ -240,6 +308,8 @@ class ReminderService:
             candidates = []
             for r in self._reminders.values():
                 if not r.last_announced_at:
+                    continue
+                if user_id is not None and r.user_id is not None and r.user_id != user_id:
                     continue
                 announced_at = datetime.fromisoformat(r.last_announced_at)
                 if announced_at >= cutoff:
@@ -295,7 +365,11 @@ class ReminderService:
         time_str: str | None = None,
         relative_minutes: int | None = None,
     ) -> datetime | None:
-        """Resolve date parameters to a concrete datetime.
+        """Resolve date parameters to a tz-aware UTC datetime.
+
+        All date math runs in the system's local timezone (the node's
+        ``datetime.now().astimezone()``) so "3 PM tomorrow" means 3 PM in the
+        user's clock, not 3 PM UTC.
 
         Priority:
         1. date_keys + time (if both provided)
@@ -304,8 +378,10 @@ class ReminderService:
         4. relative_minutes
         5. None (caller should error)
         """
-        now = datetime.now(timezone.utc)
-        local_now = datetime.now()  # naive local time for day calculations
+        # Local "now" with the system tz attached. We do all arithmetic in
+        # local time, then convert to UTC at the end for storage.
+        local_now = datetime.now().astimezone()
+        local_tz = local_now.tzinfo
 
         # Parse explicit time (HH:MM)
         hour, minute = None, None
@@ -325,25 +401,21 @@ class ReminderService:
             for key in date_keys:
                 key_lower = key.lower().strip()
 
-                # Day offset keys
                 if key_lower in _DATE_KEY_OFFSETS:
                     offset = _DATE_KEY_OFFSETS[key_lower]
                     target_date = (local_now + timedelta(days=offset)).date()
 
-                # Tomorrow+time compound keys
                 elif key_lower in _TOMORROW_TIME_KEYS:
                     target_date = (local_now + timedelta(days=1)).date()
                     if resolved_hour is None:
                         resolved_hour = _TOMORROW_TIME_KEYS[key_lower]
 
-                # Weekend
                 elif key_lower == "this_weekend":
                     days_until_sat = (5 - local_now.weekday()) % 7
                     if days_until_sat == 0 and local_now.weekday() != 5:
                         days_until_sat = 7
                     target_date = (local_now + timedelta(days=days_until_sat)).date()
 
-                # Next weekday keys
                 elif key_lower.startswith("next_"):
                     day_name = key_lower.replace("next_", "")
                     day_map = {
@@ -357,30 +429,31 @@ class ReminderService:
                             days_ahead = 7
                         target_date = (local_now + timedelta(days=days_ahead)).date()
 
-                # Time-of-day keys (no date change)
                 elif key_lower in _DATE_KEY_DEFAULT_HOURS and resolved_hour is None:
                     resolved_hour = _DATE_KEY_DEFAULT_HOURS[key_lower]
 
             if resolved_hour is None:
-                resolved_hour = 9  # Default to 9 AM if no time specified
+                resolved_hour = 9  # Caller is expected to have already prompted for time
 
-            due = datetime(
+            local_due = datetime(
                 target_date.year, target_date.month, target_date.day,
                 resolved_hour, minute or 0,
-                tzinfo=timezone.utc,
+                tzinfo=local_tz,
             )
-            return due
+            return local_due.astimezone(timezone.utc)
 
         # 3: time only (today or tomorrow if past)
         if hour is not None:
-            due = local_now.replace(hour=hour, minute=minute or 0, second=0, microsecond=0)
-            if due <= local_now:
-                due += timedelta(days=1)
-            return due.replace(tzinfo=timezone.utc)
+            local_due = local_now.replace(
+                hour=hour, minute=minute or 0, second=0, microsecond=0,
+            )
+            if local_due <= local_now:
+                local_due += timedelta(days=1)
+            return local_due.astimezone(timezone.utc)
 
         # 4: relative_minutes
         if relative_minutes is not None and relative_minutes > 0:
-            return now + timedelta(minutes=relative_minutes)
+            return datetime.now(timezone.utc) + timedelta(minutes=relative_minutes)
 
         return None
 
@@ -393,19 +466,20 @@ class ReminderService:
             return current_due + timedelta(days=1)
         elif recurrence == "weekly":
             return current_due + timedelta(weeks=1)
+        elif recurrence == "biweekly":
+            return current_due + timedelta(weeks=2)
         elif recurrence == "weekdays":
             next_due = current_due + timedelta(days=1)
             while next_due.weekday() >= 5:  # Skip Sat (5) and Sun (6)
                 next_due += timedelta(days=1)
             return next_due
         elif recurrence == "monthly":
-            # Same day next month
             month = current_due.month + 1
             year = current_due.year
             if month > 12:
                 month = 1
                 year += 1
-            day = min(current_due.day, 28)  # Safe for all months
+            day = min(current_due.day, 28)
             return current_due.replace(year=year, month=month, day=day)
         return current_due
 

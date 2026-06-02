@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services.reminder_service import ReminderData, ReminderService
+from services.reminder_service import (
+    ReminderData,
+    ReminderService,
+    has_explicit_time,
+)
 
 
 @pytest.fixture
@@ -237,35 +241,38 @@ class TestDateResolution:
     def test_date_key_tomorrow_with_time(self) -> None:
         due = ReminderService.resolve_due_at(["tomorrow"], "15:00")
         assert due is not None
-        expected_date = (datetime.now() + timedelta(days=1)).date()
-        assert due.date() == expected_date
-        assert due.hour == 15
-        assert due.minute == 0
+        # Compare in local time — "tomorrow at 3 PM" means 3 PM on the user's clock
+        local_due = due.astimezone()
+        expected_date = (datetime.now().astimezone() + timedelta(days=1)).date()
+        assert local_due.date() == expected_date
+        assert local_due.hour == 15
+        assert local_due.minute == 0
 
     def test_date_key_today_with_time(self) -> None:
         due = ReminderService.resolve_due_at(["today"], "23:59")
         assert due is not None
-        assert due.date() == datetime.now().date()
+        assert due.astimezone().date() == datetime.now().astimezone().date()
 
     def test_date_key_morning_default_hour(self) -> None:
         due = ReminderService.resolve_due_at(["morning"])
         assert due is not None
-        assert due.hour == 7
+        assert due.astimezone().hour == 7
 
     def test_date_key_tomorrow_evening(self) -> None:
         due = ReminderService.resolve_due_at(["tomorrow_evening"])
         assert due is not None
-        expected_date = (datetime.now() + timedelta(days=1)).date()
-        assert due.date() == expected_date
-        assert due.hour == 19
+        local_due = due.astimezone()
+        expected_date = (datetime.now().astimezone() + timedelta(days=1)).date()
+        assert local_due.date() == expected_date
+        assert local_due.hour == 19
 
     def test_time_only_future_today(self) -> None:
         # Use 23:59 to ensure it's in the future
         due = ReminderService.resolve_due_at(time_str="23:59")
         assert due is not None
-        now = datetime.now()
+        now = datetime.now().astimezone()
         if now.hour < 23 or (now.hour == 23 and now.minute < 59):
-            assert due.date() == now.date()
+            assert due.astimezone().date() == now.date()
 
     def test_relative_minutes(self) -> None:
         due = ReminderService.resolve_due_at(relative_minutes=30)
@@ -279,8 +286,126 @@ class TestDateResolution:
     def test_next_weekday_key(self) -> None:
         due = ReminderService.resolve_due_at(["next_monday"], "09:00")
         assert due is not None
-        assert due.weekday() == 0  # Monday
-        assert due.hour == 9
+        local_due = due.astimezone()
+        assert local_due.weekday() == 0  # Monday
+        assert local_due.hour == 9
+
+    def test_returned_datetime_is_timezone_aware(self) -> None:
+        due = ReminderService.resolve_due_at(["tomorrow"], "10:00")
+        assert due is not None
+        assert due.tzinfo is not None
+
+    def test_time_reflects_local_wall_clock(self) -> None:
+        """Regression: "10 AM tomorrow" must mean 10 AM local, not 10 AM UTC.
+
+        Before the fix this returned a datetime stamped with tzinfo=UTC but
+        carrying local-time components, so 10 AM in EST would have fired at
+        5 AM local (10 UTC = 5 EST).
+        """
+        due = ReminderService.resolve_due_at(["tomorrow"], "10:00")
+        assert due is not None
+        local_due = due.astimezone()
+        assert local_due.hour == 10
+        assert local_due.minute == 0
+
+
+class TestHasExplicitTime:
+    def test_explicit_time(self) -> None:
+        assert has_explicit_time(None, "15:00", None) is True
+
+    def test_relative_minutes(self) -> None:
+        assert has_explicit_time(None, None, 30) is True
+
+    def test_time_of_day_key(self) -> None:
+        assert has_explicit_time(["tomorrow_morning"], None, None) is True
+
+    def test_bare_tomorrow_no_time(self) -> None:
+        assert has_explicit_time(["tomorrow"], None, None) is False
+
+    def test_weekday_no_time(self) -> None:
+        assert has_explicit_time(["next_monday"], None, None) is False
+
+    def test_no_inputs(self) -> None:
+        assert has_explicit_time(None, None, None) is False
+
+    def test_zero_relative_minutes(self) -> None:
+        # 0 minutes "remind me in 0 minutes" isn't really a time
+        assert has_explicit_time(None, None, 0) is False
+
+
+class TestBiweeklyRecurrence:
+    def test_biweekly_advances_two_weeks(self, service: ReminderService) -> None:
+        due = datetime(2026, 6, 7, 12, 0, tzinfo=timezone.utc)  # Sunday
+        reminder = service.create_reminder("call grandma", due, recurrence="biweekly")
+        service.mark_announced(reminder.reminder_id)
+        updated = service.get_reminder(reminder.reminder_id)
+        new_due = datetime.fromisoformat(updated.due_at)
+        assert new_due == due + timedelta(weeks=2)
+        # And it remains a Sunday
+        assert new_due.weekday() == 6
+
+
+class TestUserScoping:
+    def test_create_with_user_id(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        reminder = service.create_reminder("alex thing", due, user_id=42)
+        assert reminder.user_id == 42
+
+    def test_get_all_filters_by_user(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        service.create_reminder("alex thing", due, user_id=42)
+        service.create_reminder("bob thing", due, user_id=99)
+        alex = service.get_all_reminders(user_id=42)
+        bob = service.get_all_reminders(user_id=99)
+        assert [r.text for r in alex] == ["alex thing"]
+        assert [r.text for r in bob] == ["bob thing"]
+
+    def test_get_all_includes_legacy_unscoped(self, service: ReminderService) -> None:
+        """Reminders saved before user scoping (user_id=None) are visible to everyone."""
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        service.create_reminder("legacy", due, user_id=None)
+        service.create_reminder("alex thing", due, user_id=42)
+        alex = service.get_all_reminders(user_id=42)
+        assert {r.text for r in alex} == {"alex thing", "legacy"}
+
+    def test_find_by_text_scoped(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        service.create_reminder("call mom", due, user_id=42)
+        service.create_reminder("call mom", due, user_id=99)
+        found = service.find_by_text("mom", user_id=42)
+        assert found is not None
+        assert found.user_id == 42
+
+    def test_find_by_text_does_not_leak_across_users(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        service.create_reminder("private alex thing", due, user_id=42)
+        # bob looking for alex's reminder shouldn't find it
+        found = service.find_by_text("private", user_id=99)
+        assert found is None
+
+    def test_delete_all_only_removes_caller_reminders(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        service.create_reminder("alex a", due, user_id=42)
+        service.create_reminder("alex b", due, user_id=42)
+        service.create_reminder("bob a", due, user_id=99)
+        count = service.delete_all_reminders(user_id=42)
+        assert count == 2
+        # Bob's reminder survives
+        assert {r.text for r in service.get_all_reminders(user_id=99)} == {"bob a"}
+
+    def test_find_most_recently_announced_scoped(self, service: ReminderService) -> None:
+        past = datetime.now(timezone.utc) - timedelta(minutes=1)
+        bob = service.create_reminder("bob's thing", past, user_id=99)
+        service.mark_announced(bob.reminder_id)
+        # Alex shouldn't see Bob's most-recent announcement
+        assert service.find_most_recently_announced(user_id=42) is None
+        assert service.find_most_recently_announced(user_id=99) is not None
+
+    def test_get_reminder_refuses_cross_user(self, service: ReminderService) -> None:
+        due = datetime.now(timezone.utc) + timedelta(hours=1)
+        bob = service.create_reminder("bob private", due, user_id=99)
+        assert service.get_reminder(bob.reminder_id, user_id=42) is None
+        assert service.get_reminder(bob.reminder_id, user_id=99) is not None
 
 
 class TestReminderData:
@@ -291,12 +416,25 @@ class TestReminderData:
             due_at="2026-03-24T15:00:00+00:00",
             created_at="2026-03-23T10:00:00+00:00",
             recurrence="daily",
+            user_id=42,
         )
         d = data.to_dict()
         restored = ReminderData.from_dict(d)
         assert restored.reminder_id == data.reminder_id
         assert restored.text == data.text
         assert restored.recurrence == data.recurrence
+        assert restored.user_id == 42
+
+    def test_round_trip_no_user_id(self) -> None:
+        """Legacy records (pre-user-scoping) lack user_id — restoration defaults to None."""
+        data = {
+            "reminder_id": "rem_legacy",
+            "text": "old",
+            "due_at": "2026-03-24T15:00:00+00:00",
+            "created_at": "2026-03-23T10:00:00+00:00",
+        }
+        restored = ReminderData.from_dict(data)
+        assert restored.user_id is None
 
     def test_is_recurring(self) -> None:
         data = ReminderData(
