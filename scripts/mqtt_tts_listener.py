@@ -832,9 +832,10 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
                 arguments = {}
 
         user_id: int | None = details.get("user_id")
+        voice_command: str = details.get("voice_command") or "[mobile chat]"
 
         ri = RequestInformation(
-            voice_command="[mobile chat]",
+            voice_command=voice_command,
             conversation_id=tool_call_id or "mobile",
             user_id=user_id,
         )
