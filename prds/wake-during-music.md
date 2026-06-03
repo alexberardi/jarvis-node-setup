@@ -77,7 +77,7 @@ All work lands on `feat/wake-during-music`. Per-phase commits, no main merges un
 
 ## Reference
 
-- Today's investigation: dev Pi journal 2026-06-03 15:32-16:52 (AEC enabled→disabled, trust-score 0.95→0.75→reverted, PGA 71→58→50→58, music false-wakes confirmed via `pre_wake_speech_seconds: 0.0` on `Wake fired` events at high scores).
+- Today's investigation log with all raw evidence: [`wake-during-music/findings-2026-06-03.md`](wake-during-music/findings-2026-06-03.md). Dev Pi journal 2026-06-03 15:32-17:00 (AEC enabled→disabled, trust-score 0.95→0.75→reverted, PGA 71→58→50→58, music false-wakes confirmed via `pre_wake_speech_seconds: 0.0` on `Wake fired` events at high scores).
 - Existing AEC code: `core/aec_speex.py`, `core/aec_reference.py`, `core/aec_pipeline.py`, `core/aec_calibrate.py` — will be removed in Phase 4.
 - Existing wake gate: `scripts/voice_listener.py:2060-2200` (music_mode, trust_score, energy_floor) — will be removed in Phase 4.
 - PGA default: `install.sh:751` (`amixer -c seeed2micvoicec sset 'PGA' '60%'`) — will be re-tuned in Phase 4 once the algorithm decides the right headroom.
