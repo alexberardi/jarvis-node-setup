@@ -57,6 +57,10 @@ class ToolExecutionResult:
     all_failed: bool = False
     first_error: str | None = None
     tool_message: str | None = None
+    # Set when any executed CommandResponse provided one. Voice pipeline
+    # invokes it after TTS + duck-release so media commands can defer their
+    # actual play() call until the sink-input is back on the real ALSA sink.
+    on_response_complete: Optional[Callable[[], None]] = None
 
 
 @dataclass
@@ -760,6 +764,9 @@ class CommandExecutionService:
             "conversation_id": conversation_id,
             "wait_for_input": wait_for_input,
             "clear_history": clear_history,
+            "on_response_complete": (
+                last_tool_result.on_response_complete if last_tool_result else None
+            ),
         }
 
     def _execute_tools(
@@ -831,6 +838,13 @@ class CommandExecutionService:
                     msg = ctx.get("message")
                     if msg and isinstance(msg, str):
                         result.tool_message = msg
+
+                # Capture the deferred-play callback from the LAST tool that
+                # set one — rare for multiple media tools to fire in a single
+                # turn; "last wins" matches the user's perceived "thing that
+                # was actually triggered" in the spoken response.
+                if command_response.on_response_complete is not None:
+                    result.on_response_complete = command_response.on_response_complete
 
                 logger.debug("Tool executed successfully", tool=tool_name)
 
@@ -984,6 +998,7 @@ class CommandExecutionService:
                     "conversation_id": conversation_id,
                     "wait_for_input": False,
                     "clear_history": False,
+                    "on_response_complete": command_response.on_response_complete,
                 }
             except Exception as e:
                 logger.error(
