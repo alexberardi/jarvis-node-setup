@@ -17,6 +17,8 @@ import subprocess
 
 from jarvis_log_client import JarvisLogger
 
+from utils.audio_volume import reload_alsa_card_if_suspended
+
 logger = JarvisLogger(service="jarvis-node")
 
 
@@ -199,6 +201,10 @@ class AudioProvider(ABC):
             sample_width=sample_width,
             format=format_arg,
         )
+        # If the sink is in the wedged-SUSPENDED state, aplay would attach
+        # but block forever. Recover by reloading module-alsa-card before
+        # launching aplay. No-op when the sink is healthy.
+        reload_alsa_card_if_suspended()
         self._cancel_event.clear()
         try:
             proc = subprocess.Popen(
@@ -498,6 +504,10 @@ class PiAudioProvider(AudioProvider):
         if self._cancel_event.is_set():
             logger.info("Audio playback pre-empted (barge-in)")
             return False
+        # Recover the audio sink if it's in the wedged-SUSPENDED state —
+        # otherwise aplay would block forever. See utils.audio_volume for
+        # the failure mode this addresses.
+        reload_alsa_card_if_suspended()
         self._cancel_event.clear()
         try:
             if volume != 1.0:
@@ -529,6 +539,7 @@ class PiAudioProvider(AudioProvider):
             return False
     
     def play_chime(self, chime_path: str) -> bool:
+        reload_alsa_card_if_suspended()
         try:
             result = subprocess.run(
                 ["aplay", chime_path],

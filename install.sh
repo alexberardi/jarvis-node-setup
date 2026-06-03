@@ -394,6 +394,36 @@ switch_audio_to_pulseaudio() {
   fi
 }
 
+# --- Disable PulseAudio autosuspend ---
+# module-suspend-on-idle suspends the sink after ~5s of no audio. On the
+# TLV320AIC3104 (ReSpeaker 2-mics HAT v2) the ALSA driver doesn't reliably
+# resume the sink when a new sink-input arrives — aplay's TTS stream
+# attaches, never drains, and blocks in the kernel until killed. The node
+# stays in "audio playing" state and ignores every subsequent wake word.
+# Same root cause silently breaks AEC startup calibration (paplay chirp
+# vanishes into the suspended sink, mic captures only zeros).
+#
+# /etc/pulse/default.pa already does `.include /etc/pulse/default.pa.d`,
+# so a drop-in here is picked up on next pulse start without touching the
+# upstream default.pa. `.nofail` keeps a future kernel that doesn't load
+# the module from aborting pulse startup.
+configure_pulseaudio_no_suspend() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  local cfg_dir="/etc/pulse/default.pa.d"
+  local cfg_file="${cfg_dir}/99-jarvis-no-suspend.pa"
+  mkdir -p "$cfg_dir"
+  local content=".nofail
+unload-module module-suspend-on-idle
+"
+  if [ ! -f "$cfg_file" ] || [ "$(cat "$cfg_file")" != "$content" ]; then
+    printf '%s' "$content" > "$cfg_file"
+    sync
+    info "PulseAudio autosuspend disabled (${cfg_file})"
+  fi
+}
+
 # --- Download and extract tarball ---
 download_and_extract() {
   if [ "$LOCAL_MODE" -eq 1 ]; then
@@ -1422,6 +1452,7 @@ main() {
   unblock_bluetooth_radio
   configure_bluetooth_class
   switch_audio_to_pulseaudio
+  configure_pulseaudio_no_suspend
 
   # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
   # heavy steps so alembic + any other key-writing code in the install
