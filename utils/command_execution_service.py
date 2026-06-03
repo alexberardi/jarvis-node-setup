@@ -842,9 +842,12 @@ class CommandExecutionService:
                 # Capture the deferred-play callback from the LAST tool that
                 # set one — rare for multiple media tools to fire in a single
                 # turn; "last wins" matches the user's perceived "thing that
-                # was actually triggered" in the spoken response.
-                if command_response.on_response_complete is not None:
-                    result.on_response_complete = command_response.on_response_complete
+                # was actually triggered" in the spoken response. getattr keeps
+                # us compatible with older jarvis-command-sdk (<0.2.1) that
+                # doesn't have the field.
+                _on_complete = getattr(command_response, "on_response_complete", None)
+                if _on_complete is not None:
+                    result.on_response_complete = _on_complete
 
                 logger.debug("Tool executed successfully", tool=tool_name)
 
@@ -998,7 +1001,9 @@ class CommandExecutionService:
                     "conversation_id": conversation_id,
                     "wait_for_input": False,
                     "clear_history": False,
-                    "on_response_complete": command_response.on_response_complete,
+                    "on_response_complete": getattr(
+                        command_response, "on_response_complete", None,
+                    ),
                 }
             except Exception as e:
                 logger.error(
