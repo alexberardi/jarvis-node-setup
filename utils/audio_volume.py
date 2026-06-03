@@ -307,10 +307,10 @@ def ensure_adc_hpf_enabled() -> None:
 # fixes asound.state for subsequent boots — without it the heal would
 # re-fire forever.
 
-# Target values mirror install.sh:553-575.
+# Target values mirror install.sh's mixer baseline block.
 _TLV320_OUTPUT_BASELINE_CMDS: tuple[tuple[str, ...], ...] = (
     ("PCM", "100%", "unmute"),
-    ("Line", "4", "unmute"),
+    ("Line", "2", "unmute"),
     ("Line DAC", "115", "unmute"),
     ("Left Line Mixer DACL1", "on"),
     ("Right Line Mixer DACR1", "on"),
@@ -320,13 +320,16 @@ _TLV320_OUTPUT_BASELINE_CMDS: tuple[tuple[str, ...], ...] = (
     ("HPCOM DAC", "0", "mute"),
 )
 
-# Drift thresholds. Line at +3 dB is the floor (calibrated +4 dB, the
-# +3 cushion lets a power-user hand-tune one step down without us
-# overwriting). Line DAC at raw value 100 maps to roughly -9 dB — the
-# v0.1.51 → v0.1.59 calibration; anything at or above that is "loud
-# enough" and we leave it alone. The current v0.1.60+ baseline is 115
+# Drift thresholds. Line baseline is +2 dB (control value 2), tuned down
+# from +4 dB on 2026-06-03 — the v0.1.100 sink keepalive caused multi-
+# stream mixing to push the codec analog stage past its clip point at
+# high volume; +2 dB gives 2 dB more analog headroom. The floor of 1
+# lets a power-user hand-tune one notch down without our self-heal
+# overwriting them. Line DAC at raw value 100 maps to roughly -9 dB —
+# the v0.1.51 → v0.1.59 calibration; anything at or above that is
+# "loud enough" and we leave it alone. The current baseline is 115
 # (-1.5 dB).
-_TLV320_LINE_MIN_VALUE = 3
+_TLV320_LINE_MIN_VALUE = 1
 _TLV320_LINE_DAC_MIN_VALUE = 100
 
 _JARVIS_ALSA_STORE = "/usr/local/sbin/jarvis-alsa-store"
