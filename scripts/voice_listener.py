@@ -41,6 +41,17 @@ from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor
 from core.helpers import get_tts_provider, get_stt_provider, get_wake_response_provider
 from core.platform_audio import platform_audio
+from core import voice_filters
+from core.voice_filters import (
+    _NOT_FOR_ME_ESCALATED_SEC_DEFAULT,
+    _NOT_FOR_ME_ESCALATION_COUNT,
+    _NOT_FOR_ME_HISTORY_WINDOW_SEC,
+    _NOT_FOR_ME_QUIET_SEC_DEFAULT,
+    _WAKE_DEBOUNCE_SEC,
+    is_non_speech as _is_non_speech,
+    record_not_for_me_event as _record_not_for_me_event,
+    suppress_wake_for,
+)
 from scripts.speech_to_text import (
     RecordingResult,
     concat_wav_files,
@@ -548,88 +559,11 @@ def get_audio_bus() -> AudioBus | None:
 # otherwise re-fire the wake detector and clash with the recording.
 _wake_paused = threading.Event()
 
-# Wake-acceptance gate. A single monotonic timestamp marks the earliest
-# moment a wake fire is allowed to be accepted; checks happen at the
-# wake-fire site in voice_listener and any caller can push the gate
-# forward via ``suppress_wake_for``. Two suppression sources today:
-#
-# 1. Same-utterance double-fire: openWakeWord can score >threshold on
-#    consecutive 80ms chunks for one "Hey Jarvis". On every accepted
-#    wake we push the gate to ``now + _WAKE_DEBOUNCE_SEC``.
-# 2. Post-not_for_me quiet period: when the server signals an ambient
-#    false-wake, side conversations cluster — the next sentence of the
-#    same conversation will likely re-trigger wake within seconds.
-#    The not_for_me handler calls ``suppress_wake_for`` with a longer
-#    cool-down (configurable via ``not_for_me_quiet_seconds``).
-#
-# Multiple suppressions don't stack — the later/longer one wins.
-_WAKE_DEBOUNCE_SEC = 8.0
-_NOT_FOR_ME_QUIET_SEC_DEFAULT = 20.0
-# Multi-fire escalation: side conversations cluster — if we see N
-# not_for_me events within a rolling window we lengthen the suppression
-# so the same conversation doesn't keep re-firing wake every few seconds.
-# A single misfire is a one-off; two in a row says the room is loud.
-_NOT_FOR_ME_HISTORY_WINDOW_SEC = 30.0
-_NOT_FOR_ME_ESCALATION_COUNT = 2
-_NOT_FOR_ME_ESCALATED_SEC_DEFAULT = 60.0
-_wake_min_next_ts: float = 0.0
-_wake_gate_lock = threading.Lock()
-_not_for_me_history: list[float] = []
-
-
-def suppress_wake_for(seconds: float, reason: str = "") -> None:
-    """Push the wake-acceptance gate forward by ``seconds`` from now.
-
-    No-op if the gate is already further out. Logs the suppression so
-    the source is debuggable from journalctl.
-    """
-    global _wake_min_next_ts
-    if seconds <= 0:
-        return
-    target = time.monotonic() + seconds
-    with _wake_gate_lock:
-        if target > _wake_min_next_ts:
-            _wake_min_next_ts = target
-            logger.info(
-                "wake-gate-extended",
-                seconds=round(seconds, 1),
-                reason=reason or "unspecified",
-            )
-
-
-def _record_not_for_me_event() -> float:
-    """Record a not_for_me fire and return the cool-down to apply.
-
-    Returns the standard ``not_for_me_quiet_seconds`` for an isolated
-    event, or the escalated ``not_for_me_escalated_quiet_seconds`` when
-    ``_NOT_FOR_ME_ESCALATION_COUNT`` events have fired within the rolling
-    ``_NOT_FOR_ME_HISTORY_WINDOW_SEC`` window. Side conversations cluster
-    — a second hit inside the window says the next wake is also likely
-    overheard speech, so we widen the gate instead of letting the same
-    cluster keep re-firing.
-    """
-    now = time.monotonic()
-    cutoff = now - _NOT_FOR_ME_HISTORY_WINDOW_SEC
-    with _wake_gate_lock:
-        _not_for_me_history[:] = [t for t in _not_for_me_history if t >= cutoff]
-        _not_for_me_history.append(now)
-        count = len(_not_for_me_history)
-    if count >= _NOT_FOR_ME_ESCALATION_COUNT:
-        cooldown = Config.get_float(
-            "not_for_me_escalated_quiet_seconds",
-            _NOT_FOR_ME_ESCALATED_SEC_DEFAULT,
-        )
-        logger.info(
-            "not-for-me cluster detected — escalating cool-down",
-            count=count,
-            window_seconds=_NOT_FOR_ME_HISTORY_WINDOW_SEC,
-            cooldown_seconds=round(cooldown, 1),
-        )
-        return cooldown
-    return Config.get_float(
-        "not_for_me_quiet_seconds",
-        _NOT_FOR_ME_QUIET_SEC_DEFAULT,
-    )
+# Wake-acceptance gate. The state, constants, and ``suppress_wake_for`` /
+# ``_record_not_for_me_event`` helpers live in ``core/voice_filters.py``
+# so they can be unit-tested without pulling in the audio stack. We
+# re-export them at module top (above) — every call-site below uses
+# the same names it always has.
 
 
 def pause_wake() -> None:
@@ -967,44 +901,11 @@ def _make_validation_handler(bus: AudioBus, stt_provider) -> Callable[[Validatio
     return validation_handler
 
 
-def _is_non_speech(text: str | None) -> bool:
-    """True if Whisper output is a non-transcript — empty, whitespace, or
-    a bracketed annotation like [BLANK_AUDIO] / (wind blowing) / *sniff* /
-    <inaudible> that Whisper emits for silence and noise rather than user
-    speech.
-
-    This NO LONGER filters "hallucination phrases" (single-word fillers,
-    YouTube artifacts, etc.). That blocklist was eating real commands
-    like "okay" / "bye" / "yes". The right place to decide "is this a
-    real command" is CC's LLM ``<not_for_me/>`` classifier, which has
-    full context — speaker, prior turns, available tools — that a static
-    word list never will. We only drop things that aren't transcripts at
-    all here; anything that looks like words goes to CC.
-    """
-    if not text:
-        return True
-    stripped = text.strip()
-    if not stripped:
-        return True
-    # Whisper-emitted metadata: [BLANK_AUDIO], (silence), [music], *sniff*,
-    # *cough*, *sad noises*, *laughs*, *sighs*, <inaudible>, etc. These are
-    # annotations, not utterances; sending them to the LLM wastes a
-    # round-trip and risks the model interpreting them as user-spoken
-    # verbs (prod 2026-06-02 saw ``*sniff*`` trigger ``"I smell something
-    # burning."``). Trim trailing sentence punctuation Whisper sometimes
-    # appends so ``*sniff*.`` is treated the same as ``*sniff*``.
-    body = stripped.rstrip(".,!?")
-    if body and (
-        (body.startswith("[") and body.endswith("]"))
-        or (body.startswith("(") and body.endswith(")"))
-        or (body.startswith("*") and body.endswith("*") and len(body) > 1)
-        or (body.startswith("<") and body.endswith(">") and len(body) > 1)
-    ):
-        return True
-    # "..." is a Whisper non-speech marker, not an utterance.
-    if stripped.strip(".") == "":
-        return True
-    return False
+# ``_is_non_speech`` is re-exported from ``core.voice_filters`` at the
+# top of this module so callers below see the same name. The shared
+# implementation handles ``*sniff*`` / ``[BLANK_AUDIO]`` / ``<inaudible>``
+# uniformly; see the module docstring there for the 2026-06-02 prod
+# incident background.
 
 
 # Words that are valid as standalone single-word follow-ups (control
@@ -1835,7 +1736,6 @@ def start_voice_listener(ma_service):
       7. On barge-in OR normal completion, run the follow-up loop.
       8. Back to step 1 with a fresh ``wake`` subscription.
     """
-    global _wake_min_next_ts
     try:
         openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
         oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
@@ -2127,8 +2027,10 @@ def start_voice_listener(ma_service):
                             fire_wake = False
                     if fire_wake:
                         now_mono = time.monotonic()
-                        with _wake_gate_lock:
-                            cooldown_remaining = _wake_min_next_ts - now_mono
+                        with voice_filters._wake_gate_lock:
+                            cooldown_remaining = (
+                                voice_filters._wake_min_next_ts - now_mono
+                            )
                             if cooldown_remaining > 0:
                                 fire_wake = False
                                 if score > 0.3:
@@ -2140,7 +2042,9 @@ def start_voice_listener(ma_service):
                                         ),
                                     )
                             else:
-                                _wake_min_next_ts = now_mono + _WAKE_DEBOUNCE_SEC
+                                voice_filters._wake_min_next_ts = (
+                                    now_mono + _WAKE_DEBOUNCE_SEC
+                                )
                     if fire_wake:
                         t_wake_fired = now_mono
                         # Snapshot the score for the auto-calibrator. The
