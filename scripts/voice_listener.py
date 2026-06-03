@@ -241,7 +241,10 @@ def _music_is_playing() -> bool:
     for item in items:
         props = item.get("properties") or {}
         binary = props.get("application.process.binary") or ""
-        if binary in _PLAYER_BINARIES and not item.get("corked", True):
+        # PA reports the absolute path on Linux (e.g.
+        # /home/pi/.jarvis/spotify/bin/go-librespot) — match on basename so
+        # custom-install locations don't slip past the filter.
+        if os.path.basename(binary) in _PLAYER_BINARIES and not item.get("corked", True):
             return True
     return False
 
@@ -323,7 +326,9 @@ def _player_sink_input_ids() -> list[str]:
     for item in items:
         props = item.get("properties") or {}
         binary = props.get("application.process.binary") or ""
-        if binary in _PLAYER_BINARIES:
+        # PA reports the absolute path on Linux — match on basename
+        # (see _music_is_playing for the same fix).
+        if os.path.basename(binary) in _PLAYER_BINARIES:
             sid = item.get("index")
             if sid is not None:
                 ids.append(str(sid))
