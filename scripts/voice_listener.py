@@ -2381,11 +2381,35 @@ def start_voice_listener(ma_service):
                         logger.warning("Follow-up loop error, resuming wake word", error=str(e))
             finally:
                 # Mirror the duck: always background, no pre-check. The
-                # restore (pactl unmute + SIGCONT) is idempotent against
-                # missing/unmuted targets, so spending background CPU when
+                # restore (pactl move-back + SIGCONT) is idempotent against
+                # missing/unmoved targets, so spending background CPU when
                 # nothing was paused is harmless. Critical: never block
                 # the return to wake-word mode on pactl round-trips.
-                _bg_executor.submit(_restore_music)
+                #
+                # If the executed command provided an on_response_complete
+                # callback (media commands deferring their actual play() so
+                # the first seconds aren't lost to the duck null sink), run
+                # it AFTER the restore so the sink-input is back on the real
+                # ALSA sink by the time librespot/MA/mpv start streaming.
+                _on_complete = (
+                    result.get("on_response_complete")
+                    if isinstance(result, dict) else None
+                )
+
+                def _restore_then_complete(
+                    on_complete=_on_complete,
+                ) -> None:
+                    _restore_music()
+                    if on_complete is not None:
+                        try:
+                            on_complete()
+                        except Exception as e:
+                            logger.warning(
+                                "on_response_complete callback raised",
+                                error=str(e),
+                            )
+
+                _bg_executor.submit(_restore_then_complete)
                 # Safety net: always clear the transient LED state when
                 # returning to wake-word mode, so a half-finished path can't
                 # leave the pinwheel (or any other transient) stuck.
