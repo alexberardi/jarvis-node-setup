@@ -1,6 +1,9 @@
-# Wake-during-music (stereo-mic + multichannel echo cancellation)
+# Wake-during-music — fix Speex AEC (delay + filter length + PGA)
 
-**Status:** draft, feat/wake-during-music
+**Status:** draft, feat/wake-during-music. Phase 2 analysis complete
+([analysis.md](wake-during-music/analysis.md)) — algorithm decision
+revised from "stereo + multichannel AEC3" to "single-channel Speex
+with corrected delay, longer filter, and tuned PGA".
 
 ## Problem
 
@@ -14,17 +17,28 @@ Today's investigation ruled out three would-be fixes:
 
 The bottleneck is the OWW input — not the gate, not the trust-score, not the gain. The model needs cleaner audio than a single bleed-saturated mic can provide, *and* a way to tell user-voice apart from music that pattern-matches the wake phrase.
 
-## Hardware available but underused
+## What the data says (Phase 2 result)
 
-ReSpeaker 2-Mics Pi HAT v2.0 (TLV320AIC3104) has **two microphones**, ~30 mm apart. Today the node captures via `dsnoopmic`, a single-channel ALSA device. The second mic is wired but unused.
+Cross-correlation of the music-only mic + PA-monitor recordings
+([analysis.md](wake-during-music/analysis.md)):
 
-A 30 mm baseline is short relative to typical room dimensions (speaker ~500 mm+), so the speaker bleed arrives at both mics nearly identically. **Simple L−R subtraction won't help.** What it does enable:
+- **Actual per-Pi acoustic delay: 64 ms** (Speex's hardcoded fallback
+  was 80 ms; the original AEC commit guessed 100-240 ms).
+- **Reverb tail to -30 dB: 149 ms** (Speex's filter is 100 ms — too
+  short by 50 % to model this room).
+- **Coherence(mic, ref) at 64 ms delay: γ² = 0.891 median**, implying
+  a theoretical linear-AEC ceiling of **~9.6 dB** of music-bleed
+  suppression — enough to take OWW from "can't see the phrase" to
+  "can see it clearly".
+- **Coherence(mic-L, mic-R): γ² = 0.85 median.** Second mic is mostly
+  redundant at this geometry; the stereo refactor described in the
+  original PRD draft would have been a big plumbing project for ~15 %
+  new information.
 
-1. **Stereo input to a proper AEC** (WebRTC AEC3) — uses both mics + the PA monitor reference as a 3-channel solve. Industry standard for smart-speaker echo cancellation.
-2. **Blind source separation (ICA / NMF)** — geometry-agnostic; can separate independent sources even with small spatial difference. Heavier CPU.
-3. **Beamforming with null steering** — calibrate a null toward the speaker. Cheap CPU; brittle to setup geometry changes.
-
-The PRD takes Option 1 as primary, with Option 2 as fallback if AEC3 doesn't work on Pi Zero 2W.
+The Speex algorithm class is fine. **What's broken is the calibration
+(delay 16 ms off) and the filter length (100 ms vs 150 ms needed).**
+Plus the mic PGA, which clips at install default and creates music
+false-wakes when dropped too low.
 
 ## Success criteria
 
@@ -40,12 +54,12 @@ Off-ramp: if CPU on Pi Zero 2W can't sustain real-time stereo AEC3 + OWW at 16 k
 
 | Phase | Scope | Deliverable | Risk |
 |---|---|---|---|
-| **0** | This PRD | Agreed plan, success metric, off-ramps | — |
-| **1** | Diagnostic recordings on the dev Pi via `parec` against the existing PA source — no node code change. Three takes: voice-only, music-only, voice+music. Recorded at PGA setting that doesn't clip (~49 % / +29 dB). Each take saved as stereo s16le 48 kHz raw + WAV. For takes 2 and 3, simultaneous PA monitor reference capture. | WAVs in `prds/wake-during-music/recordings/` (or external storage if too large for git); per-take notes on conditions. | Music volume and material affects analysis — keep representative samples. |
-| **2** | Offline analysis: inter-channel coherence, voice-vs-music spatial signature, reverb tail length, peak / RMS distributions, mic-2 gain match. Pick the algorithm class (AEC3 vs ICA vs beamforming) based on what the data actually shows, not what the PRD assumes. | `prds/wake-during-music/analysis.md` with the algorithm decision + reasoning. | Decision may be "data shows no algorithm is going to clear the bar on this hardware" → re-scope. |
-| **3** | Combined AudioBus stereo refactor + algorithm implementation. AudioBus exposes a new `subscribe_stereo()` API so existing mono consumers stay unchanged; the new wake-front-end consumes stereo + PA monitor reference. Wrapper module under `core/wake_clean_*.py`. CPU benchmark on real Pi Zero 2W. | Working `wake_clean.process(stereo, ref) → mono` on dev hardware. Tests against the Phase-1 corpus. | CPU budget. Algorithm tuning. ALSA / dsnoopmic interactions with PA holding the card. |
-| **4** | Wire cleaned mono into wake path; retire Speex AEC + music-mode energy gate + trust-score bypass (all become redundant once the OWW input is clean). Also: settle on the correct PGA default for the new front-end (probably lower than today's 60 %, since AEC is doing the heavy lifting and we want headroom). | Single code path; old AEC modules + music-mode gate removed; install.sh PGA default updated. | Regression on non-music wake reliability — validate via Phase 5. |
-| **5** | Validation against the success-criteria corpus. A/B comparison vs main (single-mic, default PGA) baseline at matching volumes. Run for ≥1 week on the dev Pi. | Ship/no-ship report. If ship: tag, GitHub pre-release, deploy to dev Pi for a week, then promote. | Reveals success metric is unrealistic on this hardware. |
+| **0** ✓ | This PRD | Agreed plan, success metric, off-ramps | — |
+| **1** ✓ | Diagnostic recordings via `parec` against PA source on dev Pi. Voice-only, music-only, voice+music, all stereo s16le 48 kHz. Music+voice and music-only also captured PA monitor reference. | WAVs in `prds/wake-during-music/recordings/`; session notes in `findings-2026-06-03.md`. | — |
+| **2** ✓ | Offline analysis (`analyze.py`) — cross-correlation delay, mic-L/R coherence, voice-vs-music PSD overlap, reverb tail decay, mic-vs-ref coherence ceiling. | [`wake-during-music/analysis.md`](wake-during-music/analysis.md). Decision: keep Speex, fix calibration + filter length + PGA. Drop the stereo refactor. | — |
+| **3** | Fix Speex AEC. (a) `core/aec_calibrate.py`: replace the broken chirp-based calibration with natural-music cross-correlation over the first 5 s of detected playback. (b) `scripts/voice_listener.py`: defaults `aec_reference_delay_ms=64`, `aec_filter_length_ms=150`, `aec_enabled=true`. (c) CPU benchmark on Pi Zero 2W at 2400-tap filter; if it busts the real-time budget, drop to 2000 (125 ms) and document the tradeoff. | Speex actually working on dev with sustained ≥6 dB suppression during music. | CPU budget. Need to verify the AudioBus subscriber starvation that broke the old calibration doesn't also affect the new measurement path. |
+| **4** | Wire it up. Retire `wake_music_trust_score` / `wake_word_music_energy_multiplier` / `wake_word_threshold_music` — the entire music-mode energy gate becomes redundant. `install.sh`: lower PGA default from 60 % to ~49 % (or whatever Phase 5 validation picks). | Single clean wake path; old music-mode gate code deleted. | Regression on non-music wake reliability — Phase 5 catches. |
+| **5** | Validation against the success-criteria corpus. A/B vs `main` baseline at matching volumes / music genres. Run dev Pi for ≥1 week. | Ship/no-ship report. If ship: tag, GitHub pre-release, deploy to dev. Promote to prod after a week of clean dev runtime. | Real-world music range may exceed our test corpus. |
 
 Each phase ends with a checkpoint commit on this branch. Phase boundaries are review points — easy to pause/redirect without sunk-cost pressure.
 
