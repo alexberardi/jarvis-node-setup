@@ -310,9 +310,39 @@ class CommandExecutionService:
 
         audio_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=50)
 
+        # PCM iterator for the player thread. We use a generator with a max-
+        # idle timeout instead of ``iter(audio_queue.get, None)`` so the
+        # player can never block forever waiting for a sentinel that fails
+        # to arrive. The original pattern leaked aplay processes whenever
+        # the cleanup's ``put_nowait(None)`` lost its race against a full
+        # queue (aplay slow + iter_content fast = queue at maxsize when
+        # iter_content ends, sentinel dropped, queue.get() blocks forever
+        # once the real chunks are drained, finally block never runs,
+        # proc.stdin stays open, aplay sits on pipe_r forever).
+        #
+        # idle_timeout=8s is comfortably above any realistic gap between
+        # chunks on a healthy stream (typical: ~50ms/chunk) and well below
+        # the user's "did it crash?" threshold. If iter_content stalls
+        # mid-response the player will close cleanly after 8s.
+        _IDLE_TIMEOUT_S: float = 8.0
+
+        def _audio_chunks() -> Any:
+            while True:
+                try:
+                    item = audio_queue.get(timeout=_IDLE_TIMEOUT_S)
+                except queue.Empty:
+                    logger.warning(
+                        "Streaming audio queue idle past timeout; ending stream",
+                        idle_timeout_s=_IDLE_TIMEOUT_S,
+                    )
+                    return
+                if item is None:
+                    return
+                yield item
+
         def audio_player() -> None:
             platform_audio.play_pcm_stream(
-                iter(audio_queue.get, None),  # sentinel = None
+                _audio_chunks(),
                 sample_rate=sample_rate,
                 channels=channels,
                 sample_width=sample_width,
@@ -373,24 +403,32 @@ class CommandExecutionService:
                 raise
         finally:
             platform_audio.unregister_cancel_closeable(response)
-            # Signal the player to stop via the None sentinel — but
-            # use put_nowait so we never block. On the barge-in cancel
-            # path the queue is typically still at maxsize (the player
-            # exited as soon as aplay died and stopped draining), and
-            # a plain audio_queue.put(None) here would deadlock the
-            # wake-step exactly the way iter_content used to. The
-            # player thread either already exited or will exit when
-            # play_pcm_stream notices aplay is gone — the sentinel is
-            # belt-and-suspenders, not load-bearing.
+            # Send the sentinel reliably, not via put_nowait. On the normal
+            # completion path the queue may be at maxsize when iter_content
+            # ends — put with a short timeout waits for the player to drain
+            # enough to accept it. If we still can't enqueue, the generator's
+            # idle timeout (see _audio_chunks above) will end the stream
+            # within _IDLE_TIMEOUT_S so aplay still exits cleanly.
             try:
-                audio_queue.put_nowait(None)
+                audio_queue.put(None, timeout=3.0)
             except queue.Full:
-                pass
-            # 5s was the player_thread join timeout we relied on after
-            # cancel; was 30s but the player should exit within a few
-            # hundred ms once aplay is gone, and a long timeout here
-            # would hide bugs more than it'd help.
-            player_thread.join(timeout=5)
+                logger.debug(
+                    "Streaming audio sentinel deferred; consumer idle "
+                    "timeout will handle stream end",
+                )
+            # Generous join — a maxsize=50 queue of 4KB chunks at 24 kHz
+            # mono 16-bit drains in ~4s. 20s lets aplay fully play out the
+            # buffered audio (the user's TTS) before we return. If the
+            # consumer is genuinely stuck, the idle timeout above plus
+            # play_pcm_stream's own 30s aplay drain timeout serve as the
+            # final escape hatches.
+            player_thread.join(timeout=20)
+            if player_thread.is_alive():
+                logger.warning(
+                    "Streaming audio player thread did not exit within 20s; "
+                    "playback may be partially lost (aplay drain timeout will "
+                    "still free the process)",
+                )
             response.close()
 
         return has_audio
@@ -680,6 +718,14 @@ class CommandExecutionService:
                                 "wait_for_input": False,
                                 "clear_history": last_tool_result.clear_history,
                                 "audio_played": True,
+                                # Forward the deferred-play callback from the
+                                # executed tool — without this, spotify/MA/
+                                # pandora "play X" through the LLM+tool path
+                                # would silently drop on_response_complete and
+                                # no music would ever start.
+                                "on_response_complete": (
+                                    last_tool_result.on_response_complete
+                                ),
                             }
                         logger.warning("Streaming continue playback failed, falling back")
 

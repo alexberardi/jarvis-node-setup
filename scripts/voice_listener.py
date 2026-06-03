@@ -277,22 +277,29 @@ _SIGSTOP_PLAYER_BINARIES: tuple[str, ...] = (
                      # compat — pkill of a missing binary is a no-op)
     "librespot",     # jarvis-cmd-spotify v0.1.3–v1.x (apt-installed via
                      # the raspotify package)
-    "go-librespot",  # jarvis-cmd-spotify v2.x+ — bundled binary controlled
-                     # via its localhost HTTP API; same Connect protocol,
-                     # different process name. Without this entry the wake-
-                     # word ducking misses Spotify entirely and music
-                     # bleeds into the user's voice capture.
 )
 
 # Binaries that must NOT be SIGSTOP'd because they participate in a
 # request/response protocol with a remote peer that expects timely ACKs.
+#
 # shairport-sync is the canonical example: SIGSTOP'ing it makes Music
 # Assistant's RTSP TEARDOWN hang (MA can't update queue state → UI stuck
 # showing "playing" after voice-stop). Muting the PA sink-input alone is
 # sufficient — shairport keeps running and answering RTSP, but its audio
 # output reaches a muted sink during the conversation.
+#
+# go-librespot was moved here on 2026-06-03: SIGSTOP'ing it during voice
+# made its localhost HTTP server unresponsive long after SIGCONT —
+# observed 15s+ timeouts on POST /player/play even after _restore_music
+# fired, breaking the deferred-play hook the spotify command uses. The
+# duck still moves its sink-input to jarvis_duck_null so audio doesn't
+# bleed during voice; librespot itself stays unblocked so it can respond
+# to play()/pause()/transfer commands immediately.
 _MUTE_ONLY_PLAYER_BINARIES: tuple[str, ...] = (
     "shairport-sync",  # jarvis-cmd-music-assistant (AirPlay receiver for MA streams)
+    "go-librespot",    # jarvis-cmd-spotify v2.x+ — controlled via localhost
+                       # HTTP API; SIGSTOP makes that API hang for 15+ seconds
+                       # after SIGCONT, breaking the deferred-play hook.
 )
 
 # Union — used by the PA sink-input matcher, which mutes everything regardless
@@ -371,31 +378,70 @@ def _ensure_duck_null_sink() -> None:
         pass
 
 
+def _player_sink_input_ids_for(binaries: tuple[str, ...]) -> list[str]:
+    """Return PA sink-input ids whose process binary basename matches.
+
+    Mirrors ``_player_sink_input_ids`` but takes a subset filter so the
+    duck logic can apply different actions to different player classes
+    (move-to-null for SIGSTOP-bound players to prevent underrun-induced
+    sink wedge; mute-only for protocol-sensitive players like
+    go-librespot and shairport-sync, which would have their HTTP/RTSP
+    responsiveness broken by SIGSTOP).
+    """
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sink-inputs"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    import json as _json
+    try:
+        items = _json.loads(result.stdout or "[]")
+    except (ValueError, TypeError):
+        return []
+    ids: list[str] = []
+    for item in items:
+        props = item.get("properties") or {}
+        binary = props.get("application.process.binary") or ""
+        if os.path.basename(binary) in binaries:
+            sid = item.get("index")
+            if sid is not None:
+                ids.append(str(sid))
+    return ids
+
+
 def _pause_active_playback() -> None:
     """Silence any active media-player subprocesses immediately.
 
-    Three-pronged:
-    - MOVE the PA sink-input off the real ALSA sink to the duck null sink.
-      This is functionally equivalent to corking (which pulse doesn't
-      expose via pactl) — pulse keeps reading samples from the process,
-      they just go to a sink that discards them. Without this step, an
-      uncorked-but-SIGSTOP'd sink-input causes underrun on the real sink
-      and after ~15s pulse wedges it in SUSPENDED. See utils.audio_volume
-      for the recovery path that handles the rare case this slips through.
-    - SIGSTOP the process so it stops generating new audio.
-    - Move covers what mute used to cover (silencing buffered audio in the
-      sink-input queue): the queue is now attached to a null sink, so
-      anything in it plays out silently rather than to the speaker.
+    Two classes of player get different treatment:
+
+    - **SIGSTOP-bound** (mpv, vlc, ffplay, cvlc, spotifyd, librespot):
+      move the sink-input to ``jarvis_duck_null`` AND SIGSTOP the process.
+      The move prevents underrun-induced sink wedge (frozen process can't
+      supply samples to its uncorked sink-input → pulse wedges the real
+      sink in SUSPENDED). The null sink absorbs whatever pulse pulls.
+
+    - **Mute-only** (shairport-sync, go-librespot): leave the sink-input
+      on the real sink and mute it. Moving these to null pollutes pulse's
+      module-stream-restore database (which remembers per-app sink
+      preference) — the NEXT sink-input the app creates would land on
+      the null sink even after restore, and the user wouldn't hear it.
+      These players also can't be SIGSTOP'd (HTTP/RTSP request handling
+      would freeze), so SIGSTOP-induced underrun isn't a concern; mute
+      is sufficient to silence the speaker without breaking the app.
 
     No internal "is-paused" flag: a previous version tracked state in a
     global so overlapping wake events wouldn't double-pause, but the flag
-    drifted out of sync when wake events landed without any player running,
-    then stuck at True — preventing the actual pause on the NEXT wake when
-    music WAS playing. pkill/pactl against missing targets is harmless.
+    drifted out of sync when wake events landed without any player
+    running, then stuck at True. pkill/pactl against missing targets is
+    harmless.
     """
     _ensure_duck_null_sink()
     parked: list[str] = []
-    for sink_input_id in _player_sink_input_ids():
+    for sink_input_id in _player_sink_input_ids_for(_SIGSTOP_PLAYER_BINARIES):
         try:
             r = subprocess.run(
                 ["pactl", "move-sink-input", sink_input_id, _DUCK_NULL_SINK_NAME],
@@ -403,6 +449,17 @@ def _pause_active_playback() -> None:
             )
             if r.returncode == 0:
                 parked.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    muted: list[str] = []
+    for sink_input_id in _player_sink_input_ids_for(_MUTE_ONLY_PLAYER_BINARIES):
+        try:
+            r = subprocess.run(
+                ["pactl", "set-sink-input-mute", sink_input_id, "1"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                muted.append(sink_input_id)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
     stopped: list[str] = []
@@ -418,16 +475,17 @@ def _pause_active_playback() -> None:
             pass
     logger.info(
         "pause_active_playback",
-        parked_sink_inputs=parked, sigstopped=stopped,
+        parked_sink_inputs=parked,
+        muted_sink_inputs=muted,
+        sigstopped=stopped,
     )
 
 
 def _resume_active_playback() -> None:
-    """Reverse the duck: SIGCONT the players, then move sink-inputs back."""
-    # SIGCONT BEFORE the move — pulse buffers anything the resumed process
-    # writes regardless of which sink the sink-input is attached to, so
-    # ordering doesn't gap audio. Moving the sink-input back from the null
-    # sink to the real sink only takes effect once samples flow again.
+    """Reverse the duck: SIGCONT, then move parked / unmute muted."""
+    # SIGCONT BEFORE moves/unmutes — pulse buffers anything the resumed
+    # process writes regardless of where the sink-input lives, and the
+    # ordering keeps the resume-audio gap small.
     resumed: list[str] = []
     for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
@@ -440,7 +498,7 @@ def _resume_active_playback() -> None:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
     restored: list[str] = []
-    for sink_input_id in _player_sink_input_ids():
+    for sink_input_id in _player_sink_input_ids_for(_SIGSTOP_PLAYER_BINARIES):
         try:
             r = subprocess.run(
                 ["pactl", "move-sink-input", sink_input_id, "@DEFAULT_SINK@"],
@@ -450,9 +508,22 @@ def _resume_active_playback() -> None:
                 restored.append(sink_input_id)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    unmuted: list[str] = []
+    for sink_input_id in _player_sink_input_ids_for(_MUTE_ONLY_PLAYER_BINARIES):
+        try:
+            r = subprocess.run(
+                ["pactl", "set-sink-input-mute", sink_input_id, "0"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                unmuted.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
     logger.info(
         "resume_active_playback",
-        sigcont=resumed, restored_sink_inputs=restored,
+        sigcont=resumed,
+        restored_sink_inputs=restored,
+        unmuted_sink_inputs=unmuted,
     )
 
 
@@ -2064,10 +2135,34 @@ def start_voice_listener(ma_service):
                             # speaker bleed even when nobody's speaking.
                             # Mirrors barge_in's two-tier (low OWW + energy
                             # above baseline) approach.
+                            #
+                            # EXCEPT when the OWW score is overwhelmingly
+                            # high (default 0.95+). At that confidence the
+                            # model is essentially declaring "this IS the
+                            # wake phrase" — defer to it instead of the
+                            # gate, because otherwise the user yelling
+                            # "Hey Jarvis" to stop their own music gets
+                            # trapped (logged scores up to 0.999 suppressed
+                            # in the wild on 2026-06-03; user had to power-
+                            # cycle the node). False positives at that
+                            # confidence level are vanishingly rare even
+                            # against music bleed.
                             sorted_rms = sorted(pre_wake_rms_values)
                             baseline_rms = sorted_rms[len(sorted_rms) // 2]
                             energy_floor = baseline_rms * music_energy_multiplier
-                            if rms <= energy_floor:
+                            trust_score = Config.get_float(
+                                "wake_music_trust_score", 0.95,
+                            )
+                            if score >= trust_score:
+                                logger.info(
+                                    "wake-music-trust-score-bypass",
+                                    score=round(float(score), 3),
+                                    rms=round(rms, 1),
+                                    baseline_rms=round(baseline_rms, 1),
+                                    energy_floor=round(energy_floor, 1),
+                                    trust_score=trust_score,
+                                )
+                            elif rms <= energy_floor:
                                 fire_wake = False
                                 if score > 0.08:
                                     logger.info(
@@ -2405,7 +2500,27 @@ def start_voice_listener(ma_service):
                     on_complete=_on_complete,
                 ) -> None:
                     _restore_music()
+                    # The TLV320 driver can't resume from SUSPENDED on this
+                    # hardware — pulse logs "Resume failed, couldn't
+                    # restore original sample settings" the moment a new
+                    # sink-input arrives. Between TTS aplay exiting and
+                    # the deferred-play hook firing, the sink frequently
+                    # transitions IDLE → SUSPENDED in a tiny window where
+                    # an IDLE check would miss it. Force a fresh alsa-card
+                    # reload here so the deferred player's sink-input
+                    # (librespot / MA / mpv) lands on a guaranteed-healthy
+                    # sink. ~500ms cost, only when on_complete is set.
                     if on_complete is not None:
+                        try:
+                            from utils.audio_volume import (
+                                force_reload_alsa_card,
+                            )
+                            force_reload_alsa_card()
+                        except Exception as e:
+                            logger.debug(
+                                "Pre-deferred-play reload raised",
+                                error=str(e),
+                            )
                         try:
                             on_complete()
                         except Exception as e:
