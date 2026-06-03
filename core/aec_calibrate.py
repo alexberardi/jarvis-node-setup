@@ -26,6 +26,8 @@ import numpy as np
 
 from jarvis_log_client import JarvisLogger
 
+from utils.audio_volume import reload_alsa_card_if_suspended
+
 if TYPE_CHECKING:
     from core.aec_reference import ReferenceReader
     from core.audio_bus import AudioBus
@@ -69,14 +71,12 @@ def calibrate_speaker_mic_delay(
         logger.warning("AEC calibration: paplay not on PATH; skipping")
         return None
 
-    # PipeWire-Pulse aggressively auto-suspends idle sinks. At startup
-    # nothing has played yet, so the sink hardware is cold-suspended and
-    # parec's monitor produces silence. paplay wakes the sink, but the
-    # resume path can drop short bursts entirely if the data looks like
-    # silence — so the warmup must be *audible* enough that PA actually
-    # routes it through the hardware. Low-amplitude white noise (~ -40
-    # dBFS) is inaudible at normal listening volumes but non-silent
-    # enough that PA keeps the hardware running through the chirp.
+    # At boot the PA sink is frequently in the wedged-SUSPENDED state
+    # (see utils.audio_volume.reload_alsa_card_if_suspended) — paplay
+    # would attach but the chirp would vanish into a suspended sink and
+    # the mic would capture only zeros, failing the peak-SNR threshold.
+    # Recover the sink before playing the chirp. The low-amplitude pre-
+    # noise warmup also keeps the sink awake through the chirp itself.
     pre_noise_samples = int(aec_rate * pre_silence_ms / 1000)
     rng = np.random.default_rng(0xA5C4115)
     pre_noise = (rng.standard_normal(pre_noise_samples) * 200.0).astype(np.int16)
@@ -84,16 +84,7 @@ def calibrate_speaker_mic_delay(
     playback = np.concatenate([pre_noise, chirp])
     capture_duration_ms = capture_duration_ms + pre_silence_ms
 
-    # Best-effort: tell PA the sink should not be suspended. No-op if
-    # already running; complements the noise warmup above.
-    if shutil.which("pactl"):
-        try:
-            subprocess.run(
-                ["pactl", "suspend-sink", "@DEFAULT_SINK@", "0"],
-                check=False, timeout=2, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+    reload_alsa_card_if_suspended()
 
     sub_name = "aec_calibrate"
     try:
