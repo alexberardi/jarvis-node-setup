@@ -1,6 +1,7 @@
 import faulthandler
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -704,6 +705,45 @@ def main():
             logger.info("LLM warmup complete")
         except Exception as e:
             logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+
+    # Spawn a continuous silent stream on the default sink so the TLV320
+    # ALSA driver never gets a chance to wedge into SUSPENDED. With
+    # nothing actively pushing audio, pulse marks the sink IDLE and the
+    # driver enters a state it can't reliably resume from ("Resume
+    # failed, couldn't restore original sample settings" floods pulse's
+    # journal). A 0-amplitude /dev/zero feed costs <0.2% CPU and a few
+    # MB of RAM but keeps the sink permanently RUNNING.
+    #
+    # Rate/format MUST match the sink's native (48 kHz stereo s16le on
+    # the TLV320). Mismatched formats force pulse to resample the
+    # keepalive stream AND any concurrent stream against each other,
+    # which produces audible static at higher output volumes — the
+    # 2026-06-03 user report of "staticky feedback when volume is
+    # higher" disappeared once the rate was raised from 8 kHz mono.
+    _sink_keepalive_proc: subprocess.Popen | None = None
+    try:
+        _sink_keepalive_proc = subprocess.Popen(
+            [
+                "paplay",
+                "--raw",
+                "--rate=48000",
+                "--channels=2",
+                "--format=s16le",
+                "/dev/zero",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        logger.info(
+            "Sink keepalive started", pid=_sink_keepalive_proc.pid,
+        )
+    except Exception as e:
+        logger.warning(
+            "Sink keepalive failed to start; sink-wedge fallback recovery "
+            "will still fire on each TTS, but the gap window remains",
+            error=str(e),
+        )
 
     # Start voice listener with retry (blocks until KeyboardInterrupt or audio failure)
     max_voice_retries: int = 3

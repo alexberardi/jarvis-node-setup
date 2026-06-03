@@ -43,44 +43,27 @@ def _run(cmd: list[str], timeout: float = 2.0) -> subprocess.CompletedProcess | 
         return None
 
 
-def reload_alsa_card_if_suspended() -> bool:
-    """Recover a SUSPENDED PA sink by unloading + reloading module-alsa-card.
-
-    On the TLV320AIC3104 (ReSpeaker v2 HAT) the sink frequently ends up in
-    SUSPENDED state after a long wake-to-TTS gap (e.g. a slow Spotify
-    handler + LLM fall-through). aplay then attaches a sink-input but the
-    sink never drains — aplay blocks in the kernel until killed and
-    jarvis-node stays in "audio playing" state forever.
-
-    `pactl suspend-sink @DEFAULT_SINK@ 0` returns "Invalid argument" on
-    this hardware and does NOT actually wake the sink. The only sequence
-    that reliably recovers is unloading module-alsa-card and reloading it
-    with the same args — empirically validated on both kitchen and dev.
-
-    Cheap (~5-10ms `pactl list short sinks`) when the sink is healthy, so
-    safe to call inline before each TTS playback. The recovery itself
-    takes ~500ms but only runs when the sink is actually wedged.
-
-    install.sh's 99-jarvis-no-suspend.pa drop-in covers the
-    module-suspend-on-idle re-suspend path; this covers the
-    can't-resume-once-suspended path that pa.d alone can't address.
-
-    Returns True if a reload was needed and attempted; False if the sink
-    was already healthy or pactl is unavailable. Never raises.
-    """
+def _alsa_sink_suspended() -> bool:
+    """True if any sink driven by ``module-alsa-card`` is in SUSPENDED state."""
     sinks = _run(["pactl", "list", "short", "sinks"], timeout=1.0)
     if sinks is None or sinks.returncode != 0:
         return False
     # Each line: <id>\t<name>\t<driver>\t<format>\t<state>
-    suspended_via_alsa = False
     for line in sinks.stdout.splitlines():
         fields = line.split("\t")
         if len(fields) >= 5 and fields[2] == "module-alsa-card.c" and fields[4] == "SUSPENDED":
-            suspended_via_alsa = True
-            break
-    if not suspended_via_alsa:
-        return False
+            return True
+    return False
 
+
+def _reload_alsa_card_module(reason: str) -> bool:
+    """Unload + reload module-alsa-card with its current args. Returns True on success.
+
+    This is the only sequence that reliably wakes a TLV320 sink that has
+    fallen into SUSPENDED — ``pactl suspend-sink ... 0`` returns "Invalid
+    argument" on this hardware. Destroying and recreating the sink clears
+    every internal suspend_cause bit.
+    """
     modules_short = _run(["pactl", "list", "short", "modules"], timeout=1.0)
     if modules_short is None or modules_short.returncode != 0:
         return False
@@ -113,10 +96,19 @@ def reload_alsa_card_if_suspended() -> bool:
         return False
 
     logger.warning(
-        "Recovering wedged audio sink via module-alsa-card reload",
+        "Reloading module-alsa-card",
         alsa_card_id=alsa_card_id,
+        reason=reason,
     )
     _run(["pactl", "unload-module", alsa_card_id], timeout=2.0)
+    # Give pulse/ALSA a moment to release the underlying PCM device.
+    # Without this brief settle, the immediate reload sometimes lands on
+    # a half-closed kernel device and the new sink comes up in a state
+    # where subsequent sink-input attaches trigger "Resume failed,
+    # couldn't restore original sample settings." Manual recovery
+    # (unload + sleep 1 + load) always works — match that pacing.
+    import time as _time_mod
+    _time_mod.sleep(0.6)
     # The Argument string contains quoted values (e.g. card_properties=
     # "module-udev-detect.discovered=1") — shell=True is required so the
     # shell parses it as a word list with proper quoting. If the load fails
@@ -132,9 +124,52 @@ def reload_alsa_card_if_suspended() -> bool:
                 "alsa-card reload failed; sink will remain absent until pulse restart",
                 stderr=result.stderr.strip(),
             )
+            return False
     except (subprocess.TimeoutExpired, OSError) as e:
         logger.error("pactl reload alsa-card raised", error=str(e))
+        return False
     return True
+
+
+def reload_alsa_card_if_suspended() -> bool:
+    """Recover a SUSPENDED PA sink by unloading + reloading module-alsa-card.
+
+    On the TLV320AIC3104 (ReSpeaker v2 HAT) the sink frequently ends up in
+    SUSPENDED state after a long wake-to-TTS gap. aplay then attaches a
+    sink-input but the sink never drains — aplay blocks in the kernel
+    until killed and jarvis-node stays in "audio playing" state forever.
+
+    Cheap (~25ms ``pactl list short sinks``) when the sink is healthy, so
+    safe to call inline before each TTS playback. The recovery itself
+    takes ~500ms but only runs when the sink is actually wedged.
+
+    Returns True if a reload was needed and attempted; False if the sink
+    was already healthy or pactl is unavailable. Never raises.
+    """
+    if not _alsa_sink_suspended():
+        return False
+    return _reload_alsa_card_module(reason="sink SUSPENDED")
+
+
+def force_reload_alsa_card() -> bool:
+    """Unconditionally reload module-alsa-card.
+
+    Use ONLY at moments where we know the sink is about to be attached to
+    by a freshly-spawned consumer (notably ``on_response_complete`` for
+    deferred media playback). The TLV320 driver's resume-from-SUSPENDED
+    path is broken — pulse logs "Resume failed, couldn't restore original
+    sample settings" the moment librespot/MA/mpv creates its sink-input.
+
+    Checking-then-reloading misses the gap: between TTS aplay exiting and
+    the deferred player attaching, the sink can be IDLE (not SUSPENDED
+    yet) when we check, then go SUSPENDED a moment later. By the time the
+    deferred play fires it's too late to recover from the new sink-input
+    side.
+
+    ~500ms cost. Only call from the deferred-play hook, NOT inline before
+    every aplay (use reload_alsa_card_if_suspended for that).
+    """
+    return _reload_alsa_card_module(reason="pre-deferred-play")
 
 
 # ── Audio card discovery (diagnostic only) ──────────────────────────────────

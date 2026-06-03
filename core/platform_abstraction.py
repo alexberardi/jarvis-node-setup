@@ -201,6 +201,25 @@ class AudioProvider(ABC):
             sample_width=sample_width,
             format=format_arg,
         )
+        # Belt-and-suspenders: if a previous call's playback proc didn't
+        # clean up (which it should — the iterator/cleanup overhaul in
+        # the upstream caller closes this gap — but a leaked aplay holds
+        # a sink-input that confuses recovery, the duck logic, and audio
+        # routing), kill it before starting fresh.
+        with self._playback_lock:
+            stale = self._playback_proc
+        if stale is not None and stale.poll() is None:
+            try:
+                stale.kill()
+                stale.wait(timeout=1.0)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            logger.warning(
+                "Killed stale playback proc before starting new aplay",
+                pid=stale.pid,
+            )
+        self._clear_playback_proc()
+
         # If the sink is in the wedged-SUSPENDED state, aplay would attach
         # but block forever. Recover by reloading module-alsa-card before
         # launching aplay. No-op when the sink is healthy.
@@ -524,11 +543,34 @@ class PiAudioProvider(AudioProvider):
                     stderr=subprocess.PIPE,
                 )
             self._set_playback_proc(proc)
+            # Hard ceiling on aplay's lifetime. If the underlying ALSA sink
+            # goes SUSPENDED mid-stream (TLV320 driver wedges despite our
+            # pa.d disable of module-suspend-on-idle), aplay blocks in the
+            # kernel on snd_pcm_drain forever. Without this timeout the
+            # poll loop never exits, the LED stays "speaking" forever, and
+            # the wake-cycle's finally — including the on_response_complete
+            # callback that starts deferred music — never fires. 60s is way
+            # more than any realistic TTS message and well under "user
+            # gives up and pulls the plug."
+            _APLAY_HARD_TIMEOUT_S: float = 60.0
+            start = _time.monotonic()
             try:
                 while proc.poll() is None:
                     if self._cancel_event.is_set():
                         proc.kill()
                         logger.info("aplay cancelled (barge-in)")
+                        return False
+                    if _time.monotonic() - start > _APLAY_HARD_TIMEOUT_S:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        logger.warning(
+                            "aplay exceeded hard timeout; killed",
+                            timeout_s=_APLAY_HARD_TIMEOUT_S,
+                            file_path=file_path,
+                        )
                         return False
                     _time.sleep(0.05)
                 return proc.returncode == 0
