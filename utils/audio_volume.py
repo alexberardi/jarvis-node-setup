@@ -43,6 +43,100 @@ def _run(cmd: list[str], timeout: float = 2.0) -> subprocess.CompletedProcess | 
         return None
 
 
+def reload_alsa_card_if_suspended() -> bool:
+    """Recover a SUSPENDED PA sink by unloading + reloading module-alsa-card.
+
+    On the TLV320AIC3104 (ReSpeaker v2 HAT) the sink frequently ends up in
+    SUSPENDED state after a long wake-to-TTS gap (e.g. a slow Spotify
+    handler + LLM fall-through). aplay then attaches a sink-input but the
+    sink never drains — aplay blocks in the kernel until killed and
+    jarvis-node stays in "audio playing" state forever.
+
+    `pactl suspend-sink @DEFAULT_SINK@ 0` returns "Invalid argument" on
+    this hardware and does NOT actually wake the sink. The only sequence
+    that reliably recovers is unloading module-alsa-card and reloading it
+    with the same args — empirically validated on both kitchen and dev.
+
+    Cheap (~5-10ms `pactl list short sinks`) when the sink is healthy, so
+    safe to call inline before each TTS playback. The recovery itself
+    takes ~500ms but only runs when the sink is actually wedged.
+
+    install.sh's 99-jarvis-no-suspend.pa drop-in covers the
+    module-suspend-on-idle re-suspend path; this covers the
+    can't-resume-once-suspended path that pa.d alone can't address.
+
+    Returns True if a reload was needed and attempted; False if the sink
+    was already healthy or pactl is unavailable. Never raises.
+    """
+    sinks = _run(["pactl", "list", "short", "sinks"], timeout=1.0)
+    if sinks is None or sinks.returncode != 0:
+        return False
+    # Each line: <id>\t<name>\t<driver>\t<format>\t<state>
+    suspended_via_alsa = False
+    for line in sinks.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 5 and fields[2] == "module-alsa-card.c" and fields[4] == "SUSPENDED":
+            suspended_via_alsa = True
+            break
+    if not suspended_via_alsa:
+        return False
+
+    modules_short = _run(["pactl", "list", "short", "modules"], timeout=1.0)
+    if modules_short is None or modules_short.returncode != 0:
+        return False
+    alsa_card_id: str | None = None
+    for line in modules_short.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) >= 2 and fields[1] == "module-alsa-card":
+            alsa_card_id = fields[0]
+            break
+    if alsa_card_id is None:
+        return False
+
+    modules_full = _run(["pactl", "list", "modules"], timeout=2.0)
+    if modules_full is None or modules_full.returncode != 0:
+        return False
+    args: str | None = None
+    in_target = False
+    for line in modules_full.stdout.splitlines():
+        if line.startswith(f"Module #{alsa_card_id}"):
+            in_target = True
+            continue
+        if in_target and line.startswith("Module #"):
+            break
+        if in_target:
+            stripped = line.lstrip()
+            if stripped.startswith("Argument:"):
+                args = stripped[len("Argument:"):].strip()
+                break
+    if not args:
+        return False
+
+    logger.warning(
+        "Recovering wedged audio sink via module-alsa-card reload",
+        alsa_card_id=alsa_card_id,
+    )
+    _run(["pactl", "unload-module", alsa_card_id], timeout=2.0)
+    # The Argument string contains quoted values (e.g. card_properties=
+    # "module-udev-detect.discovered=1") — shell=True is required so the
+    # shell parses it as a word list with proper quoting. If the load fails
+    # the card stays absent until pulse restart; udev-detect won't re-add
+    # it absent a fresh udev event, so we log loudly on failure.
+    try:
+        result = subprocess.run(
+            f"pactl load-module module-alsa-card {args}",
+            shell=True, capture_output=True, text=True, timeout=3.0,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "alsa-card reload failed; sink will remain absent until pulse restart",
+                stderr=result.stderr.strip(),
+            )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.error("pactl reload alsa-card raised", error=str(e))
+    return True
+
+
 # ── Audio card discovery (diagnostic only) ──────────────────────────────────
 
 # Pi's built-in HDMI audio device — present on every Pi whether a screen
