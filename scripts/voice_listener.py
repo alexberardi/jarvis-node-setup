@@ -330,15 +330,57 @@ def _player_sink_input_ids() -> list[str]:
     return ids
 
 
+# Dedicated null sink for parking player sink-inputs during wake. Moving
+# them off the real ALSA sink (instead of merely muting) means pulse no
+# longer expects samples from them — without this, an uncorked-but-frozen
+# sink-input causes underrun on the real sink, and after enough seconds
+# pulse wedges the sink in a SUSPENDED state that can only be recovered
+# by reloading module-alsa-card (see utils.audio_volume). Moving to null
+# eliminates the underrun entirely.
+_DUCK_NULL_SINK_NAME = "jarvis_duck_null"
+
+
+def _ensure_duck_null_sink() -> None:
+    """Idempotently create the duck null sink used by _pause_active_playback."""
+    try:
+        r = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            timeout=2.0, capture_output=True, text=True,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return
+    if r.returncode != 0:
+        return
+    if any(_DUCK_NULL_SINK_NAME in line for line in r.stdout.splitlines()):
+        return
+    try:
+        subprocess.run(
+            [
+                "pactl", "load-module", "module-null-sink",
+                f"sink_name={_DUCK_NULL_SINK_NAME}",
+                "sink_properties=device.description=jarvis-duck-null",
+            ],
+            timeout=2.0, capture_output=True,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
 def _pause_active_playback() -> None:
     """Silence any active media-player subprocesses immediately.
 
-    Two-pronged: SIGSTOP halts the process so it stops producing new audio,
-    AND we mute its PA sink-input so audio already buffered by PA doesn't
-    keep playing while the listener captures the user's command. Without
-    the sink-input mute, spotifyd's PA buffer (~1-5s of audio) bleeds into
-    the mic and Whisper transcribes the music instead of the user's speech
-    (returns markers like "(wind blowing)" / "(music)").
+    Three-pronged:
+    - MOVE the PA sink-input off the real ALSA sink to the duck null sink.
+      This is functionally equivalent to corking (which pulse doesn't
+      expose via pactl) — pulse keeps reading samples from the process,
+      they just go to a sink that discards them. Without this step, an
+      uncorked-but-SIGSTOP'd sink-input causes underrun on the real sink
+      and after ~15s pulse wedges it in SUSPENDED. See utils.audio_volume
+      for the recovery path that handles the rare case this slips through.
+    - SIGSTOP the process so it stops generating new audio.
+    - Move covers what mute used to cover (silencing buffered audio in the
+      sink-input queue): the queue is now attached to a null sink, so
+      anything in it plays out silently rather than to the speaker.
 
     No internal "is-paused" flag: a previous version tracked state in a
     global so overlapping wake events wouldn't double-pause, but the flag
@@ -346,6 +388,18 @@ def _pause_active_playback() -> None:
     then stuck at True — preventing the actual pause on the NEXT wake when
     music WAS playing. pkill/pactl against missing targets is harmless.
     """
+    _ensure_duck_null_sink()
+    parked: list[str] = []
+    for sink_input_id in _player_sink_input_ids():
+        try:
+            r = subprocess.run(
+                ["pactl", "move-sink-input", sink_input_id, _DUCK_NULL_SINK_NAME],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                parked.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
     stopped: list[str] = []
     for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
@@ -357,41 +411,18 @@ def _pause_active_playback() -> None:
                 stopped.append(binary)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
-    muted: list[str] = []
-    for sink_input_id in _player_sink_input_ids():
-        try:
-            r = subprocess.run(
-                ["pactl", "set-sink-input-mute", sink_input_id, "1"],
-                timeout=2.0, capture_output=True,
-            )
-            if r.returncode == 0:
-                muted.append(sink_input_id)
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
     logger.info(
         "pause_active_playback",
-        sigstopped=stopped, muted_sink_inputs=muted,
+        parked_sink_inputs=parked, sigstopped=stopped,
     )
 
 
 def _resume_active_playback() -> None:
-    """Reverse the duck: unmute the player sink-inputs, then SIGCONT."""
-    # Unmute BEFORE SIGCONT — otherwise SIGCONT releases the process which
-    # immediately writes audio to a still-muted sink-input (silently
-    # discarded), then we unmute and the user hears resumed playback half
-    # a beat later than the response finished. Unmuting first means the
-    # buffered audio re-engages the moment we SIGCONT.
-    unmuted: list[str] = []
-    for sink_input_id in _player_sink_input_ids():
-        try:
-            r = subprocess.run(
-                ["pactl", "set-sink-input-mute", sink_input_id, "0"],
-                timeout=2.0, capture_output=True,
-            )
-            if r.returncode == 0:
-                unmuted.append(sink_input_id)
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+    """Reverse the duck: SIGCONT the players, then move sink-inputs back."""
+    # SIGCONT BEFORE the move — pulse buffers anything the resumed process
+    # writes regardless of which sink the sink-input is attached to, so
+    # ordering doesn't gap audio. Moving the sink-input back from the null
+    # sink to the real sink only takes effect once samples flow again.
     resumed: list[str] = []
     for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
@@ -403,9 +434,20 @@ def _resume_active_playback() -> None:
                 resumed.append(binary)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    restored: list[str] = []
+    for sink_input_id in _player_sink_input_ids():
+        try:
+            r = subprocess.run(
+                ["pactl", "move-sink-input", sink_input_id, "@DEFAULT_SINK@"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                restored.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
     logger.info(
         "resume_active_playback",
-        unmuted_sink_inputs=unmuted, sigcont=resumed,
+        sigcont=resumed, restored_sink_inputs=restored,
     )
 
 
@@ -1523,6 +1565,11 @@ def _follow_up_loop(
                 if result.get("clear_history"):
                     logger.info("Conversation complete (clear_history), ending follow-up")
                     should_break = True
+                if result.get("not_for_me"):
+                    logger.info("Follow-up result signalled not_for_me, ending follow-up")
+                    cooldown = _record_not_for_me_event()
+                    suppress_wake_for(cooldown, reason="not_for_me_followup")
+                    should_break = True
             else:
                 # No conversation context — start fresh
                 result = command_service.process_voice_command(
@@ -1533,6 +1580,11 @@ def _follow_up_loop(
                 conversation_id = result.get("conversation_id") if result.get("success") else None
                 if result.get("clear_history"):
                     logger.info("Conversation complete (clear_history), ending follow-up")
+                    should_break = True
+                if result.get("not_for_me"):
+                    logger.info("Follow-up result signalled not_for_me, ending follow-up")
+                    cooldown = _record_not_for_me_event()
+                    suppress_wake_for(cooldown, reason="not_for_me_followup")
                     should_break = True
 
             # Capture TTS-end timestamp HERE (right after speak_result), not
