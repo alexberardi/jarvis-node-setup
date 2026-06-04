@@ -223,6 +223,92 @@ class ReminderService:
 
             self._persist(reminder)
 
+    def update_reminder(
+        self,
+        reminder_id: str,
+        patch: dict[str, Any],
+        user_id: int | None = None,
+    ) -> tuple[ReminderData | None, str | None]:
+        """Apply a patch to an existing reminder.
+
+        Used by the mobile command-data browser. The patch is a plain dict
+        overlay limited to the fields ReminderCommand.editable_fields()
+        marks editable (text, due_at, recurrence). The handler is expected
+        to have already filtered the patch to writable keys — this method
+        applies whatever it's given but ignores unknown keys defensively.
+
+        Updates the in-memory `_reminders` entry so the scheduler picks up
+        the new due_at without a restart. When `recurrence` changes, resets
+        `announced`, `announce_count`, `last_announced_at`, and
+        `snooze_until` so a previously-fired reminder can fire again on its
+        new schedule.
+
+        Returns:
+            (updated_reminder, None) on success.
+            (None, error_message) on failure (not found, cross-user access,
+            bad due_at, bad recurrence).
+        """
+        with self._lock:
+            reminder = self._reminders.get(reminder_id)
+            if reminder is None:
+                return None, f"Reminder {reminder_id} not found"
+
+            if (
+                user_id is not None
+                and reminder.user_id is not None
+                and reminder.user_id != user_id
+            ):
+                return None, f"Reminder {reminder_id} not found"
+
+            recurrence_changed = (
+                "recurrence" in patch and patch["recurrence"] != reminder.recurrence
+            )
+
+            if "text" in patch:
+                new_text = patch["text"]
+                if not isinstance(new_text, str) or not new_text.strip():
+                    return None, "text must be a non-empty string"
+                reminder.text = new_text.strip()
+
+            if "due_at" in patch:
+                raw_due = patch["due_at"]
+                if not isinstance(raw_due, str):
+                    return None, "due_at must be an ISO 8601 string"
+                try:
+                    parsed = datetime.fromisoformat(raw_due)
+                except ValueError:
+                    return None, f"due_at is not a valid ISO 8601 timestamp: {raw_due}"
+                if parsed.tzinfo is None:
+                    parsed = parsed.astimezone()
+                reminder.due_at = parsed.isoformat()
+
+            if "recurrence" in patch:
+                new_recurrence = patch["recurrence"]
+                if new_recurrence is not None and new_recurrence not in {
+                    "daily", "weekdays", "weekly", "biweekly", "monthly",
+                }:
+                    return None, f"unknown recurrence: {new_recurrence}"
+                reminder.recurrence = new_recurrence
+
+            if recurrence_changed:
+                # The reminder's firing history is meaningless on the new
+                # schedule — let it fire again at the next due_at.
+                reminder.announced = False
+                reminder.announce_count = 0
+                reminder.last_announced_at = None
+                reminder.snooze_until = None
+
+            self._persist(reminder)
+
+        logger.info(
+            "Reminder updated",
+            reminder_id=reminder_id,
+            patched_keys=sorted(patch.keys()),
+            recurrence_changed=recurrence_changed,
+            user_id=user_id,
+        )
+        return reminder, None
+
     def snooze_reminder(self, reminder_id: str, minutes: int = 10) -> ReminderData | None:
         """Snooze a reminder for N minutes."""
         now = datetime.now(timezone.utc)

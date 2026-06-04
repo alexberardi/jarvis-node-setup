@@ -15,8 +15,10 @@ from jarvis_command_sdk import (
     CommandAntipattern,
     CommandExample,
     FastPathPattern,
+    FieldSpec,
     IJarvisCommand,
     PreRouteResult,
+    RecordSummary,
 )
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -201,6 +203,44 @@ class ReminderCommand(IJarvisCommand):
                 description="Short relative-duration countdowns: 'set a timer for 5 minutes', 'timer for 30 seconds', 'countdown from 10', 'wake me up in 5 minutes'.",
             ),
         ]
+
+    # ── Mobile command-data browser ───────────────────────────────────────
+
+    @property
+    def data_browser_storage_name(self) -> str:
+        # Historical: records persist under "set_reminder", not "reminder".
+        from services.reminder_service import COMMAND_NAME
+        return COMMAND_NAME
+
+    def editable_fields(self) -> List[FieldSpec]:
+        return [
+            FieldSpec("reminder_id", "id", label="ID", editable=False),
+            FieldSpec("text", "string", label="What", required=True),
+            FieldSpec("due_at", "datetime", label="When", required=True),
+            FieldSpec(
+                "recurrence",
+                "enum",
+                label="Repeat",
+                enum_values=_RECURRENCE_VALUES,
+            ),
+            FieldSpec("snooze_until", "datetime", label="Snoozed until", editable=False),
+            FieldSpec("user_id", "user_ref", label="Owner", editable=False),
+            FieldSpec("announced", "bool", label="Fired", editable=False),
+            FieldSpec("announce_count", "int", label="Times fired", editable=False),
+            FieldSpec("last_announced_at", "datetime", label="Last fired", editable=False),
+            FieldSpec("created_at", "datetime", label="Created", editable=False),
+        ]
+
+    def display_summary(self, record: dict) -> RecordSummary:
+        text = record.get("text") or "Reminder"
+        due_at = record.get("due_at")
+        subtitle = ReminderService.format_due_at_human(due_at) if due_at else None
+        recurrence = record.get("recurrence")
+        if recurrence and subtitle:
+            subtitle = f"{subtitle} • {recurrence}"
+        elif recurrence:
+            subtitle = recurrence
+        return RecordSummary(title=str(text), subtitle=subtitle, icon="bell")
 
     # ── Examples ──────────────────────────────────────────────────────
 

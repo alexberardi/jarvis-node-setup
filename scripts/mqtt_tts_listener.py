@@ -1511,6 +1511,22 @@ def _process_config_push() -> None:
         logger.error("Config push processing failed", error=str(e))
 
 
+def _handle_command_data_topic(request_topic: str, raw_payload: bytes, op: str) -> None:
+    """Dispatch a mobile command-data browser request to the handler module.
+
+    Runs on the shared task executor. Response publishing happens inside
+    the handler, which uses the global `_mqtt_client` reference."""
+    if _mqtt_client is None:
+        logger.warning(
+            "command-data request arrived before MQTT client ready",
+            topic=request_topic,
+            op=op,
+        )
+        return
+    from services.command_data_handler import handle_command_data_request
+    handle_command_data_request(_mqtt_client, request_topic, raw_payload, op)
+
+
 def _handle_settings_request_notification(raw_payload: bytes) -> None:
     """Handle settings snapshot request MQTT notification."""
     try:
@@ -2115,6 +2131,12 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
     if msg.topic.endswith("/factory-reset"):
         _offload(_handle_factory_reset, msg.payload)
         return
+
+    if "/command-data/" in msg.topic and "/response/" not in msg.topic:
+        op = msg.topic.rsplit("/command-data/", 1)[-1]
+        if op in ("commands", "schema", "list", "get", "update", "delete"):
+            _offload(_handle_command_data_topic, msg.topic, msg.payload, op)
+            return
 
     try:
         payload: List[Dict[str, Any]] = json.loads(msg.payload.decode())
