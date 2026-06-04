@@ -16,6 +16,7 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    DataBrowserMode,
     FastPathPattern,
     IJarvisCommand,
     PreRouteResult,
@@ -145,6 +146,12 @@ class RoutineCommand(IJarvisCommand):
     @property
     def command_name(self) -> str:
         return "routine"
+
+    @property
+    def data_browser_mode(self) -> DataBrowserMode:
+        # Routines have a dedicated builder under /api/v0/mobile/routines; the
+        # generic command-data browser would duplicate that surface.
+        return "disabled"
 
     @property
     def description(self) -> str:
