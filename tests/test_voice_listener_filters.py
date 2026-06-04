@@ -7,8 +7,6 @@ sqlcipher, no libspeexdsp). voice_listener re-exports the same names
 at runtime.
 """
 
-import time
-
 import pytest
 
 from core import voice_filters
@@ -84,95 +82,16 @@ class TestIsNonSpeechRealUtterances:
 
 
 # ---------------------------------------------------------------------------
-# Wake-suppression gate
+# Wake-acceptance gate — debounce only
 # ---------------------------------------------------------------------------
-
-
-class TestSuppressWakeFor:
-    """The wake-acceptance gate is monotonically pushed forward only."""
-
-    def setup_method(self):
-        voice_filters.reset_wake_gate()
-
-    def test_extends_when_target_is_further(self):
-        voice_filters.suppress_wake_for(10.0, reason="test")
-        first = voice_filters.get_wake_min_next_ts()
-        # A 20s push is further out — must replace the gate.
-        voice_filters.suppress_wake_for(20.0, reason="test")
-        assert voice_filters.get_wake_min_next_ts() > first
-
-    def test_does_not_shrink_gate(self):
-        voice_filters.suppress_wake_for(60.0, reason="long")
-        long_target = voice_filters.get_wake_min_next_ts()
-        # A 5s push would shrink the gate — must be a no-op.
-        voice_filters.suppress_wake_for(5.0, reason="short")
-        assert voice_filters.get_wake_min_next_ts() == long_target
-
-    def test_zero_or_negative_seconds_is_noop(self):
-        voice_filters.suppress_wake_for(0.0, reason="zero")
-        assert voice_filters.get_wake_min_next_ts() == 0.0
-        voice_filters.suppress_wake_for(-5.0, reason="neg")
-        assert voice_filters.get_wake_min_next_ts() == 0.0
-
-
-class TestNotForMeMultiFireCooldown:
-    """A single ``not_for_me`` uses the standard cool-down; ≥2 within the
-    rolling window escalate to the longer cool-down. Side conversations
-    cluster — once we've seen two we widen the gate before more wakes
-    fire on the same conversation.
-    """
-
-    def setup_method(self):
-        voice_filters.reset_wake_gate()
-
-    def test_single_event_returns_standard_cooldown(self, monkeypatch):
-        def fake_get_float(key, default):
-            return default
-        monkeypatch.setattr(voice_filters.Config, "get_float", fake_get_float)
-
-        cooldown = voice_filters.record_not_for_me_event()
-        assert cooldown == voice_filters._NOT_FOR_ME_QUIET_SEC_DEFAULT
-
-    def test_second_event_within_window_escalates(self, monkeypatch):
-        def fake_get_float(key, default):
-            return default
-        monkeypatch.setattr(voice_filters.Config, "get_float", fake_get_float)
-
-        voice_filters.record_not_for_me_event()
-        cooldown = voice_filters.record_not_for_me_event()
-        assert cooldown == voice_filters._NOT_FOR_ME_ESCALATED_SEC_DEFAULT
-
-    def test_second_event_outside_window_does_not_escalate(self, monkeypatch):
-        def fake_get_float(key, default):
-            return default
-        monkeypatch.setattr(voice_filters.Config, "get_float", fake_get_float)
-
-        # First fire lands far in the past; the prune step in the
-        # tracker should drop it so the next call sees count=1.
-        old_ts = time.monotonic() - voice_filters._NOT_FOR_ME_HISTORY_WINDOW_SEC - 5.0
-        voice_filters._not_for_me_history.append(old_ts)
-
-        cooldown = voice_filters.record_not_for_me_event()
-        assert cooldown == voice_filters._NOT_FOR_ME_QUIET_SEC_DEFAULT
-        # The stale entry must have been pruned, not retained.
-        assert all(
-            t >= time.monotonic() - voice_filters._NOT_FOR_ME_HISTORY_WINDOW_SEC
-            for t in voice_filters._not_for_me_history
-        )
-
-    def test_escalated_cooldown_is_configurable(self, monkeypatch):
-        # Verify the Config key is consulted on the escalated path so
-        # ops can tune without code changes.
-        seen_keys: list[str] = []
-
-        def fake_get_float(key, default):
-            seen_keys.append(key)
-            return default
-        monkeypatch.setattr(voice_filters.Config, "get_float", fake_get_float)
-
-        voice_filters.record_not_for_me_event()
-        voice_filters.record_not_for_me_event()
-        assert "not_for_me_escalated_quiet_seconds" in seen_keys
+#
+# The not_for_me cool-down + escalation mechanism that used to live here was
+# removed: locking the user out for tens of seconds after a probabilistic
+# verdict is the wrong abstraction. Misclassifies now silently skip TTS and
+# the next wake is accepted immediately. Voice_listener still pushes the
+# gate forward by ``_WAKE_DEBOUNCE_SEC`` on every accepted wake to swallow
+# openWakeWord's same-utterance double-fire — that policy is asserted at
+# the wake-fire site, not here.
 
 
 @pytest.fixture(autouse=True)
