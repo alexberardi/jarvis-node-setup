@@ -392,3 +392,195 @@ class TestResumeActivePlayback:
             and "11" in cmd and "0" in cmd
             for cmd in calls
         )
+
+
+# ---------------------------------------------------------------------------
+# _resolve_takeover_binary — SDK property wins; falls back to legacy map.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTakeoverBinary:
+
+    def test_sdk_property_wins(self):
+        """A command declaring takes_over_playback_binary opts in cleanly."""
+        cmd = MagicMock()
+        cmd.takes_over_playback_binary = "mpd"
+        cmd.command_name = "wholly_unknown"
+        assert music_control._resolve_takeover_binary(cmd) == "mpd"
+
+    def test_legacy_map_fallback(self):
+        """Existing music packages (no SDK property) resolve via command_name."""
+        cmd = MagicMock(spec=["command_name"])  # spec excludes the property attr
+        cmd.command_name = "audacy"
+        assert music_control._resolve_takeover_binary(cmd) == "mpd"
+
+        cmd.command_name = "spotify"
+        assert music_control._resolve_takeover_binary(cmd) == "go-librespot"
+
+        cmd.command_name = "music"
+        assert music_control._resolve_takeover_binary(cmd) == "shairport-sync"
+
+        cmd.command_name = "pandora"
+        assert music_control._resolve_takeover_binary(cmd) == "mpv"
+
+    def test_non_music_command_returns_none(self):
+        """Weather / calendar / etc. don't trigger the takeover hook."""
+        cmd = MagicMock(spec=["command_name"])
+        cmd.command_name = "get_weather"
+        assert music_control._resolve_takeover_binary(cmd) is None
+
+    def test_empty_property_falls_through_to_map(self):
+        """An empty-string property is treated as not-declared."""
+        cmd = MagicMock()
+        cmd.takes_over_playback_binary = ""
+        cmd.command_name = "audacy"
+        assert music_control._resolve_takeover_binary(cmd) == "mpd"
+
+
+# ---------------------------------------------------------------------------
+# stop_other_music_players — per-binary stop strategies + except guard.
+# ---------------------------------------------------------------------------
+
+
+class TestStopOtherMusicPlayers:
+
+    def test_no_active_players_is_noop(self, monkeypatch):
+        """Empty sink-input list short-circuits before any strategy runs."""
+        called: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs()),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int", lambda b: called.append(b),
+        )
+        music_control.stop_other_music_players()
+        assert called == []
+
+    def test_except_binary_is_skipped(self, monkeypatch):
+        """The calling command's binary is left alone — re-tuning audacy
+        shouldn't kill mpd."""
+        pkilled: list[str] = []
+        tcp_calls: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                _entry(10, "/usr/bin/mpd"),
+                _entry(11, "/usr/bin/mpv"),
+            )),
+        )
+        monkeypatch.setattr(
+            music_control, "_stop_mpd_via_tcp",
+            lambda: tcp_calls.append("mpd"),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        music_control.stop_other_music_players(except_binary="mpd")
+        assert tcp_calls == [], "mpd was excepted; TCP stop must not fire"
+        assert pkilled == ["mpv"], "non-excepted mpv must be SIGINT'd"
+
+    def test_mpd_uses_tcp_strategy(self, monkeypatch):
+        """mpd's strategy is the in-protocol stop, not pkill."""
+        pkilled: list[str] = []
+        tcp_calls: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                _entry(10, "/usr/bin/mpd"),
+            )),
+        )
+        monkeypatch.setattr(
+            music_control, "_stop_mpd_via_tcp",
+            lambda: tcp_calls.append("mpd"),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        music_control.stop_other_music_players(except_binary="spotify_dummy")
+        assert tcp_calls == ["mpd"]
+        assert pkilled == []
+
+    def test_go_librespot_uses_http_strategy(self, monkeypatch):
+        """go-librespot is stopped via its HTTP API, not pkill."""
+        http_calls: list[str] = []
+        pkilled: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                _entry(10, "/usr/bin/go-librespot"),
+            )),
+        )
+        monkeypatch.setattr(
+            music_control, "_stop_go_librespot_via_http",
+            lambda: http_calls.append("go-librespot"),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        music_control.stop_other_music_players(except_binary=None)
+        assert http_calls == ["go-librespot"]
+        assert pkilled == []
+
+    def test_pkill_strategy_for_subprocess_players(self, monkeypatch):
+        """mpv / ffplay / shairport-sync all use the SIGINT strategy."""
+        pkilled: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                _entry(10, "/usr/bin/mpv"),
+                _entry(11, "/usr/bin/shairport-sync"),
+            )),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        music_control.stop_other_music_players()
+        assert sorted(pkilled) == sorted(["mpv", "shairport-sync"])
+
+    def test_unknown_active_binary_is_logged_not_killed(self, monkeypatch):
+        """An active binary with no registered strategy is skipped (no
+        wrong-shaped pkill against something unfamiliar)."""
+        pkilled: list[str] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                # Not in _PLAYER_BINARIES at all → filtered out by
+                # _active_player_binaries.
+                _entry(10, "/usr/bin/something-weird"),
+            )),
+        )
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        music_control.stop_other_music_players()
+        assert pkilled == []
+
+    def test_strategy_exception_does_not_abort_others(self, monkeypatch):
+        """A raising strategy is logged; sibling strategies still run."""
+        pkilled: list[str] = []
+
+        def boom():
+            raise RuntimeError("simulated TCP failure")
+
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda *a, **kw: _proc(stdout=_sink_inputs(
+                _entry(10, "/usr/bin/mpd"),
+                _entry(11, "/usr/bin/mpv"),
+            )),
+        )
+        monkeypatch.setattr(music_control, "_stop_mpd_via_tcp", boom)
+        monkeypatch.setattr(
+            music_control, "_pkill_int",
+            lambda b: pkilled.append(b),
+        )
+        # Must not raise
+        music_control.stop_other_music_players(except_binary=None)
+        # mpv still got SIGINT despite mpd's strategy raising
+        assert pkilled == ["mpv"]

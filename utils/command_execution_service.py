@@ -12,12 +12,44 @@ from clients.jarvis_command_center_client import JarvisCommandCenterClient
 from clients.responses.jarvis_command_center import ToolCallingResponse, ToolCall, ValidationRequest
 from core.command_response import CommandResponse
 from core.helpers import get_tts_provider
+from core.music_control import _resolve_takeover_binary, stop_other_music_players
 from core.platform_audio import platform_audio
 from core.request_information import RequestInformation
 from utils.command_discovery_service import get_command_discovery_service
 from utils.config_service import Config
 from utils.service_discovery import get_command_center_url
 from utils.tool_result_formatter import format_tool_result, format_tool_error
+
+
+def _maybe_take_over_music(command, arguments: Dict[str, Any]) -> None:
+    """Stop other music players if this command is a music-takeover "play".
+
+    Called immediately before ``command.execute()`` on both routing paths
+    (pre-route and LLM tool-call), so a successful play takes over the
+    speaker before any audio actually starts. Only fires for ``action="play"``
+    — non-takeover actions (skip, volume, now_playing, stop) leave sibling
+    players alone.
+
+    The binary the command itself controls is resolved via the SDK property
+    ``takes_over_playback_binary`` (preferred) or a legacy hardcoded map
+    in :mod:`core.music_control`. ``None`` means "not a music command" and
+    the helper short-circuits — no-op for weather, calendar, etc.
+    """
+    if arguments.get("action") != "play":
+        return
+    binary = _resolve_takeover_binary(command)
+    if binary is None:
+        return
+    try:
+        stop_other_music_players(except_binary=binary)
+    except Exception as e:
+        # Never let takeover failures abort the user's actual command —
+        # they'd hear "I couldn't stop Spotify" instead of their song.
+        logger.warning(
+            "music takeover failed (continuing with execute)",
+            command=getattr(command, "command_name", "?"),
+            error=str(e),
+        )
 
 
 def _build_secrets(command) -> Dict[str, str]:
@@ -858,6 +890,10 @@ class CommandExecutionService:
 
                 from jarvis_command_sdk.context import set_current_user_id
                 set_current_user_id(user_id)
+                # Music-takeover hook: if this is a music command's "play",
+                # stop sibling players before execute() so the new playback
+                # claims the speaker cleanly. No-op for non-music commands.
+                _maybe_take_over_music(command, arguments)
                 try:
                     command_response: CommandResponse = command.execute(
                         request_info, secrets=_build_secrets(command), **arguments,
@@ -1006,6 +1042,8 @@ class CommandExecutionService:
 
                 from jarvis_command_sdk.context import set_current_user_id
                 set_current_user_id(speaker_user_id)
+                # Music-takeover hook (pre_route path) — see _maybe_take_over_music.
+                _maybe_take_over_music(command, pre.arguments)
                 try:
                     command_response: CommandResponse = command.execute(
                         request_info, secrets=_build_secrets(command), **pre.arguments,
