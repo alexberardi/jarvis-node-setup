@@ -707,26 +707,33 @@ def main():
             logger.warning("LLM warmup failed (non-fatal)", error=str(e))
 
     # Spawn a continuous silent stream on the default sink so the TLV320
-    # ALSA driver never gets a chance to wedge into SUSPENDED. With
-    # nothing actively pushing audio, pulse marks the sink IDLE and the
-    # driver enters a state it can't reliably resume from ("Resume
-    # failed, couldn't restore original sample settings" floods pulse's
-    # journal). A 0-amplitude /dev/zero feed costs <0.2% CPU and a few
-    # MB of RAM but keeps the sink permanently RUNNING.
+    # ALSA driver never gets a chance to wedge into SUSPENDED. Without
+    # an active sink-input pulse marks the sink IDLE and the driver
+    # enters a state it can't reliably resume from ("Resume failed,
+    # couldn't restore original sample settings" floods pulse's journal).
+    # A 0-amplitude /dev/zero feed costs <0.2% CPU but holds the sink
+    # permanently RUNNING.
     #
-    # Rate/format MUST match the sink's native (48 kHz stereo s16le on
-    # the TLV320). Mismatched formats force pulse to resample the
-    # keepalive stream AND any concurrent stream against each other,
-    # which produces audible static at higher output volumes — the
-    # 2026-06-03 user report of "staticky feedback when volume is
-    # higher" disappeared once the rate was raised from 8 kHz mono.
+    # 44.1 kHz matches Spotify Connect's native rate. After paplay starts
+    # and pulse has registered the sink-input, drop its volume to ~-170 dB
+    # via pactl. Both knobs together produce the right behavior:
+    #
+    # - With volume at 100 % (default), pulse's mixer treats it as a
+    #   real concurrent stream and applies headroom math when other
+    #   sink-inputs (e.g. music) are also at high volume — this produced
+    #   audible static at high speaker volume on 2026-06-03.
+    # - With volume <near-zero> but non-zero, pulse still pulls samples
+    #   and keeps the sink-input "active" (so the sink stays RUNNING and
+    #   the TLV320 doesn't wedge into SUSPENDED), but the contribution
+    #   to the mix is effectively zero and other streams play through
+    #   without the headroom hit.
     _sink_keepalive_proc: subprocess.Popen | None = None
     try:
         _sink_keepalive_proc = subprocess.Popen(
             [
                 "paplay",
                 "--raw",
-                "--rate=48000",
+                "--rate=44100",
                 "--channels=2",
                 "--format=s16le",
                 "/dev/zero",
@@ -738,6 +745,49 @@ def main():
         logger.info(
             "Sink keepalive started", pid=_sink_keepalive_proc.pid,
         )
+        # Give pulse a moment to register the new sink-input, then
+        # adjust its volume. Look up by application.process.id so we
+        # find OUR paplay specifically (not any other pacat/paplay
+        # streams a user might have running).
+        time.sleep(2.0)
+        try:
+            import json as _json
+            r = subprocess.run(
+                ["pactl", "-f", "json", "list", "sink-inputs"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if r.returncode == 0:
+                target_id: Optional[str] = None
+                for item in _json.loads(r.stdout or "[]"):
+                    pid_str = (item.get("properties") or {}).get(
+                        "application.process.id",
+                    )
+                    if (
+                        pid_str
+                        and str(_sink_keepalive_proc.pid) == str(pid_str)
+                    ):
+                        target_id = str(item.get("index"))
+                        break
+                if target_id is not None:
+                    subprocess.run(
+                        ["pactl", "set-sink-input-volume", target_id, "100"],
+                        timeout=2.0, capture_output=True,
+                    )
+                    logger.info(
+                        "Sink keepalive volume reduced",
+                        sink_input_id=target_id,
+                    )
+                else:
+                    logger.warning(
+                        "Sink keepalive sink-input not found; volume "
+                        "left at default — static may be audible at high "
+                        "output volume",
+                    )
+        except Exception as e:
+            logger.warning(
+                "Sink keepalive volume adjust failed",
+                error=str(e),
+            )
     except Exception as e:
         logger.warning(
             "Sink keepalive failed to start; sink-wedge fallback recovery "

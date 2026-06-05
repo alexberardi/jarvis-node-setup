@@ -1,5 +1,17 @@
 """Music-state detection + ducking (pause / resume) on the local box.
 
+Two separate concerns share this module:
+
+  * **Ducking** (temporary, wake-window only) — :func:`pause_active_playback`
+    and :func:`resume_active_playback`. Mute or SIGSTOP players during voice
+    capture; restore them after.
+
+  * **Takeover** (permanent, on new "play") — :func:`stop_other_music_players`.
+    When a music command starts new playback (Audacy plays radio while Spotify
+    is mid-track, etc.), stop the others entirely so two streams don't share
+    the speaker. Called from the command-execution service before any
+    "play"-action command runs.
+
 When a wake word fires we pause any active media-player so it doesn't
 compete with the user's voice. Two classes of player get different
 treatment because of process / protocol constraints:
@@ -29,7 +41,10 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
+import urllib.error
+import urllib.request
 
 from jarvis_log_client import JarvisLogger
 
@@ -60,6 +75,14 @@ _MUTE_ONLY_PLAYER_BINARIES: tuple[str, ...] = (
                        # localhost HTTP API; SIGSTOP makes that API hang
                        # for 15+ seconds after SIGCONT, breaking the
                        # deferred-play hook the spotify command uses.
+    "mpd",             # jarvis-cmd-audacy — mpd keeps a long-lived HTTP
+                       # stream open to Audacy's CDN. SIGSTOP'ing it would
+                       # freeze the read side, fill the kernel TCP buffer,
+                       # and on SIGCONT resume the user from N-seconds-
+                       # behind buffered audio (wrong for *live* radio:
+                       # the user wants to be back at "now," not
+                       # 8 seconds behind). Mute-only keeps mpd reading
+                       # at real-time and produces a clean unmute.
 )
 
 # Union — used by the PA sink-input matcher, which mutes everything
@@ -294,4 +317,179 @@ def resume_active_playback() -> None:
         sigcont=resumed,
         restored_sink_inputs=restored,
         unmuted_sink_inputs=unmuted,
+    )
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Takeover: permanent stop of other music players when a new play starts
+# ───────────────────────────────────────────────────────────────────────
+
+# Existing music packages that pre-date the SDK property are routed via
+# this map. New music packages should declare a `takes_over_playback_binary`
+# property on their command class instead — :func:`_resolve_takeover_binary`
+# prefers the property and falls back to this map.
+_LEGACY_MUSIC_TAKEOVER_BINARIES: dict[str, str] = {
+    "audacy":  "mpd",
+    "spotify": "go-librespot",
+    "music":   "shairport-sync",    # jarvis-cmd-music-assistant
+    "pandora": "mpv",
+}
+
+
+def _resolve_takeover_binary(command: object) -> str | None:
+    """Pick the binary a command controls so we don't stop ourselves.
+
+    Property wins over the legacy map — packages opt in by declaring
+    ``takes_over_playback_binary`` on their command class.
+    """
+    declared = getattr(command, "takes_over_playback_binary", None)
+    if isinstance(declared, str) and declared:
+        return declared
+    name = getattr(command, "command_name", None)
+    if isinstance(name, str):
+        return _LEGACY_MUSIC_TAKEOVER_BINARIES.get(name)
+    return None
+
+
+def _stop_mpd_via_tcp() -> None:
+    """Send `stop` + `clear` to mpd's TCP control port.
+
+    Tiny stdlib protocol speaker — mpd's wire format is text-over-socket,
+    we don't need python-mpd2 just to send two commands. Best-effort; a
+    swallowed OSError means mpd wasn't running, which is the takeover's
+    desired end state anyway.
+    """
+    try:
+        with socket.create_connection(("localhost", 6600), timeout=2.0) as s:
+            s.settimeout(2.0)
+            # Consume the "OK MPD <version>\n" greeting.
+            _greeting = s.recv(1024)
+            s.sendall(b"command_list_begin\nstop\nclear\ncommand_list_end\n")
+            # Drain the OK/ACK response so the close is clean.
+            _ = s.recv(1024)
+    except (OSError, socket.timeout):
+        pass
+
+
+def _stop_go_librespot_via_http() -> None:
+    """POST to go-librespot's local pause endpoint.
+
+    stdlib urllib so we don't need an httpx dep in node core — go-librespot
+    binds to localhost:3678 by default (jarvis-cmd-spotify v2.x+).
+    """
+    try:
+        req = urllib.request.Request(
+            "http://localhost:3678/player/pause", method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2.0).close()
+    except (urllib.error.URLError, OSError, TimeoutError):
+        pass
+
+
+def _pkill_int(binary: str) -> None:
+    """SIGINT a player binary. Matches by exact basename (`pkill -x`)."""
+    try:
+        subprocess.run(
+            ["pkill", "-INT", "-x", binary],
+            timeout=2.0, capture_output=True,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
+# Players whose stop strategy is SIGINT. Other strategies (mpd TCP,
+# go-librespot HTTP) are dispatched inline by name in :func:`stop_other_music_players`
+# — name lookup happens at call time so monkeypatch/replacement works
+# (a dict of direct function references would freeze the originals at
+# import time and silently bypass any later override).
+_PKILL_INT_BINARIES: frozenset[str] = frozenset({
+    "mpv", "ffplay", "vlc", "cvlc",
+    "spotifyd", "librespot", "shairport-sync",
+})
+
+
+def _active_player_binaries() -> set[str]:
+    """Snapshot the set of player binaries currently producing audio.
+
+    Uses the same pactl sink-input scan as :func:`is_playing` but returns
+    every matched binary basename — we need the full set so the takeover
+    helper knows which strategies to invoke.
+    """
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sink-inputs"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    try:
+        items = json.loads(result.stdout or "[]")
+    except (ValueError, TypeError):
+        return set()
+    active: set[str] = set()
+    for item in items:
+        props = item.get("properties") or {}
+        binary = props.get("application.process.binary") or ""
+        basename = os.path.basename(binary)
+        if basename in _PLAYER_BINARIES:
+            active.add(basename)
+    return active
+
+
+def stop_other_music_players(except_binary: str | None = None) -> None:
+    """Permanently stop every music-producing player except the named one.
+
+    Called by the command-execution service right before a music command's
+    "play" action runs, so the new playback takes over the speaker cleanly
+    instead of layering on top of whatever was already playing.
+
+    :param except_binary: The binary the calling command controls — left
+        alone so re-tuning (e.g. switching Audacy stations) doesn't stop
+        the in-flight player. ``None`` stops everything.
+
+    Best-effort and idempotent: per-binary strategy failures are logged
+    but never raised. Players that aren't currently producing audio are
+    skipped — we don't want to thrash a paused but live daemon.
+    """
+    active = _active_player_binaries()
+    if not active:
+        return
+    stopped: list[str] = []
+    skipped: list[str] = []
+    for binary in active:
+        if binary == except_binary:
+            skipped.append(binary)
+            continue
+        try:
+            # Dispatch inline so name lookup is at call time — monkeypatch /
+            # future strategy replacement Just Works without rebuilding a
+            # cached dict.
+            if binary == "mpd":
+                _stop_mpd_via_tcp()
+            elif binary == "go-librespot":
+                _stop_go_librespot_via_http()
+            elif binary in _PKILL_INT_BINARIES:
+                _pkill_int(binary)
+            else:
+                # Active player we don't know how to stop — log and move on
+                # rather than risk a wrong-shaped pkill against an unfamiliar
+                # process.
+                logger.warning(
+                    "stop_other_music_players: no stop strategy",
+                    binary=binary,
+                )
+                continue
+            stopped.append(binary)
+        except Exception as e:  # belt-and-suspenders; strategies already swallow
+            logger.warning(
+                "stop_other_music_players: strategy raised",
+                binary=binary, error=str(e),
+            )
+    logger.info(
+        "stop_other_music_players",
+        except_binary=except_binary,
+        stopped=stopped,
+        skipped=skipped,
     )
