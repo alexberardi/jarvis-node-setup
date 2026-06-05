@@ -11,7 +11,7 @@ Patterns:
 - "speaking"         — cyan steady (TTS response playing)
 - "error"            — red steady (command failed; auto-clears with TTS)
 - "not_for_me"       — orange steady (false wake detected; brief preview, auto-clears)
-- "alert"            — red blink (~1Hz, used when alerts queued)
+- "alert"            — single steady purple LED (middle, used when alerts queued)
 - "muted"            — solid red (reserved for future)
 - "shutdown_warning" — fast red blink (power button held)
 
@@ -67,10 +67,13 @@ def _p_normal(_t: float) -> list[tuple[int, int, int, int]]:
     return [(255, 255, 255, 15)] * NUM_LEDS
 
 
-def _p_alert(t: float) -> list[tuple[int, int, int, int]]:
-    if (t % 1.0) < 0.5:
-        return [(255, 0, 0, 35)] * NUM_LEDS
-    return [(0, 0, 0, 0)] * NUM_LEDS
+def _p_alert(_t: float) -> list[tuple[int, int, int, int]]:
+    # Single steady purple LED in the middle position. Calm by design —
+    # alerts can sit in the queue for hours and a flashing red is too
+    # demanding for that duration. Same purple as wake_detected;
+    # wake_detected lights all three so the patterns are visually
+    # distinct even though they share a hue.
+    return [(0, 0, 0, 0), (180, 0, 255, 45), (0, 0, 0, 0)]
 
 
 def _p_wake_detected(_t: float) -> list[tuple[int, int, int, int]]:

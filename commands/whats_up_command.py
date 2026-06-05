@@ -1,8 +1,17 @@
-"""WhatsUpCommand — deliver pending alerts via voice.
+"""WhatsUpCommand — deliver or silently dismiss pending alerts via voice.
 
-Pre-routes "what's up", "any alerts", etc. If alerts are pending, flushes
-the queue and sends summaries to CC's chat_text() for natural composition.
-If no alerts, returns None so the LLM handles it as casual conversation.
+Two fast-path patterns:
+
+* ``check_alerts.greeting`` — "what's up", "any alerts" etc. flush the
+  queue and ANNOUNCE the alerts via CC composition.
+* ``check_alerts.dismiss`` — "clear alerts", "dismiss notifications"
+  etc. flush the queue SILENTLY (just a brief "Cleared." reply) so the
+  user can drop the alert-pending LED without sitting through every
+  announcement.
+
+If no alerts and the greeting fast-path triggers, returns None so the
+LLM handles it as casual conversation. The dismiss fast-path always
+matches — clearing an empty queue is a valid intent.
 """
 
 import json
@@ -37,6 +46,21 @@ _TRIGGER_PHRASES = [
     "any notifications",
     "check alerts",
     "check notifications",
+]
+
+_DISMISS_PHRASES = [
+    "clear alerts",
+    "clear all alerts",
+    "clear notifications",
+    "clear all notifications",
+    "dismiss alerts",
+    "dismiss all alerts",
+    "dismiss notifications",
+    "dismiss all notifications",
+    "clear the alerts",
+    "clear the notifications",
+    "cancel alerts",
+    "cancel notifications",
 ]
 
 
@@ -90,6 +114,7 @@ class WhatsUpCommand(IJarvisCommand):
     # ------------------------------------------------------------------
 
     _FAST_PATH_ID = "check_alerts.greeting"
+    _DISMISS_FAST_PATH_ID = "check_alerts.dismiss"
 
     @property
     def fast_path_patterns(self) -> List[FastPathPattern]:
@@ -99,6 +124,11 @@ class WhatsUpCommand(IJarvisCommand):
                 description="Bypass the LLM when greeting phrases ('what's up', 'any alerts') are spoken with pending alerts in the queue",
                 example="what's up",
             ),
+            FastPathPattern(
+                id=self._DISMISS_FAST_PATH_ID,
+                description="Bypass the LLM when dismiss phrases ('clear alerts', 'dismiss notifications') are spoken — silently flushes the queue",
+                example="clear alerts",
+            ),
         ]
 
     def pre_route(
@@ -107,11 +137,27 @@ class WhatsUpCommand(IJarvisCommand):
         *,
         disabled_pattern_ids: "set[str] | frozenset[str]" = frozenset(),
     ) -> PreRouteResult | None:
-        if self._FAST_PATH_ID in disabled_pattern_ids:
-            return None
-
         text = voice_command.strip().lower()
         if not text:
+            return None
+
+        # Dismiss is checked first — its phrases are more specific than
+        # the greeting phrases. "clear notifications" contains
+        # "notifications" but isn't a "what's up" — treat it as dismiss.
+        if self._DISMISS_FAST_PATH_ID not in disabled_pattern_ids:
+            dismiss_matched = any(phrase in text for phrase in _DISMISS_PHRASES)
+            if dismiss_matched:
+                queue = get_alert_queue_service()
+                dropped = queue.flush()
+                logger.info(
+                    "Pre-routed check_alerts.dismiss",
+                    alert_count=len(dropped),
+                )
+                return PreRouteResult(
+                    arguments={"dismissed": True, "dismissed_count": len(dropped)},
+                )
+
+        if self._FAST_PATH_ID in disabled_pattern_ids:
             return None
 
         matched = any(phrase in text for phrase in _TRIGGER_PHRASES)
@@ -140,6 +186,15 @@ class WhatsUpCommand(IJarvisCommand):
     # ------------------------------------------------------------------
 
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
+        # Silent-dismiss path: pre_route already flushed the queue; this
+        # just confirms the action with a one-word reply so the user
+        # knows the dismiss was accepted (and the LED returned to idle).
+        if kwargs.get("dismissed"):
+            return CommandResponse.success_response(
+                context_data={"message": "Cleared."},
+                wait_for_input=False,
+            )
+
         alerts_json: str = kwargs.get("alerts_json", "[]")
 
         try:
