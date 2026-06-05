@@ -941,7 +941,7 @@ def _install_shared_code(
     """
     lib_dir = PACKAGES_DIR / package_name / f"{package_name}_lib"
     if lib_dir.exists():
-        shutil.rmtree(lib_dir)
+        _force_rmtree(lib_dir)
     lib_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy shared directories (services/, utils/, etc.)
@@ -963,6 +963,44 @@ def _install_shared_code(
     return lib_dir
 
 
+def _force_rmtree(path: Path) -> None:
+    """Remove a directory tree, falling back to sudo for root-owned leftovers.
+
+    Same-version reinstalls and updates hit this whenever the previous install
+    left root-owned files behind — most commonly __pycache__ entries written
+    by a process that briefly ran as root, or files dropped by a post-install
+    op. shutil.rmtree on those raises PermissionError; sudo -n rm -rf is the
+    only way out without manual SSH intervention. If sudo NOPASSWD isn't
+    configured we raise an InstallError carrying the exact command an operator
+    can run to unblock — better than a bare 'Permission denied: PosixPath(...)'.
+    """
+    try:
+        shutil.rmtree(path)
+        return
+    except PermissionError as e:
+        logger.warning(
+            "rmtree blocked by permissions; attempting sudo fallback",
+            path=str(path), error=str(e),
+        )
+    except FileNotFoundError:
+        return
+
+    try:
+        subprocess.run(
+            ["sudo", "-n", "rm", "-rf", str(path)],
+            check=True,
+            capture_output=True,
+        )
+        return
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if hasattr(e, "stderr") and e.stderr else ""
+        raise InstallError(
+            f"Cannot replace existing install at {path}: permission denied "
+            f"and 'sudo -n rm -rf' fallback also failed ({stderr.strip() or e}). "
+            f"Run `sudo rm -rf {path}` on the node and retry the install."
+        )
+
+
 def _install_component(repo_dir: Path, comp_type: str, comp_name: str, comp_path: str) -> Path:
     """Install a single component to its target directory.
 
@@ -982,7 +1020,7 @@ def _install_component(repo_dir: Path, comp_type: str, comp_name: str, comp_path
     install_dir = _PROJECT_DIR / base_dir / comp_name
     if install_dir.exists():
         logger.warning("Replacing existing component", type=comp_type, name=comp_name)
-        shutil.rmtree(install_dir)
+        _force_rmtree(install_dir)
 
     install_dir.mkdir(parents=True, exist_ok=True)
 
