@@ -482,6 +482,20 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
             except Exception as e:
                 print(f"[MQTT] Skipping {cmd.command_name}: {e}", flush=True)
 
+        # Installed package versions — lets mobile compare against Pantry's
+        # latest_version and offer Install / Update / Up-to-date instead of
+        # the binary "already installed" check it used to do.
+        installed_packages: List[Dict[str, Any]] = []
+        try:
+            from services.command_store_service import list_installed
+            for meta in list_installed():
+                name = meta.get("package_name") or meta.get("command_name")
+                version = meta.get("version")
+                if name and version:
+                    installed_packages.append({"name": name, "version": version})
+        except Exception as e:
+            print(f"[MQTT] installed_packages enumeration failed: {e}", flush=True)
+
         url = f"{base_url.rstrip('/')}/api/v0/mobile/node-tool-reports/{request_id}"
         print(f"[MQTT] report_tools posting {len(client_tools)} tools to {url[:60]}", flush=True)
         RestClient.post(
@@ -489,6 +503,7 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
             data={
                 "client_tools": client_tools,
                 "available_commands": available_commands,
+                "installed_packages": installed_packages,
             },
             timeout=10,
         )
