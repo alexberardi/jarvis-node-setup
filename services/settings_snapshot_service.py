@@ -466,11 +466,20 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                     ) if schedule_obj else False,
                 }
 
+                secrets_list_a = _build_secrets_list(
+                    g.get(lambda: agent.required_secrets, [], "required_secrets"),
+                    include_values=include_values,
+                    user_id=None,
+                    log_ctx={"agent": agent_name},
+                    errors=g.errors,
+                )
+
                 entry_a: dict[str, Any] = {
                     "agent_name": agent_name,
                     "description": g.get(lambda: agent.description, "", "description"),
                     "enabled": agent_registry.get(agent_name, True),
                     "schedule": schedule_dict,
+                    "secrets": secrets_list_a,
                 }
                 service_label = agent_to_service.get(agent_name)
                 if service_label:
@@ -495,6 +504,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                         "description": "",
                         "enabled": agent_registry.get(agent_name, True),
                         "schedule": {"interval_seconds": 0, "run_on_startup": False},
+                        "secrets": [],
                         "_errors": ["entry_build_failed"],
                     }
                 )
