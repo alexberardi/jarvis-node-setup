@@ -20,6 +20,7 @@ from services.command_store_service import (
     _check_platform_compatibility,
     _write_store_metadata,
     _install_apt_deps,
+    _force_rmtree,
     _APT_MIN_FREE_BYTES,
     _APT_WRAPPER_PATH,
     InstallError,
@@ -364,6 +365,69 @@ class TestWriteStoreMetadata:
         assert data["danger_rating"] == 2
         assert data["author"] == "octocat"
         assert "installed_at" in data
+
+
+class TestForceRmtree:
+    def test_removes_user_owned_dir(self, tmp_path):
+        d = tmp_path / "target"
+        d.mkdir()
+        (d / "file.txt").write_text("x")
+        _force_rmtree(d)
+        assert not d.exists()
+
+    def test_missing_path_is_noop(self, tmp_path):
+        # Should not raise.
+        _force_rmtree(tmp_path / "does-not-exist")
+
+    def test_falls_back_to_sudo_on_permission_error(self, tmp_path):
+        d = tmp_path / "target"
+        d.mkdir()
+        (d / "file.txt").write_text("x")
+
+        rmtree_calls: list = []
+        original_rmtree = shutil.rmtree
+
+        def fake_rmtree(path, *a, **kw):
+            rmtree_calls.append(path)
+            raise PermissionError(13, "Permission denied")
+
+        run_calls: list = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(cmd)
+            # Actually delete it so the test can assert success
+            original_rmtree(d)
+            return MagicMock(returncode=0)
+
+        with patch("services.command_store_service.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("services.command_store_service.subprocess.run", side_effect=fake_run):
+            _force_rmtree(d)
+
+        assert len(rmtree_calls) == 1
+        assert run_calls == [["sudo", "-n", "rm", "-rf", str(d)]]
+
+    def test_raises_install_error_with_unblock_instructions_when_sudo_also_fails(self, tmp_path):
+        import subprocess as _sub
+        d = tmp_path / "target"
+        d.mkdir()
+
+        def fake_rmtree(path, *a, **kw):
+            raise PermissionError(13, "Permission denied")
+
+        def fake_run(cmd, **kw):
+            raise _sub.CalledProcessError(
+                returncode=1, cmd=cmd, stderr=b"sudo: a password is required\n"
+            )
+
+        with patch("services.command_store_service.shutil.rmtree", side_effect=fake_rmtree), \
+             patch("services.command_store_service.subprocess.run", side_effect=fake_run):
+            with pytest.raises(InstallError) as excinfo:
+                _force_rmtree(d)
+
+        msg = str(excinfo.value)
+        assert str(d) in msg
+        # The unblock command must be quotable into a shell verbatim.
+        assert f"sudo rm -rf {d}" in msg
 
 
 class TestInstallAptDeps:
