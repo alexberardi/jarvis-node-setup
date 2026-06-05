@@ -131,6 +131,20 @@ class TestRespeakerPatterns:
             assert (r, g, b) == (255, 0, 0)
             assert brt > 0
 
+    def test_alert_is_single_steady_purple(self) -> None:
+        """Alert: only the middle LED lit, purple, steady across time."""
+        frame_a = _PATTERNS["alert"](0.0)
+        frame_b = _PATTERNS["alert"](0.5)
+        frame_c = _PATTERNS["alert"](1.7)
+        assert frame_a == frame_b == frame_c  # steady, no blink
+        assert len(frame_a) == NUM_LEDS
+        # Middle LED purple, others off.
+        assert frame_a[0] == (0, 0, 0, 0)
+        assert frame_a[2] == (0, 0, 0, 0)
+        r, g, b, brt = frame_a[1]
+        assert (r, g, b) == (180, 0, 255)
+        assert brt > 0
+
     def test_thinking_pinwheels_one_two_three(self) -> None:
         """Thinking cycles count of lit LEDs: 1 → 2 → 3 → 1 → 2 → 3 …
 

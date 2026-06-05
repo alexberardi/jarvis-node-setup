@@ -118,6 +118,89 @@ class TestWhatsUpRun:
         assert "Storm warning" in response.context_data["message"]
 
 
+class TestWhatsUpDismiss:
+    """Silent-dismiss path — 'clear alerts', 'dismiss notifications' etc."""
+
+    def setup_method(self) -> None:
+        self.cmd = WhatsUpCommand()
+        self.queue = AlertQueueService()
+
+    @patch("commands.whats_up_command.get_alert_queue_service")
+    def test_dismiss_flushes_queue_silently(self, mock_get_queue: MagicMock) -> None:
+        self.queue.add_alert(_make_alert("Reminder", priority=3))
+        self.queue.add_alert(_make_alert("Other", priority=3))
+        mock_get_queue.return_value = self.queue
+
+        result = self.cmd.pre_route("clear alerts")
+        assert result is not None
+        assert result.arguments["dismissed"] is True
+        assert result.arguments["dismissed_count"] == 2
+        assert self.queue.count() == 0
+        # alerts_json must NOT be set on the dismiss path (run() short-
+        # circuits on the dismissed flag).
+        assert "alerts_json" not in result.arguments
+
+    @patch("commands.whats_up_command.get_alert_queue_service")
+    def test_dismiss_with_empty_queue_still_matches(self, mock_get_queue: MagicMock) -> None:
+        """Unlike the greeting fast-path, dismiss is valid even with
+        an empty queue — clearing nothing is still a clear intent."""
+        mock_get_queue.return_value = self.queue  # empty
+
+        result = self.cmd.pre_route("dismiss notifications")
+        assert result is not None
+        assert result.arguments["dismissed"] is True
+        assert result.arguments["dismissed_count"] == 0
+
+    @patch("commands.whats_up_command.get_alert_queue_service")
+    def test_dismiss_phrase_variants(self, mock_get_queue: MagicMock) -> None:
+        mock_get_queue.return_value = self.queue
+
+        for phrase in [
+            "clear alerts",
+            "clear notifications",
+            "dismiss alerts",
+            "dismiss notifications",
+            "clear all alerts",
+            "cancel notifications",
+        ]:
+            result = self.cmd.pre_route(phrase)
+            assert result is not None, f"phrase did not match: {phrase!r}"
+            assert result.arguments["dismissed"] is True
+
+    @patch("commands.whats_up_command.get_alert_queue_service")
+    def test_dismiss_precedence_over_greeting(self, mock_get_queue: MagicMock) -> None:
+        """'clear notifications' contains 'notifications', which is a
+        greeting trigger substring. The dismiss path must win."""
+        self.queue.add_alert(_make_alert("Reminder", priority=3))
+        mock_get_queue.return_value = self.queue
+
+        result = self.cmd.pre_route("clear notifications")
+        assert result is not None
+        assert result.arguments.get("dismissed") is True
+        # Greeting path would set alerts_json; dismiss path does not.
+        assert "alerts_json" not in result.arguments
+
+    def test_dismiss_disabled_pattern_falls_through_to_greeting(self) -> None:
+        """If only the dismiss fast-path is disabled, the greeting
+        check still runs and 'clear notifications' won't match any
+        greeting phrase — so we return None."""
+        result = self.cmd.pre_route(
+            "clear alerts",
+            disabled_pattern_ids={"check_alerts.dismiss"},
+        )
+        # No greeting trigger matches 'clear alerts', no fall-through.
+        assert result is None
+
+    def test_run_dismissed_returns_brief_confirmation(self) -> None:
+        response = self.cmd.run(
+            _make_request_info(),
+            dismissed=True,
+            dismissed_count=3,
+        )
+        assert response.success
+        assert response.context_data["message"] == "Cleared."
+
+
 class TestWhatsUpMetadata:
     def test_command_name(self) -> None:
         cmd = WhatsUpCommand()
