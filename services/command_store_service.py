@@ -472,18 +472,45 @@ def _jarvis_user_and_uid() -> tuple[str, int]:
     return username, uid
 
 
-def _expand_uid_tokens(value: Any, uid: int) -> Any:
-    """Recursively substitute ${UID} → str(uid) inside strings.
+def _home_for_user(username: str) -> str:
+    """Best-effort home directory for the node user.
+
+    Falls back to /home/<username> so install never aborts on a misconfigured
+    passwd entry — the conventional layout works for every supported node
+    setup (pi, jarvis_user, container users).
+    """
+    try:
+        import pwd
+        return pwd.getpwnam(username).pw_dir
+    except (KeyError, ImportError):
+        return f"/home/{username}"
+
+
+def _expand_post_install_tokens(value: Any, uid: int, username: str) -> Any:
+    """Recursively substitute ${UID}/${USER}/${HOME} tokens inside strings.
 
     Op payloads are JSON-shaped, so we only need to walk dicts, lists, and
     strings. Other primitives pass through unchanged.
+
+    Why not rely on systemd's own %U/%h specifiers? Because %h resolves to
+    the *manager's* home (i.e. /root for system-mode systemd), not the
+    User=user's home — easy to get wrong, and we hit it with the audacy
+    package's MPDCONF env value. Install-time substitution makes the
+    resulting drop-in self-contained and not dependent on a specifier
+    we can't override.
     """
     if isinstance(value, str):
-        return value.replace("${UID}", str(uid))
+        home = _home_for_user(username)
+        return (
+            value
+            .replace("${UID}", str(uid))
+            .replace("${USER}", username)
+            .replace("${HOME}", home)
+        )
     if isinstance(value, list):
-        return [_expand_uid_tokens(v, uid) for v in value]
+        return [_expand_post_install_tokens(v, uid, username) for v in value]
     if isinstance(value, dict):
-        return {k: _expand_uid_tokens(v, uid) for k, v in value.items()}
+        return {k: _expand_post_install_tokens(v, uid, username) for k, v in value.items()}
     return value
 
 
@@ -540,7 +567,7 @@ def _run_post_install(manifest: CommandManifest, package_name: str) -> None:
         payload = {k: v for k, v in raw_op.items() if k != "type"}
         if payload.get("run_as") == "jarvis_user":
             payload["run_as"] = jarvis_user
-        payload = _expand_uid_tokens(payload, jarvis_uid)
+        payload = _expand_post_install_tokens(payload, jarvis_uid, jarvis_user)
 
         logger.info(
             "Dispatching post_install op",
