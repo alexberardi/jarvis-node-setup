@@ -349,6 +349,13 @@ def main():
     # without rebuilding with py-spy on the Pi.
     faulthandler.register(signal.SIGUSR1, all_threads=True)
 
+    # `kill -USR2 <pid>` dumps a Python object-type census to
+    # /tmp/jarvis_soak/heap_main_pid<PID>_<ts>.txt. Lower memory than
+    # tracemalloc (which OOM'd on Pi Zero 2W under swap pressure). For
+    # leak hunting — take two snapshots 60+ min apart and diff.
+    from services.heap_census import register_sigusr2
+    register_sigusr2("main")
+
     # Startup banner — visible in journalctl for debugging
     logger.info("Jarvis node starting",
                 config_path=os.environ.get("CONFIG_PATH", "config.json"),
@@ -530,9 +537,10 @@ def main():
     from scripts.mqtt_tts_listener import set_shutdown_event as mqtt_set_shutdown
     mqtt_set_shutdown(_shutdown_event)
 
-    # Pass shutdown event to command discovery for graceful background refresh
-    from utils.command_discovery_service import set_shutdown_event as cmd_set_shutdown
-    cmd_set_shutdown(_shutdown_event)
+    # command_discovery_service no longer runs a background refresh thread
+    # (the poll re-imported custom_commands every cycle and leaked module
+    # objects). Discovery is now triggered only by install/uninstall code
+    # paths, so it doesn't need a shutdown hook.
 
     # Supervised threads: only mqtt and bluetooth are restarted if they die
     supervised_threads: Dict[str, Tuple[threading.Thread, Callable[[], threading.Thread]]] = {}
