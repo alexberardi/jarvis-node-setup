@@ -187,9 +187,10 @@ class TestDiscoveryConcurrency:
     def test_concurrent_discovery_does_not_raise(self):
         from utils.command_discovery_service import CommandDiscoveryService
 
-        # refresh_interval is huge so the background thread doesn't fire
-        # during the test — we only care about the refresh_now() calls.
-        svc = CommandDiscoveryService(refresh_interval=3600)
+        # The background poll was removed (it leaked module imports every
+        # cycle). Discovery now runs only via refresh_now(), which is what
+        # this concurrency test exercises.
+        svc = CommandDiscoveryService()
 
         import threading
         errors: list[BaseException] = []

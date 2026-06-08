@@ -24,30 +24,19 @@ except ImportError:
 
 
 class CommandDiscoveryService:
-    def __init__(self, refresh_interval: int = 600):
-        self.refresh_interval = refresh_interval
+    def __init__(self):
         self._commands_cache: Dict[str, IJarvisCommand] = {}
         self._last_refresh = 0
         self._lock = threading.Lock()
-
-        # Start background refresh thread
-        self._refresh_thread = threading.Thread(target=self._background_refresh, daemon=True)
-        self._refresh_thread.start()
-
-    def _background_refresh(self) -> None:
-        """Background thread that refreshes commands every refresh_interval seconds."""
-        while True:
-            if _shutdown_event is not None:
-                _shutdown_event.wait(timeout=self.refresh_interval)
-                if _shutdown_event.is_set():
-                    return
-            else:
-                time.sleep(self.refresh_interval)
-            try:
-                self._discover_commands()
-                logger.debug("Refreshed commands", count=len(self._commands_cache))
-            except Exception as e:
-                logger.error("Error refreshing commands", error=str(e))
+        # No background poll. Discovery runs on demand: CommandExecutionService
+        # forces an initial refresh in its __init__, and every legitimate
+        # disk-change path (Pantry install / uninstall / test_install / config
+        # push / mqtt-driven settings snapshot) calls refresh_now() explicitly.
+        # The old 600s polling thread popped commands.custom_commands.* from
+        # sys.modules and re-imported them every cycle, retaining ~17
+        # module objects + their function/type/dict tables per refresh —
+        # measured ~970 KB / 35 min growth in main's heap census. The polling
+        # was redundant with the install-driven refresh path. Dropped.
 
     def _discover_commands(self):
         """Discover all IJarvisCommand implementations from built-in and custom commands."""
@@ -220,15 +209,6 @@ class CommandDiscoveryService:
 # Global instance
 _command_discovery_service: Optional[CommandDiscoveryService] = None
 _init_lock = threading.Lock()
-
-# Shutdown event shared with main.py for graceful shutdown
-_shutdown_event: Optional[threading.Event] = None
-
-
-def set_shutdown_event(event: threading.Event) -> None:
-    """Accept a shutdown event from main.py for graceful shutdown of background refresh."""
-    global _shutdown_event
-    _shutdown_event = event
 
 
 def get_command_discovery_service() -> CommandDiscoveryService:
