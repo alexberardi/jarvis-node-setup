@@ -270,3 +270,105 @@ class TestRemoveManagedDropins:
             lambda p: tmp_path if p == "/etc/systemd/system" else original(p),
         )
         wrapper._op_remove_managed_dropins("music")  # no exception = pass
+
+
+# ── _op_configure_systemd_service ───────────────────────────────────────
+
+
+class TestConfigureSystemdService:
+    """End-to-end op tests — monkeypatch systemctl + the path constant so we
+    can exercise the install flow (write drop-in, daemon-reload, enable,
+    restart) without touching the real /etc/systemd or running systemctl.
+
+    The `enable` flag was added to fix the audacy install gap (mpd dies on
+    reboot because the unit was never enabled — see
+    prds/audacy-mpd-install-gap.md)."""
+
+    def _patch(self, wrapper, tmp_path, monkeypatch, *, is_enabled: bool = False):
+        """Common setup: redirect /etc/systemd/system into tmp_path, record
+        systemctl invocations, stub the is-enabled probe."""
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(wrapper, "_systemctl", lambda *a: calls.append(a))
+        monkeypatch.setattr(wrapper, "_unit_is_enabled", lambda _s: is_enabled)
+        original_path = wrapper.Path
+        monkeypatch.setattr(
+            wrapper, "Path",
+            lambda p: tmp_path if p == "/etc/systemd/system" else original_path(p),
+        )
+        return calls
+
+    def test_enable_true_invokes_systemctl_enable_before_restart(
+        self, wrapper, tmp_path, monkeypatch,
+    ):
+        calls = self._patch(wrapper, tmp_path, monkeypatch)
+        wrapper._op_configure_systemd_service(
+            {"service": "mpd", "run_as": "pi", "enable": True}, package="audacy",
+        )
+        assert ("daemon-reload",) in calls
+        assert ("enable", "mpd") in calls
+        assert ("restart", "mpd") in calls
+        # Order matters: daemon-reload, then enable, then restart.
+        assert calls.index(("daemon-reload",)) < calls.index(("enable", "mpd"))
+        assert calls.index(("enable", "mpd")) < calls.index(("restart", "mpd"))
+
+    def test_enable_false_does_not_invoke_enable(
+        self, wrapper, tmp_path, monkeypatch,
+    ):
+        calls = self._patch(wrapper, tmp_path, monkeypatch)
+        wrapper._op_configure_systemd_service(
+            {"service": "mpd", "run_as": "pi", "enable": False}, package="audacy",
+        )
+        assert ("enable", "mpd") not in calls
+        assert ("restart", "mpd") in calls
+
+    def test_enable_omitted_does_not_invoke_enable(
+        self, wrapper, tmp_path, monkeypatch,
+    ):
+        # Backwards-compat: older manifests with no `enable` key behave
+        # exactly as before — drop-in + restart, never enable.
+        calls = self._patch(wrapper, tmp_path, monkeypatch)
+        wrapper._op_configure_systemd_service(
+            {"service": "shairport-sync", "run_as": "pi"}, package="music",
+        )
+        assert not any(c[0] == "enable" for c in calls)
+
+    def test_enable_non_bool_rejected(self, wrapper, tmp_path, monkeypatch):
+        self._patch(wrapper, tmp_path, monkeypatch)
+        with pytest.raises(SystemExit):
+            wrapper._op_configure_systemd_service(
+                {"service": "mpd", "enable": "yes"}, package="audacy",
+            )
+
+    def test_idempotent_when_dropin_matches_and_unit_already_enabled(
+        self, wrapper, tmp_path, monkeypatch,
+    ):
+        # First run writes the drop-in + calls enable + restart.
+        calls = self._patch(wrapper, tmp_path, monkeypatch, is_enabled=False)
+        payload = {"service": "mpd", "run_as": "pi", "enable": True}
+        wrapper._op_configure_systemd_service(payload, package="audacy")
+        assert ("enable", "mpd") in calls
+
+        # Second run: drop-in already present, unit reports enabled — full
+        # no-op. Re-patch with is_enabled=True to model post-first-install.
+        calls.clear()
+        monkeypatch.setattr(wrapper, "_unit_is_enabled", lambda _s: True)
+        wrapper._op_configure_systemd_service(payload, package="audacy")
+        assert calls == [], "second run should be a clean no-op"
+
+    def test_dropin_matches_but_unit_not_enabled_still_runs_enable(
+        self, wrapper, tmp_path, monkeypatch,
+    ):
+        # Drop-in already on disk from a prior install, but the user (or a
+        # previous wrapper version) never ran systemctl enable. Re-running
+        # the op must enable the unit even though the file is unchanged —
+        # this is exactly the audacy-mpd-install-gap recovery path.
+        dropin_dir = tmp_path / "mpd.service.d"
+        dropin_dir.mkdir()
+        payload = {"service": "mpd", "run_as": "pi", "enable": True}
+        rendered = wrapper._render_dropin(payload, package="audacy")
+        (dropin_dir / "jarvis.conf").write_text(rendered)
+
+        calls = self._patch(wrapper, tmp_path, monkeypatch, is_enabled=False)
+        wrapper._op_configure_systemd_service(payload, package="audacy")
+        assert ("enable", "mpd") in calls
+        assert ("restart", "mpd") in calls

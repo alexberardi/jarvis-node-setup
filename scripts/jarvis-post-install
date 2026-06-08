@@ -218,23 +218,54 @@ def _op_configure_systemd_service(payload: dict, package: str) -> None:
     dropin_dir = Path("/etc/systemd/system") / f"{service}.service.d"
     dropin_path = dropin_dir / _DROPIN_FILENAME
 
+    enable_raw = payload.get("enable", False)
+    if not isinstance(enable_raw, bool):
+        _die(f"invalid enable: must be a bool, got {type(enable_raw).__name__}")
+    enable = bool(enable_raw)
+
     rendered = _render_dropin(payload, package)
 
-    # Idempotency: if content matches what we'd write, skip the daemon-reload
-    # and restart entirely so re-installs are quiet no-ops.
+    # Idempotency: if content matches what we'd write AND the unit is already
+    # enabled (when requested), skip the daemon-reload and restart entirely
+    # so re-installs are quiet no-ops. The enable check costs ~50ms but
+    # without it a reinstall on an already-enabled unit re-runs systemctl
+    # restart and daemon-reload for no reason.
     if dropin_path.exists():
         try:
             current = dropin_path.read_text()
         except OSError:
             current = ""
-        if current == rendered:
+        if current == rendered and (not enable or _unit_is_enabled(service)):
             print(f"configure-systemd-service: {service} already up to date")
             return
 
     _atomic_write(dropin_path, rendered, mode=0o644)
     _systemctl("daemon-reload")
+    if enable:
+        _systemctl("enable", service)
     _systemctl("restart", service)
-    print(f"configure-systemd-service: wrote {dropin_path} and restarted {service}")
+    msg = f"configure-systemd-service: wrote {dropin_path} and restarted {service}"
+    if enable:
+        msg += " (enabled for boot)"
+    print(msg)
+
+
+def _unit_is_enabled(service: str) -> bool:
+    """True iff `systemctl is-enabled <service>` reports enabled.
+
+    `is-enabled` is the canonical check. Returns rc=0 only for fully enabled
+    states (enabled, enabled-runtime, alias, static). All other states
+    (disabled, masked, not-found, etc.) return non-zero. We treat any
+    non-zero as "needs enabling" so the idempotency check is conservative.
+    """
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-enabled", service],
+            capture_output=True, text=True, timeout=10.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
 
 
 # ── op: set-config-file-value ───────────────────────────────────────────
