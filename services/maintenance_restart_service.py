@@ -36,6 +36,7 @@ import datetime
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from jarvis_log_client import JarvisLogger
@@ -43,6 +44,65 @@ from jarvis_log_client import JarvisLogger
 from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node")
+
+
+# ── Silent-restart marker ────────────────────────────────────────────────
+#
+# Mirrors ``services.package_install_handler._PENDING_RESULT_FILE``. main.py
+# reads this on boot to suppress the LLM-warmup TTS — a 3 AM scheduled
+# restart that loudly said "Hello! How can I assist you today?" would
+# defeat the entire purpose of running a quiet maintenance window. Same
+# treatment for the RSS-ceiling emergency stop: the user didn't ask for
+# the restart, doesn't need an audible "I'm back" confirmation.
+#
+# Marker lives in ``~/.jarvis/`` so it survives the ~3 s systemctl
+# restart but gets cleared by ``flush_pending_maintenance_restart`` on
+# the next boot. /tmp would NOT work — it's RAM-backed and we'd lose
+# the signal across reboots that go through a full power cycle.
+_MAINTENANCE_RESTART_MARKER = (
+    Path.home() / ".jarvis" / ".pending_maintenance_restart"
+)
+
+
+def has_pending_maintenance_restart() -> bool:
+    """True if the previous process exited via the maintenance scheduler.
+
+    main.py reads this to suppress the LLM-warmup audible response on
+    boot. Clear the marker via ``clear_pending_maintenance_restart``
+    once the signal has been consumed.
+    """
+    return _MAINTENANCE_RESTART_MARKER.exists()
+
+
+def clear_pending_maintenance_restart() -> None:
+    """Remove the marker file. Idempotent — safe if it doesn't exist."""
+    try:
+        _MAINTENANCE_RESTART_MARKER.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(
+            "Failed to clear maintenance-restart marker",
+            error=str(e),
+            path=str(_MAINTENANCE_RESTART_MARKER),
+        )
+
+
+def _write_maintenance_restart_marker(reason: str) -> None:
+    """Drop the marker file so the next boot stays silent."""
+    try:
+        _MAINTENANCE_RESTART_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        # Reason is informational only — caller never reads the body.
+        _MAINTENANCE_RESTART_MARKER.write_text(
+            f"{reason}\n{datetime.datetime.now().isoformat()}\n",
+        )
+    except OSError as e:
+        # Best-effort: if we can't write the marker the worst case is a
+        # spoken "Hello…" at 3 AM, which is the bug. Log loudly so the
+        # operator can spot the next-day pattern in journalctl.
+        logger.error(
+            "Failed to write maintenance-restart marker — boot may be audible",
+            error=str(e),
+            path=str(_MAINTENANCE_RESTART_MARKER),
+        )
 
 
 # ── Time-string parsing ──────────────────────────────────────────────────
@@ -207,16 +267,19 @@ class MaintenanceRestartService:
     def _exit_for_restart(self, *, reason: str) -> None:
         """Exit cleanly so systemd's Restart=always brings us back up.
 
-        A short sleep gives the just-logged "exit imminent" line time
+        Drops the silent-restart marker BEFORE the sleep so that even if
+        the 2 s flush window gets cut short by an aggressive systemd
+        TimeoutStopSec, the next boot still recognises this exit as a
+        maintenance trigger and stays quiet on warmup. Same belt-and-
+        braces as the package-install marker.
+
+        The short sleep gives the just-logged "exit imminent" line time
         to flush through the JarvisLogger queue + atexit hooks before
         the process dies. os._exit (vs sys.exit) bypasses any
-        registered handler that might otherwise convert a graceful
-        exit into a 30 s TimeoutStopSec wait.
-
-        Marked as never-returning for type checkers but in practice
-        os._exit raises SystemExit-equivalent and terminates the
-        process before the implicit return.
+        registered handler that might otherwise convert a graceful exit
+        into a 30 s TimeoutStopSec wait.
         """
+        _write_maintenance_restart_marker(reason)
         time.sleep(2.0)
         # noinspection PyProtectedMember
         os._exit(0)

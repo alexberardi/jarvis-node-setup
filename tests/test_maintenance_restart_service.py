@@ -17,7 +17,11 @@ import pytest
 from services.maintenance_restart_service import (
     MaintenanceRestartService,
     _parse_hhmm,
+    _write_maintenance_restart_marker,
+    clear_pending_maintenance_restart,
+    has_pending_maintenance_restart,
 )
+import services.maintenance_restart_service as mrs
 
 
 # ── _parse_hhmm ──────────────────────────────────────────────────────────
@@ -231,11 +235,70 @@ class TestSchedulerIteration:
             mock_cfg.get_int.return_value = 320
             mock_cfg.get_str.return_value = "03:00"
             with patch(
-                "services.maintenance_restart_service.datetime",
-            ) as mock_dt:
+                "services.maintenance_restart_service.datetime.datetime",
+                wraps=datetime.datetime,
+            ) as mock_dt_cls:
                 # 03:01, off by one minute — no fire.
-                mock_dt.datetime.now.return_value = datetime.datetime(
+                mock_dt_cls.now = lambda: datetime.datetime(
                     2026, 6, 9, 3, 1,
                 )
                 svc._check_once()
         assert reasons == []
+
+
+# ── Silent-restart marker ────────────────────────────────────────────────
+
+
+class TestMaintenanceMarker:
+    """The marker file is the contract between the scheduler and main.py's
+    boot-time warmup gate. Without it, a 3 AM restart would loudly speak
+    the LLM warmup response through the speaker — exactly what the daily
+    restart is meant to avoid."""
+
+    def test_write_then_read_then_clear(self, tmp_path) -> None:
+        marker = tmp_path / "marker"
+        with patch.object(mrs, "_MAINTENANCE_RESTART_MARKER", marker):
+            assert has_pending_maintenance_restart() is False
+            _write_maintenance_restart_marker("scheduled")
+            assert has_pending_maintenance_restart() is True
+            clear_pending_maintenance_restart()
+            assert has_pending_maintenance_restart() is False
+
+    def test_clear_is_idempotent_when_marker_absent(self, tmp_path) -> None:
+        # Calling clear on a fresh boot (no marker present) must NOT raise.
+        # Without this guard, main.py's startup code would have to wrap
+        # every call in a try/except.
+        marker = tmp_path / "absent"
+        with patch.object(mrs, "_MAINTENANCE_RESTART_MARKER", marker):
+            clear_pending_maintenance_restart()  # must not raise
+            assert has_pending_maintenance_restart() is False
+
+    def test_write_creates_parent_directory(self, tmp_path) -> None:
+        # ~/.jarvis may not exist on a freshly-provisioned node before
+        # any other component creates it. The marker writer must handle
+        # that — same convention the install handler uses.
+        marker = tmp_path / "nested" / "deep" / "marker"
+        with patch.object(mrs, "_MAINTENANCE_RESTART_MARKER", marker):
+            _write_maintenance_restart_marker("rss_ceiling")
+            assert marker.exists()
+            assert has_pending_maintenance_restart() is True
+
+    def test_exit_writes_marker_before_sleep(self, tmp_path) -> None:
+        # _exit_for_restart calls os._exit which would kill the test
+        # process; patch it to a recorder. The marker must be written
+        # BEFORE the sleep so an aggressive TimeoutStopSec can't take
+        # us out before the signal is durable on disk.
+        marker = tmp_path / "marker"
+        svc = MaintenanceRestartService()
+        exit_calls: list[int] = []
+
+        def _fake_exit(_code: int) -> None:
+            exit_calls.append(_code)
+
+        with patch.object(mrs, "_MAINTENANCE_RESTART_MARKER", marker), \
+             patch.object(mrs.os, "_exit", _fake_exit), \
+             patch.object(mrs.time, "sleep", lambda _s: None):
+            svc._exit_for_restart(reason="scheduled")
+
+        assert marker.exists()
+        assert exit_calls == [0]
