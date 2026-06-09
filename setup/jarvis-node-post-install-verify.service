@@ -1,0 +1,31 @@
+[Unit]
+Description=Jarvis Node post-install verification (auto-rollback on failed update)
+# Gate: only run if there's an install pending verification. install.sh
+# drops this marker just before its final reboot, so on a steady-state
+# boot (no update in flight) this unit is a no-op and systemd skips it
+# without even invoking the binary.
+ConditionPathExists=__SERVICE_HOME__/.jarvis/state/install-pending-verification.json
+# Order after jarvis-node.service so the watchdog observes whatever state
+# the rebooted system landed in. systemd's `After=` is start-order only —
+# it does NOT wait for jarvis-node to become "active". The script polls
+# state itself and times out at HEALTH_TIMEOUT.
+After=jarvis-node.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/jarvis-post-install-verify
+# The watchdog handles its own errors and ALWAYS clears the marker. A
+# nonzero exit means "we tried to roll back and couldn't" — log it via
+# journal, but don't have systemd retry: there's nothing to retry. The
+# rollback log at ~/.jarvis/state/last-rollback.json carries the detail.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal
+# Soft cap above the watchdog's HEALTH_TIMEOUT (default 120s) + the
+# rollback work itself. Leaves headroom for slow IO on SD card.
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
