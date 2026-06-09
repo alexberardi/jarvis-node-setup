@@ -1,0 +1,190 @@
+#!/bin/bash
+# jarvis-post-install-verify — Layer 2 self-heal for failed jarvis-node updates.
+#
+# install.sh drops a marker at ${STATE_DIR}/install-pending-verification.json
+# just before its final reboot. On the next boot, the
+# jarvis-node-post-install-verify.service unit (ConditionPathExists gates it
+# on the marker) runs this script, which watches jarvis-node.service for
+# HEALTH_TIMEOUT seconds and rolls back to /opt/jarvis-node.bak if the new
+# install never reaches a steady "active (running)" state.
+#
+# Healthy outcome: marker removed, exit 0.
+# Failure outcome:
+#   mv /opt/jarvis-node /opt/jarvis-node.broken-<target_version>
+#   mv /opt/jarvis-node.bak /opt/jarvis-node
+#   restart the service
+#   write ${STATE_DIR}/last-rollback.json so CC can surface the rollback
+#   clear the marker either way (never loop on boots)
+#
+# Why this exists on top of install.sh's in-process start_service() check:
+#   - install.sh:start_service is SKIPPED when NEEDS_REBOOT=1 (overlay added /
+#     migration). The install reboots before that check can run.
+#   - install.sh:start_service can pass at install time but the rebooted
+#     system can come up unhealthy (env changed, overlay loaded with new
+#     state, dependency surprise).
+#   - install.sh's content-level integrity check (Layer 1) catches obvious
+#     truncated-tarball cases up-front. Layer 2 catches everything else.
+#
+# Env overrides (testing):
+#   STATE_DIR        default /home/pi/.jarvis/state
+#   INSTALL_DIR      default /opt/jarvis-node
+#   SERVICE          default jarvis-node.service
+#   HEALTH_TIMEOUT   default 120  (seconds to wait for healthy)
+#   MIN_STABLE_S     default 15   (seconds the service must STAY healthy)
+#   POLL_INTERVAL    default 3
+
+# No `set -e` — we handle every error explicitly and must ALWAYS clear the
+# marker. `set -u` is fine; pipefail isn't needed (no pipelines).
+set -u
+
+STATE_DIR="${STATE_DIR:-/home/pi/.jarvis/state}"
+PENDING_FILE="${STATE_DIR}/install-pending-verification.json"
+ROLLBACK_LOG="${STATE_DIR}/last-rollback.json"
+INSTALL_DIR="${INSTALL_DIR:-/opt/jarvis-node}"
+BACKUP_DIR="${INSTALL_DIR}.bak"
+SERVICE="${SERVICE:-jarvis-node.service}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
+MIN_STABLE_S="${MIN_STABLE_S:-15}"
+POLL_INTERVAL="${POLL_INTERVAL:-3}"
+
+log() {
+    printf '[verify] %s\n' "$*"
+}
+
+# Read a string field from the marker JSON. Portable, no jq dependency —
+# marker format is simple and we control the writer in install.sh.
+read_field() {
+    local field="$1" file="$2"
+    grep -o "\"${field}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" 2>/dev/null \
+        | head -1 \
+        | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+clear_marker() {
+    rm -f "$PENDING_FILE"
+}
+
+write_rollback_log() {
+    # $1 rolled_back (true|false)  $2 reason  $3 target_v  $4 previous_v  $5 broken_path
+    local rolled_back="$1" reason="$2" target_v="$3" previous_v="$4" broken_path="$5"
+    local now
+    now="$(date -Iseconds 2>/dev/null || date)"
+    mkdir -p "$(dirname "$ROLLBACK_LOG")" 2>/dev/null || true
+    cat > "$ROLLBACK_LOG" <<JSON
+{
+  "rolled_back": ${rolled_back},
+  "reason": "${reason}",
+  "from_version": "${target_v}",
+  "to_version": "${previous_v}",
+  "broken_install_path": "${broken_path}",
+  "timestamp": "${now}"
+}
+JSON
+}
+
+# ---- Main ----
+
+if [ ! -f "$PENDING_FILE" ]; then
+    # ConditionPathExists in the unit should make this unreachable, but the
+    # script must be safe to run by hand at any time.
+    log "no pending verification marker at ${PENDING_FILE} — nothing to do"
+    exit 0
+fi
+
+target_version="$(read_field target_version "$PENDING_FILE")"
+previous_version="$(read_field previous_version "$PENDING_FILE")"
+target_version="${target_version:-unknown}"
+previous_version="${previous_version:-unknown}"
+
+log "pending install: target=${target_version} previous=${previous_version}"
+log "watching ${SERVICE} for up to ${HEALTH_TIMEOUT}s (must stay healthy for ${MIN_STABLE_S}s)"
+
+# Baseline NRestarts so we can detect a crash-loop: a freshly-failing
+# service ticks the counter every ~5s (the RestartSec in our unit).
+# Equality with baseline is the "no respawns since we started watching"
+# signal — mirrors install.sh:start_service.
+nrestarts_baseline="$(systemctl show -p NRestarts --value "${SERVICE}" 2>/dev/null || echo 0)"
+
+waited=0
+stable_since=-1
+while [ "$waited" -lt "$HEALTH_TIMEOUT" ]; do
+    state="$(systemctl show -p ActiveState --value "${SERVICE}" 2>/dev/null || echo unknown)"
+    nrestarts_now="$(systemctl show -p NRestarts --value "${SERVICE}" 2>/dev/null || echo 0)"
+    result="$(systemctl show -p Result --value "${SERVICE}" 2>/dev/null || echo unknown)"
+
+    # Fast-fail on a terminal failure: once systemd has given up
+    # (start-limit-hit), no amount of polling will change anything.
+    if [ "$state" = "failed" ] && [ "$result" = "start-limit-hit" ]; then
+        log "service terminal: state=failed result=start-limit-hit"
+        break
+    fi
+
+    if [ "$state" = "active" ] && [ "$nrestarts_now" = "$nrestarts_baseline" ]; then
+        if [ "$stable_since" = "-1" ]; then
+            stable_since=$waited
+            log "service active — starting ${MIN_STABLE_S}s stable window"
+        fi
+        if [ $((waited - stable_since)) -ge "$MIN_STABLE_S" ]; then
+            log "service healthy (active for ${MIN_STABLE_S}s, no restarts)"
+            clear_marker
+            exit 0
+        fi
+    else
+        if [ "$stable_since" != "-1" ]; then
+            log "stability lost: state=${state} restarts=${nrestarts_now} (baseline=${nrestarts_baseline}) — resetting window"
+            stable_since=-1
+        fi
+    fi
+
+    sleep "$POLL_INTERVAL"
+    waited=$((waited + POLL_INTERVAL))
+done
+
+log "service did not reach steady health within ${HEALTH_TIMEOUT}s — rolling back"
+
+if [ ! -d "$BACKUP_DIR" ]; then
+    log "ERROR: no backup at ${BACKUP_DIR}; cannot roll back"
+    write_rollback_log "false" "no_backup_available" "$target_version" "$previous_version" ""
+    clear_marker
+    exit 1
+fi
+
+systemctl stop "${SERVICE}" 2>/dev/null || true
+systemctl reset-failed "${SERVICE}" 2>/dev/null || true
+
+broken_path="${INSTALL_DIR}.broken-${target_version}"
+# Wipe any prior broken-<target_version> dir so the rename is atomic.
+# Forensic value of the freshest failure outweighs older preserved copies.
+rm -rf "$broken_path"
+
+if ! mv "$INSTALL_DIR" "$broken_path"; then
+    log "ERROR: failed to rename ${INSTALL_DIR} → ${broken_path}"
+    write_rollback_log "false" "rename_to_broken_failed" "$target_version" "$previous_version" ""
+    # Best-effort: try to bring the (broken) service back up so the node
+    # isn't completely dead. The CC inbox notification will surface the
+    # failure for human follow-up.
+    systemctl start "${SERVICE}" 2>/dev/null || true
+    clear_marker
+    exit 1
+fi
+
+if ! mv "$BACKUP_DIR" "$INSTALL_DIR"; then
+    log "ERROR: failed to restore ${BACKUP_DIR} → ${INSTALL_DIR}"
+    write_rollback_log "false" "restore_backup_failed" "$target_version" "$previous_version" "$broken_path"
+    # Try to put the broken install back so we at least have SOMETHING in
+    # /opt/jarvis-node — even a broken service is better than no service
+    # (systemd will keep retrying and the node will eventually come back
+    # online once an operator intervenes).
+    mv "$broken_path" "$INSTALL_DIR" 2>/dev/null || true
+    systemctl start "${SERVICE}" 2>/dev/null || true
+    clear_marker
+    exit 1
+fi
+
+write_rollback_log "true" "service_unhealthy_after_install" "$target_version" "$previous_version" "$broken_path"
+
+systemctl start "${SERVICE}" 2>/dev/null || true
+clear_marker
+
+log "rollback complete: ${target_version} → ${previous_version} (forensics at ${broken_path})"
+exit 0
