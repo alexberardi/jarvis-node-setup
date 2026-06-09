@@ -30,4 +30,4 @@ dotenv
 fastapi>=0.100.0
 uvicorn>=0.22.0
 packaging>=21.0
-jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@3c7da7e
+jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82
