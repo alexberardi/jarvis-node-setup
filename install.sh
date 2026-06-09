@@ -424,6 +424,40 @@ unload-module module-suspend-on-idle
   fi
 }
 
+# --- Stop PulseAudio from restoring per-app mute state ---
+# module-stream-restore caches sink/volume/mute per application.name. The
+# `pause_active_playback` duck mutes go-librespot's PA sink-input during the
+# wake window; PA writes mute=yes into the cache keyed by
+# `sink-input-by-application-name:go-librespot`. When the deferred
+# `local.resume()` in the Spotify command runs AFTER resume_active_playback
+# (a hook-ordering quirk — the resume runs in on_response_complete, which
+# fires after the wake-cycle's resume pass), go-librespot opens a fresh
+# sink-input that inherits the cached mute. Net result: every stop/start of
+# Spotify after a wake leaves playback silent until the user (or this CLI)
+# manually unmutes it. Observed 2026-06-09 on dev Pi.
+#
+# Disabling restore_muted is the correct knob — PA still remembers per-app
+# volume (a useful UX win for non-jarvis apps), but never re-applies a saved
+# mute to a new stream. restore_device=false was already set upstream;
+# preserve it so we don't regress the existing sink-routing behavior.
+configure_pulseaudio_stream_restore() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  local cfg_dir="/etc/pulse/default.pa.d"
+  local cfg_file="${cfg_dir}/98-jarvis-stream-restore.pa"
+  mkdir -p "$cfg_dir"
+  local content=".nofail
+unload-module module-stream-restore
+load-module module-stream-restore restore_device=false restore_muted=false
+"
+  if [ ! -f "$cfg_file" ] || [ "$(cat "$cfg_file")" != "$content" ]; then
+    printf '%s' "$content" > "$cfg_file"
+    sync
+    info "PulseAudio stream-restore mute caching disabled (${cfg_file})"
+  fi
+}
+
 # --- Download and extract tarball ---
 download_and_extract() {
   if [ "$LOCAL_MODE" -eq 1 ]; then
@@ -899,7 +933,14 @@ ASOUND
     amixer -c seeed2micvoicec sset 'HP DAC' '0' mute                 2>/dev/null || true
     amixer -c seeed2micvoicec sset 'HPCOM' '0' mute                  2>/dev/null || true
     amixer -c seeed2micvoicec sset 'HPCOM DAC' '0' mute              2>/dev/null || true
-    amixer -c seeed2micvoicec sset 'PGA' '60%'                       2>/dev/null || true
+    # PGA at the +35.5 dB install default digitally clipped on music
+    # alone (capture peak 0 dBFS, flat factor 13.9 — 2026-06-03 parec
+    # diagnostic). At +29 dB the same source clipped only on real voice
+    # peaks during music; wake-during-music starts firing where +35 dB
+    # killed everything. Phase 5 may tighten this further; for now 49 %
+    # is the smallest-blast-radius improvement that keeps existing
+    # voice-only wakes working.
+    amixer -c seeed2micvoicec sset 'PGA' '49%'                       2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Left PGA Mixer Line1L' on        2>/dev/null || true
     amixer -c seeed2micvoicec sset 'Right PGA Mixer Line1R' on       2>/dev/null || true
     # Enable the codec's ADC high-pass filter at the lowest cutoff
@@ -1681,6 +1722,7 @@ main() {
   configure_bluetooth_class
   switch_audio_to_pulseaudio
   configure_pulseaudio_no_suspend
+  configure_pulseaudio_stream_restore
 
   # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
   # heavy steps so alembic + any other key-writing code in the install
