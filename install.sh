@@ -442,13 +442,76 @@ download_and_extract() {
     mv "$INSTALL_DIR" "$backup"
   fi
 
-  # Stream directly to tar — avoids buffering the full tarball in /tmp
-  # (which is tmpfs / RAM-backed) and prevents OOM on 512MB boards.
-  info "Downloading and extracting ${tarball}..."
-  if ! curl -fSL "$url" | tar xzf - -C /; then
-    error "Download/extract failed. Check: https://github.com/${REPO}/releases/tag/${TAG}"
+  # Download to a sibling path on the same disk as INSTALL_DIR, then
+  # extract. The previous streaming pipeline (`curl -fSL "$url" | tar xzf
+  # - -C /`) was the v0.1.110 kitchen-Pi incident (June 2026): an HTTP/2
+  # framing close silently truncated ~3 MB off the end of a 127 MB
+  # tarball without curl reporting an error code. `set -o pipefail`
+  # didn't catch it either. The result: 195 zero-byte app files
+  # extracted from the tail of the archive (scripts/main.py among them),
+  # systemd start-limit-hit, MQTT and LEDs dead, no recovery.
+  #
+  # /tmp can't be used (tmpfs on Pi → RAM exhaustion on 130 MB tarballs);
+  # we put it next to INSTALL_DIR (which has been moved to .bak, so the
+  # path is free) so we know disk space is available.
+  local tarball_path="/opt/jarvis-node.tarball.tmp"
+  rm -f "$tarball_path"
+
+  # Best-effort Content-Length from HEAD. GitHub's release-asset CDN
+  # usually returns it on the resolved (non-redirect) URL, but we don't
+  # depend on it — if it's missing, `gzip -t` is the backstop.
+  info "Probing ${tarball} for size..."
+  local expected_size
+  expected_size="$(curl -fsSLI --max-time 30 "$url" 2>/dev/null \
+    | awk -F': ' 'BEGIN{IGNORECASE=1} tolower($1)=="content-length"{gsub(/\r/,"",$2); print $2}' \
+    | tail -1 || true)"
+  if [ -n "${expected_size:-}" ]; then
+    info "Expected tarball size: ${expected_size} bytes"
+  else
+    warn "Content-Length unavailable; will rely on gzip integrity check"
   fi
 
+  info "Downloading ${tarball}..."
+  if ! curl -fSL \
+        --retry 3 \
+        --retry-connrefused \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --max-time 600 \
+        -o "$tarball_path" \
+        "$url"; then
+    rm -f "$tarball_path"
+    error "Tarball download failed after 3 retries: $url"
+  fi
+
+  # Strict size check when we have an expected length. This is the
+  # check that would have caught the v0.1.110 truncation outright.
+  if [ -n "${expected_size:-}" ]; then
+    local actual_size
+    actual_size="$(stat -c %s "$tarball_path" 2>/dev/null || echo 0)"
+    if [ "$actual_size" != "$expected_size" ]; then
+      rm -f "$tarball_path"
+      error "Tarball size mismatch: expected ${expected_size}, got ${actual_size} (truncated transfer)"
+    fi
+    info "Tarball size verified: ${actual_size} bytes"
+  fi
+
+  # gzip -t walks the entire compressed stream verifying block headers
+  # and CRCs. Catches every truncation we've ever actually seen plus any
+  # in-flight bitflips. Cheap (~2-3 s on Pi Zero 2W for 127 MB).
+  info "Verifying tarball integrity..."
+  if ! gzip -t "$tarball_path" 2>/dev/null; then
+    rm -f "$tarball_path"
+    error "Tarball failed gzip integrity check (corrupt download)"
+  fi
+
+  info "Extracting ${tarball}..."
+  if ! tar xzf "$tarball_path" -C /; then
+    rm -f "$tarball_path"
+    error "Tarball extract failed. Check: https://github.com/${REPO}/releases/tag/${TAG}"
+  fi
+
+  rm -f "$tarball_path"
   success "Extracted to ${INSTALL_DIR}"
 
   # Restore user data from the .bak dir. Without this, an upgrade blows
@@ -504,6 +567,89 @@ download_and_extract() {
       fi
     done
   fi
+}
+
+# --- Verify install (Layer 1: post-extract integrity gate) ---
+#
+# Runs immediately after download_and_extract — before any heavy
+# downstream work (rebuild_venv, setup_database, register_commands).
+# Aborts and rolls back in place if the extracted tree is missing
+# essential files. The node never sees a broken install on disk.
+#
+# Why this matters: the v0.1.110 kitchen-Pi incident (June 2026) was a
+# silent tarball truncation that left 195 zero-byte app files,
+# including scripts/main.py. Python loaded an empty module, exited 0,
+# systemd hit start-limit-hit, MQTT and HAT LEDs went dark — and the
+# install reported success. download_and_extract now has download-to-
+# file + size check + gzip -t guarding against the same truncation, but
+# this function is the belt to that braces: any byte-level surprise
+# that gets past the network layer dies here instead of bricking the
+# node.
+#
+# Layer 1 (this) catches obvious corruption. Layer 2 (the post-reboot
+# watchdog jarvis-post-install-verify) catches runtime startup failures
+# that file-existence checks can't see.
+verify_install() {
+  if [ "$LOCAL_MODE" -eq 1 ]; then
+    info "Local mode: skipping post-extract integrity check"
+    return 0
+  fi
+
+  # Files that MUST be non-empty for jarvis-node to function. Picked to
+  # span the failure modes we've actually seen: top-level entry point,
+  # build manifest, requirements, a service that's exercised every
+  # boot, a core module, the systemd unit template, the Python venv.
+  local critical=(
+    "VERSION"
+    "scripts/main.py"
+    "pyproject.toml"
+    "requirements-pi.txt"
+    "services/led_service.py"
+    "core/wake_loop.py"
+    "setup/jarvis-node.service"
+    ".venv/bin/python"
+  )
+
+  local missing=()
+  local f
+  for f in "${critical[@]}"; do
+    if [ ! -s "${INSTALL_DIR}/${f}" ]; then
+      missing+=("$f")
+    fi
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    success "Integrity check passed (${#critical[@]}/${#critical[@]} critical files)"
+    return 0
+  fi
+
+  warn "Integrity check FAILED: ${#missing[@]} of ${#critical[@]} critical files missing/empty:"
+  printf '  - %s\n' "${missing[@]}" >&2
+
+  local backup="${INSTALL_DIR}.bak"
+  if [ ! -d "$backup" ]; then
+    error "Cannot roll back: no previous install at ${backup}. Manual recovery required."
+  fi
+
+  local broken="${INSTALL_DIR}.broken-${VERSION}"
+  warn "Rolling back: ${INSTALL_DIR} → ${broken}, restoring ${backup} → ${INSTALL_DIR}"
+  rm -rf "$broken"
+  if ! mv "$INSTALL_DIR" "$broken"; then
+    error "Rollback failed: could not move ${INSTALL_DIR} → ${broken}"
+  fi
+  if ! mv "$backup" "$INSTALL_DIR"; then
+    # Half-rolled state — try to put the broken install back so the trap
+    # finds /opt/jarvis-node populated (better than nothing for systemd).
+    mv "$broken" "$INSTALL_DIR" 2>/dev/null || true
+    error "Rollback failed: could not restore ${backup} → ${INSTALL_DIR}"
+  fi
+
+  # Bring the rolled-back service back up. The pre-install stop block
+  # in main() will have stopped it earlier; we want the node functional
+  # before this script exits.
+  systemctl start "${SERVICE_NAME}.service" 2>/dev/null || true
+
+  error "Install aborted: integrity check failed; rolled back to previous version. Forensics at ${broken}"
 }
 
 # --- Configure audio ---
@@ -1157,6 +1303,83 @@ install_self_update_wrapper() {
   success "Installed ${dest}"
 }
 
+install_post_install_verify_wrapper() {
+  # Install the Layer 2 post-reboot watchdog (script at /usr/local/sbin
+  # + oneshot systemd unit gated by ConditionPathExists on the pending
+  # marker). The watchdog catches failures the in-process install-time
+  # checks can't see: anything that goes wrong AFTER the install
+  # rebooted the box. See scripts/jarvis-post-install-verify for the
+  # recovery contract; see install.sh:verify_install for Layer 1.
+  #
+  # Defensive: refuse to overwrite a working wrapper with a zero-byte
+  # source. This is the same class of bug we're trying to defend
+  # against — if the next release also ships a truncated tarball, the
+  # OLD watchdog stays in /usr/local/sbin and can still recover us.
+  local src_script="${INSTALL_DIR}/scripts/jarvis-post-install-verify"
+  local dest_script="/usr/local/sbin/jarvis-post-install-verify"
+  if [ ! -s "$src_script" ]; then
+    warn "scripts/jarvis-post-install-verify missing/empty — keeping any existing /usr/local/sbin copy"
+  else
+    install -o root -g root -m 0755 "$src_script" "$dest_script"
+    success "Installed ${dest_script}"
+  fi
+
+  local src_unit="${INSTALL_DIR}/setup/jarvis-node-post-install-verify.service"
+  local dest_unit="/etc/systemd/system/jarvis-node-post-install-verify.service"
+  if [ ! -s "$src_unit" ]; then
+    warn "setup/jarvis-node-post-install-verify.service missing/empty — keeping any existing unit"
+  else
+    # __SERVICE_HOME__ → ${SERVICE_HOME} for the ConditionPathExists path
+    sed "s|__SERVICE_HOME__|${SERVICE_HOME}|g" "$src_unit" > "$dest_unit"
+    chown root:root "$dest_unit"
+    chmod 0644 "$dest_unit"
+    systemctl daemon-reload
+    systemctl enable jarvis-node-post-install-verify.service >/dev/null 2>&1 || true
+    success "Installed and enabled jarvis-node-post-install-verify.service"
+  fi
+}
+
+# --- Write install-pending-verification marker (Layer 2 trigger) ---
+#
+# Drops a JSON marker at ${SERVICE_HOME}/.jarvis/state/ just before
+# install.sh reboots. ConditionPathExists on the
+# jarvis-node-post-install-verify.service unit makes the marker the
+# only trigger — on boots with no install pending, the unit is a
+# zero-cost no-op. The watchdog itself self-clears the marker.
+#
+# Skipped on fresh installs (no .bak): there's nothing to roll back to,
+# and a fresh install is more likely to have legitimate first-boot
+# slowness that would false-positive the watchdog.
+write_install_pending_marker() {
+  local backup="${INSTALL_DIR}.bak"
+  if [ ! -d "$backup" ]; then
+    info "Fresh install — skipping post-install verification marker"
+    return 0
+  fi
+
+  local state_dir="${SERVICE_HOME}/.jarvis/state"
+  mkdir -p "$state_dir"
+
+  local previous="unknown"
+  if [ -s "${backup}/VERSION" ]; then
+    previous="$(tr -d '\r\n' < "${backup}/VERSION" 2>/dev/null || true)"
+    previous="${previous:-unknown}"
+  fi
+
+  local marker="${state_dir}/install-pending-verification.json"
+  local now
+  now="$(date -Iseconds 2>/dev/null || date)"
+  cat > "$marker" <<JSON
+{
+  "target_version": "${VERSION}",
+  "previous_version": "${previous}",
+  "install_timestamp": "${now}"
+}
+JSON
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${SERVICE_HOME}/.jarvis" 2>/dev/null || true
+  info "Wrote post-install verification marker: ${marker}"
+}
+
 install_apt_source_wrapper() {
   # Copy scripts/jarvis-apt-source → /usr/local/sbin/, root-owned 0755.
   # The service user invokes this via `sudo` to register 3rd-party apt
@@ -1488,6 +1711,12 @@ main() {
   fi
 
   download_and_extract
+  # Layer 1 self-heal: verify the extracted tree before doing any
+  # downstream work. If a critical file is missing/zero (truncated
+  # tarball, corrupt extract), roll back to .bak in place and abort.
+  # The v0.1.110 kitchen-Pi incident is the smoking-gun motivation —
+  # see the function header for details.
+  verify_install
   configure_audio
   setup_config
   rebuild_venv
@@ -1500,6 +1729,7 @@ main() {
   install_apt_source_wrapper
   install_post_install_wrapper
   install_self_update_wrapper
+  install_post_install_verify_wrapper
   install_alsa_store_wrapper
   install_sudoers
   create_service
@@ -1513,6 +1743,9 @@ main() {
   if [ "${NEEDS_REBOOT:-0}" -eq 1 ]; then
     verify
     print_success
+    # Drop the Layer 2 marker so the watchdog catches any post-reboot
+    # startup failure (start_service is skipped on this path).
+    write_install_pending_marker
     info "Rebooting in 5 seconds to finish setup..."
     sleep 5
     reboot
@@ -1530,6 +1763,12 @@ main() {
   # is set; this covers the upgrade path.
   local backup="${INSTALL_DIR}.bak"
   if [ -d "$backup" ] || [ -d "${INSTALL_DIR}.failed" ]; then
+    # Drop the Layer 2 marker so the watchdog re-verifies that the
+    # rebooted system stays healthy. start_service already passed an
+    # in-process health check, but the reboot is its own state change
+    # that can surface new failures (kernel module reload, env reset,
+    # dependency surprise).
+    write_install_pending_marker
     info "Upgrade complete — rebooting to reclaim resources..."
     sleep 3
     reboot
