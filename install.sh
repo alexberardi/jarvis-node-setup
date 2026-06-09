@@ -633,6 +633,15 @@ verify_install() {
   # span the failure modes we've actually seen: top-level entry point,
   # build manifest, requirements, a service that's exercised every
   # boot, a core module, the systemd unit template, the Python venv.
+  #
+  # Venv sentinel is pyvenv.cfg (a regular file), NOT .venv/bin/python.
+  # The CI-built venv ships python as a symlink chain ending at
+  # /usr/local/bin/python3 (the Docker build path), which is dangling on
+  # a Pi until rebuild_venv repoints it — and rebuild_venv runs AFTER
+  # this check. `-s` follows symlinks, so testing .venv/bin/python here
+  # always fails on a fresh Pi and rolls back every install.
+  # pyvenv.cfg catches tarball truncation just as well without the host
+  # dependency. (kitchen-Pi v0.1.111 incident, 2026-06-09.)
   local critical=(
     "VERSION"
     "scripts/main.py"
@@ -641,7 +650,7 @@ verify_install() {
     "services/led_service.py"
     "core/wake_loop.py"
     "setup/jarvis-node.service"
-    ".venv/bin/python"
+    ".venv/pyvenv.cfg"
   )
 
   local missing=()
