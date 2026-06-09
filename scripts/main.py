@@ -672,6 +672,18 @@ def main():
     supervisor_thread.start()
     logger.info("Thread supervisor started")
 
+    # Start the maintenance-restart scheduler. On the Pi Zero 2W, a daily
+    # restart at a quiet hour clears accumulated allocator fragmentation
+    # and library-internal caches that no in-process GC can reach. The
+    # window is user-configurable via the ``maintenance.restart_at_time``
+    # + ``maintenance.restart_enabled`` settings; an RSS-ceiling fallback
+    # protects against a regression that drives the leak rate above what
+    # the daily window bounds. See services/maintenance_restart_service.py.
+    from services.maintenance_restart_service import (
+        get_maintenance_restart_service,
+    )
+    get_maintenance_restart_service().start()
+
     # NOTE (v0.1.69): the v0.1.64-introduced ``connectivity_watchdog``
     # was removed here. It exited the process when CC was unreachable
     # for 5+ minutes, triggering a systemd restart — but the restarted
