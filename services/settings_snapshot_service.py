@@ -540,6 +540,19 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "volume_percent": _live_volume if _live_volume is not None else 100,
         "led_enabled": Config.get_bool("led_enabled", True),
         "led_brightness_percent": Config.get_int("led_brightness_percent", 100),
+        # Daily-restart hygiene knob. The Pi Zero 2W accumulates ~5-50 MB/h of
+        # allocator + library-cache growth that no in-process GC reaches; a
+        # short restart at a quiet hour clears it. See
+        # services/maintenance_restart_service.py for the scheduler.
+        "maintenance_restart_enabled": Config.get_bool(
+            "maintenance_restart_enabled", True,
+        ),
+        "maintenance_restart_at_time": Config.get_str(
+            "maintenance_restart_at_time", "03:00",
+        ),
+        "maintenance_restart_rss_ceiling_mb": Config.get_int(
+            "maintenance_restart_rss_ceiling_mb", 320,
+        ),
     }
 
     # Detected hardware — surfaces ReSpeaker HAT presence + audio backend to
