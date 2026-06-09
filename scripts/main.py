@@ -586,6 +586,32 @@ def main():
     except Exception as e:
         logger.warning("Early install-result flush failed (non-fatal)", error=str(e))
 
+    # Same silent-on-boot treatment for maintenance-triggered restarts.
+    # A scheduled 3 AM restart that loudly spoke the LLM warmup
+    # "Hello! How can I assist you today?" through the speaker would
+    # defeat the entire point of running a quiet maintenance window;
+    # the RSS-ceiling emergency stop has the same audibility concern.
+    # The flag rolls into ``_silent_restart`` below so the warmup gate
+    # treats both cases identically.
+    _maintenance_restart: bool = False
+    try:
+        from services.maintenance_restart_service import (
+            clear_pending_maintenance_restart,
+            has_pending_maintenance_restart,
+        )
+        _maintenance_restart = has_pending_maintenance_restart()
+        if _maintenance_restart:
+            clear_pending_maintenance_restart()
+    except Exception as e:
+        logger.warning(
+            "Maintenance-restart marker check failed (non-fatal)",
+            error=str(e),
+        )
+
+    # Either an install-triggered restart OR a maintenance-triggered
+    # restart should keep boot silent.
+    _silent_restart: bool = _install_restart or _maintenance_restart
+
     # Device scanning is now user-driven via MQTT (mobile → CC → node).
     # See services/device_scan_handler.py and mqtt_tts_listener.py.
 
@@ -714,8 +740,14 @@ def main():
     # (The deferred install-result flush already happened earlier in boot,
     # right after MQTT came up — see the block above the BT pair agent.
     # `_install_restart` was captured there before the marker was cleared.)
-    if _install_restart:
-        logger.info("Skipping LLM warmup — install-triggered restart, staying silent")
+    if _silent_restart:
+        reason = (
+            "install-triggered" if _install_restart else "maintenance-triggered"
+        )
+        logger.info(
+            "Skipping LLM warmup — silent restart, staying quiet",
+            reason=reason,
+        )
     else:
         try:
             from utils.command_execution_service import CommandExecutionService
