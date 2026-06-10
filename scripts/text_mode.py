@@ -162,6 +162,13 @@ async def startup() -> None:
     except Exception as e:
         logger.warning("Storage backend init failed (non-fatal)", error=str(e))
 
+    # Inbox backend (required for SDK JarvisInbox)
+    try:
+        from services.inbox_backend import init_inbox_backend
+        init_inbox_backend()
+    except Exception as e:
+        logger.warning("Inbox backend init failed (non-fatal)", error=str(e))
+
     # Register built-in commands (seeds command_registry table)
     try:
         from utils.command_discovery_service import CommandDiscoveryService
