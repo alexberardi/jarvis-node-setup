@@ -441,6 +441,13 @@ def main():
     except Exception as e:
         logger.warning("Storage backend init failed, commands may lack persistence", error=str(e))
 
+    # Register SDK inbox backend (posts route through command-center; no DB dependency)
+    try:
+        from services.inbox_backend import init_inbox_backend
+        init_inbox_backend()
+    except Exception as e:
+        logger.warning("Inbox backend init failed, commands cannot post inbox items", error=str(e))
+
     # Check if node is provisioned (skip in development mode)
     if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
         from provisioning.startup import is_provisioned
