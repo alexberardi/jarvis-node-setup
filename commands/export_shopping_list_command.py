@@ -108,6 +108,15 @@ def _build_notes_result(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"text": "\n".join(lines)}
 
 
+class ProviderError(Exception):
+    """A provider builder could not produce a result.
+
+    str(exc) is the message TTS/mobile should surface. Raised BEFORE the
+    trip-boundary reset is applied, so a failed export never mutates the
+    shopping list.
+    """
+
+
 PROVIDERS: Dict[str, Callable[[List[Dict[str, Any]]], Dict[str, Any]]] = {
     "walmart": _build_walmart_result,
     "notes": _build_notes_result,
@@ -153,6 +162,20 @@ _DEST_TO_PROVIDER = {
 }
 
 
+def _provider_from_utterance(voice_command: str) -> str | None:
+    """Deterministic spoken-destination detection for the LLM-routed path.
+
+    The export destination is configuration (EXPORT_PROVIDER secret); the
+    only thing that overrides it is the user naming a destination out loud.
+    """
+    said = (voice_command or "").lower()
+    if "note" in said:
+        return "notes"
+    if "walmart" in said or "store" in said:
+        return "walmart"
+    return None
+
+
 class ExportShoppingListCommand(IJarvisCommand):
     """Send the shopping list to the configured store as a tappable cart link."""
 
@@ -180,19 +203,13 @@ class ExportShoppingListCommand(IJarvisCommand):
 
     @property
     def parameters(self) -> List[JarvisParameter]:
-        return [
-            JarvisParameter(
-                "provider",
-                "string",
-                required=False,
-                description=(
-                    "Where to send the list: walmart = cart link, notes = "
-                    "copyable text list. Omit unless the user names a "
-                    "destination."
-                ),
-                enum_values=sorted(PROVIDERS),
-            ),
-        ]
+        # Deliberately empty. The export destination is configuration
+        # (EXPORT_PROVIDER secret) with a spoken override — never an
+        # LLM-extracted value. The override is derived deterministically
+        # from the utterance in post_process_tool_call; exposing it as an
+        # enum parameter taught the LLM to fill it spuriously, silently
+        # overriding the user's configured store.
+        return []
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
@@ -249,7 +266,7 @@ class ExportShoppingListCommand(IJarvisCommand):
             CommandExample("Send my shopping list to Walmart", {}, is_primary=True),
             CommandExample("Export the shopping list", {}),
             CommandExample("Send the grocery list to the store", {}),
-            CommandExample("Send my shopping list to my notes", {"provider": "notes"}),
+            CommandExample("Send my shopping list to my notes", {}),
         ]
 
     def generate_adapter_examples(self) -> List[CommandExample]:
@@ -264,8 +281,8 @@ class ExportShoppingListCommand(IJarvisCommand):
             ("Send my grocery list to the store", {}, False),
             ("Export the grocery list to Walmart", {}, False),
             ("Send the shopping list", {}, False),
-            ("Send my shopping list to my notes", {"provider": "notes"}, False),
-            ("Export the grocery list to notes", {"provider": "notes"}, False),
+            ("Send my shopping list to my notes", {}, False),
+            ("Export the grocery list to notes", {}, False),
         ]
         return [
             CommandExample(voice, args, is_primary)
@@ -301,15 +318,14 @@ class ExportShoppingListCommand(IJarvisCommand):
     def post_process_tool_call(
         self, args: Dict[str, Any], voice_command: str
     ) -> Dict[str, Any]:
-        provider = args.get("provider")
-        if provider is not None:
-            normalized = str(provider).strip().lower()
-            if normalized in PROVIDERS:
-                args["provider"] = normalized
-            else:
-                # Hallucinated destination — drop it and let run() use the
-                # configured EXPORT_PROVIDER secret.
-                args.pop("provider", None)
+        # provider is not a declared parameter, but models sometimes invent
+        # args — anything LLM-supplied is discarded unconditionally. The
+        # only provider channel besides the EXPORT_PROVIDER secret is the
+        # user actually saying a destination, detected here.
+        args.pop("provider", None)
+        spoken = _provider_from_utterance(voice_command)
+        if spoken is not None:
+            args["provider"] = spoken
         return args
 
     # ── Main execution ────────────────────────────────────────────────────
@@ -377,8 +393,8 @@ class ExportShoppingListCommand(IJarvisCommand):
         if post_result != "ok":
             return self._post_failure_response(post_result, speaker_user_id)
 
-        if provider == "notes":
-            # No Walmart-match tail — every notes row is exportable.
+        if provider != "walmart":
+            # No Walmart-match tail — every non-walmart row is exportable.
             message = (
                 f"I sent your shopping list to your phone — {item_count} "
                 f"{'item' if item_count == 1 else 'items'}."
@@ -596,6 +612,16 @@ class ExportShoppingListCommand(IJarvisCommand):
             # Notes needs no IDs — every selected entry is exportable.
             exportable = entries
 
+        # Build the provider result FIRST: if it fails (e.g. a provider
+        # API is unreachable), the list must be left exactly as it was.
+        try:
+            result = PROVIDERS[provider](exportable)
+        except ProviderError as e:
+            return CommandResponse.error_response(
+                error_details=f"export_selected provider '{provider}' failed: {e}",
+                context_data={"message": str(e)},
+            )
+
         # Export IS the trip boundary: exported one-offs leave the list
         # (they're in the cart), exported regulars go straight back on it
         # unchecked for next time. Deselected items are untouched — a
@@ -620,7 +646,6 @@ class ExportShoppingListCommand(IJarvisCommand):
             else:
                 shopping_storage.delete(entry["key"])
 
-        result = PROVIDERS[provider](exportable)
         if provider == "notes":
             message = (
                 f"Your list is ready to copy — {len(exported)} "

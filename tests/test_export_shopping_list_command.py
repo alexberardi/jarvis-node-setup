@@ -136,14 +136,10 @@ class TestProperties:
     ) -> None:
         assert command.data_browser_storage_name == "walmart_items"
 
-    def test_provider_parameter(self, command: ExportShoppingListCommand) -> None:
-        params = {p.name: p for p in command.parameters}
-        assert list(params) == ["provider"]
-        provider = params["provider"]
-        assert provider.required is False
-        assert provider.param_type == "string"
-        assert provider.enum_values == ["notes", "walmart"]
-        assert "Omit unless the user names a destination" in provider.description
+    def test_no_llm_parameters(self, command: ExportShoppingListCommand) -> None:
+        """The destination is configuration + spoken override — never an
+        LLM-extracted parameter (models fill optional enums spuriously)."""
+        assert command.parameters == []
 
     def test_keywords(self, command: ExportShoppingListCommand) -> None:
         assert "walmart" in command.keywords
@@ -176,23 +172,46 @@ class TestProperties:
 
 
 class TestPostProcess:
-    def test_valid_provider_normalized(
-        self, command: ExportShoppingListCommand
-    ) -> None:
-        args = command.post_process_tool_call(
-            {"provider": "  Notes "}, "send my shopping list to my notes"
-        )
-        assert args == {"provider": "notes"}
+    """The destination comes from the utterance, never from the LLM. Any
+    LLM-invented provider arg is discarded unconditionally; the spoken
+    destination is re-derived from the raw voice_command."""
 
-    def test_invalid_provider_dropped(
+    def test_llm_provider_discarded_bare_phrasing(
         self, command: ExportShoppingListCommand
     ) -> None:
         args = command.post_process_tool_call(
-            {"provider": "amazon"}, "send my shopping list to amazon"
+            {"provider": "walmart"}, "Export my shopping list"
         )
         assert "provider" not in args
 
-    def test_absent_provider_untouched(
+    def test_llm_provider_discarded_even_when_valid(
+        self, command: ExportShoppingListCommand
+    ) -> None:
+        """The LLM said notes but the user said walmart — the utterance wins."""
+        args = command.post_process_tool_call(
+            {"provider": "notes"}, "send my shopping list to walmart"
+        )
+        assert args == {"provider": "walmart"}
+
+    def test_spoken_notes_detected(
+        self, command: ExportShoppingListCommand
+    ) -> None:
+        args = command.post_process_tool_call({}, "send my shopping list to my notes")
+        assert args == {"provider": "notes"}
+
+    def test_spoken_walmart_detected(
+        self, command: ExportShoppingListCommand
+    ) -> None:
+        args = command.post_process_tool_call({}, "send my shopping list to walmart")
+        assert args == {"provider": "walmart"}
+
+    def test_store_phrasing_maps_to_walmart(
+        self, command: ExportShoppingListCommand
+    ) -> None:
+        args = command.post_process_tool_call({}, "send the grocery list to the store")
+        assert args == {"provider": "walmart"}
+
+    def test_bare_phrasing_defers_to_secret(
         self, command: ExportShoppingListCommand
     ) -> None:
         assert command.post_process_tool_call({}, "export the shopping list") == {}
