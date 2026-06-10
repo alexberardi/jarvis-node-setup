@@ -29,6 +29,7 @@ services:
       - ./device_managers:/app/device_managers
       - ./ha_shared:/app/ha_shared
       - ./services:/app/services
+      - ./repositories:/app/repositories
       - ./clients:/app/clients
       - ./utils:/app/utils
       - ./scripts:/app/scripts
