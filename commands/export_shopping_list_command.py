@@ -1,8 +1,10 @@
 """Export shopping list command for Jarvis.
 
-Sends the household shopping list to the speaker's phone as a rich inbox
-item with a push notification. The mobile app renders the list with
-checkboxes; the user picks items and taps "export", which fires the
+Sends the household shopping list to the speaker's phone as an
+interactive-list inbox item with a push notification. The mobile app's
+generic interactive list screen renders the payload (sections of rows
+with quantity steppers, Walmart rows gated on the live ``walmart_items``
+records); the user picks items and taps "Export", which fires the
 ``export_selected`` callback back on this command. The callback builds a
 provider-specific result — a tappable Walmart add-to-cart deep link, or a
 copyable plain-text list for the "notes" provider. Export is the trip
@@ -34,9 +36,15 @@ from jarvis_command_sdk import (
     FastPathPattern,
     FieldSpec,
     IJarvisCommand,
+    InteractiveAction,
+    InteractiveList,
+    InteractiveRow,
+    InteractiveRowAction,
+    InteractiveSection,
     JarvisStorage,
     PreRouteResult,
     RecordSummary,
+    RequiresRecordField,
     callback,
 )
 from commands.shopping_list_command import _item_key
@@ -49,12 +57,21 @@ logger = JarvisLogger(service="jarvis-node")
 SHOPPING_STORAGE_NAME = "shopping_list"
 MAP_STORAGE_NAME = "walmart_items"
 
-# Contract constants shared with command-center + mobile. Changing any of
-# these breaks the mobile inbox renderer — see the PRD shared contract.
-INBOX_CATEGORY = "shopping_list_export"
+# Wired into the interactive-list payload's action button — mobile fires
+# this @callback by name. The inbox category is InteractiveList.CATEGORY
+# ("interactive_list"), routing the item to the generic mobile renderer.
 CALLBACK_NAME = "export_selected"
 
 DEFAULT_PROVIDER = "walmart"
+
+# Walmart product-page URL pattern for the webview_pick row actions —
+# capture group 1 is the item ID mobile PATCHes onto the walmart_items
+# record. JS-compatible: mobile runs it with `new RegExp(pattern)`.
+_WALMART_ID_PATTERN = r"/ip/(?:[^/]+/)?(\d{5,})"
+
+# Interactive-list contract cap (SDK _MAX_TOTAL_ROWS): payloads over this
+# are rejected at construction, so the producer truncates instead.
+_MAX_PAYLOAD_ROWS = 100
 
 _shopping_storage: JarvisStorage | None = None
 _map_storage: JarvisStorage | None = None
@@ -377,13 +394,8 @@ class ExportShoppingListCommand(IJarvisCommand):
             "title": title,
             "summary": self._build_summary(item_count, unmatched_count, provider),
             "body": self._build_body(all_items, provider),
-            "category": INBOX_CATEGORY,
-            "metadata": {
-                "type": INBOX_CATEGORY,
-                "provider": provider,
-                "sections": sections,
-                "item_count": item_count,
-            },
+            "category": InteractiveList.CATEGORY,
+            "metadata": self._build_metadata(sections, provider),
             "user_id": speaker_user_id,
             "create_push_notification": True,
             "target_type": "user",
@@ -468,6 +480,96 @@ class ExportShoppingListCommand(IJarvisCommand):
             sections[section].append(entry)
 
         return sections
+
+    def _build_metadata(
+        self, sections: Dict[str, List[Dict[str, Any]]], provider: str
+    ) -> Dict[str, Any]:
+        """Interactive-list v1 payload for the generic mobile renderer.
+
+        Walmart rows are gated on the live ``walmart_items`` record having
+        a ``walmart_item_id`` and carry Find ID / View webview_pick actions
+        to fill one in; notes rows need no IDs, so no gate and no actions.
+        Only non-empty sections ship.
+        """
+        walmart = provider == "walmart"
+        # The SDK rejects payloads over the contract's 100-row cap rather
+        # than truncating, so drop overflow in document order ourselves —
+        # mirroring the renderer's semantics. Overflow items stay on the
+        # shopping list (only exported keys are reset/deleted) and ride
+        # along on the next export.
+        remaining = _MAX_PAYLOAD_ROWS
+        interactive_sections = []
+        for title, entries in (
+            ("Regulars", sections["regulars"]),
+            ("One-offs", sections["one_offs"]),
+        ):
+            take = entries[:remaining]
+            remaining -= len(take)
+            if take:
+                interactive_sections.append(
+                    InteractiveSection(
+                        title=title,
+                        rows=[self._build_row(entry, walmart=walmart) for entry in take],
+                    )
+                )
+        if not interactive_sections:
+            # run() short-circuits on an empty list before posting, but the
+            # contract for an empty payload is one untitled zero-row section
+            # so mobile renders empty_text instead of the fallback view.
+            interactive_sections = [InteractiveSection(rows=[])]
+        return InteractiveList(
+            command_name=self.command_name,
+            sections=interactive_sections,
+            actions=[
+                InteractiveAction(
+                    label="Export {n} items", callback=CALLBACK_NAME, style="primary"
+                )
+            ],
+            context={"provider": provider},
+            empty_text="Nothing to export",
+        ).to_dict()
+
+    def _build_row(self, entry: Dict[str, Any], *, walmart: bool) -> InteractiveRow:
+        # Labels are raw user speech — slice to the SDK cap (120) since the
+        # builders reject over-long labels instead of truncating.
+        label = str(entry["item"])[:120]
+        if not walmart:
+            return InteractiveRow(
+                key=entry["key"],
+                label=label,
+                control="checkbox_stepper",
+                default_selected=True,
+                default_quantity=entry["quantity"],
+            )
+        return InteractiveRow(
+            key=entry["key"],
+            label=label,
+            control="checkbox_stepper",
+            default_selected=True,
+            default_quantity=entry["quantity"],
+            disabled_caption="No Walmart match",
+            requires_record_field=RequiresRecordField(
+                command_name=self.command_name,
+                field="walmart_item_id",
+                field_label="ID",
+            ),
+            row_actions=[
+                InteractiveRowAction(
+                    label="Find ID",
+                    start_url="https://www.walmart.com/search?q={label}",
+                    pattern=_WALMART_ID_PATTERN,
+                    save_command_name=self.command_name,
+                    save_field="walmart_item_id",
+                ),
+                InteractiveRowAction(
+                    label="View",
+                    start_url="https://www.walmart.com/ip/{value}",
+                    pattern=_WALMART_ID_PATTERN,
+                    save_command_name=self.command_name,
+                    save_field="walmart_item_id",
+                ),
+            ],
+        )
 
     @staticmethod
     def _build_summary(item_count: int, unmatched_count: int, provider: str) -> str:
@@ -555,11 +657,17 @@ class ExportShoppingListCommand(IJarvisCommand):
     def export_selected(
         self, data: dict, request_info: RequestInformation
     ) -> CommandResponse:
-        # {selected: [{key, quantity}], provider} — quantity comes from the
-        # mobile stepper (seeded from the record default, overridable per
-        # trip); provider echoes metadata.provider so the result matches
-        # what the export screen rendered.
-        provider = str(data.get("provider") or "").strip().lower()
+        # {action, selected: [{key, quantity}], context: {provider}} —
+        # quantity comes from the mobile stepper (seeded from the record
+        # default, overridable per trip); the provider echoes the payload's
+        # context so the result matches what the interactive list rendered.
+        # Legacy payloads (pre-interactive-list) carried provider at the
+        # top level instead; unknown values fall back to the configured
+        # EXPORT_PROVIDER secret as before.
+        context = data.get("context") if isinstance(data.get("context"), dict) else {}
+        provider = str(
+            context.get("provider") or data.get("provider") or ""
+        ).strip().lower()
         if provider not in PROVIDERS:
             provider = _get_provider_name()
 
@@ -669,6 +777,13 @@ class ExportShoppingListCommand(IJarvisCommand):
             selected_count=len(selected),
         )
         return CommandResponse.success_response(
-            context_data={**result, "exported": exported, "message": message},
+            context_data={
+                **result,
+                # detail_lines renders as a checkmarked list on the generic
+                # result view; exported is the legacy key older clients read.
+                "detail_lines": list(exported),
+                "exported": exported,
+                "message": message,
+            },
             wait_for_input=False,
         )
