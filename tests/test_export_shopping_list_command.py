@@ -283,7 +283,14 @@ class TestEmptyList:
         post_mock.assert_not_called()
 
 
+def _all_rows(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [row for section in metadata["sections"] for row in section["rows"]]
+
+
 class TestPayloadShape:
+    """The metadata is the interactive_list v1 wire payload — see the
+    shared contract (SDK CLAUDE.md, "Interactive List payloads (v1)")."""
+
     def test_sections_split_regulars_and_one_offs(
         self,
         command: ExportShoppingListCommand,
@@ -302,15 +309,119 @@ class TestPayloadShape:
         payload = post_mock.call_args.args[0]
 
         metadata = payload["metadata"]
-        assert metadata["type"] == "shopping_list_export"
-        assert metadata["provider"] == "walmart"
-        assert metadata["item_count"] == 2
-        assert metadata["sections"]["regulars"] == [
-            {"key": "milk", "item": "milk", "walmart_item_id": "10450114", "quantity": 1}
+        assert metadata["type"] == "interactive_list"
+        assert metadata["version"] == 1
+        assert metadata["command_name"] == "export_shopping_list"
+        assert [s["title"] for s in metadata["sections"]] == ["Regulars", "One-offs"]
+        assert [r["key"] for r in metadata["sections"][0]["rows"]] == ["milk"]
+        assert [r["key"] for r in metadata["sections"][1]["rows"]] == ["candles"]
+
+    def test_empty_sections_omitted(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        post_mock,
+        request_info: RequestInformation,
+    ) -> None:
+        """Only non-empty sections ship — a one-off-only list has no Regulars."""
+        _add_list_item(shopping_storage, "candles")
+
+        command.run(request_info)
+        metadata = post_mock.call_args.args[0]["metadata"]
+        assert [s["title"] for s in metadata["sections"]] == ["One-offs"]
+
+    def test_walmart_row_shape(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        map_storage: FakeStorage,
+        post_mock,
+        request_info: RequestInformation,
+    ) -> None:
+        """Walmart rows: stepper control, record gate on walmart_item_id,
+        Find ID / View webview_pick actions — the exact wire dict."""
+        _add_list_item(shopping_storage, "milk")
+        _add_map_entry(map_storage, "milk", "10450114")
+
+        command.run(request_info)
+        metadata = post_mock.call_args.args[0]["metadata"]
+        (row,) = _all_rows(metadata)
+        assert row == {
+            "key": "milk",
+            "label": "milk",
+            "control": "checkbox_stepper",
+            "default": {"selected": True, "quantity": 1},
+            "disabled_caption": "No Walmart match",
+            "requires_record_field": {
+                "command_name": "export_shopping_list",
+                "field": "walmart_item_id",
+                "field_label": "ID",
+            },
+            "row_actions": [
+                {
+                    "label": "Find ID",
+                    "type": "webview_pick",
+                    "start_url": "https://www.walmart.com/search?q={label}",
+                    "pattern": r"/ip/(?:[^/]+/)?(\d{5,})",
+                    "save": {
+                        "command_name": "export_shopping_list",
+                        "field": "walmart_item_id",
+                    },
+                },
+                {
+                    "label": "View",
+                    "type": "webview_pick",
+                    "start_url": "https://www.walmart.com/ip/{value}",
+                    "pattern": r"/ip/(?:[^/]+/)?(\d{5,})",
+                    "save": {
+                        "command_name": "export_shopping_list",
+                        "field": "walmart_item_id",
+                    },
+                },
+            ],
+        }
+
+    def test_notes_row_shape(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        post_mock,
+        request_info: RequestInformation,
+    ) -> None:
+        """Notes rows: same control/defaults, but no gate and no row actions
+        — notes exports need no Walmart IDs."""
+        _add_list_item(shopping_storage, "milk")
+
+        command.run(request_info, provider="notes")
+        metadata = post_mock.call_args.args[0]["metadata"]
+        (row,) = _all_rows(metadata)
+        assert row == {
+            "key": "milk",
+            "label": "milk",
+            "control": "checkbox_stepper",
+            "default": {"selected": True, "quantity": 1},
+        }
+
+    def test_actions_context_and_empty_text(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        post_mock,
+        request_info: RequestInformation,
+    ) -> None:
+        _add_list_item(shopping_storage, "milk")
+
+        command.run(request_info)
+        metadata = post_mock.call_args.args[0]["metadata"]
+        assert metadata["actions"] == [
+            {
+                "label": "Export {n} items",
+                "callback": "export_selected",
+                "style": "primary",
+            }
         ]
-        assert metadata["sections"]["one_offs"] == [
-            {"key": "candles", "item": "candles", "walmart_item_id": None, "quantity": 1}
-        ]
+        assert metadata["context"] == {"provider": "walmart"}
+        assert metadata["empty_text"] == "Nothing to export"
 
     def test_payload_envelope(
         self,
@@ -328,7 +439,7 @@ class TestPayloadShape:
         # Push dedup is md5(title+body) over 60s — the count in the title
         # keeps back-to-back exports of different sizes distinct.
         assert "2 items" in payload["title"]
-        assert payload["category"] == "shopping_list_export"
+        assert payload["category"] == "interactive_list"
         assert payload["user_id"] == _DEFAULT_USER_ID
         assert payload["create_push_notification"] is True
         assert payload["target_type"] == "user"
@@ -351,12 +462,7 @@ class TestPayloadShape:
 
         command.run(request_info)
         payload = post_mock.call_args.args[0]
-        items = [
-            entry["item"]
-            for section in payload["metadata"]["sections"].values()
-            for entry in section
-        ]
-        assert items == ["milk"]
+        assert [r["label"] for r in _all_rows(payload["metadata"])] == ["milk"]
 
     def test_filter_is_on_checked_not_checked_at(
         self,
@@ -373,9 +479,9 @@ class TestPayloadShape:
         response = command.run(request_info)
         assert response.success
         payload = post_mock.call_args.args[0]
-        assert payload["metadata"]["item_count"] == 1
+        assert len(_all_rows(payload["metadata"])) == 1
 
-    def test_empty_string_map_id_is_null_in_payload(
+    def test_empty_string_map_id_counts_as_unmatched(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -383,16 +489,16 @@ class TestPayloadShape:
         post_mock,
         request_info: RequestInformation,
     ) -> None:
-        """Pre-seeded-but-unfilled map rows ('') normalize to null per contract."""
+        """Pre-seeded-but-unfilled map rows ('') are unmatched. The payload
+        no longer carries IDs — gating is live via requires_record_field —
+        but the voice message must still count them as needing a match."""
         _add_list_item(shopping_storage, "candles")
         _add_map_entry(map_storage, "candles", "")
 
-        command.run(request_info)
-        payload = post_mock.call_args.args[0]
-        entry = payload["metadata"]["sections"]["one_offs"][0]
-        assert entry["walmart_item_id"] is None
+        response = command.run(request_info)
+        assert "1 still needs a Walmart match" in response.context_data["message"]
 
-    def test_notes_provider_in_metadata(
+    def test_notes_provider_in_context(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -404,7 +510,7 @@ class TestPayloadShape:
         response = command.run(request_info, provider="notes")
         assert response.success
         payload = post_mock.call_args.args[0]
-        assert payload["metadata"]["provider"] == "notes"
+        assert payload["metadata"]["context"] == {"provider": "notes"}
 
     def test_invalid_provider_kwarg_falls_back_to_configured(
         self,
@@ -417,9 +523,9 @@ class TestPayloadShape:
 
         command.run(request_info, provider="amazon")
         payload = post_mock.call_args.args[0]
-        assert payload["metadata"]["provider"] == "walmart"
+        assert payload["metadata"]["context"] == {"provider": "walmart"}
 
-    def test_provider_secret_drives_metadata(
+    def test_provider_secret_drives_context(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -432,7 +538,7 @@ class TestPayloadShape:
 
         command.run(request_info)
         payload = post_mock.call_args.args[0]
-        assert payload["metadata"]["provider"] == "notes"
+        assert payload["metadata"]["context"] == {"provider": "notes"}
 
     def test_explicit_provider_kwarg_overrides_secret(
         self,
@@ -447,7 +553,32 @@ class TestPayloadShape:
 
         command.run(request_info, provider="walmart")
         payload = post_mock.call_args.args[0]
-        assert payload["metadata"]["provider"] == "walmart"
+        assert payload["metadata"]["context"] == {"provider": "walmart"}
+
+    def test_over_cap_list_truncates_to_100_rows_regulars_first(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        post_mock,
+        request_info: RequestInformation,
+    ) -> None:
+        """101+ open items must not raise out of run() — the producer drops
+        overflow in document order (Regulars first), mirroring the renderer.
+        Overflow items stay on the list and ride along on the next export."""
+        for i in range(3):
+            _add_list_item(shopping_storage, f"regular {i}", regular=True)
+        for i in range(98):
+            _add_list_item(shopping_storage, f"one off {i}")
+
+        response = command.run(request_info)
+        assert response.success
+
+        metadata = post_mock.call_args.args[0]["metadata"]
+        assert [s["title"] for s in metadata["sections"]] == ["Regulars", "One-offs"]
+        assert len(metadata["sections"][0]["rows"]) == 3
+        assert len(metadata["sections"][1]["rows"]) == 97
+        total = sum(len(s["rows"]) for s in metadata["sections"])
+        assert total == 100
 
 
 class TestPreSeeding:
@@ -507,7 +638,7 @@ class TestPreSeeding:
         assert response.success
         assert map_storage.get("almond_butter") is None
 
-    def test_notes_provider_still_reads_existing_map_rows(
+    def test_notes_provider_leaves_existing_map_rows_intact(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -515,13 +646,17 @@ class TestPreSeeding:
         post_mock,
         request_info: RequestInformation,
     ) -> None:
+        """Even a mapped item renders ungated for notes — and the map row
+        survives the export untouched."""
         _add_list_item(shopping_storage, "milk")
         _add_map_entry(map_storage, "milk", "10450114")
 
         command.run(request_info, provider="notes")
         payload = post_mock.call_args.args[0]
-        entry = payload["metadata"]["sections"]["one_offs"][0]
-        assert entry["walmart_item_id"] == "10450114"
+        (row,) = _all_rows(payload["metadata"])
+        assert "requires_record_field" not in row
+        assert "row_actions" not in row
+        assert map_storage.get("milk")["walmart_item_id"] == "10450114"
 
 
 class TestRunMessages:
@@ -625,7 +760,10 @@ class TestCallback:
         assert response.context_data["url"] == (
             "https://affil.walmart.com/cart/addToCart?items=111|1,222|1"
         )
+        # detail_lines is the generic result-view key; exported is the
+        # legacy key older clients read — both carry the display names.
         assert response.context_data["exported"] == ["milk", "eggs"]
+        assert response.context_data["detail_lines"] == ["milk", "eggs"]
         assert "Exported 2 items to your Walmart cart" in response.context_data["message"]
 
     def test_exported_one_off_removed_from_list(
@@ -723,6 +861,7 @@ class TestCallback:
         assert response.success
         assert response.context_data["url"].endswith("items=111|1")
         assert response.context_data["exported"] == ["milk"]
+        assert response.context_data["detail_lines"] == ["milk"]
         # Unmapped items were NOT exported, so they stay on the list
         assert shopping_storage.get("candles")["checked"] is False
 
@@ -783,7 +922,7 @@ class TestCallback:
             )
             assert response.context_data["url"].endswith(f"items=111|{expected}"), bogus
 
-    def test_sections_carry_default_quantity(
+    def test_rows_carry_default_quantity(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -800,13 +939,9 @@ class TestCallback:
 
         command.run(request_info)
         payload = post_mock.call_args.args[0]
-        items = (
-            payload["metadata"]["sections"]["regulars"]
-            + payload["metadata"]["sections"]["one_offs"]
-        )
-        by_key = {i["key"]: i for i in items}
-        assert by_key["milk"]["quantity"] == 2
-        assert by_key["candles"]["quantity"] == 1
+        by_key = {r["key"]: r for r in _all_rows(payload["metadata"])}
+        assert by_key["milk"]["default"] == {"selected": True, "quantity": 2}
+        assert by_key["candles"]["default"] == {"selected": True, "quantity": 1}
 
     def test_empty_selected_is_error(
         self,
@@ -900,7 +1035,7 @@ class TestNotesCallback:
                     {"key": "milk", "quantity": 2},
                     {"key": "candles", "quantity": 1},
                 ],
-                "provider": "notes",
+                "context": {"provider": "notes"},
             },
             request_info,
         )
@@ -909,6 +1044,7 @@ class TestNotesCallback:
             "Shopping list:\n- milk x2\n- candles"
         )
         assert response.context_data["exported"] == ["milk", "candles"]
+        assert response.context_data["detail_lines"] == ["milk", "candles"]
         assert "url" not in response.context_data
         assert response.context_data["message"] == (
             "Your list is ready to copy — 2 items."
@@ -923,7 +1059,7 @@ class TestNotesCallback:
         _add_list_item(shopping_storage, "milk")
 
         response = command.export_selected(
-            {"selected": [{"key": "milk", "quantity": 1}], "provider": "notes"},
+            {"selected": [{"key": "milk", "quantity": 1}], "context": {"provider": "notes"}},
             request_info,
         )
         assert response.context_data["message"] == (
@@ -947,7 +1083,7 @@ class TestNotesCallback:
                     {"key": "milk", "quantity": 1},
                     {"key": "candles", "quantity": 1},
                 ],
-                "provider": "notes",
+                "context": {"provider": "notes"},
             },
             request_info,
         )
@@ -967,7 +1103,7 @@ class TestNotesCallback:
         _add_map_entry(map_storage, "candles", "")
 
         response = command.export_selected(
-            {"selected": [{"key": "candles", "quantity": 1}], "provider": "notes"},
+            {"selected": [{"key": "candles", "quantity": 1}], "context": {"provider": "notes"}},
             request_info,
         )
         assert response.success
@@ -981,7 +1117,7 @@ class TestNotesCallback:
         request_info: RequestInformation,
     ) -> None:
         response = command.export_selected(
-            {"selected": [{"key": "ghost_item", "quantity": 1}], "provider": "notes"},
+            {"selected": [{"key": "ghost_item", "quantity": 1}], "context": {"provider": "notes"}},
             request_info,
         )
         assert response.success
@@ -993,21 +1129,70 @@ class TestNotesCallback:
         request_info: RequestInformation,
     ) -> None:
         response = command.export_selected(
-            {"selected": [], "provider": "notes"}, request_info
+            {"selected": [], "context": {"provider": "notes"}}, request_info
         )
         assert not response.success
         assert response.context_data["message"]
 
 
 class TestCallbackProviderEcho:
-    def test_echoed_provider_overrides_configured(
+    """Resolution order: data['context']['provider'] (the interactive-list
+    payload's context, echoed verbatim by mobile) → legacy top-level
+    data['provider'] (pre-interactive-list clients) → configured secret."""
+
+    def test_context_provider_overrides_configured(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
         map_storage: FakeStorage,
         request_info: RequestInformation,
     ) -> None:
-        """Result must match what the export screen rendered, not the secret."""
+        """Result must match what the interactive list rendered, not the secret."""
+        map_storage._secrets["EXPORT_PROVIDER"] = "walmart"
+        _add_list_item(shopping_storage, "milk")
+        _add_map_entry(map_storage, "milk", "111")
+
+        response = command.export_selected(
+            {
+                "selected": [{"key": "milk", "quantity": 1}],
+                "context": {"provider": "notes"},
+            },
+            request_info,
+        )
+        assert response.success
+        assert response.context_data["text"] == "Shopping list:\n- milk"
+        assert "url" not in response.context_data
+
+    def test_context_provider_wins_over_legacy_key(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        map_storage: FakeStorage,
+        request_info: RequestInformation,
+    ) -> None:
+        _add_list_item(shopping_storage, "milk")
+        _add_map_entry(map_storage, "milk", "111")
+
+        response = command.export_selected(
+            {
+                "selected": [{"key": "milk", "quantity": 1}],
+                "context": {"provider": "notes"},
+                "provider": "walmart",
+            },
+            request_info,
+        )
+        assert response.success
+        assert response.context_data["text"] == "Shopping list:\n- milk"
+        assert "url" not in response.context_data
+
+    def test_legacy_provider_key_still_honored(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        map_storage: FakeStorage,
+        request_info: RequestInformation,
+    ) -> None:
+        """Back-compat: pre-interactive-list clients send a top-level provider."""
         map_storage._secrets["EXPORT_PROVIDER"] = "walmart"
         _add_list_item(shopping_storage, "milk")
         _add_map_entry(map_storage, "milk", "111")
@@ -1020,7 +1205,27 @@ class TestCallbackProviderEcho:
         assert response.context_data["text"] == "Shopping list:\n- milk"
         assert "url" not in response.context_data
 
-    def test_invalid_echoed_provider_falls_back_to_configured(
+    def test_invalid_context_provider_falls_back_to_configured(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        map_storage: FakeStorage,
+        request_info: RequestInformation,
+    ) -> None:
+        map_storage._secrets["EXPORT_PROVIDER"] = "notes"
+        _add_list_item(shopping_storage, "milk")
+
+        response = command.export_selected(
+            {
+                "selected": [{"key": "milk", "quantity": 1}],
+                "context": {"provider": "amazon"},
+            },
+            request_info,
+        )
+        assert response.success
+        assert response.context_data["text"] == "Shopping list:\n- milk"
+
+    def test_invalid_legacy_provider_falls_back_to_configured(
         self,
         command: ExportShoppingListCommand,
         shopping_storage: FakeStorage,
@@ -1032,6 +1237,23 @@ class TestCallbackProviderEcho:
 
         response = command.export_selected(
             {"selected": [{"key": "milk", "quantity": 1}], "provider": "amazon"},
+            request_info,
+        )
+        assert response.success
+        assert response.context_data["text"] == "Shopping list:\n- milk"
+
+    def test_non_dict_context_is_ignored(
+        self,
+        command: ExportShoppingListCommand,
+        shopping_storage: FakeStorage,
+        map_storage: FakeStorage,
+        request_info: RequestInformation,
+    ) -> None:
+        map_storage._secrets["EXPORT_PROVIDER"] = "notes"
+        _add_list_item(shopping_storage, "milk")
+
+        response = command.export_selected(
+            {"selected": [{"key": "milk", "quantity": 1}], "context": "notes"},
             request_info,
         )
         assert response.success
