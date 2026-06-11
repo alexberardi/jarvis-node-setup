@@ -611,18 +611,23 @@ class TestHeartbeatThreadStatus:
 
 
 # ---------------------------------------------------------------------------
-# 1B: package_install_handler uses update_agents
+# 1B: package_install_handler restarts instead of reloading in-process
 # ---------------------------------------------------------------------------
 
-class TestPackageInstallHandlerUsesUpdateAgents:
+class TestPackageInstallHandlerRestartsInsteadOfReload:
 
-    def test_no_direct_agents_mutation(self):
-        """package_install_handler should call update_agents, not _agents ="""
+    def test_in_process_refresh_path_removed(self):
+        """Successful installs restart the node; the in-process discovery
+        refresh path (source of the duplicate-MQTT-handler bug class) must
+        stay deleted."""
         import inspect
-        from services.package_install_handler import run_install_and_upload
+        from services import package_install_handler
 
-        source = inspect.getsource(run_install_and_upload)
+        assert not hasattr(package_install_handler, "_refresh_discovery_after_install"), \
+            "in-process discovery refresh after install was deleted — restart replaces it"
+
+        source = inspect.getsource(package_install_handler.run_install_and_upload)
+        assert "_defer_result_and_restart" in source, \
+            "successful installs must defer the result and restart the node"
         assert "scheduler._agents" not in source, \
-            "package_install_handler should use scheduler.update_agents(), not scheduler._agents ="
-        assert "update_agents" in source, \
-            "package_install_handler should call scheduler.update_agents()"
+            "package_install_handler must not mutate scheduler state in-process"

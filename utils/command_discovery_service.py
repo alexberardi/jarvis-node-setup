@@ -26,6 +26,12 @@ except ImportError:
 class CommandDiscoveryService:
     def __init__(self):
         self._commands_cache: Dict[str, IJarvisCommand] = {}
+        # Custom command modules whose import/instantiation raised:
+        # module name -> error string. Surfaced as synthetic import_failed
+        # snapshot entries and in report_tools package health, so a broken
+        # Pantry install shows a "failed to load" badge instead of the
+        # command silently vanishing from every list.
+        self._failed_modules: Dict[str, str] = {}
         self._last_refresh = 0
         self._lock = threading.Lock()
         # No background poll. Discovery runs on demand: CommandExecutionService
@@ -61,6 +67,7 @@ class CommandDiscoveryService:
         import commands
 
         new_commands: Dict[str, IJarvisCommand] = {}
+        new_failed: Dict[str, str] = {}
 
         # Fetch registry once so custom commands can override disabled built-ins
         registry: Dict[str, bool] = {}
@@ -110,6 +117,7 @@ class CommandDiscoveryService:
                                 continue
                             new_commands[name] = instance
                 except Exception as e:
+                    new_failed[subpkg_name] = str(e)
                     logger.error("Error loading custom command", module=subpkg_name, error=str(e))
         except ImportError:
             pass  # custom_commands package doesn't exist yet
@@ -144,6 +152,7 @@ class CommandDiscoveryService:
 
         with self._lock:
             self._commands_cache = new_commands
+            self._failed_modules = new_failed
             self._last_refresh = time.time()
 
     def _scan_package(self, package, package_path: str, commands_dict: Dict[str, IJarvisCommand]) -> None:
@@ -177,6 +186,16 @@ class CommandDiscoveryService:
             if include_disabled:
                 return self._commands_cache.copy()
             return self._filter_enabled(self._commands_cache)
+
+    def get_failed_modules(self) -> Dict[str, str]:
+        """Get custom command modules whose import/instantiation raised.
+
+        Returns:
+            Dict mapping module name to error string (from the last
+            discovery pass).
+        """
+        with self._lock:
+            return self._failed_modules.copy()
 
     def _filter_enabled(self, commands: Dict[str, IJarvisCommand]) -> Dict[str, IJarvisCommand]:
         """Filter out disabled commands using the command_registry table."""

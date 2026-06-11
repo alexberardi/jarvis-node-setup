@@ -55,7 +55,7 @@ def cmd_install(args: argparse.Namespace) -> None:
     if args.local:
         # Local directory install (dev/testing)
         try:
-            manifest = install_from_local(args.local)
+            manifest = install_from_local(args.local, skip_tests=args.skip_tests)
             print(f"Installed: {manifest.name} v{manifest.version}")
             print(f"  Type: {manifest.package_type}")
             print(f"  Components: {len(manifest.components)}")
@@ -323,7 +323,8 @@ def main() -> None:
     install_parser.add_argument("--url", help="GitHub repo URL (direct install)")
     install_parser.add_argument("--local", help="Local directory path (dev/testing)")
     install_parser.add_argument("--version", help="Git tag to install (e.g. v1.0.0)")
-    install_parser.add_argument("--skip-tests", action="store_true", help="Skip container tests")
+    install_parser.add_argument("--skip-tests", action="store_true",
+                                help="Skip pre-flight validation (user accepts risk)")
     install_parser.set_defaults(func=cmd_install)
 
     # remove

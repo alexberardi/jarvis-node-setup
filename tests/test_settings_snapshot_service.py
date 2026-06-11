@@ -555,6 +555,245 @@ class TestAgentsInSnapshot:
         assert snapshot["agents"] == []
 
 
+class TestPackageHealthInSnapshot:
+    """Phase 3 of resilient installs: unconfigured agents are LISTED with a
+    needs-setup marker (instead of silently hidden), and failed module
+    imports from both discovery services become synthetic entries that reuse
+    the `_errors` badge plumbing ("Failed to load" on mobile).
+    """
+
+    def _agent_mocks(
+        self,
+        mock_agent_discovery,
+        mock_repo_cls,
+        mock_service_map,
+        *,
+        agents=None,
+        unconfigured=None,
+        failed=None,
+        registry=None,
+        service_map=None,
+    ):
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = agents or {}
+        agent_service.get_unconfigured_agents.return_value = unconfigured or {}
+        agent_service.get_failed_modules.return_value = failed or {}
+        mock_agent_discovery.return_value = agent_service
+
+        mock_repo = MagicMock()
+        mock_repo.get_all.return_value = registry or {}
+        mock_repo_cls.return_value = mock_repo
+
+        mock_service_map.return_value = service_map or {}
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_unconfigured_agents_listed_with_fixable_secrets(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+        mock_session_local,
+        mock_repo_cls,
+        mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_service.get_failed_modules.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        secret = _make_mock_secret(
+            "EMAIL_PASSWORD", "integration", "Email password", "string", True
+        )
+        agent = _make_mock_agent("email_alerts", "Email alert checks", interval_seconds=300)
+        agent.required_secrets = [secret]
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            unconfigured={"email_alerts": (agent, ["EMAIL_PASSWORD"])},
+            service_map={"email_alerts": "Email"},
+        )
+        mock_get_secret.return_value = None
+
+        snapshot = build_snapshot()
+
+        agents_by_name = {a["agent_name"]: a for a in snapshot["agents"]}
+        assert "email_alerts" in agents_by_name
+        entry = agents_by_name["email_alerts"]
+        assert entry["unconfigured"] is True
+        assert entry["missing_secrets"] == ["EMAIL_PASSWORD"]
+        assert entry["enabled"] is True  # registry default, not forced off
+        assert entry["description"] == "Email alert checks"
+        assert entry["schedule"] == {"interval_seconds": 300, "run_on_startup": True}
+        assert entry["associated_service"] == "Email"
+        # The secrets list is built normally so the user can FIX the agent
+        # from the card — that's the whole point of listing it.
+        assert len(entry["secrets"]) == 1
+        assert entry["secrets"][0]["key"] == "EMAIL_PASSWORD"
+        assert entry["secrets"][0]["is_set"] is False
+        assert "_errors" not in entry
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_configured_agent_entries_carry_no_unconfigured_marker(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+        mock_session_local,
+        mock_repo_cls,
+        mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_service.get_failed_modules.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        cal = _make_mock_agent("calendar_alerts", "Calendar reminders")
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            agents={"calendar_alerts": cal},
+        )
+        mock_get_secret.return_value = None
+
+        snapshot = build_snapshot()
+
+        entry = next(a for a in snapshot["agents"] if a["agent_name"] == "calendar_alerts")
+        assert "unconfigured" not in entry
+        assert "missing_secrets" not in entry
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_failed_agent_modules_emit_synthetic_entries(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+        mock_session_local,
+        mock_repo_cls,
+        mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_service.get_failed_modules.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        long_error = "cannot import name 'JarvisInbox' from 'jarvis_command_sdk'" + "x" * 300
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            failed={"email_alerts": long_error},
+        )
+        mock_get_secret.return_value = None
+
+        snapshot = build_snapshot()
+
+        entry = next(a for a in snapshot["agents"] if a["agent_name"] == "email_alerts")
+        assert entry["description"] == ""
+        assert entry["enabled"] is False
+        assert entry["secrets"] == []
+        assert len(entry["_errors"]) == 1
+        tag = entry["_errors"][0]
+        assert tag.startswith("import_failed: cannot import name 'JarvisInbox'")
+        # Error text is truncated to 200 chars after the tag prefix.
+        assert len(tag) == len("import_failed: ") + 200
+
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_failed_command_modules_emit_synthetic_entries(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_service.get_failed_modules.return_value = {"email": "ImportError: nope"}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = {}
+        agent_service.get_unconfigured_agents.return_value = {}
+        agent_service.get_failed_modules.return_value = {}
+        mock_agent_discovery.return_value = agent_service
+
+        snapshot = build_snapshot()
+
+        entry = next(c for c in snapshot["commands"] if c["command_name"] == "email")
+        assert entry["description"] == ""
+        assert entry["secrets"] == []
+        assert entry["enabled"] is False
+        assert entry["_errors"] == ["import_failed: ImportError: nope"]
+
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_discovery_services_without_registries_are_tolerated(
+        self,
+        mock_cmd_discovery,
+        mock_get_secret,
+        mock_family_discovery,
+        mock_agent_discovery,
+    ):
+        """A discovery service whose registry accessors misbehave (or return
+        non-dicts) must not break the snapshot."""
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_service.get_failed_modules.side_effect = RuntimeError("nope")
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = {}
+        agent_service.get_unconfigured_agents.side_effect = AttributeError("missing")
+        agent_service.get_failed_modules.side_effect = AttributeError("missing")
+        mock_agent_discovery.return_value = agent_service
+
+        snapshot = build_snapshot()
+
+        assert snapshot["commands"] == []
+        assert snapshot["agents"] == []
+
+
 class TestDeviceFamiliesInSnapshot:
     """Tests for device_families in build_snapshot()."""
 

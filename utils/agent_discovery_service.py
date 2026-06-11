@@ -12,7 +12,7 @@ import pkgutil
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from jarvis_log_client import JarvisLogger
 
@@ -42,6 +42,17 @@ class AgentDiscoveryService:
 
     def __init__(self):
         self._agents_cache: Dict[str, IJarvisAgent] = {}
+        # Agents that loaded fine but have missing required secrets:
+        # name -> (instance, missing secret keys). They are LISTED here
+        # instead of silently dropped (the email_alerts agent was dead for
+        # ~2 months with no UI trace) so the settings snapshot can render
+        # a "needs setup" card the user can fix. The scheduler never sees
+        # them — get_all_agents() stays configured-only.
+        self._unconfigured: Dict[str, Tuple[IJarvisAgent, List[str]]] = {}
+        # Agent modules whose import/instantiation raised: module name ->
+        # error string. Surfaced as synthetic import_failed snapshot
+        # entries and in report_tools package health.
+        self._failed_modules: Dict[str, str] = {}
         self._lock = threading.RLock()  # Use RLock for reentrant acquisition
         self._discovered = False
 
@@ -80,10 +91,15 @@ class AgentDiscoveryService:
             return {}
 
         new_agents: Dict[str, IJarvisAgent] = {}
+        new_unconfigured: Dict[str, Tuple[IJarvisAgent, List[str]]] = {}
+        new_failed: Dict[str, str] = {}
 
         # Scan built-in agents
         for _, module_name, _ in pkgutil.iter_modules(agents.__path__):
-            self._try_load_agent(f"agents.{module_name}", module_name, new_agents)
+            self._try_load_agent(
+                f"agents.{module_name}", module_name,
+                new_agents, new_unconfigured, new_failed,
+            )
 
         # Scan custom agents (installed by Pantry)
         custom_agents_dir = Path(agents.__path__[0]).parent / "agents" / "custom_agents"
@@ -99,16 +115,30 @@ class AgentDiscoveryService:
                             f"agents.custom_agents.{agent_dir.name}.agent",
                             agent_dir.name,
                             new_agents,
+                            new_unconfigured,
+                            new_failed,
                         )
 
         self._agents_cache = new_agents
+        self._unconfigured = new_unconfigured
+        self._failed_modules = new_failed
         self._discovered = True
 
-        logger.info("Agent discovery complete", count=len(new_agents))
+        logger.info(
+            "Agent discovery complete",
+            count=len(new_agents),
+            unconfigured=len(new_unconfigured),
+            failed=len(new_failed),
+        )
         return new_agents
 
     def _try_load_agent(
-        self, module_path: str, module_name: str, agents_dict: Dict[str, IJarvisAgent]
+        self,
+        module_path: str,
+        module_name: str,
+        agents_dict: Dict[str, IJarvisAgent],
+        unconfigured_dict: Dict[str, Tuple[IJarvisAgent, List[str]]],
+        failed_dict: Dict[str, str],
     ) -> None:
         """Try to load an agent from a module path."""
         try:
@@ -124,14 +154,21 @@ class AgentDiscoveryService:
                 ):
                     instance = cls()
 
-                    # Validate secrets before registering
+                    # Validate secrets before registering. Unconfigured
+                    # agents stay out of the scheduler-facing cache but are
+                    # recorded so the snapshot can list them with a
+                    # "needs setup" badge instead of hiding them.
                     if hasattr(instance, "validate_secrets"):
                         missing_secrets = instance.validate_secrets()
                         if missing_secrets:
                             logger.warning(
-                                "Agent skipped due to missing secrets",
+                                "Agent unconfigured due to missing secrets",
                                 agent=instance.name,
                                 missing=missing_secrets,
+                            )
+                            unconfigured_dict[instance.name] = (
+                                instance,
+                                list(missing_secrets),
                             )
                             continue
 
@@ -139,6 +176,7 @@ class AgentDiscoveryService:
                     logger.debug("Discovered agent", agent=instance.name)
 
         except Exception as e:
+            failed_dict[module_name] = str(e)
             logger.error(
                 "Error loading agent module", module=module_name, error=str(e)
             )
@@ -167,6 +205,31 @@ class AgentDiscoveryService:
             if not self._discovered:
                 self._do_discover_agents()
             return self._agents_cache.copy()
+
+    def get_unconfigured_agents(self) -> Dict[str, Tuple[IJarvisAgent, List[str]]]:
+        """Get agents that loaded but have missing required secrets.
+
+        Returns:
+            Dict mapping agent name to (instance, missing secret keys).
+            These agents are NOT in get_all_agents() — the scheduler never
+            runs them — but the settings snapshot lists them so the user
+            can supply the missing secrets from the mobile card.
+        """
+        with self._lock:
+            if not self._discovered:
+                self._do_discover_agents()
+            return self._unconfigured.copy()
+
+    def get_failed_modules(self) -> Dict[str, str]:
+        """Get agent modules whose import/instantiation raised.
+
+        Returns:
+            Dict mapping module name to error string.
+        """
+        with self._lock:
+            if not self._discovered:
+                self._do_discover_agents()
+            return self._failed_modules.copy()
 
     def get_context_contributing_agents(self) -> List[IJarvisAgent]:
         """Get agents that should inject data into voice request context.

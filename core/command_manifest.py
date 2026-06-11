@@ -135,7 +135,11 @@ class CommandManifest(BaseModel):
     display_name: str = ""
     author: ManifestAuthor = Field(default_factory=lambda: ManifestAuthor(github=""))
     version: str = "0.1.0"
-    min_jarvis_version: str = "0.9.0"
+    # Version floors enforced at install time (see _enforce_version_floors in
+    # command_store_service). None (missing from the yaml) means the check is
+    # skipped — bad/absent metadata must never block an install.
+    min_jarvis_version: str | None = None
+    min_sdk_version: str | None = None
     license: str = "MIT"
     categories: list[str] = Field(default_factory=list)
     homepage: str = ""

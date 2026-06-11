@@ -569,29 +569,18 @@ def main():
     else:
         logger.info("MQTT disabled in config, skipping MQTT listener")
 
-    # If the previous process restarted to load new pip imports, post
-    # the deferred install result to CC as soon as we have a network-
-    # capable process. The flush is HTTP-only (doesn't need MQTT to be
-    # connected, just available), and doing it here — before the BT
-    # pair agent, supervisor thread, and LLM warmup — shaves seconds
-    # off the mobile-perceived install time. The voice listener still
-    # starts only after this point, so the wake-word-during-restart
-    # invariant is preserved.
-    #
-    # We capture `_install_restart` BEFORE flushing because the flush
-    # clears the marker file, and we still need to suppress the LLM
-    # warmup TTS reply ("hello" out the speaker) later in boot.
+    # If the previous process restarted to apply a package change, we need
+    # to know NOW (it suppresses the LLM warmup TTS reply — "hello" out the
+    # speaker — later in boot). The deferred result itself is flushed AFTER
+    # the warmup section below, once command + agent discovery have
+    # initialized, so the flush can verify the installed components
+    # actually loaded before telling CC "done".
     _install_restart: bool = False
     try:
-        from services.package_install_handler import (
-            flush_post_restart_install_result,
-            has_pending_install_result,
-        )
+        from services.package_install_handler import has_pending_install_result
         _install_restart = has_pending_install_result()
-        if _install_restart:
-            flush_post_restart_install_result()
     except Exception as e:
-        logger.warning("Early install-result flush failed (non-fatal)", error=str(e))
+        logger.warning("Pending install-result check failed (non-fatal)", error=str(e))
 
     # Same silent-on-boot treatment for maintenance-triggered restarts.
     # A scheduled 3 AM restart that loudly spoke the LLM warmup
@@ -744,9 +733,6 @@ def main():
     # TTS reply back through the speaker, which is fine to hear once at
     # boot but annoying on every package install. The first voice command
     # after install will be a beat slower; acceptable trade-off.
-    # (The deferred install-result flush already happened earlier in boot,
-    # right after MQTT came up — see the block above the BT pair agent.
-    # `_install_restart` was captured there before the marker was cleared.)
     if _silent_restart:
         reason = (
             "install-triggered" if _install_restart else "maintenance-triggered"
@@ -764,6 +750,21 @@ def main():
             logger.info("LLM warmup complete")
         except Exception as e:
             logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+
+    # Flush any package install/uninstall result deferred by the previous
+    # process. This deliberately runs AFTER agent scheduler init and the
+    # warmup's command discovery so the flush can verify the installed
+    # package's components actually loaded post-restart before reporting
+    # "done" to CC (the health check forces a discovery pass itself when
+    # none has happened yet — e.g. on silent restarts that skip warmup).
+    # The voice listener still starts only after this point, so the
+    # wake-word-during-restart invariant is preserved.
+    if _install_restart:
+        try:
+            from services.package_install_handler import flush_post_restart_install_result
+            flush_post_restart_install_result()
+        except Exception as e:
+            logger.warning("Install-result flush failed (non-fatal)", error=str(e))
 
     # Spawn a continuous silent stream on the default sink so the TLV320
     # ALSA driver never gets a chance to wedge into SUSPENDED. Without

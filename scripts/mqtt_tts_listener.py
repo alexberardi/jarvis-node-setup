@@ -484,15 +484,41 @@ def handle_report_tools(details: Dict[str, Any]) -> None:
 
         # Installed package versions — lets mobile compare against Pantry's
         # latest_version and offer Install / Update / Up-to-date instead of
-        # the binary "already installed" check it used to do.
+        # the binary "already installed" check it used to do. Each entry also
+        # carries `previous_version` (drives the "Revert to X" action) and
+        # `health` ("failed" when any of the package's components is in a
+        # discovery failed-modules registry — red dot on the package card).
         installed_packages: List[Dict[str, Any]] = []
         try:
             from services.command_store_service import list_installed
+
+            failed_modules: Dict[str, str] = {}
+            try:
+                failed_modules.update(service.get_failed_modules())
+            except Exception:
+                pass
+            try:
+                from utils.agent_discovery_service import get_agent_discovery_service
+                failed_modules.update(
+                    get_agent_discovery_service().get_failed_modules()
+                )
+            except Exception:
+                pass
+
             for meta in list_installed():
                 name = meta.get("package_name") or meta.get("command_name")
                 version = meta.get("version")
                 if name and version:
-                    installed_packages.append({"name": name, "version": version})
+                    entry: Dict[str, Any] = {"name": name, "version": version}
+                    if meta.get("previous_version"):
+                        entry["previous_version"] = meta["previous_version"]
+                    component_names = {
+                        c.get("name") for c in meta.get("components", [])
+                    }
+                    entry["health"] = (
+                        "failed" if component_names & set(failed_modules) else "ok"
+                    )
+                    installed_packages.append(entry)
         except Exception as e:
             print(f"[MQTT] installed_packages enumeration failed: {e}", flush=True)
 
@@ -1694,6 +1720,31 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
     print("[UNINSTALL] task submitted", flush=True)
 
 
+def _handle_package_revert_notification(raw_payload: bytes) -> None:
+    """Handle package revert request from CC — runs revert in background thread."""
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in package revert notification")
+        return
+
+    request_id: str = notification.get("request_id", "")
+    command_name: str = (
+        notification.get("command_name", "") or notification.get("package_name", "")
+    )
+
+    if not request_id or not command_name:
+        print("[REVERT] missing request_id or command_name, ignoring", flush=True)
+        return
+
+    print(f"[REVERT] received: {command_name}", flush=True)
+
+    from services.package_install_handler import run_revert_and_upload
+
+    _task_executor.submit(run_revert_and_upload, request_id, command_name)
+    print("[REVERT] task submitted", flush=True)
+
+
 def _post_factory_reset_status(
     cc_url: str,
     task_id: str,
@@ -2141,6 +2192,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/package-uninstall"):
         _offload(_handle_package_uninstall_notification, msg.payload)
+        return
+
+    if msg.topic.endswith("/package-revert"):
+        _offload(_handle_package_revert_notification, msg.payload)
         return
 
     if msg.topic.endswith("/factory-reset"):

@@ -10,6 +10,12 @@ from core.ijarvis_parameter import JarvisParameter
 from core.command_response import CommandResponse
 from core.request_information import RequestInformation
 
+# Pre-import so _discover_commands' lazy `from services.command_store_service
+# import register_package_lib_paths` hits sys.modules instead of triggering a
+# fresh import (whose pydantic lazy-loading would be intercepted by the
+# importlib.import_module patches below when this file runs standalone).
+import services.command_store_service  # noqa: F401
+
 
 # ── Sample commands for testing ────────────────────────────────────────────
 
@@ -118,6 +124,7 @@ def _create_service():
     svc = object.__new__(CommandDiscoveryService)
     svc.refresh_interval = 600
     svc._commands_cache = {}
+    svc._failed_modules = {}
     svc._last_refresh = 0
     svc._lock = threading.Lock()
     return svc
@@ -297,3 +304,84 @@ class TestCustomCommandDiscovery:
         # Good command should still be discovered
         assert "test_custom" in svc._commands_cache
         assert len(svc._commands_cache) == 1
+
+
+class TestFailedModuleRegistry:
+    """Phase 3 of resilient installs: custom command modules that fail to
+    import are recorded in a registry so the settings snapshot can emit a
+    synthetic import_failed entry instead of the command silently vanishing.
+
+    Uses a real (empty) ``commands``/``commands.custom_commands`` package in
+    a tmp dir because ``_discover_commands`` pops the custom_commands module
+    from sys.modules and re-imports it via a plain import statement — a fake
+    sys.modules entry doesn't survive that round-trip.
+    """
+
+    def _make_commands_pkg(self, tmp_path):
+        (tmp_path / "commands" / "custom_commands").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "commands" / "__init__.py").write_text("")
+        (tmp_path / "commands" / "custom_commands" / "__init__.py").write_text("")
+
+    def _discover(self, svc, tmp_path, custom_modules, import_side_effect):
+        """Run _discover_commands against the tmp commands package."""
+        self._make_commands_pkg(tmp_path)
+
+        def iter_modules_side_effect(path):
+            # Only the custom_commands scan yields modules; the built-in
+            # scan (commands/) is empty.
+            if path and "custom_commands" in str(path[0]):
+                return [("", name, True) for name in custom_modules]
+            return []
+
+        with patch.dict(sys.modules), patch.object(sys, "path", [str(tmp_path)] + sys.path):
+            for key in list(sys.modules):
+                if key == "commands" or key.startswith("commands."):
+                    del sys.modules[key]
+            with patch("utils.command_discovery_service.pkgutil.iter_modules", side_effect=iter_modules_side_effect):
+                with patch("utils.command_discovery_service.importlib.import_module", side_effect=import_side_effect):
+                    svc._discover_commands()
+
+    def test_import_failure_recorded_in_failed_modules(self, tmp_path):
+        svc = _create_service()
+
+        def import_side_effect(name):
+            raise ImportError("cannot import name 'JarvisInbox' from 'jarvis_command_sdk'")
+
+        self._discover(svc, tmp_path, ["broken_cmd"], import_side_effect)
+
+        assert "broken_cmd" not in svc._commands_cache
+        failed = svc.get_failed_modules()
+        assert "broken_cmd" in failed
+        assert "JarvisInbox" in failed["broken_cmd"]
+
+    def test_failed_modules_cleared_on_successful_rediscovery(self, tmp_path):
+        svc = _create_service()
+        good_mod = _make_module_with_class(FakeCustomCommand)
+
+        # First pass: import raises — recorded.
+        self._discover(svc, tmp_path, ["flaky_cmd"], ImportError("boom"))
+        assert "flaky_cmd" in svc.get_failed_modules()
+
+        # Second pass: import succeeds — the stale failure must clear.
+        def import_side_effect(name):
+            if name == "commands.custom_commands.flaky_cmd.command":
+                return good_mod
+            raise ImportError(f"No module named '{name}'")
+
+        self._discover(svc, tmp_path, ["flaky_cmd"], import_side_effect)
+        assert "flaky_cmd" not in svc.get_failed_modules()
+        assert "test_custom" in svc._commands_cache
+
+    def test_clean_discovery_has_empty_registry(self, tmp_path):
+        svc = _create_service()
+        good_mod = _make_module_with_class(FakeCustomCommand)
+
+        def import_side_effect(name):
+            if name == "commands.custom_commands.good_cmd.command":
+                return good_mod
+            raise ImportError(f"No module named '{name}'")
+
+        self._discover(svc, tmp_path, ["good_cmd"], import_side_effect)
+
+        assert "test_custom" in svc._commands_cache
+        assert svc.get_failed_modules() == {}

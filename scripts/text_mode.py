@@ -247,6 +247,16 @@ async def startup() -> None:
 
     print("[startup] MQTT section done", flush=True)
 
+    # Flush any package install/uninstall result deferred by the previous
+    # process. Runs AFTER command registration + agent scheduler init so
+    # the flush can verify the installed package's components actually
+    # loaded post-restart before reporting "done" to CC.
+    try:
+        from services.package_install_handler import flush_post_restart_install_result
+        flush_post_restart_install_result()
+    except Exception as e:
+        logger.warning("Install-result flush failed (non-fatal)", error=str(e))
+
     # Skip LLM warmup in text mode — it's synchronous and blocks startup
     # if CC or LLM proxy is slow/down. Commands warm up on first use instead.
     print("[startup] complete", flush=True)
