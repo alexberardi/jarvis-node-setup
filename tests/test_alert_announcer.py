@@ -4,9 +4,11 @@ The main wake loop calls :func:`drain_alert_announcements` during quiet
 moments (no wake fired yet, ring buffer otherwise idle). The function
 checks the alert queue, speaks any high-priority alerts via TTS,
 listens briefly for a response (snooze/dismiss/silence), routes the
-response through CC, then flushes the queue. Self-contained — depends
-only on the alert queue service, the TTS provider, and the same
-``listen_for_follow_up`` + CC pieces the main loop uses.
+response through CC, then removes the announced alerts from the queue
+(unspoken low-priority alerts stay queued for "what's up"').
+Self-contained — depends only on the alert queue service, the TTS
+provider, and the same ``listen_for_follow_up`` + CC pieces the main
+loop uses.
 
 Coverage:
 
@@ -16,12 +18,14 @@ Coverage:
   * High-priority alert spoken, response captured → CC routed.
   * TTS raises during speak → continue with next alert; don't crash.
   * Inline listen raises → swallowed.
-  * Queue flush always runs after announcements, including on TTS failure.
+  * Only the announced alerts are removed — low-priority survive.
+  * Queue removal exception → swallowed.
   * Queue service exception at top → returns False.
 """
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
@@ -43,14 +47,15 @@ class FakeAlert:
         self.title = title
         self.summary = summary
         self.priority = priority
+        self.id = str(uuid.uuid4())
 
 
 def _queue_returning(*alerts) -> MagicMock:
     """Build a fake alert queue service. ``get_pending`` returns the
-    given alerts; ``flush`` is a no-op MagicMock."""
+    given alerts; ``remove_ids`` is a no-op MagicMock."""
     q = MagicMock()
     q.get_pending = MagicMock(return_value=list(alerts))
-    q.flush = MagicMock()
+    q.remove_ids = MagicMock()
     return q
 
 
@@ -100,7 +105,7 @@ class TestEmptyOrFilteredQueue:
 
         assert result is False
         tts.speak.assert_not_called()
-        q.flush.assert_not_called()
+        q.remove_ids.assert_not_called()
 
     def test_only_low_priority_returns_false(self, monkeypatch):
         # Priority 1 (news) is below the ALERT_ANNOUNCE_PRIORITY=3 threshold.
@@ -118,7 +123,7 @@ class TestEmptyOrFilteredQueue:
 
         assert result is False
         tts.speak.assert_not_called()
-        q.flush.assert_not_called()
+        q.remove_ids.assert_not_called()
 
     def test_queue_service_exception_returns_false(self, monkeypatch):
         def boom():
@@ -143,9 +148,8 @@ class TestAnnouncement:
 
     def test_high_priority_alert_announced_and_returns_true(self, monkeypatch):
         # Priority 3 hits the announce threshold.
-        q = _queue_returning(
-            FakeAlert("Reminder", "Take your meds", priority=3),
-        )
+        reminder = FakeAlert("Reminder", "Take your meds", priority=3)
+        q = _queue_returning(reminder)
         monkeypatch.setattr(alert_announcer, "get_alert_queue_service", lambda: q)
         tts = _tts()
         monkeypatch.setattr(alert_announcer, "get_tts_provider", lambda: tts)
@@ -159,7 +163,7 @@ class TestAnnouncement:
 
         assert result is True
         tts.speak.assert_called_once_with(True, "Take your meds")
-        q.flush.assert_called_once()
+        q.remove_ids.assert_called_once_with([reminder.id])
 
     def test_multiple_alerts_each_announced(self, monkeypatch):
         q = _queue_returning(
@@ -181,11 +185,11 @@ class TestAnnouncement:
         assert tts.speak.call_count == 2
 
     def test_mixed_priorities_filters_low(self, monkeypatch):
-        # Priority 1 silently dropped; priority 3 announced.
-        q = _queue_returning(
-            FakeAlert("news", "skip me", priority=1),
-            FakeAlert("rem", "speak me", priority=3),
-        )
+        # Priority 1 stays queued (for "what's up"); priority 3 announced
+        # and removed.
+        news = FakeAlert("news", "skip me", priority=1)
+        rem = FakeAlert("rem", "speak me", priority=3)
+        q = _queue_returning(news, rem)
         monkeypatch.setattr(alert_announcer, "get_alert_queue_service", lambda: q)
         tts = _tts()
         monkeypatch.setattr(alert_announcer, "get_tts_provider", lambda: tts)
@@ -199,6 +203,11 @@ class TestAnnouncement:
 
         assert result is True
         tts.speak.assert_called_once_with(True, "speak me")
+        # Only the announced alert is removed — the news alert survives
+        # in the queue (it never lights the LED, but "what's up" can
+        # still retrieve it).
+        q.remove_ids.assert_called_once_with([rem.id])
+        q.flush.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +238,9 @@ class TestTtsFailure:
         assert result is True
         # Both speak calls attempted.
         assert tts.speak.call_count == 2
-        # Flush still ran.
-        q.flush.assert_called_once()
+        # Removal still ran (failed-speak alerts are dropped too, not
+        # retried — a flaky TTS must not cause an announcement storm).
+        q.remove_ids.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +343,7 @@ class TestResponseHandling:
 
 
 # ---------------------------------------------------------------------------
-# Queue flush failure swallowed
+# Queue removal failure swallowed
 # ---------------------------------------------------------------------------
 
 
@@ -382,11 +392,11 @@ class TestHasPendingHighPriority:
         assert alert_announcer.has_pending_high_priority_alerts() is False
 
 
-class TestFlushFailure:
+class TestRemovalFailure:
 
-    def test_flush_exception_swallowed(self, monkeypatch):
+    def test_remove_ids_exception_swallowed(self, monkeypatch):
         q = _queue_returning(FakeAlert("rem", "speak me", priority=3))
-        q.flush = MagicMock(side_effect=OSError("queue write failed"))
+        q.remove_ids = MagicMock(side_effect=OSError("queue write failed"))
         monkeypatch.setattr(alert_announcer, "get_alert_queue_service", lambda: q)
         monkeypatch.setattr(alert_announcer, "get_tts_provider", lambda: _tts())
 

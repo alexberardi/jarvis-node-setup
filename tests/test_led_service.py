@@ -1,9 +1,10 @@
 """Tests for LEDService."""
 
+import time
 from unittest.mock import patch
 
 from services.led_service import LEDService
-from services.respeaker_led_service import _PATTERNS, NUM_LEDS
+from services.respeaker_led_service import _PATTERNS, NUM_LEDS, RespeakerLEDService
 
 
 class TestLEDService:
@@ -40,6 +41,56 @@ class TestLEDService:
         self.led.set_pattern("off")
         self.led.set_pattern("normal")
         self.led.cleanup()
+
+
+class _PreviewTimerContract:
+    """Shared preview/auto-clear contract for both LED implementations.
+
+    cancel() cannot stop an already-firing Timer, so the auto-clear
+    callback is identity-checked: it only clears if it is still the
+    current owner of the overlay.
+    """
+
+    def _make(self):  # overridden per implementation
+        raise NotImplementedError
+
+    def test_preview_autoclears(self) -> None:
+        svc = self._make()
+        svc.preview_pattern("alert", duration_seconds=0.05)
+        assert svc.current_pattern == "alert"
+        time.sleep(0.3)
+        assert svc.current_pattern == "normal"
+
+    def test_explicit_set_cancels_preview_autoclear(self) -> None:
+        # Same-value re-assert during a preview window: the stale timer
+        # must NOT clear the overlay out from under the new owner (e.g.
+        # previewing wake_detected, then genuinely waking).
+        svc = self._make()
+        svc.preview_pattern("wake_detected", duration_seconds=0.05)
+        svc.set_transient_pattern("wake_detected")
+        time.sleep(0.3)
+        assert svc.current_pattern == "wake_detected"
+        svc.set_transient_pattern(None)
+
+    def test_newer_preview_supersedes_older_timer(self) -> None:
+        svc = self._make()
+        svc.preview_pattern("alert", duration_seconds=0.05)
+        svc.preview_pattern("listening", duration_seconds=10.0)
+        time.sleep(0.3)  # old timer's window passes
+        assert svc.current_pattern == "listening"
+        svc.set_transient_pattern(None)
+
+
+class TestActPreviewTimer(_PreviewTimerContract):
+    def _make(self) -> LEDService:
+        with patch.object(LEDService, "_detect_pi", return_value=False):
+            return LEDService()
+
+
+class TestRespeakerPreviewTimer(_PreviewTimerContract):
+    def _make(self) -> RespeakerLEDService:
+        with patch("services.respeaker_led_service.respeaker_available", return_value=False):
+            return RespeakerLEDService()
 
 
 class TestLEDServiceOnPi:

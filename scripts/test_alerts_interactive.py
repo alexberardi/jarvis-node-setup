@@ -82,7 +82,7 @@ def main() -> None:
     # Wire LED callback
     led = get_led_service()
     queue = get_alert_queue_service()
-    queue.on_change = lambda count: print(f"  [LED] → {'ALERT BLINK' if count > 0 else 'normal'} ({count} pending)")
+    queue.on_change = lambda count: print(f"  [LED] → {'ALERT BLINK' if count > 0 else 'normal'} ({count} announceable)")
 
     # Inject alerts
     count = inject_alerts()
