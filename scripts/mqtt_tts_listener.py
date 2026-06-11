@@ -1081,7 +1081,22 @@ def handle_preview_led_pattern(details: Dict[str, Any]) -> None:
     if not pattern:
         logger.warning("preview_led_pattern: no pattern provided")
         return
-    duration = float(details.get("duration_seconds", 3.0))
+    raw_duration = details.get("duration_seconds", 3.0)
+    try:
+        duration = float(raw_duration if raw_duration is not None else 3.0)
+        if duration != duration:  # NaN
+            duration = 3.0
+    except (TypeError, ValueError):
+        logger.warning("preview_led_pattern: bad duration_seconds",
+                       value=str(raw_duration))
+        duration = 3.0
+    # Clamp: an unbounded duration (buggy mobile build, redelivered QoS1
+    # message) could park a purple wake_detected/alert preview for hours.
+    clamped = max(0.5, min(30.0, duration))
+    if clamped != duration:
+        logger.warning("preview_led_pattern: duration clamped",
+                       requested=duration, used=clamped)
+    duration = clamped
 
     try:
         from services.led_service import get_led_service

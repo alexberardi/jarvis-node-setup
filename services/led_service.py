@@ -43,6 +43,15 @@ class LEDService:
         self._stop_event = threading.Event()
         self._blink_period: float = 0.5
         self._enabled: bool = True
+        self._transient_timer: Optional[threading.Timer] = None
+        # Guards all pattern state AND _reapply. The alert queue's level-
+        # triggered on_change fires from several threads (scheduler sweep,
+        # voice loop, button worker, MQTT handlers); unlike the ReSpeaker
+        # service _reapply has edge-triggered side effects (blink thread
+        # start/stop), so an unsynchronized interleaving could leave a
+        # rogue blink thread running for a state we no longer hold —
+        # invisible to the same-value dedup that keys on _stable.
+        self._state_lock = threading.Lock()
         self._is_pi = self._detect_pi()
 
         if not self._is_pi:
@@ -56,12 +65,13 @@ class LEDService:
 
     def set_pattern(self, pattern: str) -> None:
         """Set the stable LED pattern: 'off', 'normal', or 'alert'."""
-        if pattern == self._stable:
-            return
-        old = self._stable
-        self._stable = pattern
-        logger.debug("LED stable pattern changed", old=old, new=pattern)
-        self._reapply()
+        with self._state_lock:
+            if pattern == self._stable:
+                return
+            old = self._stable
+            self._stable = pattern
+            logger.debug("LED stable pattern changed", old=old, new=pattern)
+            self._reapply()
 
     def set_transient_pattern(self, pattern: Optional[str]) -> None:
         """Overlay a transient pattern, or None to clear.
@@ -72,12 +82,12 @@ class LEDService:
         for visibility; ``shutdown_warning`` triggers a fast 5Hz blink
         while held.
         """
-        if pattern == self._transient:
-            return
-        old = self._transient
-        self._transient = pattern
-        logger.debug("LED transient pattern changed", old=old, new=pattern)
-        self._reapply()
+        with self._state_lock:
+            # Any explicit set cancels a pending preview auto-clear — even a
+            # same-value one, so a stale timer can't clear the overlay out
+            # from under a flow that re-asserted the same pattern.
+            self._cancel_timer_locked()
+            self._set_transient_locked(pattern)
 
     def preview_pattern(self, pattern: str, duration_seconds: float = 3.0) -> None:
         """Show ``pattern`` briefly then revert. Monochrome fallback: best-effort.
@@ -87,17 +97,42 @@ class LEDService:
         We still drive the transient + auto-clear so the API is uniform
         across hardware variants.
         """
-        self.set_transient_pattern(pattern)
-        t = threading.Timer(
-            duration_seconds, lambda: self.set_transient_pattern(None)
-        )
-        t.daemon = True
-        t.start()
+        with self._state_lock:
+            self._cancel_timer_locked()
+            self._set_transient_locked(pattern)
+            # The clear callback is identity-checked: cancel() can't stop an
+            # already-firing Timer, so the callback itself verifies it is
+            # still the current owner before clearing.
+            t = threading.Timer(duration_seconds, lambda: self._clear_preview(t))
+            t.daemon = True
+            self._transient_timer = t
+            t.start()
+
+    def _clear_preview(self, timer: threading.Timer) -> None:
+        with self._state_lock:
+            if self._transient_timer is not timer:
+                return  # superseded — a newer set/preview owns the overlay
+            self._transient_timer = None
+            self._set_transient_locked(None)
+
+    def _set_transient_locked(self, pattern: Optional[str]) -> None:
+        if pattern == self._transient:
+            return
+        old = self._transient
+        self._transient = pattern
+        logger.debug("LED transient pattern changed", old=old, new=pattern)
+        self._reapply()
+
+    def _cancel_timer_locked(self) -> None:
+        if self._transient_timer is not None:
+            self._transient_timer.cancel()
+            self._transient_timer = None
 
     def set_enabled(self, enabled: bool) -> None:
         """When disabled, force the ACT LED off regardless of pattern."""
-        self._enabled = bool(enabled)
-        self._reapply()
+        with self._state_lock:
+            self._enabled = bool(enabled)
+            self._reapply()
 
     def set_brightness_scale(self, percent: int) -> None:
         """No-op on the monochrome ACT LED — accepted for API parity."""

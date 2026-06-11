@@ -175,6 +175,16 @@ class AgentSchedulerService:
                 # Check which agents need to run
                 await self._check_and_run_agents()
 
+                # Evict expired alerts and re-deliver the announceable count
+                # to the LED every tick — reconciliation, not edge-trigger,
+                # so a dropped or out-of-order on_change callback can't
+                # strand a stale purple LED for more than one interval.
+                if self._alert_queue is not None:
+                    try:
+                        self._alert_queue.sweep_expired()
+                    except Exception as sweep_err:
+                        logger.warning("Alert queue sweep failed", error=str(sweep_err))
+
                 # Wait for check interval or stop signal
                 try:
                     await asyncio.wait_for(

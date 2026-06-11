@@ -184,31 +184,50 @@ class RespeakerLEDService:
 
     def set_transient_pattern(self, pattern: Optional[str]) -> None:
         with self._lock:
-            if pattern == self._transient:
-                return
-            old = self._transient
-            self._transient = pattern
-            # Manual override cancels any pending auto-clear from a previous
-            # preview call so the new pattern stays until explicitly cleared.
-            if self._transient_timer is not None:
-                self._transient_timer.cancel()
-                self._transient_timer = None
-        logger.debug("LED transient pattern", old=old, new=pattern)
+            # Any explicit set — including a same-value one — cancels a
+            # pending preview auto-clear. Cancelling AFTER the same-value
+            # early return left the stale timer alive: previewing
+            # "wake_detected" and then genuinely waking within the preview
+            # window let the timer clear the overlay mid-flow.
+            self._cancel_timer_locked()
+            self._set_transient_locked(pattern)
 
     def preview_pattern(self, pattern: str, duration_seconds: float = 3.0) -> None:
         """Show ``pattern`` as a transient overlay, then auto-revert.
 
         Used by the mobile "Test LEDs" picker so users can see each pattern
         without permanently overriding the stable state. Calling again
-        cancels the previous timer.
+        cancels the previous timer. Set + arm happen in one critical
+        section, and the clear callback is identity-checked — cancel()
+        cannot stop an already-firing Timer, so the callback verifies it
+        is still the current owner before clearing.
         """
-        self.set_transient_pattern(pattern)
         with self._lock:
-            self._transient_timer = threading.Timer(
-                duration_seconds, lambda: self.set_transient_pattern(None)
-            )
-            self._transient_timer.daemon = True
-            self._transient_timer.start()
+            self._cancel_timer_locked()
+            self._set_transient_locked(pattern)
+            t = threading.Timer(duration_seconds, lambda: self._clear_preview(t))
+            t.daemon = True
+            self._transient_timer = t
+            t.start()
+
+    def _clear_preview(self, timer: threading.Timer) -> None:
+        with self._lock:
+            if self._transient_timer is not timer:
+                return  # superseded — a newer set/preview owns the overlay
+            self._transient_timer = None
+            self._set_transient_locked(None)
+
+    def _set_transient_locked(self, pattern: Optional[str]) -> None:
+        if pattern == self._transient:
+            return
+        old = self._transient
+        self._transient = pattern
+        logger.debug("LED transient pattern", old=old, new=pattern)
+
+    def _cancel_timer_locked(self) -> None:
+        if self._transient_timer is not None:
+            self._transient_timer.cancel()
+            self._transient_timer = None
 
     def set_enabled(self, enabled: bool) -> None:
         """Globally enable or disable LED output.

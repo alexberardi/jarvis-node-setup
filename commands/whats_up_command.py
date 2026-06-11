@@ -4,14 +4,22 @@ Two fast-path patterns:
 
 * ``check_alerts.greeting`` — "what's up", "any alerts" etc. flush the
   queue and ANNOUNCE the alerts via CC composition.
-* ``check_alerts.dismiss`` — "clear alerts", "dismiss notifications"
+* ``check_alerts.dismiss`` — "clear my alerts", "dismiss notifications"
   etc. flush the queue SILENTLY (just a brief "Cleared." reply) so the
   user can drop the alert-pending LED without sitting through every
-  announcement.
+  announcement. Matched by verb+noun regex, not an exact phrase list —
+  "clear my alerts" once fell through to the LLM because only "clear
+  alerts" was listed, and the LED stayed purple.
 
 If no alerts and the greeting fast-path triggers, returns None so the
 LLM handles it as casual conversation. The dismiss fast-path always
 matches — clearing an empty queue is a valid intent.
+
+``run()`` is also reachable through normal LLM routing (no pre-route
+arguments). That path reads and flushes the LIVE queue — it used to
+answer "No pending alerts." unconditionally, leaving queued alerts and
+a purple LED behind. An optional ``dismiss`` parameter lets the LLM
+route dismissal phrasings the regex misses.
 """
 
 import json
@@ -27,6 +35,7 @@ from jarvis_command_sdk import (
     FastPathPattern,
     IJarvisCommand,
     PreRouteResult,
+    ValidationResult,
 )
 from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -39,6 +48,8 @@ logger = JarvisLogger(service="jarvis-node")
 _TRIGGER_PHRASES = [
     "what's up",
     "whats up",
+    "what's new",
+    "whats new",
     "any alerts",
     "any updates",
     "anything new",
@@ -48,20 +59,28 @@ _TRIGGER_PHRASES = [
     "check notifications",
 ]
 
-_DISMISS_PHRASES = [
-    "clear alerts",
-    "clear all alerts",
-    "clear notifications",
-    "clear all notifications",
-    "dismiss alerts",
-    "dismiss all alerts",
-    "dismiss notifications",
-    "dismiss all notifications",
-    "clear the alerts",
-    "clear the notifications",
-    "cancel alerts",
-    "cancel notifications",
-]
+# Dismiss intent: a clearing verb followed by an alert noun, with only a
+# closed set of determiner/filler tokens allowed between them. A free-form
+# gap fused verbs and nouns across clauses ("cancel the timer and read my
+# notifications" must not flush the queue); the closed set still covers
+# "clear my alerts", "dismiss all of the notifications", "cancel that
+# alert" — so phrasing variants can't silently fall through to the LLM.
+# The trailing lookahead rejects non-alert head nouns ("notification
+# sound/settings"). Pre-route runs against EVERY utterance and the flush
+# is destructive, so precision beats recall here — the LLM-routed
+# ``dismiss`` parameter is the backstop for missed phrasings.
+_DISMISS_RE = re.compile(
+    r"\b(clear|dismiss|cancel|remove|delete)\b"
+    r"(?:\s+(?:all|my|the|those|these|that|any|old|pending|of|please))*"
+    r"\s+(alerts?|notifications?)\b"
+    r"(?!\s+(?:sound|sounds|setting|settings|tone|tones|volume))"
+)
+
+# Negated/questioned clearing verbs must not flush ("don't clear my alerts").
+_DISMISS_NEGATION_RE = re.compile(
+    r"\b(?:don'?t|do not|didn'?t|never|won'?t|not|gonna)\s+"
+    r"(?:clear|dismiss|cancel|remove|delete)\b"
+)
 
 
 class WhatsUpCommand(IJarvisCommand):
@@ -87,6 +106,12 @@ class WhatsUpCommand(IJarvisCommand):
                 required=False,
                 description="JSON-encoded alert data (set by pre-route, not user).",
             ),
+            JarvisParameter(
+                "dismiss",
+                "boolean",
+                required=False,
+                description="Set true when the user wants alerts/notifications cleared or dismissed without hearing them.",
+            ),
         ]
 
     @property
@@ -103,6 +128,10 @@ class WhatsUpCommand(IJarvisCommand):
             CommandExample(
                 voice_command="Any alerts?",
                 expected_parameters={},
+            ),
+            CommandExample(
+                voice_command="Clear my alerts.",
+                expected_parameters={"dismiss": True},
             ),
         ]
 
@@ -145,8 +174,7 @@ class WhatsUpCommand(IJarvisCommand):
         # the greeting phrases. "clear notifications" contains
         # "notifications" but isn't a "what's up" — treat it as dismiss.
         if self._DISMISS_FAST_PATH_ID not in disabled_pattern_ids:
-            dismiss_matched = any(phrase in text for phrase in _DISMISS_PHRASES)
-            if dismiss_matched:
+            if _DISMISS_RE.search(text) and not _DISMISS_NEGATION_RE.search(text):
                 queue = get_alert_queue_service()
                 dropped = queue.flush()
                 logger.info(
@@ -160,7 +188,12 @@ class WhatsUpCommand(IJarvisCommand):
         if self._FAST_PATH_ID in disabled_pattern_ids:
             return None
 
-        matched = any(phrase in text for phrase in _TRIGGER_PHRASES)
+        matched_phrase = next((p for p in _TRIGGER_PHRASES if p in text), None)
+        if matched_phrase is not None and len(text) - len(matched_phrase) > 10:
+            # "what's new with the Lakers?" is a question for the LLM, not
+            # an alert check — only near-standalone greetings fast-path.
+            matched_phrase = None
+        matched = matched_phrase is not None
         if not matched:
             # Also check if text is a substring of any trigger
             matched = any(text in phrase for phrase in _TRIGGER_PHRASES if len(text) >= 4)
@@ -185,31 +218,66 @@ class WhatsUpCommand(IJarvisCommand):
     # Execution
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _truthy(value: Any) -> bool:
+        """Text-based tool calling can deliver booleans as strings."""
+        return value in (True, 1, "1", "true", "True", "yes")
+
+    def validate_call(self, **kwargs: Any) -> List[ValidationResult]:
+        # Text-based tool calling can deliver booleans as strings; coerce
+        # before the SDK's type validation so {"dismiss": "true"} doesn't
+        # bounce at execute() (run() re-coerces via _truthy independently).
+        if "dismiss" in kwargs:
+            kwargs = {**kwargs, "dismiss": self._truthy(kwargs.get("dismiss"))}
+        return super().validate_call(**kwargs)
+
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
-        # Silent-dismiss path: pre_route already flushed the queue; this
-        # just confirms the action with a one-word reply so the user
-        # knows the dismiss was accepted (and the LED returned to idle).
-        if kwargs.get("dismissed"):
+        # Silent-dismiss path: pre_route already flushed the queue. The
+        # extra flush is idempotent (always fires on_change(0)) and also
+        # covers an LLM-hallucinated {"dismissed": true} — "Cleared." must
+        # never be a lie that leaves the queue populated.
+        if self._truthy(kwargs.get("dismissed")) or self._truthy(kwargs.get("dismiss")):
+            dropped = get_alert_queue_service().flush()
+            if dropped:
+                logger.info("check_alerts dismiss", alert_count=len(dropped))
             return CommandResponse.success_response(
                 context_data={"message": "Cleared."},
                 wait_for_input=False,
             )
 
-        alerts_json: str = kwargs.get("alerts_json", "[]")
+        alerts_json: str = kwargs.get("alerts_json") or "[]"
 
         try:
             alerts_data = json.loads(alerts_json)
         except (json.JSONDecodeError, TypeError):
             alerts_data = []
 
-        if not alerts_data:
+        if alerts_data:
+            # Pre-routed: the greeting fast-path already flushed the queue
+            # and handed us the alerts to deliver.
+            composed = self._compose_response(alerts_data)
+            return CommandResponse.success_response(
+                context_data={"message": composed},
+                wait_for_input=False,
+            )
+
+        # LLM-routed with no pre-route data: read the LIVE queue.
+        # Answering "No pending alerts." unconditionally here left queued
+        # alerts (and a purple LED) behind — the exact "purple with no
+        # alerts" interaction observed in the field.
+        queue = get_alert_queue_service()
+        pending = queue.get_pending()
+        if not pending:
             return CommandResponse.success_response(
                 context_data={"message": "No pending alerts."},
                 wait_for_input=False,
             )
 
-        # Compose via LLM
-        composed = self._compose_response(alerts_data)
+        composed = self._compose_response([a.to_dict() for a in pending])
+        # Consume only what we read, and only after composition produced a
+        # message (it has a non-LLM fallback) — a crash above must not
+        # silently destroy the queue.
+        queue.remove_ids([a.id for a in pending])
 
         return CommandResponse.success_response(
             context_data={"message": composed},
