@@ -201,8 +201,22 @@ class TestPromptForMetadata:
         assert meta["display_name"] == "Get Stock Price"
         assert meta["version"] == "0.1.0"
         assert meta["license"] == "MIT"
-        assert meta["min_jarvis_version"] == "0.9.0"
+        # No more "0.9.0" scaffold placeholder — the field is omitted
+        # entirely when there's no real floor to declare.
+        assert "min_jarvis_version" not in meta
         assert isinstance(meta["author"], ManifestAuthor)
+
+    def test_existing_placeholder_floor_not_carried_forward(self):
+        existing = {"min_jarvis_version": "0.9.0"}
+        meta = prompt_for_metadata("get_stock_price", existing=existing,
+                                   non_interactive=True)
+        assert "min_jarvis_version" not in meta
+
+    def test_existing_real_floor_preserved(self):
+        existing = {"min_jarvis_version": "0.1.100"}
+        meta = prompt_for_metadata("get_stock_price", existing=existing,
+                                   non_interactive=True)
+        assert meta["min_jarvis_version"] == "0.1.100"
 
     def test_non_interactive_with_existing(self):
         existing = {

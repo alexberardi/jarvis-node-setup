@@ -87,6 +87,109 @@ class RemoveError(CommandStoreError):
     """Error during command removal."""
 
 
+class RevertError(CommandStoreError):
+    """Error during package revert (restore of the .previous snapshot)."""
+
+
+def _parse_semver(s: str) -> tuple[int, int, int]:
+    """Parse a loose semver string into a comparable (major, minor, patch).
+
+    Strips a leading "v", splits on ".", coerces each part int-or-0, and
+    pads to three parts. Total — never raises. Garbage input collapses to
+    (0, 0, 0); callers treat that as unparseable and skip their check
+    rather than block an install on bad metadata.
+    """
+    text = (s or "").strip()
+    if text[:1] in ("v", "V"):
+        text = text[1:]
+    # Drop git-describe / pre-release / build suffixes ("0.1.97-12-gabc1234
+    # -dirty", "1.2.3+build") before splitting on "." — otherwise the suffix
+    # corrupts the patch part ("114-dirty" → 0) and a node running a dirty
+    # checkout would fail floors it actually meets.
+    text = text.split("-", 1)[0].split("+", 1)[0]
+    nums: list[int] = []
+    for part in text.split(".")[:3]:
+        try:
+            nums.append(int(part))
+        except (TypeError, ValueError):
+            nums.append(0)
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
+
+
+def _node_version_str() -> str:
+    """This node's version string (from core.version). Test seam."""
+    from core.version import version_info
+    return version_info().version
+
+
+def _sdk_version_str() -> str:
+    """Installed jarvis_command_sdk version string. Test seam."""
+    try:
+        import jarvis_command_sdk
+        return str(getattr(jarvis_command_sdk, "__version__", "") or "")
+    except Exception:
+        return ""
+
+
+def _enforce_version_floors(manifest: CommandManifest) -> None:
+    """Refuse the install when the manifest declares a version floor this
+    node doesn't meet. Runs BEFORE any disk writes.
+
+    Missing or unparseable floors skip the check with a logged warning —
+    bad metadata must not block installs. An unparseable node/SDK version
+    (dev checkouts can report "dev"/"unknown") skips too.
+    """
+    checks: list[tuple[str, str | None, str, str, str]] = [
+        # (floor field, floor value, current version, noun, "is"/"has" phrasing)
+        ("min_jarvis_version", getattr(manifest, "min_jarvis_version", None),
+         _node_version_str(), "node version", "is"),
+        ("min_sdk_version", getattr(manifest, "min_sdk_version", None),
+         _sdk_version_str(), "SDK version", "has SDK"),
+    ]
+
+    for field, floor_str, current_str, noun, verb in checks:
+        if not floor_str:
+            continue
+
+        # ~28 published packages carry the scaffold default "0.9.0", which
+        # predates node versioning and floor enforcement — it carries no
+        # signal, and 0.1.x nodes would block every install. Treat it as
+        # no-floor.
+        if field == "min_jarvis_version" and floor_str.strip().lstrip("vV") == "0.9.0":
+            logger.warning(
+                "Legacy scaffold placeholder floor — skipping check",
+                package=manifest.name,
+            )
+            continue
+
+        floor = _parse_semver(floor_str)
+        if floor == (0, 0, 0):
+            logger.warning(
+                "Unparseable version floor — skipping check",
+                field=field, value=floor_str, package=manifest.name,
+            )
+            continue
+
+        current = _parse_semver(current_str)
+        if current == (0, 0, 0):
+            logger.warning(
+                "Unparseable installed version — skipping floor check",
+                field=field, current=current_str, package=manifest.name,
+            )
+            continue
+
+        if floor > current:
+            # The SDK ships with the node, so both floors resolve to the
+            # same user action: update the node.
+            raise InstallError(
+                f"This package needs {noun} {floor_str} or newer — "
+                f"this node {verb} {current_str}. Update the node first, "
+                f"then retry."
+            )
+
+
 def _download_archive(repo_url: str, tag: str | None = None) -> Path | None:
     """Download a GitHub repo as a tarball (no git/auth required).
 
@@ -1049,6 +1152,7 @@ def _write_package_metadata(
     component_dirs: dict[str, str],
     danger_rating: int | None = None,
     verified: bool = False,
+    previous_version: str | None = None,
 ) -> None:
     """Write package metadata to ~/.jarvis/packages/<name>.json.
 
@@ -1085,17 +1189,173 @@ def _write_package_metadata(
         "jarvis_dependencies": list(manifest.jarvis_dependencies),
         "pip_packages": pip_packages,
     }
+    if previous_version is not None:
+        # Set when this install replaced an existing version and a
+        # .previous rollback snapshot was written — mobile uses it for the
+        # "Revert to {previous_version}" action.
+        metadata["previous_version"] = previous_version
     meta_path = PACKAGES_DIR / f"{manifest.name}.json"
     with open(meta_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
 
-def _do_install(repo_dir: Path, source_label: str, *, state: dict | None = None) -> CommandManifest:
-    """Core install logic — validates, scatters components, installs deps.
+def _write_previous_snapshot(package_name: str) -> str | None:
+    """Snapshot the live install to ``~/.jarvis/packages/<name>/.previous/``.
+
+    Called from ``_do_install`` after the pre-flight gate passes, only when
+    UPDATING an existing package. The snapshot is the rollback source of
+    truth — it captures:
+
+    - ``meta.json``: the old package metadata json
+    - ``__init__.py``: the old auto-generated namespace (if any)
+    - ``<name>_lib/`` (or legacy ``lib/``): the old shared-code dir
+    - ``components/<type>__<comp>/``: a copy of every live dir recorded in
+      the old metadata's ``component_dirs`` (":" isn't filesystem-safe, so
+      the key separator becomes "__")
+
+    Any prior ``.previous`` is replaced wholesale (we keep N-1, not N-k).
+
+    Atomicity invariant: ``.previous/meta.json`` exists only when the
+    snapshot is complete, and a prior good ``.previous`` survives until the
+    new one is fully built. The snapshot is assembled in ``.previous.tmp``
+    with ``meta.json`` copied LAST, then swapped into place — a mid-copy
+    failure removes the tmp dir and re-raises, so ``_do_install``'s
+    best-effort warning correctly means "no rollback available" (never "a
+    half-snapshot revert could silently restore from").
+
+    Returns:
+        The old version string, or None when there was no metadata to
+        snapshot.
+    """
+    meta_path = PACKAGES_DIR / f"{package_name}.json"
+    if not meta_path.exists():
+        return None
+    with open(meta_path) as f:
+        old_meta = json.load(f)
+
+    pkg_dir = PACKAGES_DIR / package_name
+    prev_dir = pkg_dir / ".previous"
+    tmp_dir = pkg_dir / ".previous.tmp"
+    if tmp_dir.exists():
+        _force_rmtree(tmp_dir)
+
+    try:
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        ns_init = pkg_dir / "__init__.py"
+        if ns_init.exists():
+            shutil.copy2(ns_init, tmp_dir / "__init__.py")
+
+        # Both shared-code conventions: <name>_lib (current) and lib (legacy).
+        for lib_name in (f"{package_name}_lib", "lib"):
+            lib_dir = pkg_dir / lib_name
+            if lib_dir.is_dir():
+                shutil.copytree(
+                    lib_dir,
+                    tmp_dir / lib_name,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+
+        components_dir = tmp_dir / "components"
+        for comp_key, comp_dir_str in (old_meta.get("component_dirs") or {}).items():
+            comp_dir = Path(comp_dir_str)
+            if not comp_dir.is_dir():
+                continue
+            shutil.copytree(
+                comp_dir,
+                components_dir / comp_key.replace(":", "__"),
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+
+        # meta.json LAST — its presence is the "snapshot is complete" marker.
+        shutil.copy2(meta_path, tmp_dir / "meta.json")
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    # Snapshot fully built — only now retire the prior one and swap in.
+    _force_rmtree(prev_dir)
+    os.replace(tmp_dir, prev_dir)
+
+    old_version = old_meta.get("version")
+    logger.info(
+        "Wrote .previous rollback snapshot",
+        package=package_name,
+        version=old_version,
+    )
+    return old_version
+
+
+def has_previous_version(package_name: str) -> bool:
+    """True when a usable ``.previous`` rollback snapshot exists."""
+    return (PACKAGES_DIR / package_name / ".previous" / "meta.json").exists()
+
+
+# Pre-flight validation runs `command_store.py validate` in a SUBPROCESS so
+# component imports execute against the node's real venv (fresh interpreter,
+# real SDK) without polluting this long-running process's module state.
+# 180s bounds a Pi Zero's worst-case import-test pass.
+_PREFLIGHT_VALIDATE_TIMEOUT_SECONDS = 180
+
+
+def _run_preflight_validation(repo_dir: Path) -> None:
+    """Import-test the downloaded repo in a subprocess BEFORE any scatter.
+
+    Raises InstallError on validation failure. Nothing has been written to
+    the live component dirs at this point; the apt/pip deps installed just
+    before this gate are idempotent and harmless to keep on failure.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, str(_PROJECT_DIR / "scripts" / "command_store.py"),
+             "validate", str(repo_dir)],
+            cwd=_PROJECT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=_PREFLIGHT_VALIDATE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise InstallError(
+            f"Package failed validation: timed out after "
+            f"{_PREFLIGHT_VALIDATE_TIMEOUT_SECONDS}s"
+        ) from e
+
+    if result.returncode == 0:
+        return
+
+    # Surface the most specific line: a per-component "FAIL" line when
+    # present (stdout for import failures, stderr for manifest failures),
+    # otherwise the last stderr line.
+    detail = ""
+    for line in (result.stdout or "").splitlines() + (result.stderr or "").splitlines():
+        if "FAIL" in line:
+            detail = line.strip()
+            break
+    if not detail:
+        stderr_lines = [ln.strip() for ln in (result.stderr or "").splitlines() if ln.strip()]
+        detail = stderr_lines[-1] if stderr_lines else f"exit code {result.returncode}"
+    raise InstallError(f"Package failed validation: {detail}")
+
+
+def _do_install(
+    repo_dir: Path,
+    source_label: str,
+    *,
+    skip_tests: bool = False,
+    state: dict | None = None,
+) -> CommandManifest:
+    """Core install logic — validates, installs deps, gates, then scatters.
+
+    Order matters: version floors run before any disk writes; apt + pip deps
+    install before the pre-flight validate gate (so the gate's import tests
+    can see them — both are idempotent); nothing is scattered into the live
+    component dirs until the gate passes.
 
     Args:
         repo_dir: Path to repo directory (cloned or local).
         source_label: Display label for logging (URL or path).
+        skip_tests: Skip the pre-flight validation gate (dev/--local escape
+            hatch; the MQTT install path never sets it).
         state: Optional mutable dict the installer fills with side-info
             useful to the caller (e.g. ``pip_deps_installed``).
 
@@ -1104,6 +1364,9 @@ def _do_install(repo_dir: Path, source_label: str, *, state: dict | None = None)
     """
     # 1. Validate structure + manifest
     manifest = _validate_repo_structure(repo_dir)
+
+    # 1b. Enforce version floors BEFORE any disk writes
+    _enforce_version_floors(manifest)
 
     # 2. Check platform
     _check_platform_compatibility(manifest)
@@ -1119,38 +1382,70 @@ def _do_install(repo_dir: Path, source_label: str, *, state: dict | None = None)
     else:
         _check_name_conflicts(manifest)
 
-    # 5. Install shared code for bundles (ha_shared/, etc.)
+    # 5a. Register 3rd-party apt sources (before _install_apt_deps so the
+    # next apt-get install can resolve packages from them).
+    _install_apt_sources(manifest)
+
+    # 5b. Install apt deps (before pip so a fast apt failure aborts cleanly).
+    _install_apt_deps(manifest)
+
+    # 5c. Install pip deps — before the pre-flight gate so the gate's import
+    # tests run against the declared dependencies. Idempotent: a reinstall
+    # where every dep is already at the requested version is a no-op, and
+    # deps left behind by a gate failure are harmless.
+    _install_pip_deps(manifest, state=state)
+
+    # 6. Pre-flight validate gate: import-test every component in a
+    # subprocess against the staged repo dir. Fails the install before
+    # anything is scattered into the live directories.
+    if skip_tests:
+        logger.warning(
+            "Skipping pre-flight validation (skip_tests)", package=manifest.name
+        )
+    else:
+        _run_preflight_validation(repo_dir)
+
+    # 6b. Keep N-1: when updating, snapshot the live install to .previous
+    # BEFORE anything is scattered, so a failed update can be rolled back
+    # (automatically at the post-restart health check, or manually from the
+    # mobile package card). Best-effort — a snapshot failure must not abort
+    # an install that already passed the gate; it just means rollback won't
+    # be available for this update.
+    previous_version: str | None = None
+    if already_installed:
+        try:
+            previous_version = _write_previous_snapshot(manifest.name)
+        except Exception as e:
+            logger.warning(
+                "Could not write .previous rollback snapshot",
+                package=manifest.name,
+                error=str(e),
+            )
+
+    # 7. Install shared code for bundles (ha_shared/, etc.)
     component_paths = [c.path for c in manifest.components]
     shared_dirs = _collect_shared_dirs(repo_dir, component_paths)
     if shared_dirs:
         _install_shared_code(manifest.name, shared_dirs, repo_dir)
 
-    # 6. Install components
+    # 8. Install components
     component_dirs: dict[str, str] = {}
     for comp in manifest.components:
         install_dir = _install_component(repo_dir, comp.type, comp.name, comp.path)
         # Use type:name as key to avoid collisions (e.g., agent and manager both named "home_assistant")
         component_dirs[f"{comp.type}:{comp.name}"] = str(install_dir)
 
-    # 7. Write package metadata (for clean uninstall)
-    _write_package_metadata(manifest, source_label, component_dirs)
+    # 9. Write package metadata (for clean uninstall + revert availability)
+    _write_package_metadata(
+        manifest, source_label, component_dirs, previous_version=previous_version
+    )
 
-    # 8. Also write .store_metadata.json in the first command dir
+    # 10. Also write .store_metadata.json in the first command dir
     command_comps = [c for c in manifest.components if c.type == "command"]
     if command_comps:
         first_cmd_dir = _PROJECT_DIR / COMPONENT_INSTALL_DIRS["command"] / command_comps[0].name
         if first_cmd_dir.exists():
             _write_store_metadata(first_cmd_dir, manifest, source_label)
-
-    # 9a. Register 3rd-party apt sources (before _install_apt_deps so the
-    # next apt-get install can resolve packages from them).
-    _install_apt_sources(manifest)
-
-    # 9b. Install apt deps (before pip so a fast apt failure aborts cleanly).
-    _install_apt_deps(manifest)
-
-    # 10. Install pip deps
-    _install_pip_deps(manifest, state=state)
 
     # 10b. Run declarative post-install ops via the sudoers-gated wrapper.
     # Comes after apt + pip so the services being configured (and any
@@ -1189,7 +1484,7 @@ def install_from_github(
     Args:
         repo_url: GitHub HTTPS URL.
         version_tag: Optional git tag to checkout.
-        skip_tests: Skip container tests (user accepts risk).
+        skip_tests: Skip the pre-flight validation gate (user accepts risk).
         state: Optional dict the installer fills with side-info (e.g.
             ``pip_deps_installed``). Used by the MQTT install handler to
             decide whether the node needs a restart.
@@ -1200,12 +1495,17 @@ def install_from_github(
     logger.info("Installing from GitHub", repo_url=repo_url, tag=version_tag)
     repo_dir = _clone_repo(repo_url, version_tag)
     try:
-        return _do_install(repo_dir, repo_url, state=state)
+        return _do_install(repo_dir, repo_url, skip_tests=skip_tests, state=state)
     finally:
         shutil.rmtree(repo_dir.parent, ignore_errors=True)
 
 
-def install_from_local(local_path: str | Path, *, state: dict | None = None) -> CommandManifest:
+def install_from_local(
+    local_path: str | Path,
+    *,
+    skip_tests: bool = False,
+    state: dict | None = None,
+) -> CommandManifest:
     """Install a command or bundle from a local directory.
 
     Useful for development and testing. Does not clone — reads directly
@@ -1213,6 +1513,7 @@ def install_from_local(local_path: str | Path, *, state: dict | None = None) -> 
 
     Args:
         local_path: Path to a directory containing a manifest + components.
+        skip_tests: Skip the pre-flight validation gate (user accepts risk).
         state: Optional dict the installer fills with side-info (see
             ``install_from_github``).
 
@@ -1223,7 +1524,7 @@ def install_from_local(local_path: str | Path, *, state: dict | None = None) -> 
     if not repo_dir.is_dir():
         raise InstallError(f"Not a directory: {repo_dir}")
     logger.info("Installing from local path", path=str(repo_dir))
-    return _do_install(repo_dir, f"local:{repo_dir}", state=state)
+    return _do_install(repo_dir, f"local:{repo_dir}", skip_tests=skip_tests, state=state)
 
 
 def validate_package(local_path: str | Path) -> dict[str, Any]:
@@ -1246,6 +1547,23 @@ def validate_package(local_path: str | Path) -> dict[str, Any]:
 
     # Validate structure + manifest (reuses existing logic)
     manifest = _validate_repo_structure(repo_dir)
+
+    # Register installed package lib paths first so components that import
+    # a jarvis_dependencies namespace (e.g. ``from nest import NestProtocol``)
+    # resolve against the live install — required when this runs as the
+    # pre-flight gate's subprocess against a staged repo dir.
+    register_package_lib_paths()
+
+    # sys.path additions for the import tests: repo root, legacy lib/, and
+    # every *_lib / *_shared directory at the repo root (the shared-code
+    # conventions — see _install_shared_code and the *_shared/ pattern).
+    paths_to_add = [str(repo_dir)]
+    lib_dir = repo_dir / "lib"
+    if lib_dir.is_dir():
+        paths_to_add.append(str(lib_dir))
+    for entry in sorted(repo_dir.iterdir()):
+        if entry.is_dir() and (entry.name.endswith("_lib") or entry.name.endswith("_shared")):
+            paths_to_add.append(str(entry))
 
     # Map component types to their SDK base classes
     _TYPE_TO_BASE: dict[str, tuple[str, str]] = {
@@ -1301,12 +1619,6 @@ def validate_package(local_path: str | Path) -> dict[str, Any]:
         if not comp_file.exists():
             imports[comp.name] = {"ok": False, "error": f"File not found: {comp.path}"}
             continue
-
-        # Add repo root and lib dir to sys.path for imports
-        paths_to_add = [str(repo_dir)]
-        lib_dir = repo_dir / "lib"
-        if lib_dir.is_dir():
-            paths_to_add.append(str(lib_dir))
 
         old_path = sys.path[:]
         try:
@@ -1375,19 +1687,23 @@ def _seed_secrets(manifest: CommandManifest) -> None:
         return
 
     try:
-        from services.secret_service import seed_command_secrets_from_list
-        seed_command_secrets_from_list(manifest.secrets)
-    except ImportError:
-        # seed_command_secrets_from_list may not exist yet, try manual approach
+        from services.secret_service import set_secret, get_secret_value
+    except ImportError as e:
+        logger.warning("Could not seed secrets", error=str(e))
+        return
+
+    # Per-secret isolation: one bad declaration (e.g. an int secret that can't
+    # seed an empty value) must not abort seeding for the rest of the package.
+    for secret in manifest.secrets:
         try:
-            from services.secret_service import set_secret, get_secret_value
-            for secret in manifest.secrets:
-                existing = get_secret_value(secret.key, secret.scope)
-                if existing is None:
-                    set_secret(secret.key, "", secret.scope, secret.value_type)
-                    logger.info("Seeded empty secret", key=secret.key, scope=secret.scope)
+            existing = get_secret_value(secret.key, secret.scope)
+            if existing is None:
+                set_secret(secret.key, "", secret.scope, secret.value_type)
+                logger.info("Seeded empty secret", key=secret.key, scope=secret.scope)
         except Exception as e:
-            logger.warning("Could not seed secrets", error=str(e))
+            logger.warning(
+                "Could not seed secret", key=secret.key, error=str(e)
+            )
 
 
 def _refresh_discovery_caches() -> None:
@@ -1578,6 +1894,12 @@ def remove(package_name: str, component_type: str | None = None) -> None:
 
         # Remove shared lib dir and auto-generated namespace
         pkg_dir = PACKAGES_DIR / package_name
+        # Also drop any rollback snapshot — an orphaned .previous would let
+        # a future fresh install "roll back" to a long-uninstalled version
+        # (and would block the empty-dir cleanup below).
+        prev_dir = pkg_dir / ".previous"
+        if prev_dir.exists():
+            shutil.rmtree(prev_dir, ignore_errors=True)
         lib_dir = pkg_dir / f"{package_name}_lib"
         if lib_dir.exists():
             shutil.rmtree(lib_dir)
@@ -1628,6 +1950,164 @@ def remove(package_name: str, component_type: str | None = None) -> None:
             return
 
     raise RemoveError(f"Package '{package_name}' is not installed")
+
+
+def revert_package(package_name: str) -> str:
+    """Restore the previously-installed version from its .previous snapshot.
+
+    Callable from the package-revert MQTT flow and from the boot-time
+    auto-rollback. The caller is responsible for restarting the node — the
+    bad version's modules stay loaded in this process until then.
+
+    Steps:
+    1. Remove the current component dirs (recorded ``component_dirs`` plus
+       the same defensive sweep and path-safety checks as :func:`remove`).
+    2. Restore component dirs, shared lib, namespace, and metadata from
+       ``.previous``.
+    3. Best-effort ``pip install`` of the restored metadata's declared pip
+       deps (no uninstalls — extra dists from the bad version are harmless).
+    4. Delete the consumed ``.previous`` (we keep N-1, and N-1 is now live).
+
+    Returns:
+        The restored version string.
+
+    Raises:
+        RevertError: when the package has no metadata or no .previous
+            snapshot.
+    """
+    meta_path = PACKAGES_DIR / f"{package_name}.json"
+    if not meta_path.exists():
+        raise RevertError(f"Package '{package_name}' is not installed")
+
+    pkg_dir = PACKAGES_DIR / package_name
+    prev_dir = pkg_dir / ".previous"
+    prev_meta_path = prev_dir / "meta.json"
+    if not prev_meta_path.exists():
+        raise RevertError(
+            f"No previous version of '{package_name}' to revert to"
+        )
+
+    with open(meta_path) as f:
+        current_meta = json.load(f)
+    with open(prev_meta_path) as f:
+        prev_meta = json.load(f)
+
+    logger.info(
+        "Reverting package",
+        package=package_name,
+        from_version=current_meta.get("version"),
+        to_version=prev_meta.get("version"),
+    )
+
+    # 1. Remove current component dirs — recorded dirs + the defensive
+    # sweep over declared components, with the same under-project-dir
+    # safety checks as remove().
+    for comp_name, comp_dir_str in (current_meta.get("component_dirs") or {}).items():
+        comp_dir = Path(comp_dir_str)
+        if not comp_dir.exists():
+            continue
+        if not str(comp_dir.resolve()).startswith(str(_PROJECT_DIR.resolve())):
+            logger.warning("Skipping unsafe path", path=comp_dir_str)
+            continue
+        shutil.rmtree(comp_dir)
+    for comp in current_meta.get("components", []):
+        comp_type = comp.get("type")
+        comp_decl_name = comp.get("name")
+        if not comp_type or not comp_decl_name:
+            continue
+        install_rel = COMPONENT_INSTALL_DIRS.get(comp_type)
+        if not install_rel:
+            continue
+        install_dir = _PROJECT_DIR / install_rel / comp_decl_name
+        if not install_dir.exists() or not install_dir.is_dir():
+            continue
+        if not str(install_dir.resolve()).startswith(str(_PROJECT_DIR.resolve())):
+            continue
+        shutil.rmtree(install_dir)
+
+    # 2a. Restore component dirs to the locations the old metadata recorded.
+    components_dir = prev_dir / "components"
+    for comp_key, comp_dir_str in (prev_meta.get("component_dirs") or {}).items():
+        src = components_dir / comp_key.replace(":", "__")
+        if not src.is_dir():
+            # Defense in depth: the snapshot writer is atomic (meta.json
+            # exists only for complete snapshots), so a recorded component
+            # missing from .previous/components/ means corruption.
+            # Restoring partially would silently drop components — refuse.
+            raise RevertError(
+                f"Saved previous version of '{package_name}' is incomplete "
+                f"(missing {comp_key}) — cannot revert."
+            )
+        dest = Path(comp_dir_str)
+        if not str(dest.resolve()).startswith(str(_PROJECT_DIR.resolve())):
+            logger.warning("Skipping unsafe restore path", path=comp_dir_str)
+            continue
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
+    # 2b. Restore shared lib dir(s) and the namespace __init__.py. When the
+    # old version had no lib/namespace, the current ones are removed.
+    for lib_name in (f"{package_name}_lib", "lib"):
+        current_lib = pkg_dir / lib_name
+        if current_lib.is_dir():
+            shutil.rmtree(current_lib)
+        prev_lib = prev_dir / lib_name
+        if prev_lib.is_dir():
+            shutil.copytree(prev_lib, current_lib)
+
+    ns_init = pkg_dir / "__init__.py"
+    if ns_init.exists():
+        ns_init.unlink()
+    prev_init = prev_dir / "__init__.py"
+    if prev_init.exists():
+        shutil.copy2(prev_init, ns_init)
+
+    # 2c. Restore metadata. Strip any stale previous_version — this revert
+    # consumes the .previous snapshot, so there's nothing older to offer.
+    prev_meta.pop("previous_version", None)
+    with open(meta_path, "w") as f:
+        json.dump(prev_meta, f, indent=2)
+
+    # 3. Best-effort pip install of the restored version's declared deps.
+    deps: list[str] = []
+    for pkg in prev_meta.get("pip_packages") or []:
+        name = pkg.get("name")
+        version = pkg.get("version")
+        if not name:
+            continue
+        if version:
+            deps.append(f"{name}=={version}" if version[0].isdigit() else f"{name}{version}")
+        else:
+            deps.append(name)
+    if deps:
+        try:
+            result = subprocess.run(
+                ["nice", "-n", "15", sys.executable, "-m", "pip", "install",
+                 "--quiet", "--prefer-binary"] + deps,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "pip install during revert failed (non-fatal)",
+                    package=package_name,
+                    stderr=(result.stderr or "").strip()[:300],
+                )
+        except Exception as e:
+            logger.warning(
+                "pip install during revert failed (non-fatal)",
+                package=package_name,
+                error=str(e),
+            )
+
+    # 4. Drop the consumed snapshot — revert is one-shot.
+    shutil.rmtree(prev_dir, ignore_errors=True)
+
+    restored_version = str(prev_meta.get("version") or "unknown")
+    logger.info("Package reverted", package=package_name, version=restored_version)
+    return restored_version
 
 
 def _enable_in_registry(command_name: str) -> None:

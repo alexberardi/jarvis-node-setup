@@ -131,6 +131,106 @@ class TestAgentDiscovery:
                     assert len(result) == 0
 
 
+class ConfiguredMockAgent(MockAgent):
+    """Agent whose secrets are all set."""
+
+    def __init__(self):
+        super().__init__(name="configured_agent")
+
+    def validate_secrets(self) -> List[str]:
+        return []
+
+
+class NeedsSetupMockAgent(MockAgent):
+    """Agent with a missing required secret."""
+
+    def __init__(self):
+        super().__init__(name="needs_setup_agent")
+
+    def validate_secrets(self) -> List[str]:
+        return ["API_KEY"]
+
+
+class TestUnconfiguredAndFailedRegistries:
+    """Phase 3 of resilient installs: agents with missing secrets are LISTED
+    in a registry (not silently dropped), failed module imports are recorded,
+    and get_all_agents() stays configured-only — the scheduler is untouched.
+    """
+
+    def test_missing_secrets_agent_recorded_as_unconfigured(self, fresh_service):
+        mock_module = MagicMock()
+        mock_module.NeedsSetupMockAgent = NeedsSetupMockAgent
+
+        with patch("pkgutil.iter_modules", return_value=[(None, "needs_setup_module", None)]):
+            with patch("importlib.import_module", return_value=mock_module):
+                result = fresh_service.discover_agents()
+
+        # Still hidden from the scheduler-facing surface
+        assert "needs_setup_agent" not in result
+        assert "needs_setup_agent" not in fresh_service.get_all_agents()
+
+        # ...but listed in the unconfigured registry with the missing keys
+        unconfigured = fresh_service.get_unconfigured_agents()
+        assert "needs_setup_agent" in unconfigured
+        instance, missing = unconfigured["needs_setup_agent"]
+        assert isinstance(instance, NeedsSetupMockAgent)
+        assert missing == ["API_KEY"]
+
+    def test_configured_and_unconfigured_split(self, fresh_service):
+        mock_module = MagicMock()
+        mock_module.ConfiguredMockAgent = ConfiguredMockAgent
+        mock_module.NeedsSetupMockAgent = NeedsSetupMockAgent
+
+        with patch("pkgutil.iter_modules", return_value=[(None, "mixed_module", None)]):
+            with patch("importlib.import_module", return_value=mock_module):
+                result = fresh_service.discover_agents()
+
+        assert "configured_agent" in result
+        assert "needs_setup_agent" not in result
+        unconfigured = fresh_service.get_unconfigured_agents()
+        assert "needs_setup_agent" in unconfigured
+        assert "configured_agent" not in unconfigured
+
+    def test_failed_module_import_recorded(self, fresh_service):
+        with patch("pkgutil.iter_modules", return_value=[(None, "broken_module", None)]):
+            with patch(
+                "importlib.import_module",
+                side_effect=ImportError("cannot import name 'JarvisInbox'"),
+            ):
+                fresh_service.discover_agents()
+
+        failed = fresh_service.get_failed_modules()
+        assert "broken_module" in failed
+        assert "JarvisInbox" in failed["broken_module"]
+        assert "broken_module" not in fresh_service.get_all_agents()
+
+    def test_registries_reset_on_rediscovery(self, fresh_service):
+        # First pass: import fails — recorded.
+        with patch("pkgutil.iter_modules", return_value=[(None, "flaky_module", None)]):
+            with patch("importlib.import_module", side_effect=ImportError("boom")):
+                fresh_service.discover_agents()
+        assert "flaky_module" in fresh_service.get_failed_modules()
+
+        # Second pass: import succeeds — the stale failure must clear.
+        mock_module = MagicMock()
+        mock_module.ConfiguredMockAgent = ConfiguredMockAgent
+        with patch("pkgutil.iter_modules", return_value=[(None, "flaky_module", None)]):
+            with patch("importlib.import_module", return_value=mock_module):
+                fresh_service.discover_agents()
+        assert "flaky_module" not in fresh_service.get_failed_modules()
+
+    def test_registries_empty_on_clean_discovery(self, fresh_service):
+        mock_module = MagicMock()
+        mock_module.ConfiguredMockAgent = ConfiguredMockAgent
+
+        with patch("pkgutil.iter_modules", return_value=[(None, "clean_module", None)]):
+            with patch("importlib.import_module", return_value=mock_module):
+                fresh_service.discover_agents()
+
+        assert fresh_service.get_unconfigured_agents() == {}
+        assert fresh_service.get_failed_modules() == {}
+
+
 class TestGetAgent:
     """Test get_agent method"""
 
