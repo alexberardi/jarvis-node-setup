@@ -18,8 +18,9 @@ def set_secret(key: str, value: str, scope: str, value_type: str = "string", use
     if scope == "user" and user_id is None:
         raise ValueError(f"user_id is required for scope='user' (key={key})")
 
-    # Validate value_type
-    allowed_types = {"int", "string", "bool"}
+    # Validate value_type. "user" stores a household member's user id as a
+    # plain string (SDK >= 0.3.4 — mobile renders it as a member picker).
+    allowed_types = {"int", "string", "bool", "user"}
     if value_type not in allowed_types:
         raise ValueError(f"Invalid value_type '{value_type}'. Must be one of {allowed_types}.")
 

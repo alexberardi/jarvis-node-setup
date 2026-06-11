@@ -165,11 +165,17 @@ def prompt_for_metadata(
     """
     defaults: dict[str, Any] = {}
     if existing:
+        # The historical scaffold default "0.9.0" predates node versioning
+        # and carries no signal — treat it as "no floor declared" so
+        # regenerated manifests stop carrying the placeholder forward.
+        existing_min = existing.get("min_jarvis_version")
+        if isinstance(existing_min, str) and existing_min.strip().lstrip("vV") == "0.9.0":
+            existing_min = None
         defaults = {
             "display_name": existing.get("display_name", ""),
             "github": existing.get("author", {}).get("github", ""),
             "version": existing.get("version", "0.1.0"),
-            "min_jarvis_version": existing.get("min_jarvis_version", "0.9.0"),
+            "min_jarvis_version": existing_min,
             "license": existing.get("license", "MIT"),
             "categories": existing.get("categories", []),
             "homepage": existing.get("homepage", ""),
@@ -179,21 +185,26 @@ def prompt_for_metadata(
     default_display = defaults.get("display_name") or command_name.replace("_", " ").title()
     default_github = defaults.get("github") or ""
     default_version = defaults.get("version") or "0.1.0"
-    default_min = defaults.get("min_jarvis_version") or "0.9.0"
+    # No placeholder default — a manifest with no real floor omits the
+    # field entirely (the old "0.9.0" scaffold default blocked nothing and
+    # confused floor enforcement on 0.1.x nodes).
+    default_min = defaults.get("min_jarvis_version") or ""
     default_license = defaults.get("license") or "MIT"
     default_categories = defaults.get("categories") or []
     default_homepage = defaults.get("homepage") or ""
 
     if non_interactive:
-        return {
+        metadata: dict[str, Any] = {
             "display_name": default_display,
             "author": ManifestAuthor(github=default_github or "unknown"),
             "version": default_version,
-            "min_jarvis_version": default_min,
             "license": default_license,
             "categories": default_categories,
             "homepage": default_homepage,
         }
+        if default_min:
+            metadata["min_jarvis_version"] = default_min
+        return metadata
 
     print("\n--- Author-provided metadata ---")
     print("(Press Enter to accept defaults shown in brackets)\n")
@@ -201,7 +212,7 @@ def prompt_for_metadata(
     display_name = input(f"  Display name [{default_display}]: ").strip() or default_display
     github = input(f"  GitHub username [{default_github}]: ").strip() or default_github
     version = input(f"  Version [{default_version}]: ").strip() or default_version
-    min_jarvis = input(f"  Min Jarvis version [{default_min}]: ").strip() or default_min
+    min_jarvis = input(f"  Min Jarvis version (blank to omit) [{default_min}]: ").strip() or default_min
     license_val = input(f"  License [{default_license}]: ").strip() or default_license
     homepage = input(f"  Homepage [{default_homepage}]: ").strip() or default_homepage
 
@@ -220,15 +231,17 @@ def prompt_for_metadata(
         print(f"  Warning: invalid categories ignored: {invalid}")
         categories = [c for c in categories if c in VALID_CATEGORIES]
 
-    return {
+    metadata = {
         "display_name": display_name,
         "author": ManifestAuthor(github=github or "unknown"),
         "version": version,
-        "min_jarvis_version": min_jarvis,
         "license": license_val,
         "categories": categories,
         "homepage": homepage,
     }
+    if min_jarvis:
+        metadata["min_jarvis_version"] = min_jarvis
+    return metadata
 
 
 def generate_manifest(
@@ -283,6 +296,13 @@ def write_manifest(manifest: CommandManifest, output_dir: str = ".") -> Path:
     # Remove None authentication
     if data.get("authentication") is None:
         data["authentication"] = None
+
+    # Omit version-floor fields entirely when unset — emitting a null (or
+    # the legacy "0.9.0" scaffold placeholder) carries no signal for floor
+    # enforcement.
+    for floor_field in ("min_jarvis_version", "min_sdk_version"):
+        if data.get(floor_field) is None:
+            data.pop(floor_field, None)
 
     with open(output_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

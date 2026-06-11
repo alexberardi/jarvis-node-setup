@@ -265,6 +265,26 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                 }
             )
 
+    # Synthetic entries for command modules that failed to import — discovery
+    # only logs these, so without a stub row the command silently vanishes
+    # from the mobile list (resilient-installs incident #3 class). Reuses the
+    # `_errors` badge plumbing end to end: mobile renders "Failed to load".
+    try:
+        failed_command_modules: dict[str, str] = dict(service.get_failed_modules())
+    except Exception as e:
+        logger.debug("Could not read failed command modules", error=str(e))
+        failed_command_modules = {}
+    for module_name, import_error in failed_command_modules.items():
+        command_entries.append(
+            {
+                "command_name": module_name,
+                "description": "",
+                "secrets": [],
+                "enabled": False,
+                "_errors": [f"import_failed: {str(import_error)[:200]}"],
+            }
+        )
+
     # Build device family entries (per-family isolation so one bad protocol
     # doesn't prevent all families from appearing in the snapshot)
     family_entries: list[dict[str, Any]] = []
@@ -508,6 +528,94 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                         "_errors": ["entry_build_failed"],
                     }
                 )
+
+        # Unconfigured agents (missing required secrets) are LISTED with a
+        # "needs setup" marker instead of hidden — incident #3 of the
+        # resilient-installs PRD was email_alerts dead for ~2 months with no
+        # UI trace. The secrets list is built normally so the user can FIX
+        # the agent from the card; the scheduler still never sees these
+        # (get_all_agents stays configured-only).
+        try:
+            unconfigured_agents = dict(agent_service.get_unconfigured_agents())
+        except Exception as e:
+            logger.debug("Could not read unconfigured agents", error=str(e))
+            unconfigured_agents = {}
+
+        for agent_name, (agent, missing_secrets) in unconfigured_agents.items():
+            try:
+                g = _EntryGuard({"agent": agent_name})
+
+                schedule_obj = g.get(lambda: agent.schedule, None, "schedule")
+                schedule_dict = {
+                    "interval_seconds": g.get(
+                        lambda: schedule_obj.interval_seconds, 0, "schedule.interval_seconds"
+                    ) if schedule_obj else 0,
+                    "run_on_startup": g.get(
+                        lambda: schedule_obj.run_on_startup, False, "schedule.run_on_startup"
+                    ) if schedule_obj else False,
+                }
+
+                secrets_list_u = _build_secrets_list(
+                    g.get(lambda: agent.required_secrets, [], "required_secrets"),
+                    include_values=include_values,
+                    user_id=None,
+                    log_ctx={"agent": agent_name},
+                    errors=g.errors,
+                )
+
+                entry_u: dict[str, Any] = {
+                    "agent_name": agent_name,
+                    "description": g.get(lambda: agent.description, "", "description"),
+                    "enabled": agent_registry.get(agent_name, True),
+                    "schedule": schedule_dict,
+                    "secrets": secrets_list_u,
+                    "unconfigured": True,
+                    "missing_secrets": list(missing_secrets),
+                }
+                service_label = agent_to_service.get(agent_name)
+                if service_label:
+                    entry_u["associated_service"] = service_label
+
+                if g.errors:
+                    entry_u["_errors"] = g.errors
+                agent_entries.append(entry_u)
+            except Exception as e:
+                logger.warning(
+                    "Unconfigured agent entry build failed entirely",
+                    agent=agent_name,
+                    error=str(e),
+                )
+                agent_entries.append(
+                    {
+                        "agent_name": agent_name,
+                        "description": "",
+                        "enabled": agent_registry.get(agent_name, True),
+                        "schedule": {"interval_seconds": 0, "run_on_startup": False},
+                        "secrets": [],
+                        "unconfigured": True,
+                        "missing_secrets": list(missing_secrets),
+                        "_errors": ["entry_build_failed"],
+                    }
+                )
+
+        # Synthetic entries for agent modules that failed to import — same
+        # `_errors`-badge plumbing as the command section above.
+        try:
+            failed_agent_modules: dict[str, str] = dict(agent_service.get_failed_modules())
+        except Exception as e:
+            logger.debug("Could not read failed agent modules", error=str(e))
+            failed_agent_modules = {}
+        for module_name, import_error in failed_agent_modules.items():
+            agent_entries.append(
+                {
+                    "agent_name": module_name,
+                    "description": "",
+                    "enabled": False,
+                    "schedule": {"interval_seconds": 0, "run_on_startup": False},
+                    "secrets": [],
+                    "_errors": [f"import_failed: {str(import_error)[:200]}"],
+                }
+            )
     except Exception as e:
         logger.warning("Failed to discover agents", error=str(e))
 
