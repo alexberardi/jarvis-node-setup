@@ -504,6 +504,10 @@ def main():
         if hasattr(led_service, "set_brightness_scale"):
             led_service.set_brightness_scale(Config.get_int("led_brightness_percent", 100))
         alert_queue = get_alert_queue_service()
+        # count = announceable (priority>=3) alerts only — silent low-priority
+        # alerts (news, calendar proximity) no longer light the LED. Level
+        # signal: the same value repeats every scheduler tick; set_pattern
+        # dedups, and the repetition self-heals any LED/queue divergence.
         alert_queue.on_change = lambda count: led_service.set_pattern("alert" if count > 0 else "normal")
     except Exception as e:
         logger.warning("Alert/LED service init failed (non-fatal)", error=str(e))

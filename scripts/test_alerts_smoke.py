@@ -90,16 +90,16 @@ def run_smoke_test(with_llm: bool = False) -> None:
     queue = AlertQueueService()
 
     led_states: list[str] = []
-    queue.on_change = lambda count: led_states.append("alert" if count > 0 else "normal")
+    queue.on_change = lambda count: led_states.append("alert" if count > 0 else "normal")  # count = announceable (priority>=3)
 
     alerts = _make_alerts()
     expired = _make_expired_alert()
 
     for alert in alerts:
         queue.add_alert(alert)
-    queue.add_alert(expired)
+    queue.add_alert(expired)  # rejected outright: add_alert refuses expired alerts
 
-    print(f"  Added {len(alerts)} valid + 1 expired alert")
+    print(f"  Added {len(alerts)} valid + 1 expired alert (expired is rejected)")
     print(f"  Pending count (should be 3): {queue.count()}")
     assert queue.count() == 3, f"Expected 3, got {queue.count()}"
 

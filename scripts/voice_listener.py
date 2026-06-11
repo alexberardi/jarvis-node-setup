@@ -164,41 +164,54 @@ def _start_keyboard_listener(bus: AudioBus | None = None) -> None:
         while True:
             input()  # block until Enter
             try:
-                handle_keyword_detected()
+                try:
+                    handle_keyword_detected()
+                except Exception as e:
+                    logger.warning("Wake response TTS failed, continuing", error=str(e))
+
+                # Parallel warmup during recording
+                conversation_id = str(uuid.uuid4())
+                warmup_result: dict = {"success": False}
+                warmup_thread = threading.Thread(
+                    target=run_warmup,
+                    args=(command_service, conversation_id, *get_last_speaker(), warmup_result),
+                    daemon=True,
+                )
+                warmup_thread.start()
+
+                recording = listen(bus, history_secs=0.0)
+
+                ack_played = play_processing_ack()
+
+                start = time.perf_counter()
+                result = send_for_transcription(
+                    recording, command_service, stt_provider, validation_handler,
+                    warmup_thread=warmup_thread,
+                    conversation_id=conversation_id,
+                    warmup_result=warmup_result,
+                    skip_ack=ack_played,
+                )
+                tts_end_ts = time.monotonic()
+                end = time.perf_counter()
+
+                logger.info("Transcription complete", duration_seconds=round(end - start, 2))
+
+                follow_up_loop(bus, result, command_service, stt_provider, validation_handler, wake_word_model=WAKE_WORD_MODEL, tts_end_ts=tts_end_ts)
+
+                # Pre-generate the next processing ack in the background
+                _bg_executor.submit(fetch_next_processing_ack)
+            except KeyboardInterrupt:
+                raise
             except Exception as e:
-                logger.warning("Wake response TTS failed, continuing", error=str(e))
-
-            # Parallel warmup during recording
-            conversation_id = str(uuid.uuid4())
-            warmup_result: dict = {"success": False}
-            warmup_thread = threading.Thread(
-                target=run_warmup,
-                args=(command_service, conversation_id, *get_last_speaker(), warmup_result),
-                daemon=True,
-            )
-            warmup_thread.start()
-
-            recording = listen(bus, history_secs=0.0)
-
-            ack_played = play_processing_ack()
-
-            start = time.perf_counter()
-            result = send_for_transcription(
-                recording, command_service, stt_provider, validation_handler,
-                warmup_thread=warmup_thread,
-                conversation_id=conversation_id,
-                warmup_result=warmup_result,
-                skip_ack=ack_played,
-            )
-            tts_end_ts = time.monotonic()
-            end = time.perf_counter()
-
-            logger.info("Transcription complete", duration_seconds=round(end - start, 2))
-
-            follow_up_loop(bus, result, command_service, stt_provider, validation_handler, wake_word_model=WAKE_WORD_MODEL, tts_end_ts=tts_end_ts)
-
-            # Pre-generate the next processing ack in the background
-            _bg_executor.submit(fetch_next_processing_ack)
+                # A mic/STT/CC failure must not kill keyboard mode — and
+                # must not strand the transient LED (see finally).
+                logger.error("Keyboard-mode command failed, continuing", error=str(e))
+            finally:
+                # Mirror run_wake_loop's safety net: handle_keyword_detected
+                # sets the purple "wake_detected" transient, and an exception
+                # anywhere downstream would otherwise leave all three LEDs
+                # purple indefinitely.
+                wake_response.set_led_transient(None)
 
             logger.info("Press Enter to speak another command")
     except KeyboardInterrupt:

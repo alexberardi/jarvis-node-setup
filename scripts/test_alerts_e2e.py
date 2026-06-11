@@ -187,7 +187,7 @@ def main() -> None:
     print("\n[2] Initializing alert queue + LED...")
     led = get_led_service()
     queue = get_alert_queue_service()
-    queue.on_change = lambda count: print(f"  [LED] → {'ALERT BLINK' if count > 0 else 'normal'} ({count} pending)")
+    queue.on_change = lambda count: print(f"  [LED] → {'ALERT BLINK' if count > 0 else 'normal'} ({count} announceable)")
 
     # Inject alerts
     print("\n[3] Injecting test alerts...")

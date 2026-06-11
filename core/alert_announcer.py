@@ -8,15 +8,21 @@ that response through CC, and flush the queue.
 Three thresholds keep this from being annoying:
 
   * **Priority filter** — only ``priority >= ALERT_ANNOUNCE_PRIORITY``
-    (default 3 — reminders, urgent emails) get spoken. News at priority
-    1 lives in the queue silently for the "what's up" command.
+    (3 — reminders, urgent emails) get spoken. News at priority 1 lives
+    in the queue silently for the "what's up" command (and does not
+    light the LED — the queue's on_change only counts announceable
+    alerts).
   * **Inline listen timeout** — after speaking, we wait
     ``INLINE_LISTEN_TIMEOUT`` seconds (default 8) for a response. If
     nothing, we move on without crashing the wake cycle.
   * **Per-alert isolation** — TTS failure on one alert continues with
-    the next; inline-listen failure is swallowed; queue-flush failure
+    the next; inline-listen failure is swallowed; queue-removal failure
     is swallowed. The wake loop must not crash because the queue had a
     bad entry.
+
+Only the alerts actually announced are removed from the queue —
+unspoken low-priority alerts stay retrievable via "what's up" / the
+button, per the contract above.
 """
 
 from __future__ import annotations
@@ -29,7 +35,10 @@ from clients.responses.jarvis_command_center import ValidationRequest
 from core.audio_bus import AudioBus
 from core.helpers import get_tts_provider
 from scripts.speech_to_text import listen_for_follow_up
-from services.alert_queue_service import get_alert_queue_service
+from services.alert_queue_service import (
+    ALERT_ANNOUNCE_PRIORITY,  # single source of truth, shared with the LED gating
+    get_alert_queue_service,
+)
 
 if TYPE_CHECKING:
     from utils.command_execution_service import CommandExecutionService
@@ -38,7 +47,6 @@ if TYPE_CHECKING:
 logger = JarvisLogger(service="jarvis-node")
 
 
-ALERT_ANNOUNCE_PRIORITY = 3  # Only announce priority >= this (reminders, urgent)
 INLINE_LISTEN_TIMEOUT = 8.0  # Seconds to wait for snooze/dismiss after announcement
 
 
@@ -118,9 +126,11 @@ def drain_alert_announcements(
         except Exception as e:
             logger.warning("Inline listen after alert failed", error=str(e))
 
-    # Flush the announced alerts from the queue
+    # Remove exactly what was announced. flush() would also destroy the
+    # unspoken low-priority alerts, breaking the "news lives in the queue
+    # for what's-up" contract.
     try:
-        alert_queue.flush()
+        alert_queue.remove_ids([a.id for a in announcements])
     except Exception:
         pass
 
