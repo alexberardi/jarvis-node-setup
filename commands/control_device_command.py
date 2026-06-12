@@ -15,6 +15,12 @@ from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
 from core.request_information import RequestInformation
 
+try:
+    from jarvis_command_sdk import resolve_color
+except ImportError:  # SDK predates the shared color palette
+    def resolve_color(value: object) -> tuple[int, int, int] | None:  # type: ignore[misc]
+        return None
+
 
 # Persistent event loop for async device protocol calls.
 _device_loop: asyncio.AbstractEventLoop | None = None
@@ -50,7 +56,7 @@ class ControlDeviceCommand(IJarvisCommand):
             "turn on", "turn off", "power on", "power off",
             "play", "pause", "stop", "volume", "next", "previous",
             "lock", "unlock", "device", "tv", "light", "speaker",
-            "switch", "thermostat", "dim", "brighten",
+            "switch", "thermostat", "dim", "brighten", "color",
         ]
 
     @property
@@ -69,7 +75,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 description=(
                     "Action to perform: turn_on, turn_off, play, pause, "
                     "volume_up, volume_down, next, previous, lock, unlock, "
-                    "set_temperature, set_mode, set_brightness."
+                    "set_temperature, set_mode, set_brightness, set_color."
                 ),
             ),
             JarvisParameter(
@@ -86,6 +92,15 @@ class ControlDeviceCommand(IJarvisCommand):
                     "Value for the action. Examples: temperature in degrees for set_temperature (e.g. '69'), "
                     "mode name for set_mode (e.g. 'heat', 'cool', 'off'), "
                     "brightness percentage for set_brightness (e.g. '50')."
+                ),
+            ),
+            JarvisParameter(
+                "color",
+                "string",
+                required=False,
+                description=(
+                    "Color for set_color: a color name (e.g. 'green', 'blue', 'warm white', 'purple') "
+                    "or an 'r,g,b' triple. Required when action is set_color."
                 ),
             ),
         ]
@@ -127,6 +142,10 @@ class ControlDeviceCommand(IJarvisCommand):
                 expected_parameters={"device_name": "Nest Thermostat", "action": "set_mode", "value": "heat"},
             ),
             CommandExample(
+                voice_command="Turn the office light green",
+                expected_parameters={"device_name": "office light", "action": "set_color", "color": "green"},
+            ),
+            CommandExample(
                 voice_command="Turn up the volume on the speaker",
                 expected_parameters={"device_name": "speaker", "action": "volume_up"},
             ),
@@ -145,6 +164,10 @@ class ControlDeviceCommand(IJarvisCommand):
             ("Lock the front door", {"device_name": "front door", "action": "lock"}),
             ("Unlock the back door", {"device_name": "back door", "action": "unlock"}),
             ("Turn off all the lights", {"device_name": "all lights", "action": "turn_off"}),
+            ("Turn the bedroom light green", {"device_name": "bedroom light", "action": "set_color", "color": "green"}),
+            ("Set the living room lights to blue", {"device_name": "living room lights", "action": "set_color", "color": "blue"}),
+            ("Make the desk lamp warm white", {"device_name": "desk lamp", "action": "set_color", "color": "warm white"}),
+            ("Change the kitchen light to purple", {"device_name": "kitchen light", "action": "set_color", "color": "purple"}),
         ]
         examples = []
         for i, (utterance, params) in enumerate(items):
@@ -200,10 +223,23 @@ class ControlDeviceCommand(IJarvisCommand):
 
         entity_id: str = kwargs.get("entity_id", "")
         value: str = kwargs.get("value", "")
+        color: str = kwargs.get("color", "")
 
-        # Build action data from value param based on action type
+        # Build action data based on action type
         data: Dict[str, Any] = {}
-        if value:
+        if action == "set_color":
+            # The LLM may pass the color via a dedicated `color` param or fold
+            # it into `value` — accept either. Pass the spoken name through for
+            # adapters that resolve names themselves (Hue, Govee), and also
+            # resolve it to an RGB triple here so adapters that only accept
+            # ``rgb`` (LIFX, Kasa) get spoken-color support for free.
+            spoken: str = color or value
+            if spoken:
+                data["color"] = spoken
+                rgb = resolve_color(spoken)
+                if rgb is not None:
+                    data["rgb"] = list(rgb)
+        elif value:
             if action == "set_temperature":
                 data["temperature"] = value
             elif action == "set_mode":
