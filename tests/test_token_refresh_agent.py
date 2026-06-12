@@ -312,3 +312,140 @@ class TestRun:
             asyncio.get_event_loop().run_until_complete(agent.run())
 
         assert agent._last_results["test_provider"] == "failed"
+
+
+class TestPerUserRefresh:
+    """User-scoped refresh tokens (e.g. per-user Google calendars) are
+    refreshed once per owning user, with the SDK ContextVar set so
+    store_auth_values resolves that user's rows. Integration-scoped
+    providers (the default; e.g. household Spotify) keep the legacy
+    single-refresh path."""
+
+    def _user_scoped_command(self, auth):
+        from types import SimpleNamespace
+
+        cmd = MagicMock()
+        cmd.authentication = auth
+        cmd.all_possible_secrets = [
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", scope="user"),
+        ]
+        return cmd
+
+    def test_scope_from_declared_secrets(self, agent: TokenRefreshAgent, mock_auth_config):
+        assert agent._refresh_token_scope(mock_auth_config, self._user_scoped_command(mock_auth_config)) == "user"
+        # Plain MagicMock iterates empty -> integration default (legacy sources).
+        assert agent._refresh_token_scope(mock_auth_config, MagicMock()) == "integration"
+
+    def test_run_refreshes_each_token_owner(self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service):
+        from types import SimpleNamespace
+
+        from jarvis_command_sdk import get_current_user_id
+
+        cmd = self._user_scoped_command(mock_auth_config)
+        seen: list[tuple[int | None, dict]] = []
+        cmd.store_auth_values.side_effect = lambda values: seen.append((get_current_user_id(), values))
+
+        mock_secret_service.get_all_secrets = MagicMock(return_value=[
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", user_id=1, value="rt1"),
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", user_id=2, value="rt2"),
+            SimpleNamespace(key="OTHER", user_id=3, value="x"),
+        ])
+
+        def get_value(key, scope, user_id=None):
+            if key == "TEST_REFRESH_TOKEN" and scope == "user":
+                return {1: "rt1", 2: "rt2"}.get(user_id)
+            return None  # no expiry recorded -> needs refresh
+
+        mock_secret_service.get_secret_value.side_effect = get_value
+
+        response_data = json.dumps({"access_token": "new-access", "expires_in": 3600}).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_data
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
+            patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
+            patch("agents.token_refresh_agent.urlopen", return_value=mock_resp),
+        ):
+            mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
+            mock_families.return_value.get_all_families.return_value = {}
+            asyncio.get_event_loop().run_until_complete(agent.run())
+
+        # Both owners refreshed, each with THEIR identity ambient during the store.
+        assert seen == [
+            (1, {"access_token": "new-access"}),
+            (2, {"access_token": "new-access"}),
+        ]
+        assert get_current_user_id() is None  # cleared afterwards
+        assert agent._last_results["test_provider"] == "u1:ok, u2:ok"
+
+        # Expiry recorded per user, user-scoped.
+        expiry_calls = mock_secret_service.set_secret.call_args_list
+        assert [(c.args[2], c.kwargs.get("user_id")) for c in expiry_calls] == [
+            ("user", 1), ("user", 2),
+        ]
+
+    def test_run_user_scoped_without_user_rows_falls_back_to_legacy(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service
+    ):
+        """Pre-threading installs hold tokens in one integration row — those
+        must keep refreshing until the user re-runs OAuth."""
+        from jarvis_command_sdk import get_current_user_id
+
+        cmd = self._user_scoped_command(mock_auth_config)
+        seen: list = []
+        cmd.store_auth_values.side_effect = lambda values: seen.append(get_current_user_id())
+        mock_secret_service.get_all_secrets = MagicMock(return_value=[])
+
+        def get_value(key, scope, user_id=None):
+            if key == "TEST_REFRESH_TOKEN" and scope == "integration":
+                return "legacy-rt"
+            return None  # no expiry recorded -> needs refresh
+
+        mock_secret_service.get_secret_value.side_effect = get_value
+
+        response_data = json.dumps({"access_token": "new-access", "expires_in": 3600}).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_data
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
+            patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
+            patch("agents.token_refresh_agent.urlopen", return_value=mock_resp),
+        ):
+            mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
+            mock_families.return_value.get_all_families.return_value = {}
+            asyncio.get_event_loop().run_until_complete(agent.run())
+
+        assert agent._last_results["test_provider"] == "legacy:ok"
+        assert seen == [None]  # legacy refresh runs with no user context
+
+    def test_one_owner_failure_does_not_block_others(self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service):
+        from types import SimpleNamespace
+
+        cmd = self._user_scoped_command(mock_auth_config)
+        mock_secret_service.get_all_secrets = MagicMock(return_value=[
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", user_id=1, value="rt1"),
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", user_id=2, value="rt2"),
+        ])
+
+        def do_refresh(auth, source, user_id=None):
+            if user_id == 1:
+                raise RuntimeError("provider 500")
+            return True
+
+        with (
+            patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
+            patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
+            patch.object(agent, "_needs_refresh", return_value=True),
+            patch.object(agent, "_do_refresh", side_effect=do_refresh),
+        ):
+            mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
+            mock_families.return_value.get_all_families.return_value = {}
+            asyncio.get_event_loop().run_until_complete(agent.run())
+
+        assert agent._last_results["test_provider"] == "u1:error, u2:ok"
