@@ -1378,10 +1378,17 @@ def _pull_auth_credentials(provider: str) -> None:
         logger.error("Failed to pull auth credentials", provider=provider)
         return
 
+    # The user who ran the OAuth flow owns any user-scoped tokens. Set the
+    # SDK user ContextVar so store_auth_values() writes with scope="user"
+    # resolve to their rows. None (older CC, admin flows) = legacy behavior.
+    user_id: Optional[int] = result.pop("user_id", None)
+
     # Map JCC response keys to what store_auth_values() expects
     # JCC returns "base_url", commands expect "_base_url"
     if "base_url" in result and "_base_url" not in result:
         result["_base_url"] = result["base_url"]
+
+    from jarvis_command_sdk import set_current_user_id
 
     # Find the command that owns this provider and store credentials
     service = get_command_discovery_service()
@@ -1389,8 +1396,15 @@ def _pull_auth_credentials(provider: str) -> None:
 
     for cmd in commands.values():
         if cmd.authentication and cmd.authentication.provider == provider:
-            logger.info("Storing auth credentials", provider=provider, command=cmd.command_name)
-            cmd.store_auth_values(result)
+            logger.info(
+                "Storing auth credentials",
+                provider=provider, command=cmd.command_name, user_id=user_id,
+            )
+            set_current_user_id(user_id)
+            try:
+                cmd.store_auth_values(result)
+            finally:
+                set_current_user_id(None)
             return
 
     # No command matched — check device families
@@ -1401,8 +1415,15 @@ def _pull_auth_credentials(provider: str) -> None:
 
     for family in families.values():
         if family.authentication and family.authentication.provider == provider:
-            logger.info("Storing auth credentials", provider=provider, family=family.protocol_name)
-            family.store_auth_values(result)
+            logger.info(
+                "Storing auth credentials",
+                provider=provider, family=family.protocol_name, user_id=user_id,
+            )
+            set_current_user_id(user_id)
+            try:
+                family.store_auth_values(result)
+            finally:
+                set_current_user_id(None)
             # Refresh discovery cache so next scan includes this family
             family_service.refresh()
             return
