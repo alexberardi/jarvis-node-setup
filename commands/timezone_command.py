@@ -323,19 +323,18 @@ class TimezoneCommand(IJarvisCommand):
                 "iso_datetime": current_time.isoformat(),
             }
 
-            # Fast-path callers have no LLM downstream, so pre-compose the
-            # spoken sentence here. The LLM path keeps composing from
-            # structured fields as before.
+            # Always pre-compose the spoken sentence so the command-center
+            # voice fast-path can speak it directly (skipping the formatting
+            # LLM, which otherwise risks generic filler like "Task completed.").
             # Keep it terse — the user asked for the time, not the calendar
             # date. Trimming the day/month off the spoken response saves
             # ~3s of TTS playback per query.
-            if request_info.is_pre_routed:
-                if location == "local":
-                    context_data["message"] = f"It's {time_str}."
-                else:
-                    context_data["message"] = (
-                        f"It's {time_str} in {location.title()}."
-                    )
+            if location == "local":
+                context_data["message"] = f"It's {time_str}."
+            else:
+                context_data["message"] = (
+                    f"It's {time_str} in {location.title()}."
+                )
 
             return CommandResponse.follow_up_response(context_data=context_data)
 
