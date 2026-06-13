@@ -298,17 +298,17 @@ class CalculatorCommand(IJarvisCommand):
                 "num2": num2,
                 "operation_text": operation_text,
             }
-            # Pre-route callers have no LLM downstream — pre-compose the spoken
-            # response (omit decimals on whole numbers, so "5 plus 3" doesn't
-            # become "five point zero plus three point zero equals eight point
-            # zero" in TTS).
-            if request_info.is_pre_routed:
-                def _fmt(n: float) -> str:
-                    return str(int(n)) if n == int(n) else f"{n:g}"
-                spoken_result = _fmt(result) if operation != Operation.DIVIDE or result == int(result) else f"{result:.2f}"
-                context_data["message"] = (
-                    f"{_fmt(num1)} {operation_text} {_fmt(num2)} equals {spoken_result}."
-                )
+            # Always pre-compose the spoken response so the command-center
+            # voice fast-path can speak it directly (no formatting LLM call,
+            # which otherwise risks generic filler like "Task completed.").
+            # Omit decimals on whole numbers so "5 plus 3" doesn't become
+            # "five point zero ... equals eight point zero" in TTS.
+            def _fmt(n: float) -> str:
+                return str(int(n)) if n == int(n) else f"{n:g}"
+            spoken_result = _fmt(result) if operation != Operation.DIVIDE or result == int(result) else f"{result:.2f}"
+            context_data["message"] = (
+                f"{_fmt(num1)} {operation_text} {_fmt(num2)} equals {spoken_result}."
+            )
 
             return CommandResponse.follow_up_response(context_data=context_data)
             
