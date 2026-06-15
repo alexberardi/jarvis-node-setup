@@ -67,6 +67,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description="Name of the device to control (e.g. 'Apple TV', 'living room light').",
+                options_source="devices",
             ),
             JarvisParameter(
                 "action",
@@ -77,12 +78,19 @@ class ControlDeviceCommand(IJarvisCommand):
                     "volume_up, volume_down, next, previous, lock, unlock, "
                     "set_temperature, set_mode, set_brightness, set_color."
                 ),
+                enum_values=[
+                    "turn_on", "turn_off", "play", "pause",
+                    "volume_up", "volume_down", "next", "previous",
+                    "lock", "unlock", "set_temperature", "set_mode",
+                    "set_brightness", "set_color",
+                ],
             ),
             JarvisParameter(
                 "entity_id",
                 "string",
                 required=False,
                 description="Entity ID from the device list (e.g. 'light.office'). Pass if shown in context.",
+                options_source="entities",
             ),
             JarvisParameter(
                 "value",
