@@ -331,23 +331,10 @@ class RoutineCommand(IJarvisCommand):
         results: Dict[str, Any] = {}
         errors: Dict[str, str] = {}
 
-        # Load placeholder bindings if this routine has placeholders
-        bindings = self._load_bindings(routine_name) if routine_def.get("placeholders") else {}
-
         for step in steps:
             cmd_name = step.get("command", "")
             args = dict(step.get("args", {}))  # copy so we don't mutate the definition
             label = step.get("label", cmd_name)
-
-            # Resolve @placeholder references in args
-            if bindings:
-                args = self._resolve_placeholders(args, bindings, routine_def.get("placeholders", {}))
-
-            # Skip step if a required placeholder is unresolved
-            if args.get("_skip"):
-                logger.warning("Routine step skipped — unresolved placeholder", label=label, reason=args.get("_reason"))
-                errors[label] = args.get("_reason", "Placeholder not configured")
-                continue
 
             # Resolve relative date keywords to actual YYYY-MM-DD dates
             if "resolved_datetimes" in args:
@@ -379,14 +366,20 @@ class RoutineCommand(IJarvisCommand):
         if not results and errors:
             return CommandResponse.error_response(
                 error_details="All routine steps failed.",
-                context_data={"errors": errors},
+                context_data={"errors": errors, "passed": 0, "failed": len(errors)},
             )
 
         # Compose response via LLM (with fallback)
         composed = self._compose_response(results, errors, instruction, response_length)
 
+        # passed/failed counts are ignored by the voice path (which reads only
+        # "message") but feed the run-now / scheduled execution audit trail.
         return CommandResponse.success_response(
-            context_data={"message": composed},
+            context_data={
+                "message": composed,
+                "passed": len(results),
+                "failed": len(errors),
+            },
             wait_for_input=False,
         )
 
@@ -462,50 +455,6 @@ class RoutineCommand(IJarvisCommand):
                 # Already an absolute date or unknown — pass through
                 resolved.append(val)
         return resolved
-
-    # ------------------------------------------------------------------
-    # Placeholder resolution
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _resolve_placeholders(
-        args: Dict[str, Any],
-        bindings: Dict[str, str],
-        placeholders: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """Replace @placeholder_name references in step args with bound values.
-
-        Args with unresolved required placeholders are set to None (step will be skipped).
-        """
-        resolved = {}
-        for key, value in args.items():
-            if isinstance(value, str) and value.startswith("@"):
-                placeholder_name = value[1:]  # Strip the @
-                bound_value = bindings.get(placeholder_name)
-                if bound_value:
-                    resolved[key] = bound_value
-                else:
-                    placeholder_def = placeholders.get(placeholder_name, {})
-                    if placeholder_def.get("required", False):
-                        logger.warning(
-                            "Required placeholder not bound, step will be skipped",
-                            placeholder=placeholder_name,
-                        )
-                        return {"_skip": True, "_reason": f"Placeholder '{placeholder_name}' not configured"}
-                    resolved[key] = value  # Pass through unresolved optional placeholders
-            else:
-                resolved[key] = value
-        return resolved
-
-    def _load_bindings(self, routine_name: str) -> Dict[str, str]:
-        """Load placeholder bindings for a routine from JarvisStorage."""
-        from jarvis_command_sdk import JarvisStorage
-
-        storage = JarvisStorage("routine")
-        data = storage.get(f"bindings:{routine_name}")
-        if data and isinstance(data, dict):
-            return {k: v for k, v in data.items() if isinstance(v, str) and not k.startswith("_")}
-        return {}
 
     # ------------------------------------------------------------------
     # Default routines
