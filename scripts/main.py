@@ -466,6 +466,16 @@ def main():
     else:
         logger.info("Using JSON config for service URLs")
 
+    # Pull the household routine set from CC (pull-on-nudge backstop for any
+    # nudges missed while offline). Fail-soft: a missed pull just leaves the
+    # local routine store as-is; voice still works off defaults.
+    try:
+        from services.routine_sync_service import pull_routines
+        pulled = pull_routines()
+        logger.info("Routine boot-pull complete", count=pulled)
+    except Exception as e:
+        logger.warning("Routine boot-pull failed, continuing with local routines", error=str(e))
+
     # Initialize timer service with TTS callback
     try:
         timer_service = initialize_timer_service()

@@ -911,6 +911,59 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
         })
 
 
+def handle_routine(details: Dict[str, Any]) -> None:
+    """Execute a whole routine on this node (run-now / scheduled) and POST result.
+
+    CC publishes this for the mobile Run-now button and the scheduler. The whole
+    routine runs through the unchanged RoutineCommand engine (sequential,
+    error-resilient steps + LLM composition); the composed message + pass/fail
+    counts are POSTed back to CC's /device-control-results/{request_id}.
+    """
+    reply_request_id: Optional[str] = details.get("reply_request_id")
+    routine_name: str = details.get("routine_name", "")
+    print(f"[MQTT] routine received: {routine_name} user_id={details.get('user_id')}", flush=True)
+
+    if not reply_request_id:
+        logger.warning("routine: missing reply_request_id, ignoring")
+        return
+    if not routine_name:
+        logger.warning("routine: missing routine_name, ignoring")
+        _post_tool_call_result(reply_request_id, {"output": {"error": "Missing routine_name", "success": False}})
+        return
+
+    try:
+        from commands.routine_command import RoutineCommand
+        from jarvis_command_sdk import RequestInformation
+        from jarvis_command_sdk.context import set_current_user_id
+
+        user_id: int | None = details.get("user_id")
+        voice_command: str = details.get("voice_command") or f"routine: {routine_name}"
+        ri = RequestInformation(
+            voice_command=voice_command,
+            conversation_id=reply_request_id,
+            user_id=user_id,
+        )
+
+        logger.info("Executing routine", routine=routine_name, user_id=user_id)
+        set_current_user_id(user_id)
+        try:
+            response = RoutineCommand().run(ri, routine_name=routine_name)
+        finally:
+            set_current_user_id(None)
+
+        output: Dict[str, Any] = dict(response.context_data or {})
+        if not response.success:
+            output["error"] = response.error_details or "Routine failed"
+        output["success"] = response.success
+
+        logger.info("Routine completed", routine=routine_name, success=response.success)
+        _post_tool_call_result(reply_request_id, {"output": output})
+
+    except Exception as e:
+        logger.error("Routine execution failed", routine=routine_name, error=str(e))
+        _post_tool_call_result(reply_request_id, {"output": {"error": str(e), "success": False}})
+
+
 def _post_tool_call_result(request_id: str, result: Dict[str, Any]) -> None:
     """POST tool call result back to CC for the mobile chat polling loop."""
     from clients.rest_client import RestClient
@@ -1263,6 +1316,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "callback": handle_callback,
     "report_tools": handle_report_tools,
     "tool_call": handle_tool_call,
+    "routine": handle_routine,
     "toggle_command": handle_toggle_command,
     "update_node_config": handle_update_node_config,
     "preview_led_pattern": handle_preview_led_pattern,
@@ -1586,6 +1640,29 @@ def _process_config_push() -> None:
         logger.info("Config push processing complete", processed=count)
     except Exception as e:
         logger.error("Config push processing failed", error=str(e))
+
+
+def _handle_routines_sync_notification(raw_payload: bytes) -> None:
+    """Handle a routines/sync nudge from CC — pull the household routine set.
+
+    The nudge carries no routine data; we pull the full set over the node's
+    authenticated HTTP channel and rewrite the DB layer. Already running on the
+    task executor (via _offload), so the HTTP roundtrip is safe here.
+    """
+    try:
+        notification: Dict[str, Any] = json.loads(raw_payload.decode())
+        logger.info("Routines sync nudge received", event=notification.get("event"))
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in routines sync nudge")
+        return
+
+    try:
+        from services.routine_sync_service import pull_routines
+
+        count = pull_routines()
+        logger.info("Routines sync complete", count=count)
+    except Exception as e:
+        logger.error("Routines sync failed", error=str(e))
 
 
 def _handle_command_data_topic(request_topic: str, raw_payload: bytes, op: str) -> None:
@@ -2172,6 +2249,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if msg.topic.endswith("/config/push"):
         _offload(_handle_config_push_notification, msg.payload)
+        return
+
+    if msg.topic.endswith("/routines/sync"):
+        _offload(_handle_routines_sync_notification, msg.payload)
         return
 
     if msg.topic.endswith("/settings/request"):
