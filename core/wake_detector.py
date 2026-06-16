@@ -162,11 +162,13 @@ def decide_wake_fire(
         else static_wake_threshold
     )
     if score > 0.05:
-        # Bounded: only fires when oww sees something meaningful
-        # (someone actually talking). Useful for debugging "I said hey
-        # jarvis but it didn't hear" — shows the score it saw vs
-        # threshold.
-        logger.info(
+        # DEBUG, not INFO: this fires whenever oww hears any speech-like
+        # audio — ~12×/s during active windows. At INFO it floods
+        # jarvis-log-client's bounded (10k, drop-on-full) network queue and
+        # can evict genuinely useful logs, especially across a multi-node
+        # demo. Still invaluable for "I said hey jarvis but it didn't hear"
+        # triage — just enable debug logging on the node to see it.
+        logger.debug(
             "oww-score",
             score=round(float(score), 3),
             threshold=effective_threshold,
