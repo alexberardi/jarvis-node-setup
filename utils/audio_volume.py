@@ -214,6 +214,13 @@ def has_respeaker_hat() -> bool:
     worst (e.g. unloading the *host's* alsa-card module from inside a
     container). Cached: the hardware doesn't change at runtime.
     """
+    # In a container — or any host that sets JARVIS_NODE_OS to a non-Pi
+    # value — we don't own the kernel module / PulseAudio daemon, even if the
+    # HAT card is visible via /dev/snd passthrough. Only a native Pi node (no
+    # override, or an explicit JARVIS_NODE_OS=PI) should run these workarounds.
+    override = os.getenv("JARVIS_NODE_OS", "").upper()
+    if override and override != "PI":
+        return False
     return get_audio_card() == "seeed2micvoicec"
 
 
