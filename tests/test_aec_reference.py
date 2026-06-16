@@ -2,7 +2,7 @@
 
 The pull()/ring-buffer logic is the load-bearing part to test —
 spawning parec is exercised separately as a dev-host smoke test
-(see /home/pi/aec-test/ on jarvis-dev.local). Tests here use
+(see /home/pi/aec-test/ on the dev node). Tests here use
 ``push_for_test()`` to inject samples deterministically.
 """
 
