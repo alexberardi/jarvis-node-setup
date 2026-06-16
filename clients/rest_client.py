@@ -25,7 +25,27 @@ class RestClient:
     def _get_session(cls) -> requests.Session:
         """Get or create the shared HTTP session."""
         if cls._session is None:
-            cls._session = requests.Session()
+            session = requests.Session()
+            # Retry on CONNECTION errors with a fresh connection. After a long
+            # idle, the pooled keep-alive socket to command-center (via the
+            # Cloudflare tunnel) goes stale; the first request then fails with
+            # ConnectionRefused/aborted, which silently swallowed the first
+            # voice command after idle ("had to repeat myself"). connect=2 re-
+            # establishes a fresh connection. read=0/status=0: do NOT retry
+            # read-timeouts (that's the slow-CC path — must not be amplified).
+            # allowed_methods=None retries all verbs incl POST (safe: a stale
+            # connection fails before the request body is sent).
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
+
+            retry = Retry(
+                total=2, connect=2, read=0, status=0, redirect=0,
+                backoff_factor=0.2, allowed_methods=None, raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            cls._session = session
         return cls._session
 
     @staticmethod
