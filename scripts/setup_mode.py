@@ -198,14 +198,27 @@ async def connect_services(request: Request):
     if not config_url:
         raise HTTPException(status_code=400, detail="config_url is required")
 
-    # Fetch service list from config service.
-    # Use ?style=dockerized when running inside Docker so URLs use
-    # host.docker.internal instead of localhost.
+    # Fetch service list from config service. Services may be registered with
+    # host "localhost" (correct only for same-machine consumers), so ask the
+    # config service to rewrite those to a reachable host:
+    #   - config service on ANOTHER machine (the URL points at a remote host):
+    #     ?style=remote&remote_host=<that host> — this is the container case
+    #     where auth/CC live on a different box than this node.
+    #   - config service on the SAME Docker host: ?style=dockerized
+    #     (localhost -> host.docker.internal).
     import os
-    style_param = "?style=dockerized" if os.path.exists("/.dockerenv") else ""
+    from urllib.parse import urlparse
+
+    cfg_host = urlparse(config_url).hostname or ""
+    if cfg_host and cfg_host not in ("localhost", "127.0.0.1", "host.docker.internal"):
+        params = {"style": "remote", "remote_host": cfg_host}
+    elif os.path.exists("/.dockerenv"):
+        params = {"style": "dockerized"}
+    else:
+        params = {}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{config_url}/services{style_param}")
+            resp = await client.get(f"{config_url}/services", params=params)
             if resp.status_code != 200:
                 return JSONResponse(
                     {"ok": False, "errors": {"config": f"Config service returned {resp.status_code}"}},
