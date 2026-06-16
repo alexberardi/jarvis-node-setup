@@ -644,6 +644,22 @@ class PiAudioProvider(AudioProvider):
             return []
 
 
+class LinuxHostAudioProvider(PiAudioProvider):
+    """Audio provider for non-Pi Linux hosts — containers, generic Linux
+    servers, USB audio.
+
+    Inherits :class:`PiAudioProvider`, which is now hardware-agnostic: the
+    TLV320/ReSpeaker self-heal and keepalive no-op off-HAT (see
+    ``utils.audio_volume.has_respeaker_hat``) and the playback target comes
+    from ``get_output_device()`` (the ``audio_output_device`` setting, else
+    ALSA ``default``). Kept as a distinct class so container-specific
+    behavior (e.g. preferring ``pacat`` over ``aplay`` when sharing a host
+    PulseAudio socket) can diverge here without touching the Pi path.
+    """
+
+    pass
+
+
 class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
     """Raspberry Pi/Linux-specific network discovery provider"""
     
@@ -1437,13 +1453,8 @@ class PlatformFactory:
         if platform == "MACOS":
             return MacOSAudioProvider()
         if platform == "LINUX":
-            # Non-Pi Linux (containers, generic Linux hosts). The dedicated
-            # LinuxHostAudioProvider — configurable ALSA/PulseAudio device,
-            # no ReSpeaker/TLV320 assumptions — lands in Phase 3
-            # (prds/cross-platform-node.md). Until then fall back to the Pi
-            # provider; this matches prior behavior, which routed all Linux
-            # here.
-            return PiAudioProvider()
+            # Non-Pi Linux: containers, generic Linux hosts, USB audio.
+            return LinuxHostAudioProvider()
         return PiAudioProvider()  # "PI"
     
     @staticmethod

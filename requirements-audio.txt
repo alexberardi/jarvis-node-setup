@@ -1,17 +1,13 @@
-# Audio and wake-word dependencies (Pi Zero / native only)
-# Install on top of requirements-base.txt
+# Audio + wake-word dependencies. Install on top of requirements-base.txt.
+# Cross-platform: works on a native Pi AND in the container / generic Linux.
+# HAT-only libs (spidev/apa102-pi/gpiozero) live in requirements-hat.txt —
+# they can't install off-Pi.
 pyaudio
 sounddevice
 vosk
-# openwakeword installed separately with --no-deps
+# openwakeword installed separately with --no-deps (avoids ai-edge-litert,
+# which has no wheel on these arches)
 onnxruntime>=1.10.0,<2,!=1.25.1
 scikit-learn>=1,<2
 scipy
 numpy
-
-# ReSpeaker 2-mics Pi HAT v2 — RGB LEDs + user button.
-# Pin backend (lgpio) lives in apt's python3-lgpio; venv inherits it
-# via --system-site-packages. See requirements-pi.txt for details.
-spidev
-apa102-pi
-gpiozero
