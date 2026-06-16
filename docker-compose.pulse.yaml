@@ -1,0 +1,26 @@
+# Overlay for hosts that run PulseAudio or PipeWire (e.g. any Linux desktop).
+#
+# On such hosts the sound server owns the audio devices, so raw /dev/snd is
+# exclusive — capture may sneak in but TTS playback can't open the device
+# ("Device or resource busy"). Route audio through the host sound server's
+# socket instead. Compose with the base file:
+#
+#   docker compose -f docker-compose.audio.yaml -f docker-compose.pulse.yaml up
+#
+# Set JARVIS_HOST_UID to your login uid if it isn't 1000 (run `id -u`):
+#   JARVIS_HOST_UID=$(id -u) docker compose -f docker-compose.audio.yaml -f docker-compose.pulse.yaml up
+#
+# pipewire-pulse accepts the container even as root, so no non-root/uid rework
+# is needed (classic PulseAudio daemons may differ). Output is forced to the
+# `pulse` ALSA device (-> host default sink). Capture stays on the mic chosen
+# in audio.env / auto-selected from the /dev/snd devices the base file passes.
+services:
+  jarvis-node-audio:
+    environment:
+      PULSE_SERVER: unix:/run/user/${JARVIS_HOST_UID:-1000}/pulse/native
+      XDG_RUNTIME_DIR: /run/user/${JARVIS_HOST_UID:-1000}
+      # Overrides any JARVIS_AUDIO_OUTPUT_DEVICE in audio.env (environment
+      # wins over env_file) — play through the host sound server.
+      JARVIS_AUDIO_OUTPUT_DEVICE: pulse
+    volumes:
+      - /run/user/${JARVIS_HOST_UID:-1000}/pulse/native:/run/user/${JARVIS_HOST_UID:-1000}/pulse/native
