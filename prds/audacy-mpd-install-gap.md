@@ -1,7 +1,7 @@
 # Finding: Audacy install never enables mpd (silent break on reboot)
 
 **Date:** 2026-06-07
-**Discovered during:** Phase 2c (split-mode) soak validation on `jarvis-dev.local`
+**Discovered during:** Phase 2c (split-mode) soak validation on `<dev-node>.local`
 **Severity:** Medium — audacy command silently broken after the first reboot following install.
 **Status:** FIXED 2026-06-07. See "What landed" below. Wrapper change still needs to reach the Pi for the install path to exercise the fix end-to-end.
 

@@ -1,6 +1,6 @@
 # Migration: jarvis-node service from `root` to `pi`
 
-Status: **dev hand-patched on `jarvis-dev.local`** (2026-05-06). Installer changes still pending — this doc is the spec.
+Status: **dev hand-patched on `<dev-node>.local`** (2026-05-06). Installer changes still pending — this doc is the spec.
 
 ## Why
 
@@ -21,7 +21,7 @@ Alternatives we considered:
 - **PulseAudio system mode** — deprecated, fragile, security headache.
 - **Run jarvis-node as `pi`** — clean, matches the original SDK design. **Chosen.**
 
-## What changed (on the running Pi `jarvis-dev.local`)
+## What changed (on the running Pi `<dev-node>.local`)
 
 1. `pi` added to `bluetooth` group: `sudo usermod -aG bluetooth pi`
 2. State migrated: `cp -a /root/.jarvis /home/pi/.jarvis` then `chown -R pi:pi /home/pi/.jarvis`
@@ -192,7 +192,7 @@ Files in `/root/.jarvis/` to preserve:
 
 ## Rollback
 
-Two safety nets exist on `jarvis-dev.local`:
+Two safety nets exist on `<dev-node>.local`:
 
 1. **Pre-migration tarball**: `/tmp/jarvis-pre-pi-migration-1778117177.tar.gz` — old `/root/.jarvis/` + old service unit. To restore:
    ```bash
