@@ -76,8 +76,12 @@ WAKE_WORD_MODEL = Config.get_str("wake_word_model", "hey_jarvis") or "hey_jarvis
 # common USB mics. The wake loop downsamples 48 kHz → 16 kHz per chunk.
 OWW_RATE = 16000
 OWW_CHUNK = 1280
-MIC_RATE = 48000
-MIC_CHUNK = OWW_CHUNK * (MIC_RATE // OWW_RATE)  # 3840 samples = 80 ms
+# 48 kHz is the ReSpeaker HAT's native rate; USB mics that only support
+# 44.1 kHz (or other rates) override via the `mic_sample_rate` setting —
+# wake_loop resamples whatever we capture down to OWW_RATE via a rational
+# ratio, so the rate no longer has to be a multiple of 16 kHz.
+MIC_RATE = Config.get_int("mic_sample_rate", 48000)
+MIC_CHUNK = round(OWW_CHUNK * MIC_RATE / OWW_RATE)  # 80 ms at MIC_RATE
 
 
 # Shared AudioBus, set when start_voice_listener() initializes its bus.
