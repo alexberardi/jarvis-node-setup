@@ -80,6 +80,16 @@ class AgentSchedulerService:
             self._stop_event: Optional[asyncio.Event] = None
             self._alert_queue: Optional[AlertQueueService] = None
 
+            # Cache the agent_registry enabled-map. _check_and_run_agents reads
+            # it every 10s tick, and each read opened a fresh SQLCipher session
+            # — and SQLCipher re-derives the key (PBKDF) on every new
+            # connection, so this was real CPU + allocation churn on the Pi
+            # Zero every 10s. The registry only changes on a mobile toggle or
+            # an auto-disable, so a short TTL is plenty; _auto_disable_agent
+            # invalidates explicitly so a tripped agent stops promptly.
+            self._enabled_cache: Optional[Dict[str, bool]] = None
+            self._enabled_cache_ts: float = 0.0
+
             self._initialized = True
 
     AUTO_DISABLE_AFTER_FAILURES: int = 3
@@ -233,21 +243,41 @@ class AgentSchedulerService:
             if now - last_run >= interval:
                 await self._run_agent_safe(agent)
 
-    def _enabled_map(self) -> Dict[str, bool]:
-        """Read the agent_registry once and return a name -> enabled snapshot.
+    ENABLED_CACHE_TTL_SECONDS: float = 30.0
 
-        Falls back to {} (all agents treated as enabled) if the DB read fails,
-        so a transient DB issue doesn't silently stop every agent.
+    def _enabled_map(self) -> Dict[str, bool]:
+        """Return a name -> enabled snapshot from agent_registry, cached for
+        ENABLED_CACHE_TTL_SECONDS so we don't open (and re-key) a SQLCipher
+        session on every 10s scheduler tick.
+
+        Falls back to the last good cache, then {} (all agents treated as
+        enabled), if the DB read fails — so a transient DB issue doesn't
+        silently stop every agent.
         """
+        now = time.monotonic()
+        if (
+            self._enabled_cache is not None
+            and now - self._enabled_cache_ts < self.ENABLED_CACHE_TTL_SECONDS
+        ):
+            return self._enabled_cache
         try:
             db = SessionLocal()
             try:
-                return AgentRegistryRepository(db).get_all()
+                enabled = AgentRegistryRepository(db).get_all()
+                self._enabled_cache = enabled
+                self._enabled_cache_ts = now
+                return enabled
             finally:
                 db.close()
         except Exception as e:
             logger.warning("Failed to read agent registry, treating all as enabled", error=str(e))
-            return {}
+            return self._enabled_cache if self._enabled_cache is not None else {}
+
+    def invalidate_enabled_cache(self) -> None:
+        """Force the next _enabled_map() to re-read the registry. Call after
+        any write to agent enabled-state so the change takes effect at the
+        next tick instead of waiting out the TTL."""
+        self._enabled_cache_ts = 0.0
 
     def _ensure_agents_registered(self, agent_names: list[str]) -> None:
         """Insert default-enabled rows for any agents not yet in the registry."""
@@ -352,6 +382,10 @@ class AgentSchedulerService:
         with self._context_lock:
             self._auto_disabled_reasons[agent_name] = reason
             self._consecutive_failures.pop(agent_name, None)
+
+        # Drop the cached enabled-map so the very next tick sees this agent as
+        # disabled instead of running it again for up to ENABLED_CACHE_TTL_SECONDS.
+        self.invalidate_enabled_cache()
 
     def get_auto_disabled_reasons(self) -> Dict[str, str]:
         """Snapshot of agents that were auto-disabled this process lifetime.

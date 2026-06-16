@@ -13,6 +13,23 @@ from typing import Any, Callable, Dict, Optional, Tuple
 # openwakeword) that need more stack than pure Python threads.
 threading.stack_size(2 * 1024 * 1024)
 
+# Cap glibc malloc arenas BEFORE any worker thread spawns. A multi-threaded
+# process on glibc opens up to 8×CPU arenas (32 on the 4-core Pi Zero 2),
+# which fragment independently under steady transient churn. Belt-and-suspenders
+# alongside the per-wake-cycle malloc_trim (core/wake_loop.py) that actually
+# reclaims each voice command's freed audio buffers; applied via mallopt so it
+# ships with a code update (the systemd unit also sets MALLOC_ARENA_MAX for
+# fresh installs; setting both is harmless). No-op off glibc (macOS dev).
+try:
+    import ctypes as _ctypes
+
+    _libc_malloc = _ctypes.CDLL("libc.so.6")
+    _M_TRIM_THRESHOLD, _M_ARENA_MAX = -1, -8  # from <malloc.h>
+    _libc_malloc.mallopt(_M_ARENA_MAX, 2)
+    _libc_malloc.mallopt(_M_TRIM_THRESHOLD, 128 * 1024)
+except Exception as _malloc_err:  # non-glibc (e.g. macOS dev) — harmless no-op
+    print(f"glibc malloc tuning skipped: {_malloc_err}", file=sys.stderr)
+
 # Set config service URL from config.json before any library imports,
 # so jarvis-config-client uses the right URL instead of localhost
 if not os.environ.get("JARVIS_CONFIG_URL"):
@@ -545,6 +562,22 @@ def main():
     if alert_queue is not None:
         agent_scheduler.set_alert_queue(alert_queue)
     logger.info("Agent scheduler initialized")
+
+    # Memory watchdog: logs RSS+swap+thread slope every ~5 min and ERRORs if it
+    # drifts past a threshold — so a future memory regression surfaces in the
+    # logs instead of as a slow wake weeks later (this is the "catch leaks
+    # before prod" instrument). Cheap; disable with JARVIS_MEMORY_WATCHDOG=0.
+    if os.environ.get("JARVIS_MEMORY_WATCHDOG", "1") != "0":
+        try:
+            from utils.memory_hygiene import MemoryWatchdog
+
+            MemoryWatchdog(
+                interval_seconds=float(
+                    os.environ.get("JARVIS_MEMORY_WATCHDOG_INTERVAL", "300")
+                ),
+            ).start()
+        except Exception as e:
+            logger.warning("Memory watchdog init failed (non-fatal)", error=str(e))
 
     # MusicAssistantService (utils/music_assistant_service.py) is currently broken
     # against websockets >= 14 (uses removed `ws.closed` attr) and recursively

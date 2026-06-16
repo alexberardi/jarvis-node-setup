@@ -27,7 +27,15 @@ WorkingDirectory=__PROJECT_DIR__
 # so systemd never triggered a restart.
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
+# Bound the stop window to 10s (was 30s). The Python main process self-exits
+# cleanly in ~3s (SIGTERM handler force-exit, or os._exit on a maintenance
+# restart), but Pantry packages can spawn child processes (e.g.
+# spotify_keepalive → go-librespot) that don't die on SIGTERM, so systemd
+# waits out TimeoutStopSec before SIGKILLing them — a 30s stall on EVERY
+# restart/upgrade, with scary "stop-sigterm timed out, Killing" logs. 10s
+# still leaves the main process its full graceful-exit budget while cutting
+# the orphan-child cleanup stall to a third.
+TimeoutStopSec=10
 KillSignal=SIGTERM
 # Raise mlock cap so jarvis-node can pin hot pages in RAM and avoid
 # SD-card swap stalls. Pi Zero 2W has 416 MiB usable; node's working
@@ -41,6 +49,15 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=__PROJECT_DIR__
 Environment=CONFIG_PATH=__PROJECT_DIR__/config.json
 Environment=JARVIS_CONFIG_URL_STYLE=remote
+# Cap glibc malloc arenas to curb heap fragmentation. A ~30-thread process
+# defaults to up to 8×CPU arenas (32 on a 4-core Pi Zero 2), each fragmenting
+# independently under steady transient churn (5-min agent fetches, the ZWave
+# full-state dump) — RSS+swap then ratchet up until the wake loop swap-thrashes
+# (7-8 s wake). Read by glibc at process start, before Python. main.py also
+# calls mallopt() so existing nodes get this on a code update without the unit
+# being regenerated. MALLOC_TRIM_THRESHOLD_ makes glibc return freed pages sooner.
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
 SyslogIdentifier=jarvis-node
 
 [Install]

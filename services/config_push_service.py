@@ -187,8 +187,9 @@ def _dispatch_command_registry(config_data: dict[str, str]) -> None:
 def _dispatch_agent_registry(config_data: dict[str, str]) -> None:
     """Update agent enabled/disabled state in the registry.
 
-    The scheduler reads is_enabled() on every tick, so no discovery refresh
-    is needed — the next scheduled check naturally picks up the new state.
+    The scheduler reads the enabled-map on every tick (cached for a short TTL),
+    so after writing we invalidate that cache — the next scheduled check then
+    picks up the new state immediately instead of waiting out the TTL.
     """
     agent_name = config_data.get("agent_name", "")
     enabled_str = config_data.get("enabled", "true")
@@ -204,6 +205,15 @@ def _dispatch_agent_registry(config_data: dict[str, str]) -> None:
         repo.set_enabled(agent_name, enabled)
     finally:
         db.close()
+
+    # Force the scheduler to re-read on its next tick (it caches the
+    # enabled-map to avoid a SQLCipher session every 10s).
+    try:
+        from services.agent_scheduler_service import get_agent_scheduler_service
+
+        get_agent_scheduler_service().invalidate_enabled_cache()
+    except Exception as e:
+        logger.warning("Could not invalidate scheduler enabled-cache", error=str(e))
 
     logger.info("Agent registry updated", agent=agent_name, enabled=enabled)
 
