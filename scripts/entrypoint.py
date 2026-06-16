@@ -54,6 +54,39 @@ def _has_credentials() -> bool:
         return False
 
 
+def _apply_config_service_env() -> None:
+    """Expose the registered config-service URL to jarvis-config-client.
+
+    setup_mode saves the config-service URL the user entered to config.json
+    (jarvis_config_service_url). jarvis-config-client reads JARVIS_CONFIG_URL
+    from the environment, and only rewrites localhost-registered services to a
+    reachable host when JARVIS_CONFIG_URL_STYLE=remote. So when the config
+    service is on another machine (the container case), set both — otherwise
+    the runtime resolves command-center/MQTT/etc. as 'localhost' and can't
+    reach them. An explicit JARVIS_CONFIG_URL already in the env wins.
+    """
+    if os.environ.get("JARVIS_CONFIG_URL"):
+        return
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    url = (cfg.get("jarvis_config_service_url") or "").strip()
+    if not url:
+        return
+    os.environ["JARVIS_CONFIG_URL"] = url
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    if host and host not in ("localhost", "127.0.0.1", "host.docker.internal"):
+        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", "remote")
+    print(
+        f"[entrypoint] config service: {url} "
+        f"(style={os.environ.get('JARVIS_CONFIG_URL_STYLE', 'default')})",
+        flush=True,
+    )
+
+
 def main() -> None:
     _seed_config()
 
@@ -63,6 +96,7 @@ def main() -> None:
         setup_main()
         return
 
+    _apply_config_service_env()
     mode = os.environ.get("JARVIS_NODE_MODE", "text").strip().lower()
     if mode == "voice":
         print("[entrypoint] credentials + voice mode → starting voice runtime", flush=True)
