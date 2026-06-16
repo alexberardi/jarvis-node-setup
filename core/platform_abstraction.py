@@ -18,9 +18,32 @@ import subprocess
 
 from jarvis_log_client import JarvisLogger
 
-from utils.audio_volume import reload_alsa_card_if_suspended
+from utils.audio_volume import get_audio_card, reload_alsa_card_if_suspended
+from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node")
+
+
+@lru_cache(maxsize=1)
+def _default_output_device() -> str:
+    """ALSA playback device to use when none is configured.
+
+    The ``output`` alias (a PulseAudio bridge in ``/etc/asound.conf`` written
+    by ``install.sh``) only exists on a ReSpeaker HAT node. Everywhere else —
+    containers, USB audio, generic Linux — fall back to the ALSA ``default``
+    device. Cached: the audio hardware doesn't change at runtime.
+    """
+    return "output" if get_audio_card() == "seeed2micvoicec" else "default"
+
+
+def get_output_device() -> str:
+    """The ``aplay -D`` target for playback.
+
+    Overridable per node via the ``audio_output_device`` setting (e.g. a
+    ``hw:1,0`` USB card or a named PulseAudio sink); otherwise auto-detected
+    by :func:`_default_output_device`.
+    """
+    return Config.get_str("audio_output_device") or _default_output_device()
 
 
 class AudioProvider(ABC):
@@ -187,7 +210,7 @@ class AudioProvider(ABC):
         )
         cmd = [
             "aplay",
-            "-D", "output",      # the pulse alias defined in /etc/asound.conf
+            "-D", get_output_device(),  # HAT pulse alias, or configured/default device
             "-q",
             "-f", format_arg,
             "-r", str(sample_rate),
@@ -532,14 +555,14 @@ class PiAudioProvider(AudioProvider):
         try:
             if volume != 1.0:
                 proc = subprocess.Popen(
-                    f"sox {file_path} -t wav - vol {volume} | aplay -D output",
+                    f"sox {file_path} -t wav - vol {volume} | aplay -D {get_output_device()}",
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
             else:
                 proc = subprocess.Popen(
-                    ["aplay", "-D", "output", file_path],
+                    ["aplay", "-D", get_output_device(), file_path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
