@@ -1,0 +1,61 @@
+# Audio-capable node image: full voice runtime (mic capture + wake word +
+# speaker) for running a node in a container on a Linux host. Separate from
+# the lightweight headless ./Dockerfile (text mode only) so that image isn't
+# bloated with audio/ML deps.
+#
+# Audio is passed in from the host at run time — share the host PulseAudio
+# socket (recommended) or pass --device /dev/snd. See docker-compose.audio
+# and prds/cross-platform-node.md (Phase 4) for the run wiring. macOS Docker
+# Desktop cannot pass host audio through; use a Linux host.
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Build deps (git for Pantry installs; build-essential + libsqlcipher-dev for
+# the sqlcipher3 fallback) plus the audio stack:
+#   portaudio19-dev   - PyAudio / sounddevice (build + runtime)
+#   libspeexdsp1      - Speex AEC (core/aec_speex loads it via ctypes)
+#   alsa-utils        - aplay / arecord
+#   pulseaudio-utils  - pactl / parec / paplay (the runtime control surface)
+#   libpulse0 / libasound2-plugins - client lib + ALSA->Pulse bridge
+#   libsndfile1, sox, mpv, ffmpeg  - chimes / file playback / streaming
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       git build-essential libsqlcipher-dev \
+       portaudio19-dev libspeexdsp1 alsa-utils \
+       pulseaudio-utils libpulse0 libasound2-plugins \
+       libsndfile1 sox mpv ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Base + audio deps (NOT requirements-hat.txt — those are Pi-HAT only).
+# openwakeword installed --no-deps to avoid ai-edge-litert (no wheel here).
+COPY requirements-base.txt requirements-audio.txt ./
+RUN pip install --no-cache-dir -r requirements-base.txt \
+    && pip install --no-cache-dir -r requirements-audio.txt \
+    && pip install --no-cache-dir openwakeword --no-deps
+
+# Pre-fetch the openWakeWord models so an ephemeral container doesn't
+# re-download them on first wake. Stored in the openwakeword package dir.
+RUN python -c "import openwakeword.utils as u; u.download_models()"
+
+# Install SDK from monorepo sibling (provided via build-contexts / additional_contexts)
+COPY --from=jarvis-command-sdk . /tmp/jarvis-command-sdk/
+RUN pip install --no-cache-dir /tmp/jarvis-command-sdk && rm -rf /tmp/jarvis-command-sdk
+
+# Application code (.dockerignore excludes .venv, __pycache__, tests, etc.)
+COPY . .
+
+ARG VERSION=unknown
+RUN printf "%s" "$VERSION" > /app/VERSION
+
+ENV PYTHONPATH=/app
+ENV JARVIS_SKIP_PROVISIONING_CHECK=true
+ENV CONFIG_PATH=/config/config.json
+ENV JARVIS_NODE_PORT=7771
+# Force the non-Pi Linux audio provider and never run host-level TLV320
+# workarounds, even if a HAT card is visible via /dev/snd passthrough.
+ENV JARVIS_NODE_OS=LINUX
+# Run the full voice runtime (vs the headless text node).
+ENV JARVIS_NODE_MODE=voice
+
+CMD ["python", "scripts/entrypoint.py"]
