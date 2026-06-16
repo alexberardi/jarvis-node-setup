@@ -11,6 +11,7 @@ import re
 import threading
 import time as _time
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from dataclasses import dataclass
 from typing import Dict, List, Any
 import subprocess
@@ -1361,35 +1362,66 @@ class MacOSBluetoothProvider(BluetoothProvider):
         return False
 
 
+@lru_cache(maxsize=1)
+def is_raspberry_pi() -> bool:
+    """True if running on real Raspberry Pi hardware.
+
+    Reads the device-tree model instead of trusting ``platform.system()``,
+    which reports "Linux" on *any* Linux host (containers, generic servers)
+    and so can't distinguish a real Pi from a Linux box that merely runs the
+    node runtime. Mirrors the device-tree probe in ``provisioning/api.py``.
+    Cached — the hardware doesn't change at runtime.
+    """
+    if platform.system().lower() != "linux":
+        return False
+    try:
+        with open("/proc/device-tree/model") as f:
+            return "raspberry pi" in f.read().lower()
+    except OSError:
+        return False
+
+
 # Platform Factory
 class PlatformFactory:
     """Factory for creating platform-specific providers"""
-    
+
     @staticmethod
     def get_platform() -> str:
-        """Get the current platform from environment or detect automatically"""
+        """Get the current platform: "MACOS", "PI", or "LINUX".
+
+        "LINUX" is a non-Pi Linux host (containers, generic servers) — a
+        distinct target from a real Pi, even though both report
+        ``platform.system() == "Linux"``. An explicit ``JARVIS_NODE_OS`` env
+        var overrides detection (e.g. to force a container's platform).
+        """
         platform_env = os.getenv("JARVIS_NODE_OS")
         if platform_env:
             return platform_env.upper()
-        
+
         # Auto-detect based on system
         system = platform.system().lower()
         if system == "darwin":
             return "MACOS"
-        elif system == "linux":
-            return "PI"  # Assume Raspberry Pi for Linux
-        else:
-            return "PI"  # Default to PI
-    
+        if system == "linux":
+            return "PI" if is_raspberry_pi() else "LINUX"
+        return "LINUX"
+
     @staticmethod
     def create_audio_provider() -> AudioProvider:
         """Create the appropriate audio provider for the current platform"""
         platform = PlatformFactory.get_platform()
-        
+
         if platform == "MACOS":
             return MacOSAudioProvider()
-        else:
+        if platform == "LINUX":
+            # Non-Pi Linux (containers, generic Linux hosts). The dedicated
+            # LinuxHostAudioProvider — configurable ALSA/PulseAudio device,
+            # no ReSpeaker/TLV320 assumptions — lands in Phase 3
+            # (prds/cross-platform-node.md). Until then fall back to the Pi
+            # provider; this matches prior behavior, which routed all Linux
+            # here.
             return PiAudioProvider()
+        return PiAudioProvider()  # "PI"
     
     @staticmethod
     def create_network_discovery_provider() -> NetworkDiscoveryProvider:
