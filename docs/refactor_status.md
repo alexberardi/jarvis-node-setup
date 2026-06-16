@@ -6,7 +6,7 @@ pass that broke the 2,538-line monolith into focused modules under
 
 **State as of last touch (2026-06-04 ~15:03 EDT):**
 - Local working tree: clean, all 324 refactor-related tests green.
-- jarvis-dev.local: phases 1-11 all live. Service restarted
+- <dev-node>.local: phases 1-11 all live. Service restarted
   2026-06-04 15:02:36 EDT; "Waiting for wake word" reached at
   15:03:17. No exceptions in journal.
 - Final sizes:
@@ -38,7 +38,7 @@ Every phase had the same shape:
    sanity parse + the shadow scan (see "Soak gotchas" below).
 
 4. **DEPLOY** — `scp` the new module + updated `voice_listener.py` to
-   `pi@jarvis-dev.local:/opt/jarvis-node/`, then run a Python import
+   `pi@<dev-node>.local:/opt/jarvis-node/`, then run a Python import
    probe on the Pi to confirm everything loads. **Restart between
    phases.** Each restart catches its own latent shadow bugs.
 

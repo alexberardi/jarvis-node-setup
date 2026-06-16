@@ -2,7 +2,7 @@
 
 Status as of 2026-05-07 EOD. Companion to `migration-to-pi-service.md` —
 the user-switch from root → pi unblocked PulseAudio routing, but the
-end-to-end pair → connect → audio flow on `jarvis-dev.local` is still
+end-to-end pair → connect → audio flow on `<dev-node>.local` is still
 unreliable with Arctis GameBuds.
 
 This doc is the handoff for a fresh-context session. It captures what
@@ -25,7 +25,7 @@ pick up.
 
 ## What's deployed where
 
-### `jarvis-dev.local` (the Pi) — running
+### `<dev-node>.local` (the Pi) — running
 
 All node-side code changes are deployed and the service is running
 under PID 4932 (started 2026-05-07 21:49:16 EDT). Files modified:
@@ -342,10 +342,10 @@ In order of effort vs payoff:
 
 When trying again next session:
 
-- `ssh pi@jarvis-dev.local 'bluetoothctl info <MAC>'` — should show
+- `ssh pi@<dev-node>.local 'bluetoothctl info <MAC>'` — should show
   `Paired: yes`, `Bonded: yes`, `Connected: yes`, `Trusted: yes` for
   a fully working bond.
-- `ssh pi@jarvis-dev.local 'pactl list sinks short'` — should show a
+- `ssh pi@<dev-node>.local 'pactl list sinks short'` — should show a
   `bluez_output.<MAC>` line when the audio profile is up. Default
   sink (`pactl get-default-sink`) should auto-switch to it via
   PipeWire's `module-switch-on-connect`.

@@ -643,9 +643,9 @@ actions via the CC → MQTT → node → protocol pipeline.
 **Installing on a Pi (production):**
 ```bash
 # From dev machine:
-scp -r /path/to/package pi@jarvis-dev.local:/tmp/my-package
-ssh -t pi@jarvis-dev.local "sudo /opt/jarvis-node/.venv/bin/python /opt/jarvis-node/scripts/command_store.py install --local /tmp/my-package"
-ssh -t pi@jarvis-dev.local "sudo systemctl restart jarvis-node"
+scp -r /path/to/package pi@<dev-node>.local:/tmp/my-package
+ssh -t pi@<dev-node>.local "sudo /opt/jarvis-node/.venv/bin/python /opt/jarvis-node/scripts/command_store.py install --local /tmp/my-package"
+ssh -t pi@<dev-node>.local "sudo systemctl restart jarvis-node"
 ```
 
 ## Threading Model

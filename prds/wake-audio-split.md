@@ -11,7 +11,7 @@
 
 **Owner branch:** `feat/wake-audio-split` off main. WIP commit preserves the full structural work for revisit when running on Pi 3A+/4/Zero 3W or otherwise increasing RAM. Do not delete the branch without checking first.
 
-**Decisions locked (carry-forward):** Option A (audio owns hot path), source under `jarvis-node-setup/audio_process/`, AEC moves with audio (still WIP, not abandoned), liveness/execute timeout split, file-based metrics, manual DoD on `jarvis-dev.local`, `tts_playback.py` carve-out NOT needed (`core/platform_audio.py` already abstracts aplay/pulse), command-discovery still in audio after Phase 2 — Phase 2c (TBD) moves it.
+**Decisions locked (carry-forward):** Option A (audio owns hot path), source under `jarvis-node-setup/audio_process/`, AEC moves with audio (still WIP, not abandoned), liveness/execute timeout split, file-based metrics, manual DoD on `<dev-node>.local`, `tts_playback.py` carve-out NOT needed (`core/platform_audio.py` already abstracts aplay/pulse), command-discovery still in audio after Phase 2 — Phase 2c (TBD) moves it.
 
 ## Problem
 
@@ -256,7 +256,7 @@ Goal: per-tool `command.execute()` calls go from audio→main over IPC. Audio si
 
 ### Verification
 
-Same DoD as the rest of the rework: user runs both processes on `jarvis-dev.local` (two tmux windows per the soak section below) and confirms a voice command with tool calls round-trips cleanly. Then a tagged release with updated `install.sh` deploys cleanly.
+Same DoD as the rest of the rework: user runs both processes on `<dev-node>.local` (two tmux windows per the soak section below) and confirms a voice command with tool calls round-trips cleanly. Then a tagged release with updated `install.sh` deploys cleanly.
 
 ### Where to look first when resuming
 
@@ -266,7 +266,7 @@ Same DoD as the rest of the rework: user runs both processes on `jarvis-dev.loca
 4. Read `scripts/main.py` `_start_ipc_server` (currently only handles `MSG_REPORT_STATUS`).
 5. Start with step 1 above (extract `_execute_one_tool_locally`). Then 2 (override hook). Then 4 (main-side handler). Then 3 (audio-side wiring). Then 5 (pre-route).
 
-## Test pattern on jarvis-dev.local
+## Test pattern on <dev-node>.local
 
 ### Run-in-place iteration loop (Phases 2-3)
 
@@ -276,7 +276,7 @@ This is the inner loop. No systemd touched. `scp` the new modules over, run the 
 # On laptop:
 cd jarvis-node-setup
 ./sync_files_to_zero.sh        # existing — pushes code to /opt/jarvis-node
-ssh pi@jarvis-dev.local 'sudo systemctl stop jarvis-node'
+ssh pi@<dev-node>.local 'sudo systemctl stop jarvis-node'
 
 # In tmux/screen on the Pi:
 # Window 1: main process (no wake loop)
@@ -337,7 +337,7 @@ git tag v0.1.X-dev
 ./scripts/release.sh                       # if it exists
 
 # On jarvis-dev:
-ssh pi@jarvis-dev.local
+ssh pi@<dev-node>.local
 sudo systemctl stop jarvis-node
 curl -L <release tarball> | tar xz -C /tmp
 cd /tmp/jarvis-node-setup-*
@@ -373,6 +373,6 @@ The dual-mode env var is the load-bearing safety net. Don't delete it until at l
 ## Definition of done
 
 - [ ] Phase 1-5 deliverables shipped per table above
-- [ ] **Manual end-to-end verification on `jarvis-dev.local`**: voice command with tool calls round-trips cleanly in split mode; user confirms it works.
-- [ ] **Tagged release with updated `install.sh` deploys cleanly on `jarvis-dev.local`**: both services come up active; rollback rehearsed by deliberately breaking the audio unit template and confirming the `.bak` restore brings the old single-process state back.
+- [ ] **Manual end-to-end verification on `<dev-node>.local`**: voice command with tool calls round-trips cleanly in split mode; user confirms it works.
+- [ ] **Tagged release with updated `install.sh` deploys cleanly on `<dev-node>.local`**: both services come up active; rollback rehearsed by deliberately breaking the audio unit template and confirming the `.bak` restore brings the old single-process state back.
 - [ ] Soak measurements collected for the record (24 h baseline + 24 h split, file-based) and appended to this PRD — data for the kitchen rollout decision, not a pass/fail gate.

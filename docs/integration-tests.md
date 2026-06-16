@@ -937,7 +937,7 @@ real GPU model behavior) move us into v3.
 
 ### v3 — real-service / GPU testing
 
-- Register the Ubuntu desktop (`10.0.0.122`) as a GHA self-hosted
+- Register the Ubuntu desktop (`<gpu-host>`) as a GHA self-hosted
   runner with `[self-hosted, linux, cuda]` labels.
 - Add `gpu-llm-cuda` job in the runner with `--gpus all`, path-gated
   to `jarvis-llm-proxy-api/**`.
@@ -955,7 +955,7 @@ real GPU model behavior) move us into v3.
 
 ## Where the openclaw side picks this up
 
-The Pi at `pi@10.0.0.245` runs the openclaw agentic workflow. Three
+The Pi at `pi@<node-host>` runs the openclaw agentic workflow. Three
 agent prompts there will need updates to consume this layer's outputs:
 
 | Path | Update |
@@ -1002,7 +1002,7 @@ In `jarvis-command-center`:
 |---|---|
 | `.github/workflows/integration-trigger.yml` | Fires `repository_dispatch` on PR events with the v2.3 payload (incl. linked_prs) |
 
-On the openclaw Pi (`pi@10.0.0.245`):
+On the openclaw Pi (`pi@<node-host>`):
 
 | Path | Purpose |
 |---|---|
