@@ -1565,7 +1565,10 @@ WorkingDirectory=${INSTALL_DIR}
 # loss triggers a restart (on-failure would only restart on rc != 0).
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
+# 10s (was 30s): main process self-exits in ~3s, but orphaned package
+# children (spotify_keepalive → go-librespot) ignore SIGTERM and otherwise
+# stall every restart/upgrade for the full timeout. See setup/jarvis-node.service.
+TimeoutStopSec=10
 KillSignal=SIGTERM
 # Raise mlock cap — jarvis-node pins hot pages (oww model, AEC, audio
 # bus) in RAM to avoid SD-card swap stalls on Pi Zero. Default 64 KiB
@@ -1578,6 +1581,12 @@ Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${INSTALL_DIR}
 Environment=CONFIG_PATH=${INSTALL_DIR}/config.json
 Environment=JARVIS_CONFIG_URL_STYLE=remote
+# Cap glibc malloc arenas to curb heap fragmentation (32 arenas on a 4-core
+# Pi Zero 2 fragment independently under steady churn → RSS+swap ratchet →
+# slow wake). Read before Python; main.py also calls mallopt() for code-only
+# updates. See setup/jarvis-node.service for the full rationale.
+Environment=MALLOC_ARENA_MAX=2
+Environment=MALLOC_TRIM_THRESHOLD_=131072
 SyslogIdentifier=jarvis-node
 
 [Install]

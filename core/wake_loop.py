@@ -656,6 +656,20 @@ def run_wake_loop(
             f"{int((time.monotonic() - t_wake_fired) * 1000)}ms "
             f"from wake_fired to return-to-idle"
         )
+        # Return this cycle's freed audio-buffer pages to the OS now. Every
+        # wake cycle churns several MB of large transient buffers (the joined
+        # recording, float copies during RMS-normalization, resample arrays,
+        # the streamed TTS PCM). glibc keeps those freed pages, so committed
+        # RSS+swap steps up ~5-15 MB per voice command and stays up until the
+        # next watchdog trim (5 min) — which is the real cause of the
+        # "wake word takes 7-8s after the node's been used a while" symptom.
+        # Trimming here, while the pages are still near the heap top, reclaims
+        # them per cycle. malloc_trim() is a no-op off glibc (macOS dev).
+        try:
+            from utils.memory_hygiene import malloc_trim
+            malloc_trim()
+        except Exception:
+            pass
         if _bg_executor is not None:
             _bg_executor.submit(fetch_next_processing_ack)
         print(f"Ready — say '{wake_word_model.replace('_', ' ')}'")
