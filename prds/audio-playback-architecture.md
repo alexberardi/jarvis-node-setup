@@ -53,7 +53,7 @@ Current author lean: **C first** (cheapest win if it pans out), then **B**, then
 
 ## Success criteria
 
-> 30 minutes of mixed playback (Spotify + voice commands + Pandora) at the volume the user reports as "loud kitchen listening level" on jarvis-kitchen.local **without audible static** AND **without the sink wedging**. Validated over a 24-hour soak test on jarvis-dev.local before kitchen deploy.
+> 30 minutes of mixed playback (Spotify + voice commands + Pandora) at the volume the user reports as "loud kitchen listening level" on <kitchen-node>.local **without audible static** AND **without the sink wedging**. Validated over a 24-hour soak test on <dev-node>.local before kitchen deploy.
 
 Measured by:
 - Subjective listening at the dev Pi at a calibrated volume level. Pass = no static perceptible to user.
