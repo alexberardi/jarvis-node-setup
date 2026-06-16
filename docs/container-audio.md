@@ -18,8 +18,12 @@ openWakeWord models.
 
 ## Step 1 — Quick start (ALSA `/dev/snd`)
 
-This path passes the host's sound devices straight through with `/dev/snd`. It
-works whether or not the host runs PulseAudio, so it's the best first test.
+This path passes the host's sound devices straight through with `/dev/snd`.
+**Use it only on a host with no sound server** (e.g. a headless server with a
+USB mic/speaker). On a Linux **desktop** the running PulseAudio/PipeWire owns
+the devices, so raw `/dev/snd` is exclusive — capture may work but playback
+fails with "Device or resource busy". There, use **Step 2** (the pulse
+overlay) instead.
 
 ### 1. Build the image
 
@@ -106,11 +110,37 @@ The node never runs the ReSpeaker/TLV320 driver workarounds in a container
 
 ---
 
-## Step 2 — Shared host PulseAudio (full control surface) — *not yet wired*
+## Step 2 — Shared host PulseAudio / PipeWire (recommended on a desktop)
 
-`/dev/snd` gives capture + wake + playback, but the runtime's volume control,
-music ducking, and Bluetooth speak `pactl`/`parec` against a PulseAudio server.
-To keep those working, the container shares the host's PulseAudio socket — which
-requires running the container as your host user (PulseAudio rejects root). That
-wiring (non-root uid + socket/cookie mounts) lands next; see
-`prds/cross-platform-node.md` Phase 4.
+On a host that runs a sound server (any Linux desktop with PipeWire, or
+PulseAudio), route audio through its socket instead of `/dev/snd`. This is
+**required** there — the sound server owns the devices, so `/dev/snd` playback
+is busy — and it's the better path generally (the server mixes, handles
+full-duplex, and keeps `pactl` volume/ducking working).
+
+Add the pulse overlay on top of the base file:
+
+```bash
+docker compose -f docker-compose.audio.yaml -f docker-compose.pulse.yaml up
+```
+
+It bind-mounts the host PulseAudio socket (`/run/user/<uid>/pulse/native`),
+sets `PULSE_SERVER`, and forces playback to the `pulse` device (→ your host
+default sink). If your login uid isn't 1000, pass it:
+
+```bash
+JARVIS_HOST_UID=$(id -u) docker compose -f docker-compose.audio.yaml -f docker-compose.pulse.yaml up
+```
+
+Notes:
+- **No non-root rework needed** with PipeWire's pipewire-pulse — it accepts the
+  container as root. (A classic PulseAudio daemon configured to reject root
+  would need the container to run as your uid; pipewire-pulse, the Linux
+  desktop default, does not.)
+- Playback follows your host **default sink** — set that to the right output in
+  your desktop sound settings (`pactl set-default-sink ...`).
+- Capture still uses the mic from `audio.env` / auto-select over `/dev/snd`
+  (the base file passes it through). To also capture via the sound server, set
+  `JARVIS_MIC_DEVICE_NAME=pulse` in `audio.env`.
+- Verified working: containerized node on an Ubuntu/PipeWire desktop —
+  "Hey Jarvis" → wake → STT → command-center → spoken response out the headset.
