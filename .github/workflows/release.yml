@@ -139,9 +139,17 @@ jobs:
             ```
             Then open http://localhost:7771 to set up.
 
+            **Voice node with audio (mic + wake word + speaker):** runs the full
+            voice runtime in a container; needs host audio passed in. Image
+            `ghcr.io/alexberardi/jarvis-node-audio:${{ steps.version.outputs.version }}`
+            (amd64 + arm64). See
+            [docs/container-audio.md](https://github.com/${{ github.repository }}/blob/main/docs/container-audio.md).
+
   docker-image:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # arm64 legs build under QEMU emulation (slowest is the audio image's
+    # numpy/scipy/onnxruntime install + wake-model prefetch).
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -161,6 +169,9 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -171,10 +182,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push headless image (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           build-contexts: |
             jarvis-command-sdk=jarvis-command-sdk
@@ -186,4 +199,23 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Jarvis headless node
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Build and push audio image (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.audio
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-contexts: |
+            jarvis-command-sdk=jarvis-command-sdk
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ghcr.io/alexberardi/jarvis-node-audio:latest
+            ghcr.io/alexberardi/jarvis-node-audio:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Jarvis voice node (mic + wake + speaker)
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
