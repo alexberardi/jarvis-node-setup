@@ -136,7 +136,12 @@ def follow_up_loop(
         return
 
     conversation_id: str | None = None
-    if initial_result and initial_result.get("success"):
+    if initial_result and initial_result.get("success") and not initial_result.get("pre_routed"):
+        # A pre-routed initial turn never registered a CC conversation, so we
+        # must not "continue" it (CC would 400). Leaving conversation_id=None
+        # makes the next follow-up start a fresh CC conversation via
+        # process_voice_command — which also carries recently_shown_items over
+        # in node_context so "mark those as read" still resolves.
         conversation_id = initial_result.get("conversation_id")
 
     # The AudioBus ring buffer is already capturing post-TTS audio. Track
