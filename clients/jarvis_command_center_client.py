@@ -530,6 +530,7 @@ class JarvisCommandCenterClient:
         speaker_confidence: Optional[float] = None,
         agents: Optional[dict] = None,
         adapter_settings: Optional[dict] = None,
+        recently_shown_items: Optional[list] = None,
     ) -> bool:
         """
         Start a conversation session and register available client-side tools.
@@ -569,6 +570,12 @@ class JarvisCommandCenterClient:
             node_context["speaker_user_id"] = speaker_user_id
         if speaker_confidence is not None:
             node_context["speaker_confidence"] = float(speaker_confidence)
+
+        # Carry the most-recently-surfaced list so CC can re-inject the
+        # RECENTLY SHOWN block on this (possibly fresh) conversation — the
+        # follow-up "mark those as read" path after a pre-route / re-wake.
+        if recently_shown_items:
+            node_context["recently_shown_items"] = recently_shown_items
 
         # Add agent context (Home Assistant, etc.)
         if agents:
