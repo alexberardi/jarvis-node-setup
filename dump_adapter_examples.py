@@ -12,16 +12,23 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
+
+# Workspace root containing the sibling command repos. Defaults to the parent of
+# this repo (the usual `jarvis/` checkout layout); override with JARVIS_WORKSPACE.
+_WORKSPACE_ROOT = Path(
+    os.environ.get("JARVIS_WORKSPACE", Path(__file__).resolve().parent.parent)
+)
 
 # Pantry-style extra command paths we also scan. The Pantry installer normally
 # copies/symlinks these into commands/custom_commands/, but when they're only
 # in sibling repos we can still import them directly by file path.
 _PANTRY_COMMAND_ROOTS = [
-    Path("/Users/alexanderberardi/jarvis/jarvis-cmd-music-assistant/commands/music/command.py"),
-    Path("/Users/alexanderberardi/jarvis/jarvis-cmd-meteo-weather/commands/get_weather/command.py"),
+    _WORKSPACE_ROOT / "jarvis-cmd-music-assistant/commands/music/command.py",
+    _WORKSPACE_ROOT / "jarvis-cmd-meteo-weather/commands/get_weather/command.py",
 ]
 
 
