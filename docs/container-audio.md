@@ -160,3 +160,26 @@ Notes:
   `JARVIS_MIC_DEVICE_NAME=pulse` in `audio.env`.
 - Verified working: containerized node on an Ubuntu/PipeWire desktop —
   "Hey Jarvis" → wake → STT → command-center → spoken response out the headset.
+
+## Echo cancellation (AEC)
+
+AEC removes the node's own playback from the mic, so it can hear "Hey Jarvis"
+over music/TTS (barge-in). It's **opt-in** — enable with:
+
+```
+JARVIS_AEC_ENABLED=true   # in audio.env, or uncomment in docker-compose.pulse.yaml
+```
+
+**Requires the pulse path** (`docker-compose.pulse.yaml`): the reference signal
+is captured from the host sink's `.monitor` source over the shared socket. On
+the bare `/dev/snd` path there's no monitor, so AEC stays inert (pass-through).
+
+Validated in-container on PipeWire: the reference reader connects, startup
+**calibration succeeds** (measures the playback→mic delay), and the pipeline
+runs every frame with no errors — notably better than the Pi HAT, whose
+monitor delivers silence to `parec`. Tuning knobs (also env-overridable):
+`JARVIS_AEC_FILTER_LENGTH_MS`, `JARVIS_AEC_REFERENCE_DELAY_MS`,
+`JARVIS_AEC_CALIBRATE_ON_STARTUP`, `JARVIS_AEC_MONITOR_SOURCE`.
+
+Most useful with **open speakers** (real acoustic echo); a closed headset has
+little echo, so the gain is small there.
