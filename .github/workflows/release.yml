@@ -145,11 +145,19 @@ jobs:
             (amd64 + arm64). See
             [docs/container-audio.md](https://github.com/${{ github.repository }}/blob/main/docs/container-audio.md).
 
-  docker-image:
-    runs-on: ubuntu-latest
-    # arm64 legs build under QEMU emulation (slowest is the audio image's
-    # numpy/scipy/onnxruntime install + wake-model prefetch).
-    timeout-minutes: 120
+  # Build each image for each arch on a NATIVE runner (no QEMU), push by
+  # digest. Fast enough to run on every push (arm64 wheels install natively).
+  build-images:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: headless, dockerfile: Dockerfile,       repo: ghcr.io/alexberardi/jarvis-node,       runner: ubuntu-latest,    platform: linux/amd64, arch: amd64 }
+          - { image: headless, dockerfile: Dockerfile,       repo: ghcr.io/alexberardi/jarvis-node,       runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64 }
+          - { image: audio,    dockerfile: Dockerfile.audio, repo: ghcr.io/alexberardi/jarvis-node-audio, runner: ubuntu-latest,    platform: linux/amd64, arch: amd64 }
+          - { image: audio,    dockerfile: Dockerfile.audio, repo: ghcr.io/alexberardi/jarvis-node-audio, runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -169,30 +177,80 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Tags / dispatch-release -> full multi-arch :latest + :version.
-      # main pushes -> amd64-only :edge (fast, native; doesn't clobber :latest).
-      - name: Compute image params
-        id: img
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-contexts: |
+            jarvis-command-sdk=jarvis-command-sdk
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          outputs: type=image,name=${{ matrix.repo }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digest
+          echo "${{ steps.build.outputs.digest }}" > /tmp/digest/digest
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digest/digest
+          retention-days: 1
+
+  # Merge the per-arch digests into one multi-arch tag per image.
+  # v* tags / dispatch-release -> :latest + :version; main -> :edge.
+  merge-images:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute tags
+        id: tags
         run: |
           HEADLESS=ghcr.io/alexberardi/jarvis-node
           AUDIO=ghcr.io/alexberardi/jarvis-node-audio
           VER="${{ steps.version.outputs.version }}"
           if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.release }}" = "true" ]; then
-            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
-            {
-              echo "headless_tags<<EOF"; echo "$HEADLESS:latest"; echo "$HEADLESS:$VER"; echo "EOF"
-              echo "audio_tags<<EOF";   echo "$AUDIO:latest";    echo "$AUDIO:$VER";    echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "headless=$HEADLESS:latest $HEADLESS:$VER" >> "$GITHUB_OUTPUT"
+            echo "audio=$AUDIO:latest $AUDIO:$VER" >> "$GITHUB_OUTPUT"
           else
-            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
-            {
-              echo "headless_tags<<EOF"; echo "$HEADLESS:edge"; echo "EOF"
-              echo "audio_tags<<EOF";   echo "$AUDIO:edge";    echo "EOF"
-            } >> "$GITHUB_OUTPUT"
+            echo "headless=$HEADLESS:edge" >> "$GITHUB_OUTPUT"
+            echo "audio=$AUDIO:edge" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -204,36 +262,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push headless image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: ${{ steps.img.outputs.platforms }}
-          push: true
-          build-contexts: |
-            jarvis-command-sdk=jarvis-command-sdk
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ steps.img.outputs.headless_tags }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Jarvis headless node
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-
-      - name: Build and push audio image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.audio
-          platforms: ${{ steps.img.outputs.platforms }}
-          push: true
-          build-contexts: |
-            jarvis-command-sdk=jarvis-command-sdk
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          tags: ${{ steps.img.outputs.audio_tags }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Jarvis voice node (mic + wake + speaker)
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+      - name: Create + push manifests
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          mk() {
+            repo="$1"; pat="$2"; shift 2
+            refs=""; for f in $pat; do refs="$refs ${repo}@$(cat "$f")"; done
+            targs=""; for t in "$@"; do targs="$targs -t $t"; done
+            docker buildx imagetools create $targs $refs
+            docker buildx imagetools inspect "$1"
+          }
+          mk ghcr.io/alexberardi/jarvis-node       'digest-headless-*/digest' ${{ steps.tags.outputs.headless }}
+          mk ghcr.io/alexberardi/jarvis-node-audio 'digest-audio-*/digest'    ${{ steps.tags.outputs.audio }}
