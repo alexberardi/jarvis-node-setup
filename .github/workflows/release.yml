@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -26,9 +28,10 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             docker_image: python:3.13-slim
+            runner: ubuntu-24.04-arm   # native arm64 (free for public repos) — no QEMU
 
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +42,6 @@ jobs:
           repository: alexberardi/jarvis-command-sdk
           path: jarvis-command-sdk
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Determine version
         id: version
         run: |
@@ -51,7 +51,7 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build tarball in emulated container
+      - name: Build tarball (native arm64 container)
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
             -v "${{ github.workspace }}:/src:ro" \
@@ -169,6 +169,28 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Tags / dispatch-release -> full multi-arch :latest + :version.
+      # main pushes -> amd64-only :edge (fast, native; doesn't clobber :latest).
+      - name: Compute image params
+        id: img
+        run: |
+          HEADLESS=ghcr.io/alexberardi/jarvis-node
+          AUDIO=ghcr.io/alexberardi/jarvis-node-audio
+          VER="${{ steps.version.outputs.version }}"
+          if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.release }}" = "true" ]; then
+            echo "platforms=linux/amd64,linux/arm64" >> "$GITHUB_OUTPUT"
+            {
+              echo "headless_tags<<EOF"; echo "$HEADLESS:latest"; echo "$HEADLESS:$VER"; echo "EOF"
+              echo "audio_tags<<EOF";   echo "$AUDIO:latest";    echo "$AUDIO:$VER";    echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "platforms=linux/amd64" >> "$GITHUB_OUTPUT"
+            {
+              echo "headless_tags<<EOF"; echo "$HEADLESS:edge"; echo "EOF"
+              echo "audio_tags<<EOF";   echo "$AUDIO:edge";    echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -182,39 +204,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push headless image (amd64 + arm64)
+      - name: Build and push headless image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.img.outputs.platforms }}
           push: true
           build-contexts: |
             jarvis-command-sdk=jarvis-command-sdk
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/alexberardi/jarvis-node:latest
-            ghcr.io/alexberardi/jarvis-node:${{ steps.version.outputs.version }}
+          tags: ${{ steps.img.outputs.headless_tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Jarvis headless node
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
-      - name: Build and push audio image (amd64 + arm64)
+      - name: Build and push audio image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.audio
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.img.outputs.platforms }}
           push: true
           build-contexts: |
             jarvis-command-sdk=jarvis-command-sdk
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/alexberardi/jarvis-node-audio:latest
-            ghcr.io/alexberardi/jarvis-node-audio:${{ steps.version.outputs.version }}
+          tags: ${{ steps.img.outputs.audio_tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Jarvis voice node (mic + wake + speaker)
