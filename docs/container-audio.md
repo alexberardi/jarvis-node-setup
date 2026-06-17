@@ -16,6 +16,22 @@ openWakeWord models.
 
 ---
 
+## Easiest: let the setup script decide
+
+After building the image (`docker compose -f docker-compose.audio.yaml build`),
+run:
+
+```bash
+./scripts/configure-audio.sh
+```
+
+It detects your host's audio transport (PipeWire/PulseAudio socket vs raw
+`/dev/snd`), lets you pick the mic, writes `audio.env`, and prints the exact
+`docker compose … up` command for your host (including the pulse overlay +
+`JARVIS_HOST_UID` when needed). On macOS it tells you to run natively instead.
+
+The two sections below are the manual reference for each transport.
+
 ## Step 1 — Quick start (ALSA `/dev/snd`)
 
 This path passes the host's sound devices straight through with `/dev/snd`.
