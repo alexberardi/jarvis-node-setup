@@ -31,10 +31,9 @@ treatment because of process / protocol constraints:
     localhost HTTP API became unresponsive for 15+ s after SIGCONT
     (observed 2026-06-03), breaking the deferred-play hook.
 
-State queries (:func:`is_playing`, :func:`wake_music_energy_multiplier`)
-sit alongside ducking actions in this module because the wake loop
-consults both at the same point — "is music playing?" decides the
-threshold and energy multiplier; the duck fires when the wake passes.
+The state query :func:`is_playing` sits alongside the ducking actions
+in this module because the duck path consults it at the same point the
+wake loop fires.
 """
 
 from __future__ import annotations
@@ -47,8 +46,6 @@ import urllib.error
 import urllib.request
 
 from jarvis_log_client import JarvisLogger
-
-from utils.config_service import Config
 
 
 logger = JarvisLogger(service="jarvis-node")
@@ -98,19 +95,6 @@ _PLAYER_BINARIES: tuple[str, ...] = (
 # pulse wedges the sink in a SUSPENDED state that can only be recovered
 # by reloading module-alsa-card. Moving to null eliminates the underrun.
 _DUCK_NULL_SINK_NAME = "jarvis_duck_null"
-
-
-def wake_music_energy_multiplier() -> float:
-    """How far current RMS must rise above the running baseline to fire
-    a wake during music playback.
-
-    Music alone occupies a fairly stable RMS band — a voice spoken over
-    it adds energy on top, producing a spike of ~1.5-2.5x the music
-    baseline at a normal speaking distance from the Pi Zero mic.
-    Tunable via the ``wake_word_music_energy_multiplier`` setting if
-    the room's speaker bleed profile is unusual.
-    """
-    return Config.get_float("wake_word_music_energy_multiplier", 1.5)
 
 
 def is_playing() -> bool:

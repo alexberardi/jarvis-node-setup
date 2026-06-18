@@ -51,20 +51,6 @@ def _entry(index: int, binary: str, corked: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# wake_music_energy_multiplier — trivial Config wrapper
-# ---------------------------------------------------------------------------
-
-
-class TestWakeMusicEnergyMultiplier:
-    def test_default(self, monkeypatch):
-        monkeypatch.setattr(
-            music_control.Config, "get_float",
-            lambda key, default: default,
-        )
-        assert music_control.wake_music_energy_multiplier() == 1.5
-
-
-# ---------------------------------------------------------------------------
 # is_playing — PA cork state is the source of truth, not process existence.
 # ---------------------------------------------------------------------------
 
