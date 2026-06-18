@@ -702,6 +702,30 @@ verify_install() {
 #   Seeed's `respeaker-2mic-v2_0-overlay` which we vendor in `setup/`)
 # - JST speaker output via the codec's HP path
 # - 3x APA102 RGB LEDs on SPI (see services/respeaker_led_service.py)
+# --- Curb proactive swapping to the SD card ---
+# The node's working set (~150-260 MiB) is large for the Pi Zero 2's 416 MiB
+# RAM. At the kernel default vm.swappiness=60 the kernel proactively pages the
+# working set out to the dphys swapfile on the (slow) SD card; after the node
+# sits idle, the next wake must fault those pages back from SD — the 7-8s
+# "slow wake". swappiness=1 keeps pages resident and only swaps as a LAST
+# resort. We use 1, not 0: 0 removes swap as an OOM safety valve, and on a
+# 416 MiB Pi a working-set spike past RAM would then OOM-kill -> the
+# respawn-cascade that has bricked a Pi before (same reason we don't
+# mlockall). Persistent via sysctl.d + applied immediately.
+configure_vm_swappiness() {
+  local cfg_file="/etc/sysctl.d/99-jarvis-node.conf"
+  local content="# Keep the jarvis-node working set resident in RAM — SD-card swap is slow and
+# causes 7-8s wakes after idle. 1 (not 0) keeps swap as a last-resort OOM
+# safety valve. Managed by jarvis-node install.sh.
+vm.swappiness=1
+"
+  if [ ! -f "$cfg_file" ] || [ "$(cat "$cfg_file")" != "$content" ]; then
+    printf '%s' "$content" > "$cfg_file"
+    sysctl -q -w vm.swappiness=1 2>/dev/null || true
+    info "vm.swappiness=1 set (${cfg_file}) — avoids slow SD-swap wakes after idle"
+  fi
+}
+
 # - GPIO17 user button (see services/button_service.py)
 configure_audio() {
   if [ "$SKIP_AUDIO" -eq 1 ]; then
@@ -1741,6 +1765,7 @@ main() {
   switch_audio_to_pulseaudio
   configure_pulseaudio_no_suspend
   configure_pulseaudio_stream_restore
+  configure_vm_swappiness
 
   # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
   # heavy steps so alembic + any other key-writing code in the install
