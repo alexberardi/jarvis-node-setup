@@ -11,15 +11,39 @@ import re
 import threading
 import time as _time
 from abc import ABC, abstractmethod
+from functools import lru_cache
 from dataclasses import dataclass
 from typing import Dict, List, Any
 import subprocess
 
 from jarvis_log_client import JarvisLogger
 
-from utils.audio_volume import reload_alsa_card_if_suspended
+from utils.audio_volume import get_audio_card, reload_alsa_card_if_suspended
+from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node")
+
+
+@lru_cache(maxsize=1)
+def _default_output_device() -> str:
+    """ALSA playback device to use when none is configured.
+
+    The ``output`` alias (a PulseAudio bridge in ``/etc/asound.conf`` written
+    by ``install.sh``) only exists on a ReSpeaker HAT node. Everywhere else —
+    containers, USB audio, generic Linux — fall back to the ALSA ``default``
+    device. Cached: the audio hardware doesn't change at runtime.
+    """
+    return "output" if get_audio_card() == "seeed2micvoicec" else "default"
+
+
+def get_output_device() -> str:
+    """The ``aplay -D`` target for playback.
+
+    Overridable per node via the ``audio_output_device`` setting (e.g. a
+    ``hw:1,0`` USB card or a named PulseAudio sink); otherwise auto-detected
+    by :func:`_default_output_device`.
+    """
+    return Config.get_str("audio_output_device") or _default_output_device()
 
 
 class AudioProvider(ABC):
@@ -186,7 +210,7 @@ class AudioProvider(ABC):
         )
         cmd = [
             "aplay",
-            "-D", "output",      # the pulse alias defined in /etc/asound.conf
+            "-D", get_output_device(),  # HAT pulse alias, or configured/default device
             "-q",
             "-f", format_arg,
             "-r", str(sample_rate),
@@ -531,14 +555,14 @@ class PiAudioProvider(AudioProvider):
         try:
             if volume != 1.0:
                 proc = subprocess.Popen(
-                    f"sox {file_path} -t wav - vol {volume} | aplay -D output",
+                    f"sox {file_path} -t wav - vol {volume} | aplay -D {get_output_device()}",
                     shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
             else:
                 proc = subprocess.Popen(
-                    ["aplay", "-D", "output", file_path],
+                    ["aplay", "-D", get_output_device(), file_path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
@@ -618,6 +642,22 @@ class PiAudioProvider(AudioProvider):
         except Exception as e:
             logger.error(f"Error getting audio devices: {e}")
             return []
+
+
+class LinuxHostAudioProvider(PiAudioProvider):
+    """Audio provider for non-Pi Linux hosts — containers, generic Linux
+    servers, USB audio.
+
+    Inherits :class:`PiAudioProvider`, which is now hardware-agnostic: the
+    TLV320/ReSpeaker self-heal and keepalive no-op off-HAT (see
+    ``utils.audio_volume.has_respeaker_hat``) and the playback target comes
+    from ``get_output_device()`` (the ``audio_output_device`` setting, else
+    ALSA ``default``). Kept as a distinct class so container-specific
+    behavior (e.g. preferring ``pacat`` over ``aplay`` when sharing a host
+    PulseAudio socket) can diverge here without touching the Pi path.
+    """
+
+    pass
 
 
 class PiNetworkDiscoveryProvider(NetworkDiscoveryProvider):
@@ -1361,35 +1401,61 @@ class MacOSBluetoothProvider(BluetoothProvider):
         return False
 
 
+@lru_cache(maxsize=1)
+def is_raspberry_pi() -> bool:
+    """True if running on real Raspberry Pi hardware.
+
+    Reads the device-tree model instead of trusting ``platform.system()``,
+    which reports "Linux" on *any* Linux host (containers, generic servers)
+    and so can't distinguish a real Pi from a Linux box that merely runs the
+    node runtime. Mirrors the device-tree probe in ``provisioning/api.py``.
+    Cached — the hardware doesn't change at runtime.
+    """
+    if platform.system().lower() != "linux":
+        return False
+    try:
+        with open("/proc/device-tree/model") as f:
+            return "raspberry pi" in f.read().lower()
+    except OSError:
+        return False
+
+
 # Platform Factory
 class PlatformFactory:
     """Factory for creating platform-specific providers"""
-    
+
     @staticmethod
     def get_platform() -> str:
-        """Get the current platform from environment or detect automatically"""
+        """Get the current platform: "MACOS", "PI", or "LINUX".
+
+        "LINUX" is a non-Pi Linux host (containers, generic servers) — a
+        distinct target from a real Pi, even though both report
+        ``platform.system() == "Linux"``. An explicit ``JARVIS_NODE_OS`` env
+        var overrides detection (e.g. to force a container's platform).
+        """
         platform_env = os.getenv("JARVIS_NODE_OS")
         if platform_env:
             return platform_env.upper()
-        
+
         # Auto-detect based on system
         system = platform.system().lower()
         if system == "darwin":
             return "MACOS"
-        elif system == "linux":
-            return "PI"  # Assume Raspberry Pi for Linux
-        else:
-            return "PI"  # Default to PI
-    
+        if system == "linux":
+            return "PI" if is_raspberry_pi() else "LINUX"
+        return "LINUX"
+
     @staticmethod
     def create_audio_provider() -> AudioProvider:
         """Create the appropriate audio provider for the current platform"""
         platform = PlatformFactory.get_platform()
-        
+
         if platform == "MACOS":
             return MacOSAudioProvider()
-        else:
-            return PiAudioProvider()
+        if platform == "LINUX":
+            # Non-Pi Linux: containers, generic Linux hosts, USB audio.
+            return LinuxHostAudioProvider()
+        return PiAudioProvider()  # "PI"
     
     @staticmethod
     def create_network_discovery_provider() -> NetworkDiscoveryProvider:

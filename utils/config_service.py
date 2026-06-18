@@ -65,7 +65,10 @@ class Config:
 
     @staticmethod
     def get_bool(key: str, default: Optional[bool] = None) -> Optional[bool]:
-        """Get a boolean value from config"""
+        """Get a boolean value from config. Env var JARVIS_<KEY> overrides."""
+        env_val = Config._env_override(key)
+        if env_val is not None:
+            return bool(env_val) and env_val.lower() not in ('false', '0', 'no', 'off')
         Config._load_config()
         if Config._config_json is None:
             return default
@@ -84,7 +87,13 @@ class Config:
 
     @staticmethod
     def get_float(key: str, default: float) -> float:
-        """Get a float value from config"""
+        """Get a float value from config. Env var JARVIS_<KEY> overrides."""
+        env_val = Config._env_override(key)
+        if env_val is not None:
+            try:
+                return float(env_val)
+            except ValueError:
+                pass
         Config._load_config()
         if Config._config_json is None:
             return default

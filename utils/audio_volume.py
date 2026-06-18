@@ -28,6 +28,7 @@ import json
 import os
 import re
 import subprocess
+from functools import lru_cache
 
 from jarvis_log_client import JarvisLogger
 
@@ -146,6 +147,8 @@ def reload_alsa_card_if_suspended() -> bool:
     Returns True if a reload was needed and attempted; False if the sink
     was already healthy or pactl is unavailable. Never raises.
     """
+    if not has_respeaker_hat():
+        return False
     if not _alsa_sink_suspended():
         return False
     return _reload_alsa_card_module(reason="sink SUSPENDED")
@@ -169,6 +172,8 @@ def force_reload_alsa_card() -> bool:
     ~500ms cost. Only call from the deferred-play hook, NOT inline before
     every aplay (use reload_alsa_card_if_suspended for that).
     """
+    if not has_respeaker_hat():
+        return False
     return _reload_alsa_card_module(reason="pre-deferred-play")
 
 
@@ -195,6 +200,28 @@ def get_audio_card() -> str | None:
         if not name.startswith(_HDMI_CARD_PREFIX):
             return name
     return None
+
+
+@lru_cache(maxsize=1)
+def has_respeaker_hat() -> bool:
+    """True if the ReSpeaker 2-Mic HAT (TLV320AIC3104, ALSA card
+    ``seeed2micvoicec``) is present.
+
+    The SUSPENDED-sink reload, the output-mixer baseline, the ADC-HPF fix and
+    the sink keepalive all exist solely to work around that codec's driver
+    bugs. They must not run on other hardware (USB audio, a container sharing
+    a host sink, macOS), where they're useless at best and disruptive at
+    worst (e.g. unloading the *host's* alsa-card module from inside a
+    container). Cached: the hardware doesn't change at runtime.
+    """
+    # In a container — or any host that sets JARVIS_NODE_OS to a non-Pi
+    # value — we don't own the kernel module / PulseAudio daemon, even if the
+    # HAT card is visible via /dev/snd passthrough. Only a native Pi node (no
+    # override, or an explicit JARVIS_NODE_OS=PI) should run these workarounds.
+    override = os.getenv("JARVIS_NODE_OS", "").upper()
+    if override and override != "PI":
+        return False
+    return get_audio_card() == "seeed2micvoicec"
 
 
 # ── Codec self-heal (TLV320AIC3104 ADC HPF) ─────────────────────────────────

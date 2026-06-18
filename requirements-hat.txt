@@ -1,0 +1,12 @@
+# ReSpeaker 2-Mic Pi HAT v2 — RGB LEDs (SPI) + user button (GPIO17).
+# NATIVE PI WITH THE HAT ONLY — not installed in the container or on
+# HAT-less hosts (split out of requirements-audio.txt so the audio set
+# stays cross-platform).
+#
+# The pin backend (lgpio) is the apt package python3-lgpio (installed by
+# install.sh) and is visible to the venv via --system-site-packages; the
+# lgpio PyPI package needs liblgpio-dev, which only ships on Pi OS, so it
+# can't be built off-Pi.
+spidev
+apa102-pi
+gpiozero
