@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*.*.*'
   workflow_dispatch:
@@ -26,9 +28,10 @@ jobs:
           - arch: arm64
             platform: linux/arm64
             docker_image: python:3.13-slim
+            runner: ubuntu-24.04-arm   # native arm64 (free for public repos) — no QEMU
 
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +42,6 @@ jobs:
           repository: alexberardi/jarvis-command-sdk
           path: jarvis-command-sdk
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Determine version
         id: version
         run: |
@@ -51,7 +51,7 @@ jobs:
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build tarball in emulated container
+      - name: Build tarball (native arm64 container)
         run: |
           docker run --rm --platform ${{ matrix.platform }} \
             -v "${{ github.workspace }}:/src:ro" \
@@ -139,8 +139,24 @@ jobs:
             ```
             Then open http://localhost:7771 to set up.
 
-  docker-image:
-    runs-on: ubuntu-latest
+            **Voice node with audio (mic + wake word + speaker):** runs the full
+            voice runtime in a container; needs host audio passed in. Image
+            `ghcr.io/alexberardi/jarvis-node-audio:${{ steps.version.outputs.version }}`
+            (amd64 + arm64). See
+            [docs/container-audio.md](https://github.com/${{ github.repository }}/blob/main/docs/container-audio.md).
+
+  # Build each image for each arch on a NATIVE runner (no QEMU), push by
+  # digest. Fast enough to run on every push (arm64 wheels install natively).
+  build-images:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: headless, dockerfile: Dockerfile,       repo: ghcr.io/alexberardi/jarvis-node,       runner: ubuntu-latest,    platform: linux/amd64, arch: amd64 }
+          - { image: headless, dockerfile: Dockerfile,       repo: ghcr.io/alexberardi/jarvis-node,       runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64 }
+          - { image: audio,    dockerfile: Dockerfile.audio, repo: ghcr.io/alexberardi/jarvis-node-audio, runner: ubuntu-latest,    platform: linux/amd64, arch: amd64 }
+          - { image: audio,    dockerfile: Dockerfile.audio, repo: ghcr.io/alexberardi/jarvis-node-audio, runner: ubuntu-24.04-arm, platform: linux/arm64, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
     steps:
@@ -171,19 +187,91 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
           build-contexts: |
             jarvis-command-sdk=jarvis-command-sdk
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ghcr.io/alexberardi/jarvis-node:latest
-            ghcr.io/alexberardi/jarvis-node:${{ steps.version.outputs.version }}
+          outputs: type=image,name=${{ matrix.repo }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Jarvis headless node
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digest
+          echo "${{ steps.build.outputs.digest }}" > /tmp/digest/digest
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digest/digest
+          retention-days: 1
+
+  # Merge the per-arch digests into one multi-arch tag per image.
+  # v* tags / dispatch-release -> :latest + :version; main -> :edge.
+  merge-images:
+    needs: build-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute tags
+        id: tags
+        run: |
+          HEADLESS=ghcr.io/alexberardi/jarvis-node
+          AUDIO=ghcr.io/alexberardi/jarvis-node-audio
+          VER="${{ steps.version.outputs.version }}"
+          if [ "${{ github.ref_type }}" = "tag" ] || [ "${{ inputs.release }}" = "true" ]; then
+            echo "headless=$HEADLESS:latest $HEADLESS:$VER" >> "$GITHUB_OUTPUT"
+            echo "audio=$AUDIO:latest $AUDIO:$VER" >> "$GITHUB_OUTPUT"
+          else
+            echo "headless=$HEADLESS:edge" >> "$GITHUB_OUTPUT"
+            echo "audio=$AUDIO:edge" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create + push manifests
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          mk() {
+            repo="$1"; pat="$2"; shift 2
+            refs=""; for f in $pat; do refs="$refs ${repo}@$(cat "$f")"; done
+            targs=""; for t in "$@"; do targs="$targs -t $t"; done
+            docker buildx imagetools create $targs $refs
+            docker buildx imagetools inspect "$1"
+          }
+          mk ghcr.io/alexberardi/jarvis-node       'digest-headless-*/digest' ${{ steps.tags.outputs.headless }}
+          mk ghcr.io/alexberardi/jarvis-node-audio 'digest-audio-*/digest'    ${{ steps.tags.outputs.audio }}

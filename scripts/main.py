@@ -835,72 +835,80 @@ def main():
     #   to the mix is effectively zero and other streams play through
     #   without the headroom hit.
     _sink_keepalive_proc: subprocess.Popen | None = None
-    try:
-        _sink_keepalive_proc = subprocess.Popen(
-            [
-                "paplay",
-                "--raw",
-                "--rate=44100",
-                "--channels=2",
-                "--format=s16le",
-                "/dev/zero",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        logger.info(
-            "Sink keepalive started", pid=_sink_keepalive_proc.pid,
-        )
-        # Give pulse a moment to register the new sink-input, then
-        # adjust its volume. Look up by application.process.id so we
-        # find OUR paplay specifically (not any other pacat/paplay
-        # streams a user might have running).
-        time.sleep(2.0)
+    # ReSpeaker-HAT-only workaround: the keepalive exists solely to dodge the
+    # TLV320's broken resume-from-SUSPENDED path. It's pointless on other
+    # hardware and wrong inside a container sharing a host PulseAudio sink, so
+    # only run it when the HAT is actually present.
+    from utils.audio_volume import has_respeaker_hat
+    if not has_respeaker_hat():
+        logger.info("Sink keepalive skipped (no ReSpeaker HAT detected)")
+    else:
         try:
-            import json as _json
-            r = subprocess.run(
-                ["pactl", "-f", "json", "list", "sink-inputs"],
-                capture_output=True, text=True, timeout=2.0,
+            _sink_keepalive_proc = subprocess.Popen(
+                [
+                    "paplay",
+                    "--raw",
+                    "--rate=44100",
+                    "--channels=2",
+                    "--format=s16le",
+                    "/dev/zero",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-            if r.returncode == 0:
-                target_id: Optional[str] = None
-                for item in _json.loads(r.stdout or "[]"):
-                    pid_str = (item.get("properties") or {}).get(
-                        "application.process.id",
-                    )
-                    if (
-                        pid_str
-                        and str(_sink_keepalive_proc.pid) == str(pid_str)
-                    ):
-                        target_id = str(item.get("index"))
-                        break
-                if target_id is not None:
-                    subprocess.run(
-                        ["pactl", "set-sink-input-volume", target_id, "100"],
-                        timeout=2.0, capture_output=True,
-                    )
-                    logger.info(
-                        "Sink keepalive volume reduced",
-                        sink_input_id=target_id,
-                    )
-                else:
-                    logger.warning(
-                        "Sink keepalive sink-input not found; volume "
-                        "left at default — static may be audible at high "
-                        "output volume",
-                    )
+            logger.info(
+                "Sink keepalive started", pid=_sink_keepalive_proc.pid,
+            )
+            # Give pulse a moment to register the new sink-input, then
+            # adjust its volume. Look up by application.process.id so we
+            # find OUR paplay specifically (not any other pacat/paplay
+            # streams a user might have running).
+            time.sleep(2.0)
+            try:
+                import json as _json
+                r = subprocess.run(
+                    ["pactl", "-f", "json", "list", "sink-inputs"],
+                    capture_output=True, text=True, timeout=2.0,
+                )
+                if r.returncode == 0:
+                    target_id: Optional[str] = None
+                    for item in _json.loads(r.stdout or "[]"):
+                        pid_str = (item.get("properties") or {}).get(
+                            "application.process.id",
+                        )
+                        if (
+                            pid_str
+                            and str(_sink_keepalive_proc.pid) == str(pid_str)
+                        ):
+                            target_id = str(item.get("index"))
+                            break
+                    if target_id is not None:
+                        subprocess.run(
+                            ["pactl", "set-sink-input-volume", target_id, "100"],
+                            timeout=2.0, capture_output=True,
+                        )
+                        logger.info(
+                            "Sink keepalive volume reduced",
+                            sink_input_id=target_id,
+                        )
+                    else:
+                        logger.warning(
+                            "Sink keepalive sink-input not found; volume "
+                            "left at default — static may be audible at high "
+                            "output volume",
+                        )
+            except Exception as e:
+                logger.warning(
+                    "Sink keepalive volume adjust failed",
+                    error=str(e),
+                )
         except Exception as e:
             logger.warning(
-                "Sink keepalive volume adjust failed",
+                "Sink keepalive failed to start; sink-wedge fallback recovery "
+                "will still fire on each TTS, but the gap window remains",
                 error=str(e),
             )
-    except Exception as e:
-        logger.warning(
-            "Sink keepalive failed to start; sink-wedge fallback recovery "
-            "will still fire on each TTS, but the gap window remains",
-            error=str(e),
-        )
 
     # Start voice listener with retry (blocks until KeyboardInterrupt or audio failure)
     max_voice_retries: int = 3

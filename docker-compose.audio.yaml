@@ -1,0 +1,59 @@
+# Voice node in a container WITH host audio (mic + wake word + speaker).
+#
+# Quick-start transport: ALSA passthrough via /dev/snd. Works on any Linux
+# host (Ubuntu server, Raspberry Pi) whether or not PulseAudio is running.
+# (The shared-host-PulseAudio path — needed for volume/ducking control and
+# A2DP — runs the container non-root and is documented separately; see
+# docs/container-audio.md "Step 2".)
+#
+# macOS is NOT supported: Docker Desktop's VM can't pass host audio through.
+# Use a Linux host.
+#
+# First run has no credentials, so it starts the setup web UI on :7771 —
+# register the node there, then `docker compose -f docker-compose.audio.yaml
+# restart` to boot into the voice runtime.
+#
+# Usage:
+#   ./scripts/configure-audio.sh                      # optional: pick devices -> audio.env
+#   docker compose -f docker-compose.audio.yaml up --build
+#
+# Building needs the jarvis-command-sdk sibling repo at ../jarvis-command-sdk.
+
+services:
+  jarvis-node-audio:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+      additional_contexts:
+        jarvis-command-sdk: ../jarvis-command-sdk
+    # Once a multi-arch image is published, drop `build:` and use:
+    # image: ghcr.io/alexberardi/jarvis-node-audio:latest
+    container_name: jarvis-node-audio
+    restart: unless-stopped
+    ports:
+      - "7771:7771"                # setup UI (first run) + node HTTP API
+    devices:
+      - "/dev/snd:/dev/snd"        # ALSA passthrough — mic + speaker
+    group_add:
+      - "audio"                    # access to /dev/snd
+    environment:
+      JARVIS_NODE_DB: /data/jarvis_node.db
+      JARVIS_SECRET_DIRECTORY: /data
+      # JARVIS_NODE_MODE=voice and JARVIS_NODE_OS=LINUX are baked into the
+      # image. With no audio.env, playback uses ALSA 'default' and the mic
+      # auto-selects the first input device — fine for a single USB audio
+      # device. Override per host via configure-audio.sh (writes audio.env).
+    env_file:
+      - path: audio.env            # written by configure-audio.sh; optional
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach host-mapped services (CC/MQTT) on Linux
+    volumes:
+      - jarvis-node-config:/config
+      - jarvis-node-data:/data
+      - jarvis-node-packages:/root/.jarvis/packages
+
+volumes:
+  jarvis-node-config:
+  jarvis-node-data:
+  jarvis-node-packages:

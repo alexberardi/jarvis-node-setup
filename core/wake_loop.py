@@ -37,6 +37,7 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from math import gcd
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -167,7 +168,12 @@ def run_wake_loop(
     is per-iteration: the deques, the wake-fire snapshot score, the
     adaptive silence threshold, and the conversation IDs.
     """
-    resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
+    # Resample whatever the mic captured (bus.rate) down to OWW_RATE using a
+    # reduced rational ratio, so non-integer-multiple rates (e.g. a 44.1 kHz
+    # USB mic) work — not just multiples of 16 kHz. 48 kHz → up=1, down=3.
+    _resample_gcd = gcd(bus.rate, OWW_RATE)
+    resample_up = OWW_RATE // _resample_gcd
+    resample_down = bus.rate // _resample_gcd
     alert_check_counter = 0
 
     while True:
@@ -253,8 +259,10 @@ def run_wake_loop(
                 pre_wake_speech_frames.append(rms > pre_wake_vad_threshold)
                 pre_wake_rms_values.append(rms)
 
-                if resample_down > 1:
-                    resampled = _get_resample_poly()(samples, up=1, down=resample_down)
+                if bus.rate != OWW_RATE:
+                    resampled = _get_resample_poly()(
+                        samples, up=resample_up, down=resample_down
+                    )
                     samples = np.clip(resampled, -32768, 32767).astype(np.int16)
 
                 if aec_pipeline is not None:
