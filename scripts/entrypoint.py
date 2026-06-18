@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
-"""Docker entrypoint — routes to setup mode or normal text mode.
+"""Docker entrypoint — routes to setup, text, or voice mode.
 
 Checks for valid credentials in the config file. If missing or
 placeholder values, launches the setup web UI so the user can
-register the node. Otherwise, launches text_mode for normal operation.
+register the node. Otherwise launches:
+
+  * voice mode (scripts.main) — the full audio runtime (mic capture,
+    wake word, speaker) — when JARVIS_NODE_MODE=voice. Requires the
+    audio image (Dockerfile.audio) and host audio passed in.
+  * text mode (scripts.text_mode) — the headless REST node, no audio —
+    otherwise (the default).
+
+Note: JARVIS_NODE_MODE is the *node run mode* and is distinct from the
+``voice_mode`` config key, which is the command-center response style
+(brief/text).
 """
 
 import json
@@ -44,17 +54,58 @@ def _has_credentials() -> bool:
         return False
 
 
+def _apply_config_service_env() -> None:
+    """Expose the registered config-service URL to jarvis-config-client.
+
+    setup_mode saves the config-service URL the user entered to config.json
+    (jarvis_config_service_url). jarvis-config-client reads JARVIS_CONFIG_URL
+    from the environment, and only rewrites localhost-registered services to a
+    reachable host when JARVIS_CONFIG_URL_STYLE=remote. So when the config
+    service is on another machine (the container case), set both — otherwise
+    the runtime resolves command-center/MQTT/etc. as 'localhost' and can't
+    reach them. An explicit JARVIS_CONFIG_URL already in the env wins.
+    """
+    if os.environ.get("JARVIS_CONFIG_URL"):
+        return
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    url = (cfg.get("jarvis_config_service_url") or "").strip()
+    if not url:
+        return
+    os.environ["JARVIS_CONFIG_URL"] = url
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    if host and host not in ("localhost", "127.0.0.1", "host.docker.internal"):
+        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", "remote")
+    print(
+        f"[entrypoint] config service: {url} "
+        f"(style={os.environ.get('JARVIS_CONFIG_URL_STYLE', 'default')})",
+        flush=True,
+    )
+
+
 def main() -> None:
     _seed_config()
 
-    if _has_credentials():
-        print("[entrypoint] credentials found → starting text mode", flush=True)
-        from scripts.text_mode import main as text_main
-        text_main()
-    else:
+    if not _has_credentials():
         print("[entrypoint] no credentials → starting setup mode", flush=True)
         from scripts.setup_mode import main as setup_main
         setup_main()
+        return
+
+    _apply_config_service_env()
+    mode = os.environ.get("JARVIS_NODE_MODE", "text").strip().lower()
+    if mode == "voice":
+        print("[entrypoint] credentials + voice mode → starting voice runtime", flush=True)
+        from scripts.main import main as voice_main
+        voice_main()
+    else:
+        print("[entrypoint] credentials found → starting text mode", flush=True)
+        from scripts.text_mode import main as text_main
+        text_main()
 
 
 if __name__ == "__main__":

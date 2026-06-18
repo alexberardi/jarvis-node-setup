@@ -1,3 +1,6 @@
+# Container audio device selection (written by scripts/configure-audio.sh)
+audio.env
+
 # Python
 __pycache__/
 *.py[cod]
