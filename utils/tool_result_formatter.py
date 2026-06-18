@@ -58,6 +58,16 @@ def format_tool_result(
             output["context"] = {}
         output["context"]["actions"] = [a.to_dict() for a in result.actions]
 
+    # Surface items the user can act on in a follow-up ("mark those as read",
+    # "send me #3"). The command-center stashes these and re-injects them into
+    # the prompt; the node remembers ref_id->owner for act_on_items dispatch.
+    # getattr keeps us compatible with older jarvis-command-sdk (<0.4.0).
+    items = getattr(result, "referenceable_items", None)
+    if items:
+        output["referenceable_items"] = [
+            _serialize_for_json(i.to_dict()) for i in items
+        ]
+
     return {
         "tool_call_id": tool_call_id,
         "output": output,
