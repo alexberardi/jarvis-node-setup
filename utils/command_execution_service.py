@@ -109,6 +109,17 @@ class ParseResult:
 
 
 _MAX_CONVERSATION_USERS = 100
+# How long the node remembers the most-recently-surfaced list for a voice
+# follow-up ("mark those as read"). Memory is node-level (not conversation-
+# keyed) so it resolves whether the list was surfaced via the LLM tool path, a
+# node-side pre-route (which never touches CC), or a previous wake cycle. The
+# TTL bounds staleness; it also gates whether the node ships the list to CC in
+# node_context at the next /conversation/start.
+_RECENT_ITEMS_TTL_SECONDS = 600
+# Actions that change or send data — these require an explicit spoken
+# confirmation turn before act_on_items will dispatch them (mark_read and other
+# read-only/idempotent verbs run immediately).
+_DESTRUCTIVE_ACTIONS = frozenset({"delete", "trash", "archive", "send", "send_reply"})
 
 
 class CommandExecutionService:
@@ -119,6 +130,10 @@ class CommandExecutionService:
         self.command_discovery = get_command_discovery_service()
         self.client = JarvisCommandCenterClient(self.command_center_url)
         self._conversation_users: OrderedDict[str, int | None] = OrderedDict()
+        # Most-recently surfaced referenceable items (node-level, latest wins):
+        # {ref_id: {"owner", "label", "attrs", "actions"}} + a monotonic stamp.
+        self._recent_items: Dict[str, Dict[str, Any]] = {}
+        self._recent_items_ts: float = 0.0
         # Force initial discovery
         self.command_discovery.refresh_now()
 
@@ -127,6 +142,62 @@ class CommandExecutionService:
         self._conversation_users[conversation_id] = user_id
         while len(self._conversation_users) > _MAX_CONVERSATION_USERS:
             self._conversation_users.popitem(last=False)
+
+    def _record_referenceable_items(self, owner: str, items: Any) -> None:
+        """Remember the items a command/agent just surfaced (node-level, latest wins).
+
+        The most-recent surfacing replaces the buffer ("those" == the last thing
+        shown). Stored node-level — not per conversation_id — so a follow-up
+        resolves whether the surfacing came from the LLM tool path, a node-side
+        pre-route, or a prior wake cycle; the node ships this list to CC in
+        node_context at the next /conversation/start. Stores only handles +
+        facets, never the command's payload, keeping the node a thin edge.
+        """
+        if not items:
+            return
+        bucket: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            d = item.to_dict() if hasattr(item, "to_dict") else dict(item)
+            ref_id = d.get("ref_id")
+            if not ref_id:
+                continue
+            bucket[ref_id] = {
+                "owner": owner,
+                "label": d.get("label"),
+                "attrs": d.get("attrs") or {},
+                "actions": d.get("actions") or [],
+            }
+        if bucket:
+            self._recent_items = bucket
+            self._recent_items_ts = time.monotonic()
+
+    def _maybe_record_items(self, owner: str, command_response: "CommandResponse") -> None:
+        """Record any referenceable items a successful command surfaced this turn."""
+        if not getattr(command_response, "success", True):
+            return
+        items = getattr(command_response, "referenceable_items", None)
+        if items:
+            self._record_referenceable_items(owner, items)
+
+    def _recent_items_fresh(self) -> bool:
+        """True if the remembered list is non-empty and within the TTL."""
+        return bool(self._recent_items) and (
+            time.monotonic() - self._recent_items_ts
+        ) <= _RECENT_ITEMS_TTL_SECONDS
+
+    def recently_shown_items_wire(self) -> list[dict] | None:
+        """Wire form of the remembered items for node_context (None if stale/empty).
+
+        Shipped to CC at /conversation/start so the command-center can re-inject
+        the RECENTLY SHOWN block on a FRESH conversation (a pre-route or re-wake
+        follow-up), where there is no tool result for CC to stash from.
+        """
+        if not self._recent_items_fresh():
+            return None
+        return [
+            {"ref_id": rid, "label": m["label"], "attrs": m["attrs"], "actions": m["actions"]}
+            for rid, m in self._recent_items.items()
+        ]
 
     def register_tools_for_conversation(
         self,
@@ -172,6 +243,10 @@ class CommandExecutionService:
                 speaker_confidence=speaker_confidence,
                 agents=agents,
                 adapter_settings=adapter_settings,
+                # Carry the most-recently-surfaced list to CC so a follow-up on a
+                # FRESH conversation (pre-route / re-wake) can still resolve
+                # "mark those as read" — there's no tool result for CC to stash from.
+                recently_shown_items=self.recently_shown_items_wire(),
             )
 
             if success:
@@ -869,37 +944,49 @@ class CommandExecutionService:
             logger.debug("Executing tool", tool=tool_name, tool_call_id=tool_call.id)
 
             try:
-                command = self.command_discovery.get_command(tool_name)
-
-                if not command:
-                    error_msg = f"Unknown tool: {tool_name}"
-                    logger.error("Unknown tool", tool=tool_name)
-                    result.api_results.append(format_tool_error(tool_call.id, error_msg))
-                    continue
-
-                arguments = tool_call.function.get_arguments_dict()
-                arguments = command.post_process_tool_call(arguments, voice_command)
-
-                user_id = self._conversation_users.get(conversation_id)
-                request_info = RequestInformation(
-                    voice_command=voice_command or f"Tool call: {tool_name}",
-                    conversation_id=conversation_id,
-                    is_validation_response=False,
-                    user_id=user_id,
-                )
-
-                from jarvis_command_sdk.context import set_current_user_id
-                set_current_user_id(user_id)
-                # Music-takeover hook: if this is a music command's "play",
-                # stop sibling players before execute() so the new playback
-                # claims the speaker cleanly. No-op for non-music commands.
-                _maybe_take_over_music(command, arguments)
-                try:
-                    command_response: CommandResponse = command.execute(
-                        request_info, secrets=_build_secrets(command), **arguments,
+                if tool_name == "act_on_items":
+                    # Generic "act on what I was just shown" tool. Dispatch is
+                    # handled here (not in a command's run()) because only this
+                    # service holds the per-conversation ref_id->owner map.
+                    command_response = self._dispatch_act_on_items(
+                        tool_call, conversation_id, voice_command
                     )
-                finally:
-                    set_current_user_id(None)
+                else:
+                    command = self.command_discovery.get_command(tool_name)
+
+                    if not command:
+                        error_msg = f"Unknown tool: {tool_name}"
+                        logger.error("Unknown tool", tool=tool_name)
+                        result.api_results.append(format_tool_error(tool_call.id, error_msg))
+                        continue
+
+                    arguments = tool_call.function.get_arguments_dict()
+                    arguments = command.post_process_tool_call(arguments, voice_command)
+
+                    user_id = self._conversation_users.get(conversation_id)
+                    request_info = RequestInformation(
+                        voice_command=voice_command or f"Tool call: {tool_name}",
+                        conversation_id=conversation_id,
+                        is_validation_response=False,
+                        user_id=user_id,
+                    )
+
+                    from jarvis_command_sdk.context import set_current_user_id
+                    set_current_user_id(user_id)
+                    # Music-takeover hook: if this is a music command's "play",
+                    # stop sibling players before execute() so the new playback
+                    # claims the speaker cleanly. No-op for non-music commands.
+                    _maybe_take_over_music(command, arguments)
+                    try:
+                        command_response: CommandResponse = command.execute(
+                            request_info, secrets=_build_secrets(command), **arguments,
+                        )
+                    finally:
+                        set_current_user_id(None)
+
+                    # Remember any items this command surfaced so a follow-up
+                    # act_on_items can resolve "those"/"#3" to a ref_id + owner.
+                    self._maybe_record_items(tool_name, command_response)
 
                 # Aggregate signals: OR across all tool responses
                 if command_response.wait_for_input:
@@ -947,6 +1034,133 @@ class CommandExecutionService:
             )
 
         return result
+
+    def _dispatch_act_on_items(
+        self, tool_call: ToolCall, conversation_id: str, voice_command: str
+    ) -> CommandResponse:
+        """Dispatch ``act_on_items(action, ref_ids)`` to the owning commands' @callbacks.
+
+        Resolves each ref_id against this conversation's surfaced-items map,
+        groups by owning command, and calls ``command.get_callbacks()[action]``
+        with the same ``{action, selected, context}`` payload a mobile tap sends —
+        so one @callback handler serves both surfaces. Fully fail-soft: an empty
+        stash, unknown ids, or an unsupported action yields a spoken explanation,
+        never a raise.
+        """
+        args = tool_call.function.get_arguments_dict()
+        action = str(args.get("action") or "").strip()
+        ref_ids = args.get("ref_ids") or []
+        if isinstance(ref_ids, str):
+            ref_ids = [ref_ids]
+
+        bucket = self._recent_items if self._recent_items_fresh() else {}
+        if not action or not ref_ids or not bucket:
+            logger.info(
+                "act_on_items: nothing to act on",
+                action=action, ref_count=len(ref_ids), have_items=bool(bucket),
+            )
+            return CommandResponse.final_response(
+                context_data={"message": "I don't have anything shown to act on right now."}
+            )
+
+        known = [(rid, bucket[rid]) for rid in ref_ids if rid in bucket]
+        unknown = [rid for rid in ref_ids if rid not in bucket]
+        if unknown:
+            logger.warning("act_on_items: unknown ref_ids", unknown=unknown, action=action)
+        if not known:
+            return CommandResponse.error_response(
+                error_details="None of those items are in the list I just showed you.",
+                context_data={"message": "I couldn't find those items in what I just showed you."},
+            )
+
+        # Destructive verbs (delete/archive/send/...) require an explicit
+        # confirmation round-trip, which isn't wired yet — v1 surfaces only
+        # non-destructive actions (mark_read). Refuse rather than act without
+        # confirmation. (See follow-on: spoken confirm turn for destructive verbs.)
+        if action in _DESTRUCTIVE_ACTIONS:
+            logger.info("act_on_items: refusing destructive action without confirmation", action=action)
+            return CommandResponse.error_response(
+                error_details=f"'{action}' needs confirmation and isn't available by voice yet.",
+                context_data={
+                    "message": (
+                        f"I can't {action.replace('_', ' ')} those by voice yet — "
+                        "you can do that from the app."
+                    )
+                },
+            )
+
+        # Group by owning command and dispatch each group to its @callback.
+        by_owner: Dict[str, List[tuple]] = {}
+        for rid, meta in known:
+            by_owner.setdefault(meta["owner"], []).append((rid, meta))
+
+        user_id = self._conversation_users.get(conversation_id)
+        request_info = RequestInformation(
+            voice_command=voice_command or f"act_on_items: {action}",
+            conversation_id=conversation_id,
+            is_validation_response=False,
+            user_id=user_id,
+        )
+
+        from jarvis_command_sdk.context import set_current_user_id
+
+        messages: List[str] = []
+        all_ok = True
+        set_current_user_id(user_id)
+        try:
+            for owner, entries in by_owner.items():
+                command = self.command_discovery.get_command(owner)
+                if command is None:
+                    all_ok = False
+                    logger.warning("act_on_items: owner command not found", owner=owner)
+                    messages.append("I couldn't reach the right app for those.")
+                    continue
+                get_callbacks = getattr(command, "get_callbacks", None)
+                callbacks = get_callbacks() if callable(get_callbacks) else {}
+                handler = callbacks.get(action)
+                if handler is None:
+                    all_ok = False
+                    logger.warning(
+                        "act_on_items: action not supported",
+                        owner=owner, action=action, available=list(callbacks.keys()),
+                    )
+                    messages.append(f"I can't {action.replace('_', ' ')} those.")
+                    continue
+                data = {
+                    "action": action,
+                    # attrs first, then key/action LAST so a stray attrs key can't
+                    # clobber the message handle the callback reads.
+                    "selected": [
+                        {**(meta.get("attrs") or {}), "key": rid} for rid, meta in entries
+                    ],
+                    "context": {"source_tool": owner},
+                }
+                try:
+                    resp = handler(data, request_info)
+                except Exception as e:
+                    all_ok = False
+                    logger.error(
+                        "act_on_items: callback raised", owner=owner, action=action, error=str(e)
+                    )
+                    messages.append("Sorry, that didn't work.")
+                    continue
+                if not resp.success:
+                    all_ok = False
+                msg = (resp.context_data or {}).get("message") or resp.error_details
+                if msg:
+                    messages.append(msg)
+                # A follow-up callback may itself surface new items to chain on.
+                self._maybe_record_items(owner, resp)
+        finally:
+            set_current_user_id(None)
+
+        combined = " ".join(m for m in messages if m).strip()
+        if all_ok:
+            return CommandResponse.final_response(context_data={"message": combined or "Done."})
+        return CommandResponse.error_response(
+            error_details=combined or "Sorry, that didn't work.",
+            context_data={"message": combined or "Sorry, that didn't work."},
+        )
 
     @staticmethod
     def _get_tool_signature(tool_calls: List[ToolCall]) -> tuple:
@@ -1079,10 +1293,20 @@ class CommandExecutionService:
                     )
                     return None
 
+                # Remember any items the pre-routed command surfaced (e.g. an
+                # email list) so a follow-up "mark those as read" resolves even
+                # though this path never contacts CC.
+                self._maybe_record_items(command.command_name, command_response)
+
                 return {
                     "success": True,
                     "message": message,
                     "conversation_id": conversation_id,
+                    # Pre-routed turns never registered this conversation with CC,
+                    # so the follow-up loop must NOT continue it (that 400s).
+                    # The flag makes the loop start a fresh CC conversation, which
+                    # also carries recently_shown_items across in node_context.
+                    "pre_routed": True,
                     "wait_for_input": False,
                     "clear_history": False,
                     "on_response_complete": getattr(

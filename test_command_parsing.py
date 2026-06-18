@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import datetime
 import json
+import os
 import time
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
@@ -2197,25 +2198,26 @@ def main():
     })
     print(f"✅ Results written to {args.output}")
 
-    # Also write to JCC temp location for server-side tooling
-    jcc_results_path = "/Users/alexanderberardi/jarvis/jarvis-command-center/temp/test_results.json"
-    write_results_to_file(jcc_results_path, {
-        "summary": {
-            "total_tests": len(test_commands_to_run),
-            "passed": passed_tests,
-            "failed": failed_tests,
-            "success_rate": round((passed_tests / len(test_commands_to_run) * 100), 2) if test_commands_to_run else 0,
-            "avg_response_time": round(sum(response_times) / len(response_times), 3) if response_times else 0,
-            "min_response_time": round(min(response_times), 3) if response_times else 0,
-            "max_response_time": round(max(response_times), 3) if response_times else 0,
-            "test_run_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        },
-        "test_results": all_test_results,
-        "failed_test_details": failed_test_details,
-        "analysis": generate_analysis(all_test_results),
-        "slow_tests": []
-    })
-    print(f"✅ Results written to {jcc_results_path}")
+    # Also write to JCC temp location for server-side tooling, if configured.
+    jcc_results_path = os.environ.get("JCC_RESULTS_PATH")
+    if jcc_results_path:
+        write_results_to_file(jcc_results_path, {
+            "summary": {
+                "total_tests": len(test_commands_to_run),
+                "passed": passed_tests,
+                "failed": failed_tests,
+                "success_rate": round((passed_tests / len(test_commands_to_run) * 100), 2) if test_commands_to_run else 0,
+                "avg_response_time": round(sum(response_times) / len(response_times), 3) if response_times else 0,
+                "min_response_time": round(min(response_times), 3) if response_times else 0,
+                "max_response_time": round(max(response_times), 3) if response_times else 0,
+                "test_run_timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            },
+            "test_results": all_test_results,
+            "failed_test_details": failed_test_details,
+            "analysis": generate_analysis(all_test_results),
+            "slow_tests": []
+        })
+        print(f"✅ Results written to {jcc_results_path}")
     
     print(f"\n🔚 Test execution completed.")
 
