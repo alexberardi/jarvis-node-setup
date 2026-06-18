@@ -99,8 +99,6 @@ def _isolate_loop(monkeypatch):
 
     # Threshold + config helpers
     monkeypatch.setattr(wake_loop, "current_wake_threshold", lambda: 0.5)
-    monkeypatch.setattr(wake_loop, "music_is_playing", lambda: False)
-    monkeypatch.setattr(wake_loop, "wake_music_energy_multiplier", lambda: 1.0)
     monkeypatch.setattr(wake_loop, "_pre_wake_vad_threshold", lambda: 500.0)
     monkeypatch.setattr(
         wake_loop, "_adaptive_silence_threshold", lambda stats: None
@@ -108,13 +106,13 @@ def _isolate_loop(monkeypatch):
 
     # Make decide_wake_fire delegate the score check — score > threshold
     # is the simplest characterization of the production gate. The full
-    # three-gate logic is already tested in test_wake_detector.py.
+    # two-gate logic is already tested in test_wake_detector.py.
     class _Verdict:
         def __init__(self, should_fire: bool) -> None:
             self.should_fire = should_fire
 
-    def _decide(*, score, static_wake_threshold, **kw):
-        return _Verdict(score >= static_wake_threshold)
+    def _decide(*, score, threshold, **kw):
+        return _Verdict(score >= threshold)
 
     monkeypatch.setattr(wake_loop, "decide_wake_fire", _decide)
 
@@ -176,7 +174,6 @@ def _run(
     bus,
     oww,
     *,
-    aec_pipeline=None,
     wake_word_model: str = "hey_jarvis",
     expect_exit: type = KeyboardInterrupt,
 ):
@@ -188,7 +185,6 @@ def _run(
             command_service=MagicMock(),
             stt_provider=MagicMock(),
             validation_handler=MagicMock(),
-            aec_pipeline=aec_pipeline,
             wake_word_model=wake_word_model,
         )
 
@@ -531,3 +527,37 @@ def test_send_for_transcription_exception_falls_through_to_follow_up(monkeypatch
     args, kwargs = fu.call_args
     # result is positional arg 1 (after bus).
     assert args[1] is None
+
+
+def test_high_score_suppressed_then_alert_drains(monkeypatch):
+    """Regression: a high OWW score that decide_wake_fire SUPPRESSES (e.g. the
+    debounce gate trips while score > threshold) must not be mistaken for a
+    wake when an alert then breaks the inner loop.
+
+    The post-loop branch keys off whether a wake actually fired (`fired`), not
+    the raw `score` — otherwise the stale-high score routes a suppressed
+    detection into wake handling and the pending alert is silently dropped.
+    """
+    class _NoFire:
+        should_fire = False
+
+    # decide_wake_fire suppresses even a high score (models the debounce gate).
+    monkeypatch.setattr(wake_loop, "decide_wake_fire", lambda **kw: _NoFire())
+    # Alert fires on the SECOND inner iteration — after the high chunk has
+    # scored — so `score` is left high (0.9) at the break.
+    monkeypatch.setattr(wake_loop, "_ALERT_CHECK_INTERVAL", 2)
+    monkeypatch.setattr(wake_loop, "has_pending_high_priority_alerts", lambda: True)
+
+    drain = MagicMock(side_effect=KeyboardInterrupt())  # exit after the drain
+    monkeypatch.setattr(wake_loop, "drain_alert_announcements", drain)
+    # If the bug regressed, control would fall into wake handling instead —
+    # make that path raise too so the test fails cleanly rather than hanging.
+    handle = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "handle_keyword_detected", handle)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    drain.assert_called_once()   # alert drained despite the high suppressed score
+    handle.assert_not_called()   # NOT treated as a wake

@@ -4,8 +4,8 @@ Owns module-level wake-control state (``pause_wake`` / ``resume_wake`` /
 ``wake_paused``), the bounded background executor used across the wake
 path, the keyboard-trigger fallback, and the ``start_voice_listener``
 entry point that wires up the openWakeWord model, the long-running
-AudioBus, the optional AEC pipeline, command/STT/validation services,
-then hands control to :func:`core.wake_loop.run_wake_loop`.
+AudioBus, command/STT/validation services, then hands control to
+:func:`core.wake_loop.run_wake_loop`.
 
 External consumers:
   * ``scripts.main`` imports :func:`start_voice_listener`.
@@ -27,7 +27,6 @@ from openwakeword.model import Model as OWWModel
 
 from jarvis_log_client import JarvisLogger
 
-from core.aec_pipeline import AecPipeline
 from core.audio_bus import AudioBus
 from core.helpers import get_stt_provider
 from core import voice_filters  # noqa: F401  re-export for callers
@@ -230,12 +229,12 @@ def start_voice_listener(ma_service):
 
     Sets up the openWakeWord model, the long-running AudioBus, services
     (command / STT / validation), pre-warms the LLM and processing-ack
-    cache, optionally starts the inline AEC pipeline, then hands the
-    fully-initialized resources to :func:`core.wake_loop.run_wake_loop`.
+    cache, then hands the fully-initialized resources to
+    :func:`core.wake_loop.run_wake_loop`.
 
-    KeyboardInterrupt cleanup (stopping the AEC pipeline, stopping the
-    bus, releasing the OWW model) stays here — the loop body doesn't
-    need to know about resources it didn't create.
+    KeyboardInterrupt cleanup (stopping the bus, releasing the OWW model)
+    stays here — the loop body doesn't need to know about resources it
+    didn't create.
     """
     try:
         openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
@@ -291,33 +290,6 @@ def start_voice_listener(ma_service):
                 threshold=current_wake_threshold())
     print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={current_wake_threshold()})")
 
-    # Inline AEC: pulls a reference frame from PA's monitor source per
-    # mic chunk, subtracts speaker bleed via Speex. Disabled by default
-    # (gated on aec_enabled); any startup failure falls back to a
-    # passthrough so wake detection stays alive.
-    aec_pipeline: AecPipeline | None = None
-    if Config.get_bool("aec_enabled", False):
-        try:
-            aec_filter_ms = Config.get_float("aec_filter_length_ms", 100.0)
-            aec_delay_ms = Config.get_float("aec_reference_delay_ms", 80.0)
-            aec_pipeline = AecPipeline(
-                rate=OWW_RATE,
-                frame_size=160,
-                filter_length=int(aec_filter_ms * OWW_RATE / 1000),
-                reference_delay_samples=int(aec_delay_ms * OWW_RATE / 1000),
-                reference_buffer_secs=Config.get_float("aec_buffer_secs", 2.0),
-                monitor_source=Config.get_str("aec_monitor_source"),
-            )
-            aec_pipeline.start()
-            if Config.get_bool("aec_calibrate_on_startup", True):
-                try:
-                    aec_pipeline.calibrate_delay(bus)
-                except Exception as e:
-                    logger.warning("AEC calibration raised; keeping configured delay", error=str(e))
-        except Exception as e:
-            logger.error("AEC pipeline init failed, continuing without AEC", error=str(e))
-            aec_pipeline = None
-
     try:
         run_wake_loop(
             bus=bus,
@@ -325,13 +297,10 @@ def start_voice_listener(ma_service):
             command_service=command_service,
             stt_provider=stt_provider,
             validation_handler=validation_handler,
-            aec_pipeline=aec_pipeline,
             wake_word_model=WAKE_WORD_MODEL,
         )
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
     finally:
-        if aec_pipeline is not None:
-            aec_pipeline.stop()
         bus.stop()
         del oww

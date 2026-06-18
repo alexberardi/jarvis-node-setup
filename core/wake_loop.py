@@ -1,8 +1,8 @@
 """Main wake-word detection loop.
 
 Owns the long-running ``while True`` that drives every wake cycle on
-the node: outer iteration setup (threshold/music snapshot, deques),
-inner per-chunk scoring (resample → AEC → openWakeWord predict →
+the node: outer iteration setup (threshold, deques),
+inner per-chunk scoring (resample → openWakeWord predict →
 ``decide_wake_fire``), the alert-drain break-out path, and the
 post-fire orchestration chain (``bus.unsubscribe`` → ``oww.reset``
 in the background → ``pause_active_playback`` → wake-audio capture
@@ -14,12 +14,12 @@ earlier refactor phases — it owns no logic of its own beyond glue
 and the per-iteration state (deques, score snapshot, RMS stats,
 adaptive silence threshold). Every decision lives in a leaf module:
 
-  * ``core.wake_detector`` — the three-gate fire verdict
+  * ``core.wake_detector`` — the two-gate fire verdict
   * ``core.wake_response`` — TTS ack + LED + warmup pre-cache
   * ``core.wake_transcription`` — STT round-trip + CC orchestration
   * ``core.follow_up_loop`` — post-TTS conversation continuation
   * ``core.alert_announcer`` — high-priority alert TTS during quiet
-  * ``core.music_control`` — ducking + is_playing
+  * ``core.music_control`` — ducking (pause/resume during the exchange)
   * ``core.vad_thresholds`` — barge-in + adaptive silence
   * ``core.wake_calibration`` — auto-tune via legitimate-score history
 
@@ -37,7 +37,6 @@ import time
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from math import gcd
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,10 +51,8 @@ from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor, oww_lock as _oww_lock
 from core.follow_up_loop import follow_up_loop
 from core.music_control import (
-    is_playing as music_is_playing,
     pause_active_playback,
     resume_active_playback,
-    wake_music_energy_multiplier,
 )
 from core.platform_audio import platform_audio
 from core.vad_thresholds import (
@@ -89,7 +86,6 @@ from utils.config_service import Config
 if TYPE_CHECKING:
     from openwakeword.model import Model as OWWModel
     from utils.command_execution_service import CommandExecutionService
-    from core.aec_pipeline import AecPipeline
 
 
 logger = JarvisLogger(service="jarvis-node")
@@ -154,12 +150,11 @@ def run_wake_loop(
     command_service: "CommandExecutionService",
     stt_provider,
     validation_handler,
-    aec_pipeline: "AecPipeline | None",
     wake_word_model: str,
 ) -> None:
     """Run the wake loop until KeyboardInterrupt.
 
-    Resources (``bus``, ``oww``, ``aec_pipeline``) are owned by the
+    Resources (``bus``, ``oww``) are owned by the
     caller (:func:`scripts.voice_listener.start_voice_listener`),
     which sets them up before calling and tears them down after.
 
@@ -168,12 +163,7 @@ def run_wake_loop(
     is per-iteration: the deques, the wake-fire snapshot score, the
     adaptive silence threshold, and the conversation IDs.
     """
-    # Resample whatever the mic captured (bus.rate) down to OWW_RATE using a
-    # reduced rational ratio, so non-integer-multiple rates (e.g. a 44.1 kHz
-    # USB mic) work — not just multiples of 16 kHz. 48 kHz → up=1, down=3.
-    _resample_gcd = gcd(bus.rate, OWW_RATE)
-    resample_up = OWW_RATE // _resample_gcd
-    resample_down = bus.rate // _resample_gcd
+    resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
     alert_check_counter = 0
 
     while True:
@@ -185,25 +175,16 @@ def run_wake_loop(
         # updates apply without a service restart. Using a local also
         # keeps the inner loop hot path off the disk.
         wake_threshold = current_wake_threshold()
-        # Snapshot music state alongside the threshold so the energy
-        # gate below matches the threshold's assumption. music_is_playing
-        # round-trips to pactl (~ms) so we don't want to call it per
-        # chunk; we only need it to be coherent with the threshold
-        # used for the current outer iteration.
-        #
-        # Secondary check via AEC's reference reader: pactl detection
-        # is fragile (misses stuck playback after a failed stop-music
-        # command, briefly-corked sink-inputs, unrecognized player
-        # binaries). ref_rms reflects what's actually being sent to
-        # the speaker, so it catches the cases pactl misses.
-        music_mode = music_is_playing() or (
-            aec_pipeline is not None
-            and aec_pipeline.has_recent_reference_signal()
-        )
-        music_energy_multiplier = wake_music_energy_multiplier()
 
         wake_q = bus.subscribe("wake")
         score = 0.0
+        # Did this inner loop exit via an actual wake fire? The post-loop
+        # branch keys off THIS, not `score`: the debounce gate can suppress
+        # a fire while score > threshold, and an alert-drain break can then
+        # leave that stale-high score behind. Using score as the
+        # discriminator would route a suppressed wake into wake handling
+        # and silently drop the pending alert.
+        fired = False
         # Pre-wake VAD ring buffer — one bool per 80 ms chunk, last
         # PRE_WAKE_VAD_FRAMES kept. On wake fire we sum it and report
         # how many seconds of speech happened in the window before wake.
@@ -259,26 +240,9 @@ def run_wake_loop(
                 pre_wake_speech_frames.append(rms > pre_wake_vad_threshold)
                 pre_wake_rms_values.append(rms)
 
-                if bus.rate != OWW_RATE:
-                    resampled = _get_resample_poly()(
-                        samples, up=resample_up, down=resample_down
-                    )
+                if resample_down > 1:
+                    resampled = _get_resample_poly()(samples, up=1, down=resample_down)
                     samples = np.clip(resampled, -32768, 32767).astype(np.int16)
-
-                if aec_pipeline is not None:
-                    samples = aec_pipeline.process(samples)
-                    # The pre-wake RMS readings (used by the music
-                    # energy gate below) were taken from the raw mic
-                    # above — that signal is still dominated by music
-                    # bleed even when AEC has cleaned the voice into
-                    # a strong OWW score. Re-measure on the cleaned
-                    # signal so the gate's baseline and current-frame
-                    # RMS are both post-cancellation and comparable.
-                    # Without this, AEC-cleaned wakes score 0.5-0.8
-                    # but get suppressed because raw mic bleed > raw
-                    # mic-with-voice in RMS terms.
-                    rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-                    pre_wake_rms_values[-1] = rms
 
                 with _oww_lock:
                     predictions = oww.predict(samples)
@@ -293,22 +257,16 @@ def run_wake_loop(
                 # the 80 ms real-time budget) — that's a known
                 # property of openWakeWord on this hardware, not
                 # something logging per chunk can help with.
-                # The three-gate wake-fire pipeline (score >
-                # threshold + music-bleed gate + same-utterance
-                # debounce) lives in ``core/wake_detector.py``. On
-                # a fired verdict it advances
-                # ``voice_filters._wake_min_next_ts`` under the
-                # gate lock so we don't double-fire on the next
-                # 80 ms chunk of the same OWW utterance.
+                # The two-gate wake-fire pipeline (score > threshold +
+                # same-utterance debounce) lives in
+                # ``core/wake_detector.py``. On a fired verdict it advances
+                # ``voice_filters._wake_min_next_ts`` under the gate lock
+                # so we don't double-fire on the next 80 ms chunk of the
+                # same OWW utterance.
                 now_mono = time.monotonic()
                 verdict = decide_wake_fire(
                     score=score,
-                    rms=rms,
-                    pre_wake_rms_values=pre_wake_rms_values,
-                    music_mode=music_mode,
-                    aec_pipeline=aec_pipeline,
-                    static_wake_threshold=wake_threshold,
-                    music_energy_multiplier=music_energy_multiplier,
+                    threshold=wake_threshold,
                     now_mono=now_mono,
                 )
                 fire_wake = verdict.should_fire
@@ -358,6 +316,7 @@ def run_wake_loop(
                             silence_threshold=adaptive_silence_threshold,
                             ambient_median_rms=rms_stats.get("median"),
                         )
+                    fired = True
                     break
         finally:
             _t_unsub_start = time.monotonic()
@@ -367,9 +326,11 @@ def run_wake_loop(
                 f"{int((time.monotonic() - _t_unsub_start) * 1000)}ms"
             )
 
-        # If we broke out without a wake (alert-drain case), handle
-        # alerts and loop.
-        if score <= wake_threshold:
+        # If we broke out without firing a wake (alert-drain case), handle
+        # alerts and loop. Keyed off `fired`, not `score`: a debounce-
+        # suppressed high score still needs to fall through to the alert
+        # drain rather than be treated as a wake.
+        if not fired:
             try:
                 drain_alert_announcements(
                     bus, command_service, stt_provider, validation_handler,
@@ -472,19 +433,17 @@ def run_wake_loop(
                 # When None, listen() falls back to its static config
                 # value, preserving prior behavior.
                 #
-                # quiet_wait gated on actual speaker activity: with
-                # wake_ack_audio_enabled=False AND no music playing,
-                # the speaker is silent — running the drain would
-                # misidentify the user's own command (4000+ RMS) as
-                # speaker echo and discard the first 400 ms of speech.
-                # That's the "cut off mid-sentence" pattern from prod.
-                # AEC reference-signal is the right signal: True only
-                # when the speaker actually had recent output.
-                speaker_recently_active = (
-                    aec_pipeline is not None
-                    and aec_pipeline.has_recent_reference_signal()
-                )
-                listen_quiet_wait_secs = None if speaker_recently_active else 0.0
+                # Default the quiet-wait drain off (0.0). It used to be
+                # gated on the AEC reference reader's "did the speaker just
+                # have output" signal, but AEC has been removed and we have
+                # no equally-cheap replacement. This matches the effective
+                # prod behavior all along (AEC shipped disabled, so this was
+                # always False → 0.0). Running the drain when the speaker is
+                # actually silent misidentifies the user's own command
+                # (4000+ RMS) as speaker echo and chops the first 400 ms —
+                # the "cut off mid-sentence" prod bug — so off is the safe
+                # default.
+                listen_quiet_wait_secs = 0.0
                 # silence_duration override (default 0.8 s): natural
                 # mid-sentence pauses (between clauses, taking a breath)
                 # commonly run 250-400 ms. The historical 0.3 s default
