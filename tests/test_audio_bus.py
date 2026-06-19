@@ -138,6 +138,60 @@ class TestSlowConsumerIsolation:
         assert elapsed < 0.5  # should be milliseconds, half-second is loose guard
 
 
+class TestWakeDrainToNewest:
+    """The wake loop (core/wake_loop.py) subscribes with a shallow maxsize=4
+    queue and drains to the newest chunk each iteration so detection stays
+    current under a transient over-budget stall, instead of scoring up to
+    ~10s of stale backlog from the old 128-deep FIFO."""
+
+    @staticmethod
+    def _drain_to_newest(q):
+        """Mirror of the wake-loop consumer: blocking get, then drain any
+        backlog and keep only the newest chunk, counting skips."""
+        import queue as _q
+
+        raw = q.get(timeout=0.5)
+        skipped = 0
+        while True:
+            try:
+                raw = q.get_nowait()
+                skipped += 1
+            except _q.Empty:
+                break
+        return raw, skipped
+
+    def test_drain_keeps_consumer_on_newest_chunk(self) -> None:
+        bus = _bus()
+        wake = bus.subscribe("wake", maxsize=4)
+        # Audio arrived far faster than the (stalled) consumer could score.
+        for i in range(50):
+            bus.push(bytes([i]))
+        # Bus drop-oldest leaves the last 4 (46,47,48,49); drain-to-newest
+        # then yields the FRESHEST chunk (49), not a ~10s-stale one.
+        raw, skipped = self._drain_to_newest(wake)
+        assert raw == bytes([49])
+        assert skipped == 3  # got 46 via get(), then drained 47,48,49
+        assert wake.empty()
+
+    def test_no_skip_when_consumer_keeps_up(self) -> None:
+        # When only one chunk is queued, the drain skips nothing and there
+        # is no realign churn (so steady-state predict jitter is unaffected).
+        bus = _bus()
+        wake = bus.subscribe("wake", maxsize=4)
+        bus.push(bytes([7]))
+        raw, skipped = self._drain_to_newest(wake)
+        assert raw == bytes([7])
+        assert skipped == 0
+
+    def test_shallow_queue_bounds_backlog(self) -> None:
+        # The whole point: the wake queue can never hoard seconds of audio.
+        bus = _bus()
+        wake = bus.subscribe("wake", maxsize=4)
+        for i in range(1000):
+            bus.push(bytes([i % 256]))
+        assert wake.qsize() <= 4  # bounded to ~320ms at 80ms/chunk, not ~10s
+
+
 class TestLifecycle:
     def test_start_opens_stream_via_factory_and_resolver(self) -> None:
         mock_stream = MagicMock()
