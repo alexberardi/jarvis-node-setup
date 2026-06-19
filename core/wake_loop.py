@@ -176,7 +176,12 @@ def run_wake_loop(
         # keeps the inner loop hot path off the disk.
         wake_threshold = current_wake_threshold()
 
-        wake_q = bus.subscribe("wake")
+        # Small queue (4 * 80ms = 320ms) on the latency-critical wake path.
+        # The default 128-deep (~10.24s) drop-oldest FIFO let a sustained
+        # over-budget loop accumulate seconds of stale backlog and score
+        # audio up to ~10s old -> multi-second-late / missed wake. A shallow
+        # queue + drain-to-newest (below) keeps detection current instead.
+        wake_q = bus.subscribe("wake", maxsize=4)
         score = 0.0
         # Did this inner loop exit via an actual wake fire? The post-loop
         # branch keys off THIS, not `score`: the debounce gate can suppress
@@ -198,6 +203,7 @@ def run_wake_loop(
         pre_wake_speech_seconds: float | None = None
         try:
             was_paused = False
+            _last_skip_log_ts = 0.0
             while True:
                 alert_check_counter += 1
                 if alert_check_counter >= _ALERT_CHECK_INTERVAL:
@@ -210,6 +216,29 @@ def run_wake_loop(
                     raw_data = wake_q.get(timeout=0.5)
                 except queue.Empty:
                     continue
+
+                # Stay CURRENT under a transient over-budget stall: drain any
+                # backlog and keep only the newest chunk. With the shallow
+                # maxsize=4 queue this only skips on a genuine multi-chunk
+                # overrun, never normal predict jitter. We deliberately do NOT
+                # oww.reset() here: the dropped chunks are stale PRE-wake
+                # audio, and the user's actual "hey jarvis" arrives on the
+                # fresh contiguous chunks that follow — so the wake word is
+                # never scored across the gap, and we avoid the ~1.3s post-
+                # reset priming blind-spot that frequent skips would create.
+                skipped = 0
+                while True:
+                    try:
+                        raw_data = wake_q.get_nowait()
+                        skipped += 1
+                    except queue.Empty:
+                        break
+                if skipped and time.monotonic() - _last_skip_log_ts > 10.0:
+                    logger.info(
+                        "wake loop dropped stale audio backlog to stay current",
+                        skipped_chunks=skipped,
+                    )
+                    _last_skip_log_ts = time.monotonic()
 
                 # While paused, drop the chunk and don't score it. The
                 # queue still drains so we don't process stale audio
