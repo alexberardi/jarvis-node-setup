@@ -9,12 +9,10 @@ Deduplicates by provider so components sharing the same OAuth provider
 (e.g. multiple Google commands) only trigger one refresh per cycle.
 """
 
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
+import httpx
 from jarvis_log_client import JarvisLogger
 
 from core.ijarvis_agent import AgentSchedule, IJarvisAgent
@@ -31,6 +29,18 @@ class TokenRefreshAgent(IJarvisAgent):
 
     def __init__(self) -> None:
         self._last_results: dict[str, str] = {}
+        self._http: httpx.Client | None = None
+
+    def _http_client(self) -> httpx.Client:
+        """Reused HTTP client for the life of this singleton agent. A fresh
+        httpx/urllib client per refresh leaks native memory (notably the
+        per-call SSL context loaded into libcrypto) even when closed; on a
+        background schedule that accumulates and degrades wake latency.
+        Reuse one client instead.
+        """
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.Client(timeout=15)
+        return self._http
 
     @property
     def name(self) -> str:
@@ -241,13 +251,9 @@ class TokenRefreshAgent(IJarvisAgent):
             payload["client_secret"] = auth.client_secret
 
         try:
-            req = Request(
-                auth.exchange_url,
-                data=urlencode(payload).encode(),
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            with urlopen(req, timeout=15) as resp:
-                data: dict[str, Any] = json.loads(resp.read().decode())
+            resp = self._http_client().post(auth.exchange_url, data=payload)
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
         except Exception as e:
             logger.error("Refresh request failed", provider=auth.provider, error=str(e))
             return False

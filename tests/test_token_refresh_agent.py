@@ -1,7 +1,6 @@
 """Tests for TokenRefreshAgent."""
 
 import asyncio
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -142,18 +141,16 @@ class TestDoRefresh:
         source = MagicMock()
         mock_secret_service.get_secret_value.return_value = "old-refresh"
 
-        response_data = json.dumps({
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
             "access_token": "new-access",
             "refresh_token": "new-refresh",
             "expires_in": 3600,
-        }).encode()
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = response_data
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("agents.token_refresh_agent.urlopen", return_value=mock_resp):
+        with patch.object(agent, "_http_client", return_value=mock_client):
             assert agent._do_refresh(mock_auth_config, source) is True
 
         source.store_auth_values.assert_called_once_with({
@@ -166,24 +163,24 @@ class TestDoRefresh:
         source = MagicMock()
         mock_secret_service.get_secret_value.return_value = "old-refresh"
 
-        response_data = json.dumps({
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
             "access_token": "new-access",
             "expires_in": 3600,
-        }).encode()
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
 
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = response_data
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
-
-        with patch("agents.token_refresh_agent.urlopen", return_value=mock_resp):
+        with patch.object(agent, "_http_client", return_value=mock_client):
             assert agent._do_refresh(mock_auth_config, source) is True
 
         source.store_auth_values.assert_called_once_with({"access_token": "new-access"})
 
     def test_http_error_returns_false(self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service):
         mock_secret_service.get_secret_value.return_value = "old-refresh"
-        with patch("agents.token_refresh_agent.urlopen", side_effect=Exception("timeout")):
+        mock_client = MagicMock()
+        mock_client.post.side_effect = Exception("timeout")
+        with patch.object(agent, "_http_client", return_value=mock_client):
             assert agent._do_refresh(mock_auth_config, MagicMock()) is False
 
 
@@ -358,16 +355,15 @@ class TestPerUserRefresh:
 
         mock_secret_service.get_secret_value.side_effect = get_value
 
-        response_data = json.dumps({"access_token": "new-access", "expires_in": 3600}).encode()
         mock_resp = MagicMock()
-        mock_resp.read.return_value = response_data
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.json.return_value = {"access_token": "new-access", "expires_in": 3600}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
 
         with (
             patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
             patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
-            patch("agents.token_refresh_agent.urlopen", return_value=mock_resp),
+            patch.object(agent, "_http_client", return_value=mock_client),
         ):
             mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
             mock_families.return_value.get_all_families.return_value = {}
@@ -406,16 +402,15 @@ class TestPerUserRefresh:
 
         mock_secret_service.get_secret_value.side_effect = get_value
 
-        response_data = json.dumps({"access_token": "new-access", "expires_in": 3600}).encode()
         mock_resp = MagicMock()
-        mock_resp.read.return_value = response_data
-        mock_resp.__enter__ = lambda s: s
-        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.json.return_value = {"access_token": "new-access", "expires_in": 3600}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
 
         with (
             patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
             patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
-            patch("agents.token_refresh_agent.urlopen", return_value=mock_resp),
+            patch.object(agent, "_http_client", return_value=mock_client),
         ):
             mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
             mock_families.return_value.get_all_families.return_value = {}

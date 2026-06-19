@@ -57,12 +57,34 @@ class DirectDeviceService:
         self._household_id = household_id
         self._device_cache: dict[str, DeviceRecord] = {}
         self._protocols: dict[str, IJarvisDeviceProtocol] = {}
+        self._http: httpx.AsyncClient | None = None
         self._load_protocols()
 
     def _load_protocols(self) -> None:
         """Load available protocol adapters via discovery service."""
         discovery = get_device_family_discovery_service()
         self._protocols = dict(discovery.get_all_families())
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """Return a reused HTTP client for the life of this (singleton) service.
+
+        Creating a fresh ``httpx.AsyncClient`` per call leaks native memory
+        (connection pool + buffers, and an SSL context for HTTPS) even when the
+        client is properly closed — measured at ~250 KB per HTTP cycle on the
+        Pi. Because ``refresh_from_cc`` runs on a 5-minute background-agent
+        schedule, that churn accumulates as GC-invisible native memory that
+        ``malloc_trim`` can't reclaim, until the wake-detection path gets
+        swapped and wake latency spikes. Reuse one client instead.
+        """
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=10)
+        return self._http
+
+    async def aclose(self) -> None:
+        """Close the reused HTTP client (call on node shutdown)."""
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
 
     def register_device(self, record: DeviceRecord) -> None:
         """Add or update a device in the local cache."""
@@ -81,10 +103,10 @@ class DirectDeviceService:
         headers = {"X-API-Key": f"{self._node_id}:{self._api_key}"}
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                devices = resp.json()
+            client = self._http_client()
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            devices = resp.json()
 
             count = 0
             for dev in devices:
