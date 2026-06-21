@@ -1,0 +1,177 @@
+#!/bin/bash
+# jarvis-net-watchdog — cause-agnostic network self-heal for Pi nodes.
+#
+# Runs as a root oneshot every ~60s (jarvis-net-watchdog.timer). One check
+# per invocation; all state lives in a tmpfs file so it resets cleanly on
+# reboot (that reset IS the boot-loop guard — see below).
+#
+# WHY THIS EXISTS (2026-06 kitchen-node incident):
+#   A Pi node went unreachable — no SSH, no ping, no mDNS — while the CPU was
+#   still running (LEDs on, wake word still fired locally). That is the classic
+#   "wlan0 dropped off the network but the box is alive" failure: WiFi power-
+#   save after idle, a brcmfmac association loss, or a NetworkManager/netplan
+#   profile that didn't enforce power-save on the live interface. install.sh
+#   *tries* to disable power-save at setup, but that fix is one-shot and
+#   silently no-ops on some stacks (iwconfig absent, netplan-managed
+#   connection, wrong profile matched). Nothing then RECOVERED the node, and
+#   the app-layer post-install watchdog only ever checked jarvis-node.service —
+#   never the network — so a node that was "off the network but running" was
+#   invisible to it. This watchdog closes that gap regardless of root cause,
+#   and also re-fills the connectivity-watchdog role removed in v0.1.69.
+#
+# WHAT IT DOES, each run:
+#   1. Idempotently force WiFi power-save OFF on the live interface (the
+#      enforcement install.sh's config-layer setting can't guarantee).
+#   2. Probe LAN reachability (ping the default gateway).
+#   3. On sustained loss, escalate: reapply -> bounce -> reboot (last resort).
+#
+# ESCALATION (counts are consecutive failed checks, ~60s apart):
+#   >= FAIL_REAPPLY (3, ~3 min): nmcli device reapply  (re-push NM config)
+#   >= FAIL_BOUNCE  (4, ~4 min): ip link down/up + reapply  (re-associate)
+#   >= FAIL_REBOOT  (6, ~6 min): reboot — ONLY if we were online earlier this
+#                                boot (online==1), uptime >= MIN_UPTIME, AND we
+#                                are under the persistent reboot-rate limit.
+#                                (fail 5 keeps bouncing, giving DHCP/assoc ~2
+#                                min after the bounce before we resort to reboot.)
+#   TWO reboot guards:
+#     1. online==1 (tmpfs): never reboot on a boot where we never reached the
+#        network — a node that simply never gets WiFi keeps retrying forever.
+#     2. REBOOT_MAX in REBOOT_WINDOW (PERSISTENT, survives reboot): the tmpfs
+#        flag re-arms every boot, so on a flapping link guard #1 alone would
+#        reboot every ~10 min indefinitely. This caps reboots to REBOOT_MAX per
+#        REBOOT_WINDOW; past that we keep bouncing but stop rebooting.
+
+set -u
+
+IFACE="${NETWD_IFACE:-wlan0}"
+FAIL_REAPPLY="${NETWD_FAIL_REAPPLY:-3}"
+FAIL_BOUNCE="${NETWD_FAIL_BOUNCE:-4}"
+FAIL_REBOOT="${NETWD_FAIL_REBOOT:-6}"
+MIN_UPTIME="${NETWD_MIN_UPTIME:-120}"
+PING_WAIT="${NETWD_PING_WAIT:-2}"
+STATE="${NETWD_STATE:-/run/jarvis-net-watchdog.state}"
+BREADCRUMB="${NETWD_BREADCRUMB:-/var/log/jarvis-net-watchdog.json}"
+# Persistent reboot-rate limit (survives reboot — this is the loop guard the
+# tmpfs state can't provide): at most REBOOT_MAX reboots per REBOOT_WINDOW sec.
+REBOOT_LOG="${NETWD_REBOOT_LOG:-/var/lib/jarvis-net-watchdog/reboots}"
+REBOOT_MAX="${NETWD_REBOOT_MAX:-3}"
+REBOOT_WINDOW="${NETWD_REBOOT_WINDOW:-3600}"
+# Paths below are overridable only so the test suite can drive the script on a
+# non-Pi host; on a real node they resolve to the kernel's standard locations.
+SYSFS_NET="${NETWD_SYSFS_NET:-/sys/class/net}"
+UPTIME_FILE="${NETWD_UPTIME_FILE:-/proc/uptime}"
+
+log() { printf '[net-watchdog] %s\n' "$*"; }
+
+# --- Skip cleanly when there's nothing to watch (e.g. ethernet-only, container).
+if [ ! -e "${SYSFS_NET}/${IFACE}" ]; then
+    log "interface ${IFACE} not present — nothing to watch"
+    exit 0
+fi
+
+# --- Read prior state (fail count + whether we've ever been online this boot).
+fail=0
+online=0
+if [ -r "$STATE" ]; then
+    # shellcheck disable=SC1090
+    . "$STATE" 2>/dev/null || true
+    fail="${fail:-0}"
+    online="${online:-0}"
+fi
+case "$fail" in *[!0-9]*) fail=0 ;; esac
+case "$online" in *[!0-9]*) online=0 ;; esac
+
+write_state() {
+    # tmpfs file; key=val so it can be sourced back next run.
+    printf 'fail=%s\nonline=%s\n' "$1" "$2" > "$STATE" 2>/dev/null || true
+}
+
+# --- (1) Enforce power-save OFF on the live interface. iw is the driver-level
+#     control install.sh now installs; nmcli reapply alone does not always push
+#     powersave to brcmfmac. Cheap + idempotent, so do it every run.
+if command -v iw >/dev/null 2>&1; then
+    iw dev "$IFACE" set power_save off >/dev/null 2>&1 || true
+fi
+
+# --- (2) Probe LAN reachability via the default gateway on this interface.
+gw="$(ip route show default 0.0.0.0/0 dev "$IFACE" 2>/dev/null | awk '/default/{print $3; exit}')"
+[ -z "$gw" ] && gw="$(ip route show default 2>/dev/null | awk '/default/{print $3; exit}')"
+
+healthy=0
+if [ -n "$gw" ] && ping -c1 -W "$PING_WAIT" "$gw" >/dev/null 2>&1; then
+    healthy=1
+fi
+
+if [ "$healthy" -eq 1 ]; then
+    if [ "$fail" -ne 0 ]; then
+        log "LAN recovered (gw=${gw}) after ${fail} failed check(s)"
+    fi
+    write_state 0 1
+    exit 0
+fi
+
+# --- (3) Unhealthy: increment and escalate.
+fail=$((fail + 1))
+write_state "$fail" "$online"
+log "no LAN on ${IFACE} (gw='${gw:-none}') consecutive_fail=${fail}"
+
+uptime_s="$(cut -d. -f1 "$UPTIME_FILE" 2>/dev/null || echo 0)"
+case "$uptime_s" in *[!0-9]*) uptime_s=0 ;; esac
+
+if [ "$fail" -ge "$FAIL_REBOOT" ] && [ "$online" -eq 1 ] && [ "$uptime_s" -ge "$MIN_UPTIME" ]; then
+    # Persistent cross-reboot rate limit. The tmpfs `online` flag re-arms on
+    # every boot, so without this a node on a flapping link reboots forever.
+    # Count reboots recorded within REBOOT_WINDOW; if we're at the cap, do NOT
+    # reboot — fall through and keep bouncing instead.
+    now_epoch="$(date +%s 2>/dev/null || echo 0)"
+    case "$now_epoch" in *[!0-9]*) now_epoch=0 ;; esac
+    recent=0
+    if [ -r "$REBOOT_LOG" ]; then
+        tmpf="${REBOOT_LOG}.$$"
+        : > "$tmpf" 2>/dev/null || true
+        while read -r ts; do
+            case "$ts" in '' | *[!0-9]*) continue ;; esac
+            # now_epoch==0 means the clock is unreadable — treat every prior
+            # reboot as "recent" (fail safe toward NOT rebooting).
+            if [ "$now_epoch" -eq 0 ] || [ $((now_epoch - ts)) -lt "$REBOOT_WINDOW" ]; then
+                printf '%s\n' "$ts" >> "$tmpf" 2>/dev/null || true
+                recent=$((recent + 1))
+            fi
+        done < "$REBOOT_LOG"
+        mv "$tmpf" "$REBOOT_LOG" 2>/dev/null || rm -f "$tmpf" 2>/dev/null || true
+    fi
+
+    if [ "$recent" -ge "$REBOOT_MAX" ]; then
+        log "reboot rate-limited: ${recent} reboot(s) in the last ${REBOOT_WINDOW}s — NOT rebooting; continuing bounce/reapply"
+    else
+        log "LAN down for ${fail} checks, online this boot — rebooting (last resort; ${recent} prior in window)"
+        mkdir -p "$(dirname "$REBOOT_LOG")" 2>/dev/null || true
+        printf '%s\n' "$now_epoch" >> "$REBOOT_LOG" 2>/dev/null || true
+        now="$(date -Iseconds 2>/dev/null || date 2>/dev/null || echo unknown)"
+        mkdir -p "$(dirname "$BREADCRUMB")" 2>/dev/null || true
+        cat > "$BREADCRUMB" 2>/dev/null <<JSON || true
+{"action":"reboot","reason":"lan_down_after_online","iface":"${IFACE}","gateway":"${gw:-none}","consecutive_fail":${fail},"uptime_s":${uptime_s},"reboots_in_window":${recent},"timestamp":"${now}"}
+JSON
+        sync 2>/dev/null || true
+        systemctl reboot 2>/dev/null || reboot 2>/dev/null || true
+        exit 0
+    fi
+fi
+
+if [ "$fail" -ge "$FAIL_BOUNCE" ]; then
+    log "bouncing ${IFACE} (link down/up + nmcli reapply)"
+    ip link set "$IFACE" down 2>/dev/null || true
+    sleep 2
+    ip link set "$IFACE" up 2>/dev/null || true
+    nmcli device reapply "$IFACE" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+if [ "$fail" -ge "$FAIL_REAPPLY" ]; then
+    log "reapplying NetworkManager config on ${IFACE}"
+    nmcli device reapply "$IFACE" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# fail 1..(FAIL_REAPPLY-1): just observe; could be a transient gateway blip.
+exit 0
