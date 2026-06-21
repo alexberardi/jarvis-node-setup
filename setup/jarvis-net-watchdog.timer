@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Jarvis node network self-heal every 60s
+# Keep watching even if a single run fails to start for any reason.
+[Timer]
+# First check 90s after boot (lets NetworkManager associate), then every 60s.
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10s
+# Persisted=false: this is liveness watching, not a missed-job catch-up.
+Persistent=false
+Unit=jarvis-net-watchdog.service
+
+[Install]
+WantedBy=timers.target
