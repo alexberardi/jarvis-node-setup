@@ -205,6 +205,7 @@ install_apt_deps() {
   local wanted=(
     "${PY_PKG}" "${PY_VENV_PKG}"
     git avahi-utils hostapd dnsmasq
+    iw
     sqlcipher libsqlcipher-dev libopenblas-dev
     mosquitto-clients
   )
@@ -1013,25 +1014,42 @@ ASOUND
     info "Card not present yet (will appear after the reboot below)"
   fi
 
-  # --- Disable WiFi power management ---
+  # --- Disable WiFi power management (config layer) ---
   # Pi Zero 2 W's wlan0 enters power-save mode after idle, dropping off the
   # network entirely. SSH becomes unreachable, MQTT disconnects, and the node
-  # looks dead even though the CPU is still running. This is a one-liner in
-  # NetworkManager or a cron @reboot fallback for systems using wpa_supplicant.
+  # looks dead even though the CPU is still running. Disable it at three layers
+  # so no single stack quirk leaves it on:
+  #   (a) the *active* NM connection's wifi.powersave (persists across reboots),
+  #   (b) an immediate driver-level `iw ... power_save off` (covers the case
+  #       where NM's setting isn't pushed to brcmfmac — e.g. a netplan-rendered
+  #       connection), and
+  #   (c) continuous runtime enforcement + recovery via jarvis-net-watchdog
+  #       (install_net_watchdog below) — the durable backstop.
+  # The 2026-06 kitchen-node incident is the motivation: the old one-shot fix
+  # silently no-op'd (iwconfig absent so the cron fallback never installed; a
+  # netplan-managed connection that didn't enforce power-save on the live
+  # interface), nothing recovered the node, and the app-layer post-install
+  # watchdog never checked the network — so an alive-but-offline node was
+  # invisible. We target the *active* connection (not a name grep that can
+  # match a stale/secondary profile) and verify the result.
   if command -v nmcli >/dev/null 2>&1; then
     local wifi_con
-    wifi_con="$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ':802-11-wireless' | head -1 | cut -d: -f1 || true)"
+    wifi_con="$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2)"
+    if [ -z "$wifi_con" ]; then
+      wifi_con="$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | grep ':802-11-wireless' | head -1 | cut -d: -f1)"
+    fi
     if [ -n "$wifi_con" ]; then
-      nmcli connection modify "$wifi_con" wifi.powersave 2 2>/dev/null && \
-        success "WiFi power-save disabled (NetworkManager)" || true
+      nmcli connection modify "$wifi_con" wifi.powersave 2 2>/dev/null || true
+      nmcli device reapply wlan0 >/dev/null 2>&1 || true
+      success "WiFi power-save disabled on active connection (${wifi_con})"
+    else
+      warn "No active wlan0 NetworkManager connection — relying on jarvis-net-watchdog to enforce power-save off"
     fi
   fi
-  # Persistent fallback: iwconfig at every boot via cron
-  if command -v iwconfig >/dev/null 2>&1; then
-    local cron_line="@reboot /sbin/iwconfig wlan0 power off 2>/dev/null || true"
-    (crontab -l 2>/dev/null | grep -qF "iwconfig wlan0 power off") || \
-      (crontab -l 2>/dev/null; echo "$cron_line") | crontab - && \
-      success "WiFi power-off cron installed"
+  # Immediate driver-level enforcement. `iw` is now in the apt deps; nmcli's
+  # setting alone does not always reach the brcmfmac driver.
+  if command -v iw >/dev/null 2>&1; then
+    iw dev wlan0 set power_save off >/dev/null 2>&1 || true
   fi
 }
 
@@ -1754,6 +1772,64 @@ print_success() {
 }
 
 # --- Main ---
+configure_persistent_journald() {
+  # Make journald persistent so a node that wedges or falls off the network
+  # leaves a forensic trail that SURVIVES the reboot. Default Storage=auto
+  # only persists when /var/log/journal exists — on Pi images it usually
+  # doesn't, so the logs of the failure boot are lost (exactly what happened
+  # in the 2026-06 kitchen incident: nothing to read after the power-cycle).
+  # Cap the size so it can't fill the SD card.
+  if [ ! -d /var/log/journal ]; then
+    mkdir -p /var/log/journal 2>/dev/null || true
+    systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+  fi
+  mkdir -p /etc/systemd/journald.conf.d 2>/dev/null || true
+  cat > /etc/systemd/journald.conf.d/jarvis.conf 2>/dev/null <<'JCONF' || true
+# Jarvis node: persistent, size-capped journal so a wedge / network drop is
+# still readable after the reboot. See install.sh:configure_persistent_journald.
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+SystemKeepFree=100M
+SystemMaxFileSize=20M
+JCONF
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
+  journalctl --flush >/dev/null 2>&1 || true
+  success "Persistent journald enabled (cap 200M)"
+}
+
+install_net_watchdog() {
+  # Install the cause-agnostic network self-heal: a root oneshot driven by a
+  # 60s timer that enforces WiFi power-save off on the live interface and
+  # recovers a node that has fallen off the network (power-save, association
+  # loss, a netplan profile that didn't enforce power-save) via
+  # reapply -> bounce -> reboot. See scripts/jarvis-net-watchdog for the
+  # escalation ladder + boot-loop guard. Re-fills the connectivity-watchdog
+  # role removed in v0.1.69 and the blind spot the app-layer post-install
+  # watchdog has (it only ever checks jarvis-node.service, never the network).
+  local src_script="${INSTALL_DIR}/scripts/jarvis-net-watchdog"
+  if [ ! -s "$src_script" ]; then
+    warn "scripts/jarvis-net-watchdog missing/empty — node network self-heal not installed"
+    return 0
+  fi
+  install -o root -g root -m 0755 "$src_script" /usr/local/sbin/jarvis-net-watchdog
+
+  local svc="${INSTALL_DIR}/setup/jarvis-net-watchdog.service"
+  local tmr="${INSTALL_DIR}/setup/jarvis-net-watchdog.timer"
+  if [ ! -s "$svc" ] || [ ! -s "$tmr" ]; then
+    warn "jarvis-net-watchdog systemd units missing — self-heal timer not enabled"
+    return 0
+  fi
+  install -o root -g root -m 0644 "$svc" /etc/systemd/system/jarvis-net-watchdog.service
+  install -o root -g root -m 0644 "$tmr" /etc/systemd/system/jarvis-net-watchdog.timer
+  systemctl daemon-reload
+  if systemctl enable --now jarvis-net-watchdog.timer >/dev/null 2>&1; then
+    success "Network self-heal watchdog installed and armed (60s timer)"
+  else
+    warn "Could not enable jarvis-net-watchdog.timer"
+  fi
+}
+
 main() {
   NEEDS_REBOOT=0
 
@@ -1766,6 +1842,7 @@ main() {
   configure_pulseaudio_no_suspend
   configure_pulseaudio_stream_restore
   configure_vm_swappiness
+  configure_persistent_journald
 
   # Set up the service user (groups, lingering, ~/.jarvis) BEFORE the
   # heavy steps so alembic + any other key-writing code in the install
@@ -1816,6 +1893,7 @@ main() {
   install_self_update_wrapper
   install_post_install_verify_wrapper
   install_alsa_store_wrapper
+  install_net_watchdog
   install_sudoers
   create_service
 

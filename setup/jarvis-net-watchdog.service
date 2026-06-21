@@ -1,0 +1,30 @@
+[Unit]
+Description=Jarvis node network self-heal (recovers wlan0 from power-save / association loss)
+# Run after the network stack is up; the watchdog tolerates "no network yet"
+# on its own (it only escalates after FAIL_* consecutive checks and never
+# reboots until it has actually been online this boot).
+After=network.target NetworkManager.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+User=root
+# One check per invocation; all run-state lives in tmpfs (resets on reboot,
+# which is the boot-loop guard). See scripts/jarvis-net-watchdog for the
+# escalation ladder and why each threshold is where it is.
+ExecStart=/usr/local/sbin/jarvis-net-watchdog
+# Tunables (consecutive ~60s checks before each escalation step):
+Environment=NETWD_IFACE=wlan0
+Environment=NETWD_FAIL_REAPPLY=3
+Environment=NETWD_FAIL_BOUNCE=4
+Environment=NETWD_FAIL_REBOOT=6
+# Don't reboot in the first MIN_UPTIME seconds even if it looks down — gives
+# WiFi/NetworkManager time to associate on a cold boot.
+Environment=NETWD_MIN_UPTIME=120
+# Persistent reboot-rate cap so a flapping link can't reboot-loop the node:
+# at most NETWD_REBOOT_MAX reboots per NETWD_REBOOT_WINDOW seconds.
+Environment=NETWD_REBOOT_MAX=3
+Environment=NETWD_REBOOT_WINDOW=3600
+SyslogIdentifier=jarvis-net-watchdog
+StandardOutput=journal
+StandardError=journal
