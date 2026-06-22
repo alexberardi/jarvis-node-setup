@@ -1830,6 +1830,51 @@ install_net_watchdog() {
   fi
 }
 
+reconcile_wifi_profiles() {
+  # Deconflict duplicate NetworkManager profiles for the same SSID. Two
+  # autoconnect profiles for one SSID at equal priority make reconnection
+  # nondeterministic: when the link drops NM can thrash between them, rack up
+  # auth failures (CTRL-EVENT-ASSOC-REJECT / SSID-TEMP-DISABLED), and strand the
+  # node off-network. That was the TRUE root cause of the 2026-06 kitchen
+  # incident — a provisioning `jarvis-<ssid>` profile colliding with a
+  # netplan-rendered one (both autoconnect, both priority 0). Pin the profile
+  # actually serving wlan0 right now and stop every other same-SSID profile
+  # from competing. Re-runs on every install/update, so a netplan regen that
+  # re-enables its duplicate is re-demoted next time and, regardless, always
+  # loses to the pinned priority-999 keeper.
+  command -v nmcli >/dev/null 2>&1 || return 0
+
+  local active active_ssid
+  active="$(nmcli -t -f GENERAL.CONNECTION device show wlan0 2>/dev/null | cut -d: -f2-)"
+  if [ -z "$active" ]; then
+    info "wlan0 has no active NM connection — skipping WiFi profile reconcile"
+    return 0
+  fi
+  active_ssid="$(nmcli -t -g 802-11-wireless.ssid connection show "$active" 2>/dev/null)"
+  [ -n "$active_ssid" ] || return 0
+
+  local dups=0 name nm_ssid
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    nm_ssid="$(nmcli -t -g 802-11-wireless.ssid connection show "$name" 2>/dev/null)"
+    [ "$nm_ssid" = "$active_ssid" ] || continue
+    if [ "$name" = "$active" ]; then
+      nmcli connection modify "$name" connection.autoconnect yes connection.autoconnect-priority 999 2>/dev/null || true
+    else
+      nmcli connection modify "$name" connection.autoconnect no 2>/dev/null || true
+      dups=$((dups + 1))
+    fi
+  done <<EOF
+$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | awk -F: '$2=="802-11-wireless"{print $1}')
+EOF
+
+  if [ "$dups" -gt 0 ]; then
+    success "Reconciled ${dups} duplicate WiFi profile(s) for '${active_ssid}' — pinned '${active}' (autoconnect-priority 999)"
+  else
+    info "No duplicate WiFi profiles for the active SSID"
+  fi
+}
+
 main() {
   NEEDS_REBOOT=0
 
@@ -1880,6 +1925,7 @@ main() {
   # see the function header for details.
   verify_install
   configure_audio
+  reconcile_wifi_profiles
   setup_config
   rebuild_venv
   restore_pantry_pip_deps

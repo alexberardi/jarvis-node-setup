@@ -39,7 +39,18 @@ def _make_stubs(bindir: Path, calllog: Path, ping_file: Path) -> None:
         {log}
         exit "$(cat "{ping_file}" 2>/dev/null || echo 1)"
     """))
-    for name in ("nmcli", "iw", "logger", "systemctl", "reboot"):
+    # nmcli: log every call, and answer the two queries the watchdog uses to
+    # find the preferred (highest autoconnect-priority) wifi profile, so the
+    # duplicate-profile recovery path (`nmcli connection up <pref>`) runs.
+    _write_stub(bindir / "nmcli", textwrap.dedent(f"""\
+        {log}
+        case "$*" in
+          "-t -f NAME,TYPE connection show") echo "wlan-good:802-11-wireless" ;;
+          "-t -g connection.autoconnect-priority connection show wlan-good") echo "999" ;;
+        esac
+        exit 0
+    """))
+    for name in ("iw", "logger", "systemctl", "reboot"):
         _write_stub(bindir / name, f"{log}\nexit 0\n")
 
 
@@ -99,11 +110,15 @@ def test_escalation_reapply_then_bounce_then_reboot(tmp_path):
 
     assert "device reapply" not in h.tick(online=False)   # fail 1
     assert "device reapply" not in h.tick(online=False)   # fail 2
-    assert "nmcli device reapply wlan0" in h.tick(online=False)  # fail 3 → reapply
+
+    reapply = h.tick(online=False)  # fail 3 → reapply + force preferred profile
+    assert "nmcli device reapply wlan0" in reapply
+    assert "nmcli connection up wlan-good" in reapply  # recovers the duplicate-profile race
 
     bounce = h.tick(online=False)  # fail 4 → bounce
     assert "ip link set wlan0 down" in bounce
     assert "ip link set wlan0 up" in bounce
+    assert "nmcli connection up wlan-good" in bounce
 
     # fail 5 keeps bouncing (gives DHCP/assoc ~2 min after the bounce) — NOT reboot.
     five = h.tick(online=False)
