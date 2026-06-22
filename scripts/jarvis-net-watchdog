@@ -158,18 +158,35 @@ JSON
     fi
 fi
 
+# Preferred wifi profile = the highest autoconnect-priority 802-11-wireless
+# connection (install.sh pins the known-good one to 999). Forcing it up
+# recovers — WITHOUT a reboot — from a duplicate-same-SSID profile race where
+# NM latched onto a profile that can't authenticate (the 2026-06 root cause).
+pref="$(nmcli -t -f NAME,TYPE connection show 2>/dev/null \
+    | awk -F: '$2=="802-11-wireless"{print $1}' \
+    | while IFS= read -r n; do
+        printf '%s\t%s\n' "$(nmcli -t -g connection.autoconnect-priority connection show "$n" 2>/dev/null || echo 0)" "$n"
+      done | sort -rn | head -1 | cut -f2-)"
+
 if [ "$fail" -ge "$FAIL_BOUNCE" ]; then
-    log "bouncing ${IFACE} (link down/up + nmcli reapply)"
+    log "bouncing ${IFACE} (link down/up + reapply + force preferred profile)"
     ip link set "$IFACE" down 2>/dev/null || true
     sleep 2
     ip link set "$IFACE" up 2>/dev/null || true
     nmcli device reapply "$IFACE" >/dev/null 2>&1 || true
+    if [ -n "$pref" ]; then
+        nmcli connection up "$pref" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 
 if [ "$fail" -ge "$FAIL_REAPPLY" ]; then
-    log "reapplying NetworkManager config on ${IFACE}"
+    log "reapplying NM config + forcing preferred profile on ${IFACE}"
     nmcli device reapply "$IFACE" >/dev/null 2>&1 || true
+    if [ -n "$pref" ]; then
+        log "forcing up preferred wifi profile: ${pref}"
+        nmcli connection up "$pref" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 
