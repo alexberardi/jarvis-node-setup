@@ -25,14 +25,13 @@ SCAN_TIMEOUT: float = 10.0
 def run_scan_and_upload(request_id: str) -> None:
     """Run device scan and upload results to CC. Meant to run in a background thread."""
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_async_scan_and_upload(request_id))
+        # asyncio.run() shuts down the loop's default executor; the old
+        # new_event_loop()/loop.close() leaked to_thread worker threads (parked
+        # in futex_wait) per scan — see device_state_handler for the full note.
+        asyncio.run(_async_scan_and_upload(request_id))
     except Exception as e:
         logger.error("Device scan handler failed", request_id=request_id[:8], error=str(e))
         _upload_error(request_id, str(e))
-    finally:
-        loop.close()
 
 
 async def _async_scan_and_upload(request_id: str) -> None:
