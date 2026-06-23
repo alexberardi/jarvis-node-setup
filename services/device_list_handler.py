@@ -23,10 +23,11 @@ logger = JarvisLogger(service="jarvis-node")
 
 def run_collect_and_upload(request_id: str, manager_name: str) -> None:
     """Run device collection and upload results to CC.  Meant to run in a background thread."""
-    loop = asyncio.new_event_loop()
     try:
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_async_collect_and_upload(request_id, manager_name))
+        # asyncio.run() shuts down the loop's default executor; the old
+        # new_event_loop()/loop.close() leaked to_thread worker threads (parked
+        # in futex_wait) per request — see device_state_handler for the full note.
+        asyncio.run(_async_collect_and_upload(request_id, manager_name))
     except Exception as e:
         logger.error(
             "Device list handler failed",
@@ -35,8 +36,6 @@ def run_collect_and_upload(request_id: str, manager_name: str) -> None:
             error=str(e),
         )
         _upload_error(request_id, str(e))
-    finally:
-        loop.close()
 
 
 async def _async_collect_and_upload(request_id: str, manager_name: str) -> None:
