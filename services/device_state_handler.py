@@ -20,15 +20,17 @@ logger = JarvisLogger(service="jarvis-node")
 
 def run_state_query_and_upload(request_id: str, details: dict[str, Any]) -> None:
     """Run device state query and upload results to CC. Runs in a background thread."""
-    loop = asyncio.new_event_loop()
     try:
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_async_query_and_upload(request_id, details))
+        # asyncio.run() — NOT a hand-rolled new_event_loop()/loop.close() — so the
+        # loop's default ThreadPoolExecutor (created by any device protocol that
+        # wraps a sync API call in asyncio.to_thread) is SHUT DOWN, not leaked.
+        # loop.close() does not stop those workers; they parked in futex_wait
+        # forever, a batch per device request, until the node hit "can't start
+        # new thread" and wake broke after ~1.5 days uptime (2026-06-23 incident).
+        asyncio.run(_async_query_and_upload(request_id, details))
     except Exception as e:
         logger.error("Device state handler failed", request_id=request_id[:8], error=str(e))
         _upload_result(request_id, {"error": str(e)})
-    finally:
-        loop.close()
 
 
 async def _async_query_and_upload(request_id: str, details: dict[str, Any]) -> None:
