@@ -541,6 +541,13 @@ _OP_HANDLERS: dict[str, Callable[[mqtt.Client, str, dict[str, Any]], None]] = {
     "delete": _op_delete,
 }
 
+# The ops the MQTT listener should route here. This is the SINGLE source of
+# truth — the listener derives its allowlist from this set, so adding a handler
+# to _OP_HANDLERS automatically makes it routable (no second list to keep in
+# sync). The historical bug was a hardcoded tuple in the listener that didn't
+# include "create", so create requests fell through and timed out CC.
+SUPPORTED_OPS: frozenset[str] = frozenset(_OP_HANDLERS)
+
 
 def handle_command_data_request(
     client: mqtt.Client,

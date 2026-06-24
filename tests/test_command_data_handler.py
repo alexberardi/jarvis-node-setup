@@ -419,6 +419,18 @@ class TestGet:
 # ── update op ──────────────────────────────────────────────────────────────
 
 
+class TestSupportedOps:
+    """The listener routes command-data ops from command_data_handler.SUPPORTED_OPS.
+    Pinning it == _OP_HANDLERS keys prevents the drift that made `create`
+    requests time out (the listener had a hardcoded allowlist missing it)."""
+
+    def test_supported_ops_matches_handlers(self) -> None:
+        assert command_data_handler.SUPPORTED_OPS == set(command_data_handler._OP_HANDLERS)
+
+    def test_create_is_routable(self) -> None:
+        assert "create" in command_data_handler.SUPPORTED_OPS
+
+
 class TestCreate:
     def _create(self, mqtt_client, **payload):
         payload.setdefault("correlation_id", "c1")
