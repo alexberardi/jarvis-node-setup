@@ -190,6 +190,11 @@ def repo(discovery):
             {"_data_key": "row-2", "id": "row-2", "text": "beta", "user_id": 99},
             {"_data_key": "row-3", "id": "row-3", "text": "legacy"},  # no user_id
         ],
+        "creatable_storage": [
+            # has a create_only `scope` field — used to pin that create_only
+            # fields are NOT writable on update.
+            {"_data_key": "cre-1", "id": "cre-1", "text": "orig", "scope": "personal", "user_id": 42},
+        ],
     }
 
     fake_repo = MagicMock()
@@ -514,6 +519,41 @@ class TestUpdate:
         assert body["ok"] is True
         assert body["record"]["text"] == "kept"
         assert body["record"]["user_id"] == 42
+
+    def test_create_only_field_is_not_writable_on_update(
+        self, mqtt_client, discovery, repo
+    ) -> None:
+        # `scope` is create_only (editable=False): settable at create, but it
+        # must NOT be patchable on update — re-scoping a personal record to
+        # household would change who can see it. A scope-only patch filters to
+        # empty -> client error, never a silent re-scope.
+        result = _request(mqtt_client, "update", {
+            "correlation_id": "co1",
+            "command_name": "creatable",
+            "key": "cre-1",
+            "patch": {"scope": "household"},
+            "requesting_user_id": 42,
+        })
+        body = result["body"]
+        assert body["ok"] is False
+        assert "no editable" in body["error"]["message"].lower()
+
+    def test_update_drops_create_only_keeps_editable(
+        self, mqtt_client, discovery, repo
+    ) -> None:
+        # A mixed patch applies the editable field and silently drops the
+        # create_only `scope` — the stored scope is unchanged.
+        result = _request(mqtt_client, "update", {
+            "correlation_id": "co2",
+            "command_name": "creatable",
+            "key": "cre-1",
+            "patch": {"text": "renamed", "scope": "household"},
+            "requesting_user_id": 42,
+        })
+        body = result["body"]
+        assert body["ok"] is True
+        assert body["record"]["text"] == "renamed"
+        assert body["record"]["scope"] == "personal"  # create_only never re-scoped
 
     def test_patch_with_zero_editable_fields_is_error(
         self, mqtt_client, discovery, repo
