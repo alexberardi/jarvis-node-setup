@@ -5,6 +5,7 @@ Subscribed topics (under the node's wildcard `jarvis/nodes/{node_id}/#`):
     .../command-data/schema    -- get a command's FieldSpec list + mode
     .../command-data/list      -- list records for one command
     .../command-data/get       -- get one record by data_key
+    .../command-data/create    -- create a new record (opt-in per command)
     .../command-data/update    -- patch one record (dict overlay)
     .../command-data/delete    -- delete one record
 
@@ -160,6 +161,7 @@ def _op_schema(
     _publish(client, request_topic, correlation_id, {
         "ok": True,
         "mode": cmd.data_browser_mode,
+        "supports_create": cmd.data_browser_supports_create,
         "fields": [f.to_dict() for f in cmd.editable_fields()],
     })
 
@@ -266,6 +268,7 @@ def _op_get(
         "record": record,
         "schema": {
             "mode": cmd.data_browser_mode,
+            "supports_create": cmd.data_browser_supports_create,
             "fields": [f.to_dict() for f in cmd.editable_fields()],
         },
     })
@@ -338,6 +341,79 @@ def _op_update(
     _publish(client, request_topic, correlation_id, {
         "ok": True,
         "record": updated_record,
+    })
+
+
+def _op_create(
+    client: mqtt.Client,
+    request_topic: str,
+    payload: dict[str, Any],
+) -> None:
+    """Create a new record for one command.
+
+    Mirrors _op_update but mints a fresh record instead of patching an
+    existing one. The record's owner (`user_id`) is stamped server-side from
+    `requesting_user_id` inside the command's `data_browser_create` hook — the
+    client can never assert ownership, and an unresolved caller is rejected
+    fail-closed by the command.
+
+    Create is opt-in per command via `data_browser_supports_create`: a command
+    that doesn't opt in is refused here, so a generic save can never silently
+    bypass runtime state (e.g. a scheduler that reads an in-memory cache)."""
+    correlation_id = payload.get("correlation_id")
+    if not correlation_id:
+        return
+
+    command_name = payload.get("command_name")
+    raw_values = payload.get("data")
+    requesting_user_id = payload.get("requesting_user_id")
+
+    cmd = _resolve_by_command_name(command_name) if command_name else None
+    if cmd is None or not _visible(cmd) or not isinstance(raw_values, dict):
+        _publish(client, request_topic, correlation_id, {
+            "ok": False, "error": {"message": "command or values missing"},
+        })
+        return
+
+    if cmd.data_browser_mode == "readonly":
+        _publish(client, request_topic, correlation_id, {
+            "ok": False, "error": {"message": "command is read-only"},
+        })
+        return
+
+    if not cmd.data_browser_supports_create:
+        _publish(client, request_topic, correlation_id, {
+            "ok": False, "error": {"message": "command does not support adding records"},
+        })
+        return
+
+    # Allowed-on-create = editable fields PLUS create-only fields (e.g. a
+    # record's scope, chosen once at birth). Server-managed fields
+    # (user_id / id / created_at) are neither editable nor create_only, so a
+    # client can't smuggle them in — they're stamped by the command itself.
+    creatable = {f.name for f in cmd.editable_fields() if f.editable or f.create_only}
+    creatable.discard("data_key")
+    values = {k: v for k, v in raw_values.items() if k in creatable}
+
+    try:
+        new_key, record = cmd.data_browser_create(values, requesting_user_id)
+    except ValueError as exc:
+        _publish(client, request_topic, correlation_id, {
+            "ok": False, "error": {"message": str(exc)},
+        })
+        return
+
+    logger.info(
+        "command-data record created",
+        command_name=cmd.command_name,
+        data_key=new_key,
+        created_keys=sorted(values.keys()),
+        requesting_user_id=requesting_user_id,
+    )
+    _publish(client, request_topic, correlation_id, {
+        "ok": True,
+        "record": _strip_storage_meta(record) if isinstance(record, dict) else record,
+        "key": new_key,
     })
 
 
@@ -460,9 +536,17 @@ _OP_HANDLERS: dict[str, Callable[[mqtt.Client, str, dict[str, Any]], None]] = {
     "schema": _op_schema,
     "list": _op_list,
     "get": _op_get,
+    "create": _op_create,
     "update": _op_update,
     "delete": _op_delete,
 }
+
+# The ops the MQTT listener should route here. This is the SINGLE source of
+# truth — the listener derives its allowlist from this set, so adding a handler
+# to _OP_HANDLERS automatically makes it routable (no second list to keep in
+# sync). The historical bug was a hardcoded tuple in the listener that didn't
+# include "create", so create requests fell through and timed out CC.
+SUPPORTED_OPS: frozenset[str] = frozenset(_OP_HANDLERS)
 
 
 def handle_command_data_request(
