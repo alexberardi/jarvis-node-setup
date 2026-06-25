@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Client software for Jarvis voice nodes"
 requires-python = ">=3.10"
 dependencies = [
-    "jarvis-command-sdk",
+    # >=0.4.1 for the command-data create-verb (data_browser_supports_create /
+    # data_browser_create + FieldSpec.create_only) used by _op_create.
+    "jarvis-command-sdk>=0.4.1",
 ]
 
 [tool.setuptools.packages.find]
