@@ -2321,7 +2321,10 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     if "/command-data/" in msg.topic and "/response/" not in msg.topic:
         op = msg.topic.rsplit("/command-data/", 1)[-1]
-        if op in ("commands", "schema", "list", "get", "update", "delete"):
+        # Derive the routable ops from the handler so the two never drift
+        # (cached after first import; the handler module is already loaded).
+        from services.command_data_handler import SUPPORTED_OPS
+        if op in SUPPORTED_OPS:
             _offload(_handle_command_data_topic, msg.topic, msg.payload, op)
             return
 

@@ -105,6 +105,52 @@ class _ReadonlyCommand(_ToyCommand):
         return "readonly"
 
 
+class _CreatableCommand(_ToyCommand):
+    """Opts into create with a custom hook so the node delegates to it.
+
+    Records the (filtered) fields + user it received so tests can assert the
+    node stamps ownership server-side and drops non-creatable fields."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_create: dict[str, Any] | None = None
+
+    @property
+    def command_name(self) -> str:
+        return "creatable"
+
+    @property
+    def data_browser_storage_name(self) -> str:
+        return "creatable_storage"
+
+    @property
+    def data_browser_supports_create(self) -> bool:
+        return True
+
+    def editable_fields(self):
+        return [
+            FieldSpec("id", "id", editable=False),
+            FieldSpec("text", "string", editable=True),
+            FieldSpec(
+                "scope", "enum", enum_values=["personal", "household"],
+                editable=False, create_only=True,
+            ),
+            FieldSpec("user_id", "user_ref", editable=False),
+        ]
+
+    def data_browser_create(self, fields, requesting_user_id):
+        self.last_create = {"fields": dict(fields), "user": requesting_user_id}
+        if requesting_user_id is None and fields.get("scope", "personal") == "personal":
+            raise ValueError("cannot create a personal record without a known user")
+        key = "new-key"
+        return key, {
+            "id": key,
+            "text": fields.get("text"),
+            "scope": fields.get("scope"),
+            "user_id": requesting_user_id,
+        }
+
+
 @pytest.fixture
 def mqtt_client():
     return MagicMock()
@@ -117,12 +163,14 @@ def discovery():
     toy = _ToyCommand()
     disabled = _DisabledCommand()
     readonly = _ReadonlyCommand()
+    creatable = _CreatableCommand()
 
     fake_discovery = MagicMock()
     by_name = {
         "toy": toy,
         "secret": disabled,
         "ro": readonly,
+        "creatable": creatable,
     }
     fake_discovery.get_command.side_effect = lambda n: by_name.get(n)
     fake_discovery.get_all_commands.return_value = by_name
@@ -141,6 +189,11 @@ def repo(discovery):
             {"_data_key": "row-1", "id": "row-1", "text": "alpha", "user_id": 42},
             {"_data_key": "row-2", "id": "row-2", "text": "beta", "user_id": 99},
             {"_data_key": "row-3", "id": "row-3", "text": "legacy"},  # no user_id
+        ],
+        "creatable_storage": [
+            # has a create_only `scope` field — used to pin that create_only
+            # fields are NOT writable on update.
+            {"_data_key": "cre-1", "id": "cre-1", "text": "orig", "scope": "personal", "user_id": 42},
         ],
     }
 
@@ -240,8 +293,19 @@ class TestSchema:
         body = result["body"]
         assert body["ok"] is True
         assert body["mode"] == "enabled"
+        assert body["supports_create"] is False  # toy doesn't opt in
         field_names = [f["name"] for f in body["fields"]]
         assert field_names == ["id", "text", "user_id"]
+
+    def test_reports_supports_create(self, mqtt_client, discovery, repo) -> None:
+        result = _request(mqtt_client, "schema", {
+            "correlation_id": "c1", "command_name": "creatable"
+        })
+        body = result["body"]
+        assert body["ok"] is True
+        assert body["supports_create"] is True
+        scope = next(f for f in body["fields"] if f["name"] == "scope")
+        assert scope["create_only"] is True  # round-trips through to_dict
 
     def test_disabled_command_returns_not_found(self, mqtt_client, discovery, repo) -> None:
         result = _request(mqtt_client, "schema", {
@@ -355,6 +419,91 @@ class TestGet:
 # ── update op ──────────────────────────────────────────────────────────────
 
 
+class TestSupportedOps:
+    """The listener routes command-data ops from command_data_handler.SUPPORTED_OPS.
+    Pinning it == _OP_HANDLERS keys prevents the drift that made `create`
+    requests time out (the listener had a hardcoded allowlist missing it)."""
+
+    def test_supported_ops_matches_handlers(self) -> None:
+        assert command_data_handler.SUPPORTED_OPS == set(command_data_handler._OP_HANDLERS)
+
+    def test_create_is_routable(self) -> None:
+        assert "create" in command_data_handler.SUPPORTED_OPS
+
+
+class TestCreate:
+    def _create(self, mqtt_client, **payload):
+        payload.setdefault("correlation_id", "c1")
+        payload.setdefault("command_name", "creatable")
+        return _request(mqtt_client, "create", payload)["body"]
+
+    def test_creates_and_echoes_key_and_owner(self, mqtt_client, discovery, repo) -> None:
+        body = self._create(
+            mqtt_client,
+            data={"text": "hello", "scope": "personal"},
+            requesting_user_id=42,
+        )
+        assert body["ok"] is True
+        assert body["key"] == "new-key"
+        assert body["record"]["user_id"] == 42  # stamped from requesting_user_id
+        assert body["record"]["scope"] == "personal"
+        assert body["record"]["text"] == "hello"
+
+    def test_drops_non_creatable_fields_before_hook(self, mqtt_client, discovery, repo) -> None:
+        # Client tries to smuggle id / user_id / an unknown field; the node
+        # filters to editable + create_only names before the command sees them.
+        self._create(
+            mqtt_client,
+            data={"text": "x", "scope": "household", "user_id": 999, "id": "evil", "bogus": 1},
+            requesting_user_id=7,
+        )
+        seen = discovery.get_command("creatable").last_create["fields"]
+        assert seen == {"text": "x", "scope": "household"}
+
+    def test_unsupported_command_is_refused(self, mqtt_client, discovery, repo) -> None:
+        # toy doesn't opt into create
+        body = self._create(
+            mqtt_client, command_name="toy", data={"text": "x"}, requesting_user_id=1
+        )
+        assert body["ok"] is False
+        assert "support" in body["error"]["message"].lower()
+
+    def test_readonly_command_rejected(self, mqtt_client, discovery, repo) -> None:
+        body = self._create(
+            mqtt_client, command_name="ro", data={"text": "x"}, requesting_user_id=1
+        )
+        assert body["ok"] is False
+        assert "read-only" in body["error"]["message"].lower()
+
+    def test_disabled_command_is_not_found(self, mqtt_client, discovery, repo) -> None:
+        body = self._create(
+            mqtt_client, command_name="secret", data={"text": "x"}, requesting_user_id=1
+        )
+        assert body["ok"] is False
+
+    def test_missing_data_is_error(self, mqtt_client, discovery, repo) -> None:
+        body = self._create(mqtt_client, requesting_user_id=1)  # no data dict
+        assert body["ok"] is False
+
+    def test_hook_value_error_surfaces_message(self, mqtt_client, discovery, repo) -> None:
+        # personal scope with an unresolved user -> hook fails closed
+        body = self._create(
+            mqtt_client, data={"text": "x", "scope": "personal"}, requesting_user_id=None
+        )
+        assert body["ok"] is False
+        assert "without a known user" in body["error"]["message"]
+
+    def test_no_correlation_id_no_publish(self, mqtt_client, discovery, repo) -> None:
+        request_topic = "jarvis/nodes/test/command-data/create"
+        command_data_handler.handle_command_data_request(
+            mqtt_client,
+            request_topic,
+            json.dumps({"command_name": "creatable", "data": {"text": "x"}, "requesting_user_id": 1}).encode(),
+            "create",
+        )
+        mqtt_client.publish.assert_not_called()
+
+
 class TestUpdate:
     def test_basic_field_update(self, mqtt_client, discovery, repo) -> None:
         result = _request(mqtt_client, "update", {
@@ -382,6 +531,41 @@ class TestUpdate:
         assert body["ok"] is True
         assert body["record"]["text"] == "kept"
         assert body["record"]["user_id"] == 42
+
+    def test_create_only_field_is_not_writable_on_update(
+        self, mqtt_client, discovery, repo
+    ) -> None:
+        # `scope` is create_only (editable=False): settable at create, but it
+        # must NOT be patchable on update — re-scoping a personal record to
+        # household would change who can see it. A scope-only patch filters to
+        # empty -> client error, never a silent re-scope.
+        result = _request(mqtt_client, "update", {
+            "correlation_id": "co1",
+            "command_name": "creatable",
+            "key": "cre-1",
+            "patch": {"scope": "household"},
+            "requesting_user_id": 42,
+        })
+        body = result["body"]
+        assert body["ok"] is False
+        assert "no editable" in body["error"]["message"].lower()
+
+    def test_update_drops_create_only_keeps_editable(
+        self, mqtt_client, discovery, repo
+    ) -> None:
+        # A mixed patch applies the editable field and silently drops the
+        # create_only `scope` — the stored scope is unchanged.
+        result = _request(mqtt_client, "update", {
+            "correlation_id": "co2",
+            "command_name": "creatable",
+            "key": "cre-1",
+            "patch": {"text": "renamed", "scope": "household"},
+            "requesting_user_id": 42,
+        })
+        body = result["body"]
+        assert body["ok"] is True
+        assert body["record"]["text"] == "renamed"
+        assert body["record"]["scope"] == "personal"  # create_only never re-scoped
 
     def test_patch_with_zero_editable_fields_is_error(
         self, mqtt_client, discovery, repo
