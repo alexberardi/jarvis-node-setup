@@ -237,6 +237,39 @@ class DirectDeviceService:
             mac_address=device.mac_address,
         )
 
+    async def remove_device(self, details: dict[str, Any]) -> None:
+        """Let a device's protocol clean up when it's deleted from Jarvis (e.g.
+        HomeKit unpair). CC publishes ``device_removed`` before deleting the
+        record. Best-effort; always invalidates the cache afterward.
+        """
+        entity_id: str = details.get("entity_id", "")
+        protocol: str = details.get("protocol", "")
+        adapter = self._protocols.get(protocol)
+        if adapter is None:
+            self._load_protocols()
+            adapter = self._protocols.get(protocol)
+        try:
+            if adapter is not None and hasattr(adapter, "on_removed"):
+                from device_families.base import DiscoveredDevice
+
+                discovered = DiscoveredDevice(
+                    entity_id=entity_id,
+                    name=details.get("name", ""),
+                    domain=details.get("domain", ""),
+                    manufacturer=protocol,
+                    model=details.get("model", ""),
+                    protocol=protocol,
+                    cloud_id=details.get("cloud_id"),
+                    local_ip=details.get("local_ip"),
+                    mac_address=details.get("mac_address"),
+                )
+                await adapter.on_removed(discovered, entity_id=entity_id)
+                logger.info("Protocol cleanup on device removal", entity_id=entity_id, protocol=protocol)
+        except Exception as e:
+            logger.warning("Device on_removed failed", entity_id=entity_id, error=str(e))
+        finally:
+            self.invalidate_cache()
+
     def get_context_data(self) -> dict[str, Any]:
         """Build context data for voice prompts (same shape as HA context).
 

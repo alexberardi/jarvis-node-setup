@@ -1180,6 +1180,22 @@ def handle_invalidate_device_cache(details: Dict[str, Any]) -> None:
         logger.warning("invalidate_device_cache failed", error=str(e))
 
 
+def handle_device_removed(details: Dict[str, Any]) -> None:
+    """CC published that a device was deleted — let its protocol clean up (e.g.
+    HomeKit unpair) so the accessory is released and a future re-add starts fresh.
+    Runs off-thread because protocol cleanup is async + may do network I/O.
+    """
+    def _run() -> None:
+        import asyncio
+        try:
+            from services.direct_device_service import get_direct_device_service
+            asyncio.run(get_direct_device_service().remove_device(details))
+        except Exception as e:
+            logger.warning("device_removed handler failed", error=str(e))
+
+    _task_executor.submit(_run)
+
+
 def handle_measure_ambient_noise(details: Dict[str, Any]) -> None:
     """Capture ambient audio and post back a suggested silence_threshold.
 
@@ -1323,6 +1339,7 @@ command_handlers: Dict[str, Callable[[Dict[str, Any]], None]] = {
     "enroll_voice": handle_enroll_voice,
     "verify_voice": handle_verify_voice,
     "invalidate_device_cache": handle_invalidate_device_cache,
+    "device_removed": handle_device_removed,
     "measure_ambient_noise": handle_measure_ambient_noise,
 }
 
