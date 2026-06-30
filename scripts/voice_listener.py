@@ -237,10 +237,27 @@ def start_voice_listener(ma_service):
     didn't create.
     """
     try:
-        openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
+        # Egress is opt-in: only reach out to download the openWakeWord model
+        # when explicitly enabled. When off, load whatever is already staged
+        # locally; if it's absent, OWWModel raises and we fall through to the
+        # keyboard/exception fallback below.
+        if Config.get_bool("wake_word_model_autodownload_enabled", False):
+            openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
+        else:
+            logger.info(
+                "Skipping openWakeWord model download (autodownload disabled by policy) — "
+                "loading locally staged model only",
+                model=WAKE_WORD_MODEL,
+            )
         oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
     except Exception as e:
-        logger.warning("openWakeWord init failed, falling back to keyboard trigger", error=str(e))
+        logger.warning(
+            "openWakeWord init failed, falling back to keyboard trigger — "
+            "wake model missing; enable wake_word_model_autodownload_enabled "
+            "or pre-stage the model",
+            error=str(e),
+            model=WAKE_WORD_MODEL,
+        )
         if sys.stdin and sys.stdin.isatty():
             _start_keyboard_listener()
         else:
