@@ -62,6 +62,19 @@ async def _async_query_and_upload(request_id: str, details: dict[str, Any]) -> N
         })
         return
 
+    # A protocol may report that it needs to be paired before it can return
+    # real state (e.g. HomeKit's setup-code pairing). Surface that verbatim with
+    # a "pairing" control type so the app shows a Pair affordance regardless of
+    # the device's domain — domain normalization below would otherwise drop it.
+    if raw_state.get("needs_pairing"):
+        _upload_result(request_id, {
+            "entity_id": entity_id,
+            "domain": domain,
+            "state": {"needs_pairing": True},
+            "ui_hints": {"control_type": "pairing"},
+        })
+        return
+
     # Normalize via domain handler
     handler = get_domain_handler(domain)
     if handler:
