@@ -126,6 +126,14 @@ class IJarvisDeviceProtocol(ABC):
             values: Key-value pairs from the OAuth token exchange.
         """
 
+    async def on_removed(self, device: Any, **kwargs: Any) -> None:
+        """Called when a device of this protocol is removed from Jarvis.
+
+        Override to release resources (e.g. unpair a HomeKit accessory so it
+        becomes pairable again). The node publishes this via the ``device_removed``
+        MQTT command before the device record is deleted. Default: no-op.
+        """
+
     def validate_secrets(self) -> list[str]:
         """Check which required secrets are missing.
 
