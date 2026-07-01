@@ -33,6 +33,7 @@ from jarvis_log_client import JarvisLogger
 
 from core.runtime_state import is_busy
 from core.version import version_info
+from utils.config_service import Config
 
 
 logger = JarvisLogger(service="jarvis-node")
@@ -159,7 +160,18 @@ def maybe_apply_update(pending: dict[str, Any]) -> None:
     - Docker / dev installs (those update out-of-band)
     - A busy node (belt-and-suspenders; CC should already defer)
     - A task matching our current version (nothing to do)
+
+    Gated by the ``allow_updates`` policy (env ``JARVIS_ALLOW_UPDATES``),
+    which defaults to False. When disabled this short-circuits before any
+    state write or installer spawn — no GitHub/wrapper egress at all.
     """
+    if not Config.get_bool("allow_updates", False):
+        logger.info(
+            "Update requested but updates are disabled by policy — ignoring",
+            task_id=pending.get("task_id"),
+        )
+        return
+
     if _in_flight.is_set():
         return
 
