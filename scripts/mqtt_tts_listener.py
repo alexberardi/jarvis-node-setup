@@ -1802,7 +1802,14 @@ def _handle_camera_credentials_notification(raw_payload: bytes) -> None:
 
 
 def _handle_package_install_notification(raw_payload: bytes) -> None:
-    """Handle package install request from CC — runs install in background thread."""
+    """Handle a package install nudge from CC — verify with CC, then install.
+
+    Zero-trust: this MQTT message is an untrusted nudge. Only ``request_id`` is
+    used; the authoritative repo URL is fetched from CC's verify endpoint (which
+    404s on a spoofed request_id). We never install from a URL supplied in the
+    MQTT payload — that would let anyone able to reach the broker install
+    arbitrary code on the node.
+    """
     try:
         notification: Dict[str, Any] = json.loads(raw_payload.decode())
     except json.JSONDecodeError:
@@ -1810,19 +1817,15 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
         return
 
     request_id: str = notification.get("request_id", "")
-    command_name: str = notification.get("command_name", "")
-    github_repo_url: str = notification.get("github_repo_url", "")
-    git_tag: str | None = notification.get("git_tag")
-
-    if not request_id or not github_repo_url:
-        print(f"[INSTALL] missing request_id or github_repo_url, ignoring", flush=True)
+    if not request_id:
+        print(f"[INSTALL] missing request_id, ignoring", flush=True)
         return
 
-    print(f"[INSTALL] received: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
+    print(f"[INSTALL] nudge received request_id={request_id[:8]}", flush=True)
 
     from services.package_install_handler import run_install_and_upload
 
-    _task_executor.submit(run_install_and_upload, request_id, command_name, github_repo_url, git_tag)
+    _task_executor.submit(run_install_and_upload, request_id)
     print("[INSTALL] task submitted", flush=True)
 
 
