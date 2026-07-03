@@ -15,6 +15,7 @@ from jarvis_log_client import JarvisLogger
 
 from utils.audio_volume import set_volume_percent
 from utils.config_service import Config
+from utils.mqtt_credentials import fetch_and_persist_mqtt_credentials
 from core.helpers import get_tts_provider
 from services.config_push_service import process_pending_configs
 from services.settings_snapshot_service import handle_snapshot_request
@@ -2578,6 +2579,17 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     logger.info("Test command cleanup thread started")
 
     config = get_mqtt_config()
+
+    # If the broker requires auth but this node has no credential yet (the
+    # transition window), fetch it from command-center over the authenticated
+    # HTTP channel and persist it. Falls through to anonymous if command-center
+    # has no credential yet or is unreachable — connecting exactly as today.
+    if not config["username"] or not config["password"]:
+        fetched_user, fetched_pw = fetch_and_persist_mqtt_credentials()
+        if fetched_user and fetched_pw:
+            config["username"] = fetched_user
+            config["password"] = fetched_pw
+
     scheme: str = config["scheme"]
     transport: str = "websockets" if scheme in ("ws", "wss") else "tcp"
 
