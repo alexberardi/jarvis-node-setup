@@ -221,42 +221,78 @@ def _download_archive(repo_url: str, tag: str | None = None) -> Path | None:
         return None
 
 
+def _looks_like_commit_sha(ref: str) -> bool:
+    """A ref that is a 7-40 char lowercase hex string is a commit SHA, not a
+    branch/tag name. Pantry now pins installs to the immutable commit it
+    validated (a tag can be force-repointed to un-reviewed code after review),
+    and ``git clone --branch`` rejects a raw SHA — so we must fetch these by
+    object id rather than silently falling back to the default branch.
+    """
+    ref = ref.strip()
+    return 7 <= len(ref) <= 40 and all(c in "0123456789abcdef" for c in ref.lower())
+
+
 def _clone_repo(repo_url: str, tag: str | None = None) -> Path:
-    """Download a repo — tries archive download first, falls back to git clone.
+    """Download a repo — tries archive download first, falls back to git.
 
     Args:
         repo_url: GitHub HTTPS URL.
-        tag: Optional git tag to checkout.
+        tag: Optional git ref to fetch — a tag/branch name OR a commit SHA
+            (Pantry pins to the validated commit SHA to defeat the
+            validate-then-repoint TOCTOU).
 
     Returns:
         Path to the repo directory.
     """
-    # Try archive download first (no git/auth needed)
+    # Try archive download first (no git/auth needed). GitHub serves
+    # /archive/<sha>.tar.gz for a full commit SHA, so this path already pins
+    # exactly what Pantry validated.
     result_path = _download_archive(repo_url, tag)
     if result_path:
         return result_path
 
-    # Fallback to git clone
+    # Prevent git from prompting for credentials (hangs headless nodes)
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-cmd-"))
+    repo_path = tmpdir / "repo"
+
+    # A commit SHA can't be `git clone --branch`ed. Fetch the exact object so a
+    # pinned install NEVER silently degrades to the mutable default branch (which
+    # would reintroduce the TOCTOU the SHA pin closes). GitHub allows fetching an
+    # arbitrary reachable SHA.
+    if tag and _looks_like_commit_sha(tag):
+        steps = [
+            ["git", "init", "--quiet", str(repo_path)],
+            ["git", "-C", str(repo_path), "remote", "add", "origin", repo_url],
+            ["git", "-C", str(repo_path), "fetch", "--depth", "1", "origin", tag],
+            ["git", "-C", str(repo_path), "checkout", "--quiet", "FETCH_HEAD"],
+        ]
+        for step in steps:
+            result = subprocess.run(step, capture_output=True, text=True, timeout=60, env=env)
+            if result.returncode != 0:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                raise InstallError(
+                    f"Failed to fetch pinned commit {tag}: {result.stderr.strip()}"
+                )
+        return repo_path
+
     cmd = ["git", "clone", "--depth", "1"]
     if tag:
         cmd.extend(["--branch", tag])
-    cmd.extend([repo_url, str(tmpdir / "repo")])
-
-    # Prevent git from prompting for credentials (hangs headless nodes)
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    cmd.extend([repo_url, str(repo_path)])
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
     if result.returncode != 0 and tag:
         shutil.rmtree(tmpdir, ignore_errors=True)
         tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-cmd-"))
-        fallback_cmd = ["git", "clone", "--depth", "1", repo_url, str(tmpdir / "repo")]
+        repo_path = tmpdir / "repo"
+        fallback_cmd = ["git", "clone", "--depth", "1", repo_url, str(repo_path)]
         result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60, env=env)
     if result.returncode != 0:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise InstallError(f"Failed to download package: {result.stderr.strip()}")
 
-    return tmpdir / "repo"
+    return repo_path
 
 
 def _validate_repo_structure(repo_dir: Path) -> CommandManifest:

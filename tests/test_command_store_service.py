@@ -28,6 +28,8 @@ from services.command_store_service import (
     _write_store_metadata,
     _install_apt_deps,
     _force_rmtree,
+    _clone_repo,
+    _looks_like_commit_sha,
     _APT_MIN_FREE_BYTES,
     _APT_WRAPPER_PATH,
     _PREFLIGHT_VALIDATE_TIMEOUT_SECONDS,
@@ -1332,3 +1334,65 @@ class TestInstallAptBeforePipOrdering:
                 install_from_github("https://github.com/test/repo", skip_tests=True)
 
         mock_pip.assert_not_called()
+
+
+class TestClonePinsToCommitSha:
+    """Pantry pins installs to the immutable validated commit SHA (P1.6). The
+    git fallback must fetch that exact object, never `--branch <sha>` (which git
+    rejects) and never silently drop to the mutable default branch."""
+
+    def test_looks_like_commit_sha(self):
+        assert _looks_like_commit_sha("0123456789abcdef0123456789abcdef01234567")
+        assert _looks_like_commit_sha("abc1234")  # short SHA
+        assert not _looks_like_commit_sha("v1.0.0")
+        assert not _looks_like_commit_sha("main")
+        assert not _looks_like_commit_sha("release-2024")  # hyphen -> not hex
+        assert not _looks_like_commit_sha("abc")  # too short
+
+    def test_sha_ref_fetches_exact_object_not_branch(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        calls: list = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        # Force the git path (archive download unavailable).
+        with patch("services.command_store_service._download_archive", return_value=None), \
+             patch("services.command_store_service.subprocess.run", side_effect=fake_run):
+            _clone_repo("https://github.com/test/repo", tag=sha)
+
+        joined = [" ".join(c) for c in calls]
+        # Fetches the exact SHA object + checks it out...
+        assert any(f"fetch --depth 1 origin {sha}" in j for j in joined)
+        assert any("checkout --quiet FETCH_HEAD" in j for j in joined)
+        # ...and NEVER tries to --branch it or clone the default branch.
+        assert not any("--branch" in j for j in joined)
+        assert not any(c[:2] == ["git", "clone"] for c in calls)
+
+    def test_sha_fetch_failure_raises_without_falling_back_to_main(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+
+        def fake_run(cmd, **kw):
+            # init/remote succeed; the fetch of the pinned SHA fails.
+            rc = 1 if "fetch" in cmd else 0
+            return MagicMock(returncode=rc, stderr="not found", stdout="")
+
+        with patch("services.command_store_service._download_archive", return_value=None), \
+             patch("services.command_store_service.subprocess.run", side_effect=fake_run):
+            with pytest.raises(InstallError, match=f"pinned commit {sha}"):
+                _clone_repo("https://github.com/test/repo", tag=sha)
+
+    def test_tag_ref_still_uses_clone_branch(self):
+        calls: list = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        with patch("services.command_store_service._download_archive", return_value=None), \
+             patch("services.command_store_service.subprocess.run", side_effect=fake_run):
+            _clone_repo("https://github.com/test/repo", tag="v1.0.0")
+
+        joined = [" ".join(c) for c in calls]
+        assert any("clone --depth 1 --branch v1.0.0" in j for j in joined)
