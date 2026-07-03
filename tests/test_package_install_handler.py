@@ -285,12 +285,14 @@ class TestRunInstallFailureNeverRestarts:
 
 
 class TestRunUninstall:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.remove")
-    def test_success_defers_with_uninstall_action(self, mock_remove, mock_defer, mock_upload):
-        run_uninstall_and_upload("req-6", "pkg", None)
+    def test_success_defers_with_uninstall_action(self, mock_remove, mock_defer, mock_upload, mock_verify):
+        run_uninstall_and_upload("req-6", None)
 
+        mock_verify.assert_called_once_with("req-6")
         mock_remove.assert_called_once_with("pkg", component_type=None)
         mock_defer.assert_called_once()
         kwargs = mock_defer.call_args.kwargs
@@ -299,13 +301,24 @@ class TestRunUninstall:
         assert kwargs["success"] is True
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.remove")
+    def test_removes_cc_name_not_payload(self, mock_remove, mock_defer, mock_verify):
+        """The package removed is the CC-authoritative command_name; the nudge's
+        component_type is passed through only as a narrowing hint."""
+        run_uninstall_and_upload("req-6b", "command")
+
+        mock_remove.assert_called_once_with("pkg", component_type="command")
+
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.remove")
-    def test_failure_posts_immediately_no_restart(self, mock_remove, mock_defer, mock_upload):
+    def test_failure_posts_immediately_no_restart(self, mock_remove, mock_defer, mock_upload, mock_verify):
         mock_remove.side_effect = Exception("not installed")
 
-        run_uninstall_and_upload("req-7", "pkg", None)
+        run_uninstall_and_upload("req-7", None)
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -313,19 +326,33 @@ class TestRunUninstall:
         assert kwargs["success"] is False
         assert kwargs["action"] == "uninstall"
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=None)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.remove")
+    def test_spoofed_request_removes_nothing(self, mock_remove, mock_defer, mock_upload, mock_verify):
+        """A forged uninstall nudge (verify returns None) removes nothing."""
+        run_uninstall_and_upload("req-spoof", None)
+
+        mock_remove.assert_not_called()
+        mock_defer.assert_not_called()
+        mock_upload.assert_not_called()
+
 
 # ── run_revert_and_upload ───────────────────────────────────────────────────
 
 
 class TestRunRevert:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.revert_package")
-    def test_success_defers_with_revert_action(self, mock_revert, mock_defer, mock_upload):
+    def test_success_defers_with_revert_action(self, mock_revert, mock_defer, mock_upload, mock_verify):
         mock_revert.return_value = "1.0.0"
 
-        run_revert_and_upload("req-15", "pkg")
+        run_revert_and_upload("req-15")
 
+        mock_verify.assert_called_once_with("req-15")
         mock_revert.assert_called_once_with("pkg")
         mock_defer.assert_called_once()
         kwargs = mock_defer.call_args.kwargs
@@ -335,13 +362,14 @@ class TestRunRevert:
         assert kwargs["details"] == {"package_name": "pkg", "version": "1.0.0"}
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.revert_package")
-    def test_failure_posts_immediately_no_restart(self, mock_revert, mock_defer, mock_upload):
+    def test_failure_posts_immediately_no_restart(self, mock_revert, mock_defer, mock_upload, mock_verify):
         mock_revert.side_effect = Exception("No previous version of 'pkg' to revert to")
 
-        run_revert_and_upload("req-16", "pkg")
+        run_revert_and_upload("req-16")
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -350,6 +378,18 @@ class TestRunRevert:
         assert kwargs["success"] is False
         assert kwargs["action"] == "revert"
         assert "No previous version" in kwargs["error"]
+
+    @patch("services.package_install_handler._verify_with_cc", return_value=None)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.revert_package")
+    def test_spoofed_request_reverts_nothing(self, mock_revert, mock_defer, mock_upload, mock_verify):
+        """A forged revert nudge (verify returns None) reverts nothing."""
+        run_revert_and_upload("req-spoof")
+
+        mock_revert.assert_not_called()
+        mock_defer.assert_not_called()
+        mock_upload.assert_not_called()
 
 
 # ── _defer_result_and_restart ───────────────────────────────────────────────
