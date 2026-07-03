@@ -134,15 +134,27 @@ def _patched_agent_discovery(service: Any):
 # ── run_install_and_upload ──────────────────────────────────────────────────
 
 
+# Authoritative install details as returned by CC's verify endpoint. The node
+# installs from THIS, never from the (untrusted) MQTT nudge payload.
+_VERIFY_OK = {
+    "confirmed": True,
+    "command_name": "pkg",
+    "github_repo_url": "https://github.com/x/y",
+    "git_tag": None,
+}
+
+
 class TestRunInstallSuccessAlwaysRestarts:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.install_from_github")
-    def test_success_defers_even_without_pip_deps(self, mock_install, mock_defer, mock_upload):
+    def test_success_defers_even_without_pip_deps(self, mock_install, mock_defer, mock_upload, mock_verify):
         mock_install.return_value = _fake_manifest("pkg")
 
-        run_install_and_upload("req-1", "pkg", "https://github.com/x/y", None)
+        run_install_and_upload("req-1")
 
+        mock_verify.assert_called_once_with("req-1")
         mock_defer.assert_called_once()
         kwargs = mock_defer.call_args.kwargs
         assert kwargs["success"] is True
@@ -152,10 +164,13 @@ class TestRunInstallSuccessAlwaysRestarts:
         assert kwargs["details"]["package_name"] == "pkg"
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc",
+           return_value={"confirmed": True, "command_name": "pkg",
+                         "github_repo_url": "https://github.com/x/y", "git_tag": "v1.0.0"})
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.install_from_github")
-    def test_success_with_pip_deps_passes_them_through(self, mock_install, mock_defer, mock_upload):
+    def test_success_with_pip_deps_passes_them_through(self, mock_install, mock_defer, mock_upload, mock_verify):
         def fake_install(url, version_tag=None, state=None):
             if state is not None:
                 state["pip_deps_installed"] = ["httpx"]
@@ -163,31 +178,78 @@ class TestRunInstallSuccessAlwaysRestarts:
 
         mock_install.side_effect = fake_install
 
-        run_install_and_upload("req-2", "pkg", "https://github.com/x/y", "v1.0.0")
+        run_install_and_upload("req-2")
 
         assert mock_defer.call_args.kwargs["pip_deps_installed"] == ["httpx"]
+        # git_tag from the CC verify response reaches the installer.
+        assert mock_install.call_args.kwargs["version_tag"] == "v1.0.0"
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.install_from_github")
-    def test_install_never_skips_preflight_gate(self, mock_install, mock_defer, mock_upload):
+    def test_install_never_skips_preflight_gate(self, mock_install, mock_defer, mock_upload, mock_verify):
         """The MQTT path must never set skip_tests."""
         mock_install.return_value = _fake_manifest("pkg")
 
-        run_install_and_upload("req-3", "pkg", "https://github.com/x/y", None)
+        run_install_and_upload("req-3")
 
         assert "skip_tests" not in mock_install.call_args.kwargs
 
-
-class TestRunInstallFailureNeverRestarts:
+    @patch("services.package_install_handler._verify_with_cc")
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.install_from_github")
-    def test_failure_posts_immediately(self, mock_install, mock_defer, mock_upload):
+    def test_installs_repo_url_from_cc_not_payload(self, mock_install, mock_defer, mock_upload, mock_verify):
+        """Zero-trust: the installed repo URL is the one CC returns from verify,
+        so a spoofed MQTT payload URL can never reach the installer."""
+        mock_verify.return_value = {
+            "confirmed": True, "command_name": "pkg",
+            "github_repo_url": "https://github.com/real/repo", "git_tag": None,
+        }
+        mock_install.return_value = _fake_manifest("pkg")
+
+        run_install_and_upload("req-3b")
+
+        assert mock_install.call_args.args[0] == "https://github.com/real/repo"
+
+
+class TestRunInstallVerificationGate:
+    @patch("services.package_install_handler._verify_with_cc", return_value=None)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.install_from_github")
+    def test_failed_verification_installs_nothing(self, mock_install, mock_defer, mock_upload, mock_verify):
+        """A spoofed or stale nudge (verify returns None) installs nothing,
+        defers nothing, and posts nothing — it is dropped."""
+        run_install_and_upload("req-spoof")
+
+        mock_install.assert_not_called()
+        mock_defer.assert_not_called()
+        mock_upload.assert_not_called()
+
+    @patch("services.package_install_handler._verify_with_cc",
+           return_value={"confirmed": True, "command_name": "pkg", "github_repo_url": "", "git_tag": None})
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.command_store_service.install_from_github")
+    def test_verify_without_repo_url_reports_failure(self, mock_install, mock_upload, mock_verify):
+        run_install_and_upload("req-nourl")
+
+        mock_install.assert_not_called()
+        mock_upload.assert_called_once()
+        assert mock_upload.call_args.kwargs["success"] is False
+
+
+class TestRunInstallFailureNeverRestarts:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.install_from_github")
+    def test_failure_posts_immediately(self, mock_install, mock_defer, mock_upload, mock_verify):
         mock_install.side_effect = Exception("Package failed validation: boom")
 
-        run_install_and_upload("req-4", "pkg", "https://github.com/x/y", None)
+        run_install_and_upload("req-4")
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -196,11 +258,12 @@ class TestRunInstallFailureNeverRestarts:
         assert kwargs["success"] is False
         assert "boom" in kwargs["error"]
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.install_from_github")
     def test_failure_with_pip_deps_installed_still_no_restart(
-        self, mock_install, mock_defer, mock_upload
+        self, mock_install, mock_defer, mock_upload, mock_verify
     ):
         """Pip deps from a failed attempt are idempotent/harmless — the
         pre-flight gate means nothing was scattered, so no restart."""
@@ -211,7 +274,7 @@ class TestRunInstallFailureNeverRestarts:
 
         mock_install.side_effect = fake_install
 
-        run_install_and_upload("req-5", "pkg", "https://github.com/x/y", None)
+        run_install_and_upload("req-5")
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -222,12 +285,14 @@ class TestRunInstallFailureNeverRestarts:
 
 
 class TestRunUninstall:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.remove")
-    def test_success_defers_with_uninstall_action(self, mock_remove, mock_defer, mock_upload):
-        run_uninstall_and_upload("req-6", "pkg", None)
+    def test_success_defers_with_uninstall_action(self, mock_remove, mock_defer, mock_upload, mock_verify):
+        run_uninstall_and_upload("req-6", None)
 
+        mock_verify.assert_called_once_with("req-6")
         mock_remove.assert_called_once_with("pkg", component_type=None)
         mock_defer.assert_called_once()
         kwargs = mock_defer.call_args.kwargs
@@ -236,13 +301,24 @@ class TestRunUninstall:
         assert kwargs["success"] is True
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.remove")
+    def test_removes_cc_name_not_payload(self, mock_remove, mock_defer, mock_verify):
+        """The package removed is the CC-authoritative command_name; the nudge's
+        component_type is passed through only as a narrowing hint."""
+        run_uninstall_and_upload("req-6b", "command")
+
+        mock_remove.assert_called_once_with("pkg", component_type="command")
+
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.remove")
-    def test_failure_posts_immediately_no_restart(self, mock_remove, mock_defer, mock_upload):
+    def test_failure_posts_immediately_no_restart(self, mock_remove, mock_defer, mock_upload, mock_verify):
         mock_remove.side_effect = Exception("not installed")
 
-        run_uninstall_and_upload("req-7", "pkg", None)
+        run_uninstall_and_upload("req-7", None)
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -250,19 +326,33 @@ class TestRunUninstall:
         assert kwargs["success"] is False
         assert kwargs["action"] == "uninstall"
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=None)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.remove")
+    def test_spoofed_request_removes_nothing(self, mock_remove, mock_defer, mock_upload, mock_verify):
+        """A forged uninstall nudge (verify returns None) removes nothing."""
+        run_uninstall_and_upload("req-spoof", None)
+
+        mock_remove.assert_not_called()
+        mock_defer.assert_not_called()
+        mock_upload.assert_not_called()
+
 
 # ── run_revert_and_upload ───────────────────────────────────────────────────
 
 
 class TestRunRevert:
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.revert_package")
-    def test_success_defers_with_revert_action(self, mock_revert, mock_defer, mock_upload):
+    def test_success_defers_with_revert_action(self, mock_revert, mock_defer, mock_upload, mock_verify):
         mock_revert.return_value = "1.0.0"
 
-        run_revert_and_upload("req-15", "pkg")
+        run_revert_and_upload("req-15")
 
+        mock_verify.assert_called_once_with("req-15")
         mock_revert.assert_called_once_with("pkg")
         mock_defer.assert_called_once()
         kwargs = mock_defer.call_args.kwargs
@@ -272,13 +362,14 @@ class TestRunRevert:
         assert kwargs["details"] == {"package_name": "pkg", "version": "1.0.0"}
         mock_upload.assert_not_called()
 
+    @patch("services.package_install_handler._verify_with_cc", return_value=_VERIFY_OK)
     @patch("services.package_install_handler._upload_result")
     @patch("services.package_install_handler._defer_result_and_restart")
     @patch("services.command_store_service.revert_package")
-    def test_failure_posts_immediately_no_restart(self, mock_revert, mock_defer, mock_upload):
+    def test_failure_posts_immediately_no_restart(self, mock_revert, mock_defer, mock_upload, mock_verify):
         mock_revert.side_effect = Exception("No previous version of 'pkg' to revert to")
 
-        run_revert_and_upload("req-16", "pkg")
+        run_revert_and_upload("req-16")
 
         mock_defer.assert_not_called()
         mock_upload.assert_called_once()
@@ -287,6 +378,18 @@ class TestRunRevert:
         assert kwargs["success"] is False
         assert kwargs["action"] == "revert"
         assert "No previous version" in kwargs["error"]
+
+    @patch("services.package_install_handler._verify_with_cc", return_value=None)
+    @patch("services.package_install_handler._upload_result")
+    @patch("services.package_install_handler._defer_result_and_restart")
+    @patch("services.command_store_service.revert_package")
+    def test_spoofed_request_reverts_nothing(self, mock_revert, mock_defer, mock_upload, mock_verify):
+        """A forged revert nudge (verify returns None) reverts nothing."""
+        run_revert_and_upload("req-spoof")
+
+        mock_revert.assert_not_called()
+        mock_defer.assert_not_called()
+        mock_upload.assert_not_called()
 
 
 # ── _defer_result_and_restart ───────────────────────────────────────────────
