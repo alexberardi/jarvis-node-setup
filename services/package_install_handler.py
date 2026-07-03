@@ -43,14 +43,54 @@ logger = JarvisLogger(service="jarvis-node")
 _PENDING_RESULT_FILE = Path.home() / ".jarvis" / ".pending_install_result.json"
 
 
-def run_install_and_upload(
-    request_id: str,
-    command_name: str,
-    github_repo_url: str,
-    git_tag: str | None,
-) -> None:
-    """Run package install and upload results to CC. Meant to run in a background thread."""
-    print(f"[INSTALL] starting install: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
+def _verify_with_cc(request_id: str) -> dict[str, Any] | None:
+    """Verify a package install/uninstall/revert request with CC (zero-trust gate).
+
+    Install, uninstall, and revert all share the same request table and the same
+    verify endpoint. Returns the verify response — including the authoritative
+    ``command_name`` (and ``github_repo_url`` for installs) — or None if the
+    request_id is unknown / expired / already-consumed. A None return means the
+    MQTT nudge was spoofed or stale, so the operation is dropped. The package
+    identity is taken from CC here, never from the (untrusted) MQTT payload.
+    """
+    cc_url = get_command_center_url()
+    if not cc_url:
+        logger.error("Cannot verify package request: CC URL not resolved")
+        return None
+
+    from utils.config_service import Config
+    node_id: str = Config.get_str("node_id", "") or ""
+
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/package-install/{request_id}/verify"
+    result = RestClient.get(url, timeout=10)
+    if not result or not result.get("confirmed"):
+        logger.warning("Package request verification failed", request_id=request_id[:8])
+        return None
+
+    return result
+
+
+def run_install_and_upload(request_id: str) -> None:
+    """Verify with CC, then run the install and upload results. Background thread.
+
+    Zero-trust: the repo URL comes from CC's verify endpoint (keyed on a
+    request_id CC actually issued for this node), never from the MQTT nudge.
+    A spoofed/stale request_id fails verification and nothing is installed.
+    """
+    verify_data = _verify_with_cc(request_id)
+    if not verify_data:
+        return
+
+    command_name: str = verify_data.get("command_name", "")
+    github_repo_url: str = verify_data.get("github_repo_url", "")
+    git_tag: str | None = verify_data.get("git_tag")
+
+    if not github_repo_url:
+        logger.error("Install verify returned no repo URL", request_id=request_id[:8])
+        _upload_result(request_id, success=False, error="No repo URL in verify response")
+        return
+
+    print(f"[INSTALL] verified: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
     install_state: dict[str, Any] = {}
     error_msg: str | None = None
     details: dict[str, Any] | None = None
@@ -477,11 +517,27 @@ def _failed_module_error(discovery_service: Any, name: str) -> str | None:
 
 def run_uninstall_and_upload(
     request_id: str,
-    command_name: str,
     component_type: str | None = None,
 ) -> None:
-    """Run package uninstall and upload results to CC. Meant to run in a background thread."""
-    print(f"[UNINSTALL] starting uninstall: {command_name} (type={component_type})", flush=True)
+    """Verify with CC, then run the uninstall and upload results. Background thread.
+
+    Zero-trust: the package to remove comes from CC's verify endpoint (keyed on
+    a request_id CC issued for this node), never from the MQTT nudge. A spoofed
+    or stale request_id fails verification and nothing is removed. component_type
+    is a non-authoritative narrowing hint from the nudge (it only scopes removal
+    within the CC-authoritative package, so it is not a trust boundary).
+    """
+    verify_data = _verify_with_cc(request_id)
+    if not verify_data:
+        return
+
+    command_name: str = verify_data.get("command_name", "")
+    if not command_name:
+        logger.error("Uninstall verify returned no package name", request_id=request_id[:8])
+        _upload_result(request_id, success=False, error="No package in verify response", action="uninstall")
+        return
+
+    print(f"[UNINSTALL] verified: {command_name} (type={component_type})", flush=True)
     try:
         from services.command_store_service import remove
 
@@ -520,9 +576,23 @@ def run_uninstall_and_upload(
     # _defer_result_and_restart does not return.
 
 
-def run_revert_and_upload(request_id: str, command_name: str) -> None:
-    """Run package revert and upload results to CC. Meant to run in a background thread."""
-    print(f"[REVERT] starting revert: {command_name}", flush=True)
+def run_revert_and_upload(request_id: str) -> None:
+    """Verify with CC, then run the revert and upload results. Background thread.
+
+    Zero-trust: the package to revert comes from CC's verify endpoint, never the
+    MQTT nudge. A spoofed/stale request_id fails verification and nothing reverts.
+    """
+    verify_data = _verify_with_cc(request_id)
+    if not verify_data:
+        return
+
+    command_name: str = verify_data.get("command_name", "")
+    if not command_name:
+        logger.error("Revert verify returned no package name", request_id=request_id[:8])
+        _upload_result(request_id, success=False, error="No package in verify response", action="revert")
+        return
+
+    print(f"[REVERT] verified: {command_name}", flush=True)
     try:
         from services.command_store_service import revert_package
 

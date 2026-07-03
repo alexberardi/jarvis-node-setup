@@ -1502,23 +1502,63 @@ def _pull_auth_credentials(provider: str) -> None:
     logger.warning("No command or device family found for auth provider", provider=provider)
 
 
+def _fetch_k2_from_cc(request_id: str) -> Dict[str, Any] | None:
+    """Fetch the authoritative K2 key from CC over the node's authenticated
+    (X-API-Key) channel. Returns the key payload ({k2, kid, created_at}) or None
+    if CC has no pending K2 for this request_id — meaning the nudge was spoofed
+    or stale, so nothing is saved.
+    """
+    from clients.rest_client import RestClient
+    from utils.service_discovery import get_command_center_url
+    from utils.config_service import Config
+
+    cc_url: str = get_command_center_url() or ""
+    if not cc_url:
+        logger.error("Cannot fetch K2: CC URL not resolved")
+        return None
+
+    node_id: str = Config.get_str("node_id", "") or ""
+    url = f"{cc_url.rstrip('/')}/api/v0/nodes/{node_id}/k2/provision/{request_id}"
+    result = RestClient.get(url, timeout=10)
+    if not result or not result.get("k2"):
+        return None
+    return result
+
+
 def _handle_k2_provision(raw_payload: bytes) -> None:
-    """Handle K2 encryption key provisioned via MQTT (for Docker/headless nodes)."""
+    """Handle a K2 provision nudge from CC (for Docker/headless nodes).
+
+    Zero-trust: the MQTT message is an untrusted nudge carrying only a
+    request_id. The actual K2 key material is fetched from CC over the node's
+    authenticated (X-API-Key) channel — never taken from the MQTT payload — so a
+    spoofed broker message cannot overwrite the node's settings-sync key (which
+    would let an attacker decrypt pushed config and exfiltrate the node's
+    outbound secret snapshot).
+    """
     try:
         data: Dict[str, Any] = json.loads(raw_payload.decode())
     except json.JSONDecodeError:
         logger.warning("Invalid JSON in K2 provision message")
         return
 
-    k2 = data.get("k2", "")
-    kid = data.get("kid", "")
-    created_at = data.get("created_at", "")
-
-    if not k2 or not kid:
-        logger.warning("K2 provision message missing required fields")
+    request_id: str = data.get("request_id", "")
+    if not request_id:
+        logger.warning("K2 provision nudge missing request_id")
         return
 
-    request_id: str = data.get("request_id", "")
+    key_data = _fetch_k2_from_cc(request_id)
+    if not key_data:
+        logger.warning("K2 provision verification failed", request_id=request_id[:8])
+        _ack_k2_provision(request_id, success=False, error="verification failed")
+        return
+
+    k2 = key_data.get("k2", "")
+    kid = key_data.get("kid", "")
+    created_at = key_data.get("created_at", "")
+    if not k2 or not kid:
+        logger.warning("K2 provision fetch returned incomplete key")
+        _ack_k2_provision(request_id, success=False, error="incomplete key data")
+        return
 
     try:
         from datetime import datetime
@@ -1526,17 +1566,13 @@ def _handle_k2_provision(raw_payload: bytes) -> None:
 
         dt = datetime.fromisoformat(created_at) if created_at else datetime.utcnow()
         save_k2(k2, kid, dt)
-        logger.info("K2 encryption key provisioned via MQTT", kid=kid)
-        print(f"[MQTT] K2 provisioned: kid={kid}", flush=True)
-
-        # Acknowledge receipt to CC
-        if request_id:
-            _ack_k2_provision(request_id, success=True)
+        logger.info("K2 encryption key provisioned via CC pull", kid=kid)
+        print(f"[MQTT] K2 provisioned (verified): kid={kid}", flush=True)
+        _ack_k2_provision(request_id, success=True)
     except Exception as e:
         logger.error("K2 provisioning failed", error=str(e))
         print(f"[MQTT] K2 provision error: {e}", flush=True)
-        if request_id:
-            _ack_k2_provision(request_id, success=False, error=str(e))
+        _ack_k2_provision(request_id, success=False, error=str(e))
 
 
 # Persistent event loop for device protocol calls. Protocols like Apple TV
@@ -1802,7 +1838,14 @@ def _handle_camera_credentials_notification(raw_payload: bytes) -> None:
 
 
 def _handle_package_install_notification(raw_payload: bytes) -> None:
-    """Handle package install request from CC — runs install in background thread."""
+    """Handle a package install nudge from CC — verify with CC, then install.
+
+    Zero-trust: this MQTT message is an untrusted nudge. Only ``request_id`` is
+    used; the authoritative repo URL is fetched from CC's verify endpoint (which
+    404s on a spoofed request_id). We never install from a URL supplied in the
+    MQTT payload — that would let anyone able to reach the broker install
+    arbitrary code on the node.
+    """
     try:
         notification: Dict[str, Any] = json.loads(raw_payload.decode())
     except json.JSONDecodeError:
@@ -1810,24 +1853,26 @@ def _handle_package_install_notification(raw_payload: bytes) -> None:
         return
 
     request_id: str = notification.get("request_id", "")
-    command_name: str = notification.get("command_name", "")
-    github_repo_url: str = notification.get("github_repo_url", "")
-    git_tag: str | None = notification.get("git_tag")
-
-    if not request_id or not github_repo_url:
-        print(f"[INSTALL] missing request_id or github_repo_url, ignoring", flush=True)
+    if not request_id:
+        print(f"[INSTALL] missing request_id, ignoring", flush=True)
         return
 
-    print(f"[INSTALL] received: {command_name} from {github_repo_url} tag={git_tag}", flush=True)
+    print(f"[INSTALL] nudge received request_id={request_id[:8]}", flush=True)
 
     from services.package_install_handler import run_install_and_upload
 
-    _task_executor.submit(run_install_and_upload, request_id, command_name, github_repo_url, git_tag)
+    _task_executor.submit(run_install_and_upload, request_id)
     print("[INSTALL] task submitted", flush=True)
 
 
 def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
-    """Handle package uninstall request from CC — runs uninstall in background thread."""
+    """Handle a package uninstall nudge from CC — verify with CC, then remove.
+
+    Zero-trust: the package to remove is taken from CC's verify response (keyed
+    on a request_id CC issued for this node), not the MQTT payload, so a forged
+    nudge cannot remove an arbitrary package. component_type is only a narrowing
+    hint (it scopes removal within the CC-authoritative package).
+    """
     try:
         notification: Dict[str, Any] = json.loads(raw_payload.decode())
     except json.JSONDecodeError:
@@ -1835,23 +1880,26 @@ def _handle_package_uninstall_notification(raw_payload: bytes) -> None:
         return
 
     request_id: str = notification.get("request_id", "")
-    command_name: str = notification.get("command_name", "")
     component_type: str | None = notification.get("component_type")
 
-    if not request_id or not command_name:
-        print("[UNINSTALL] missing request_id or command_name, ignoring", flush=True)
+    if not request_id:
+        print("[UNINSTALL] missing request_id, ignoring", flush=True)
         return
 
-    print(f"[UNINSTALL] received: {command_name} (type={component_type})", flush=True)
+    print(f"[UNINSTALL] nudge received request_id={request_id[:8]}", flush=True)
 
     from services.package_install_handler import run_uninstall_and_upload
 
-    _task_executor.submit(run_uninstall_and_upload, request_id, command_name, component_type)
+    _task_executor.submit(run_uninstall_and_upload, request_id, component_type)
     print("[UNINSTALL] task submitted", flush=True)
 
 
 def _handle_package_revert_notification(raw_payload: bytes) -> None:
-    """Handle package revert request from CC — runs revert in background thread."""
+    """Handle a package revert nudge from CC — verify with CC, then revert.
+
+    Zero-trust: the package to revert is taken from CC's verify response, not
+    the MQTT payload, so a forged nudge cannot revert an arbitrary package.
+    """
     try:
         notification: Dict[str, Any] = json.loads(raw_payload.decode())
     except json.JSONDecodeError:
@@ -1859,19 +1907,16 @@ def _handle_package_revert_notification(raw_payload: bytes) -> None:
         return
 
     request_id: str = notification.get("request_id", "")
-    command_name: str = (
-        notification.get("command_name", "") or notification.get("package_name", "")
-    )
 
-    if not request_id or not command_name:
-        print("[REVERT] missing request_id or command_name, ignoring", flush=True)
+    if not request_id:
+        print("[REVERT] missing request_id, ignoring", flush=True)
         return
 
-    print(f"[REVERT] received: {command_name}", flush=True)
+    print(f"[REVERT] nudge received request_id={request_id[:8]}", flush=True)
 
     from services.package_install_handler import run_revert_and_upload
 
-    _task_executor.submit(run_revert_and_upload, request_id, command_name)
+    _task_executor.submit(run_revert_and_upload, request_id)
     print("[REVERT] task submitted", flush=True)
 
 
