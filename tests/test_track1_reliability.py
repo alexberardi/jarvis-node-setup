@@ -298,6 +298,8 @@ class TestMQTTReconnect:
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
              }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=(None, None)), \
              patch("scripts.mqtt_tts_listener.time.sleep") as mock_sleep:
 
             # loop_forever blocks, so mock it to return immediately
@@ -309,6 +311,49 @@ class TestMQTTReconnect:
             assert mock_client.connect.call_count == 3
             # Should have slept between retries (backoff)
             assert mock_sleep.call_count >= 2
+
+    def test_start_mqtt_listener_fetches_creds_when_config_has_none(self):
+        """With no config creds (transition), fetch from CC and apply to the client."""
+        from scripts.mqtt_tts_listener import start_mqtt_listener
+
+        mock_client = MagicMock()
+        mock_client.connect.return_value = None
+        mock_client.loop_forever.return_value = None
+
+        with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client), \
+             patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt", "broker": "localhost", "port": 1883,
+                 "username": "", "password": "", "topic": "jarvis/nodes/test/#",
+             }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=("jarvis", "secretpw")) as mock_fetch, \
+             patch("scripts.mqtt_tts_listener.time.sleep"):
+
+            start_mqtt_listener(MagicMock())
+
+            mock_fetch.assert_called_once()
+            mock_client.username_pw_set.assert_called_once_with("jarvis", "secretpw")
+
+    def test_start_mqtt_listener_skips_fetch_when_config_has_creds(self):
+        """Existing config creds are used as-is; no command-center round-trip."""
+        from scripts.mqtt_tts_listener import start_mqtt_listener
+
+        mock_client = MagicMock()
+        mock_client.connect.return_value = None
+        mock_client.loop_forever.return_value = None
+
+        with patch("scripts.mqtt_tts_listener.mqtt.Client", return_value=mock_client), \
+             patch("scripts.mqtt_tts_listener.get_mqtt_config", return_value={
+                 "scheme": "mqtt", "broker": "localhost", "port": 1883,
+                 "username": "jarvis", "password": "existingpw", "topic": "jarvis/nodes/test/#",
+             }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials") as mock_fetch, \
+             patch("scripts.mqtt_tts_listener.time.sleep"):
+
+            start_mqtt_listener(MagicMock())
+
+            mock_fetch.assert_not_called()
+            mock_client.username_pw_set.assert_called_once_with("jarvis", "existingpw")
 
     def test_start_mqtt_listener_gives_up_after_max_retries(self):
         """After all retries fail, should return without calling loop_forever."""
@@ -324,6 +369,8 @@ class TestMQTTReconnect:
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
              }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=(None, None)), \
              patch("scripts.mqtt_tts_listener.time.sleep"):
 
             start_mqtt_listener(MagicMock())
@@ -344,7 +391,9 @@ class TestMQTTReconnect:
                  "broker": "localhost", "port": 1883,
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
-             }):
+             }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=(None, None)):
             mock_client.loop_forever.return_value = None
             start_mqtt_listener(MagicMock())
 
@@ -371,6 +420,8 @@ class TestMQTTReconnect:
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
              }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=(None, None)), \
              patch("scripts.mqtt_tts_listener.Config.get_str", return_value="test-node-id"):
             start_mqtt_listener(MagicMock())
 
@@ -449,6 +500,8 @@ class TestMQTTReconnect:
                  "username": None, "password": None,
                  "topic": "jarvis/nodes/test/#",
              }), \
+             patch("scripts.mqtt_tts_listener.fetch_and_persist_mqtt_credentials",
+                   return_value=(None, None)), \
              patch("scripts.mqtt_tts_listener.Config.get_str", return_value=""):
             start_mqtt_listener(MagicMock())
 
