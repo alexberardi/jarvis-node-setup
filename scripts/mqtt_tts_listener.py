@@ -1027,6 +1027,38 @@ def handle_toggle_command(details: Dict[str, Any]) -> None:
 _KEYS_REQUIRING_RESTART: set[str] = {"wake_word_model"}
 
 
+# Identity / credential keys an over-the-wire config update must NEVER set.
+# Endpoint URLs (``*_url``) and broker keys (``mqtt_*``) are matched by pattern
+# below so new ones are covered automatically.
+_CONFIG_UPDATE_FORBIDDEN_KEYS = frozenset({"node_id", "api_key"})
+
+
+def _reject_trust_anchor_keys(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``settings`` with trust-anchor keys stripped out.
+
+    ``update_node_config`` is a node-preference channel (volume, LEDs, mute,
+    room, wake settings). It must not be able to write the command-center URL
+    (which every verify-gate resolves the CC from → a repoint is node RCE), the
+    node's identity/credentials, or the broker location. Reject those keys —
+    identity by name, and every ``*_url`` endpoint / ``mqtt_*`` broker key by
+    pattern — and log what was dropped.
+    """
+    safe: Dict[str, Any] = {}
+    rejected: List[str] = []
+    for key, value in settings.items():
+        if key in _CONFIG_UPDATE_FORBIDDEN_KEYS or key.endswith("_url") or key.startswith("mqtt_"):
+            rejected.append(key)
+        else:
+            safe[key] = value
+    if rejected:
+        logger.warning(
+            "update_node_config: rejected trust-anchor keys — a config push may "
+            "not repoint the CC URL, node identity, or broker",
+            rejected=rejected,
+        )
+    return safe
+
+
 def handle_update_node_config(details: Dict[str, Any]) -> None:
     """Update node config.json values from mobile app.
 
@@ -1046,6 +1078,13 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
     settings: Dict[str, Any] = details.get("settings", {})
     if not settings:
         logger.warning("update_node_config: no settings provided")
+        return
+
+    # A broker-delivered config update must not be able to repoint the CC URL
+    # the verify-gates trust, or overwrite node identity / credentials / broker.
+    # Strip those keys before anything is applied or persisted.
+    settings = _reject_trust_anchor_keys(settings)
+    if not settings:
         return
 
     # Volume is an OS-level setting. Apply immediately AND persist to
