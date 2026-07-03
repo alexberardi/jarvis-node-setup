@@ -92,3 +92,60 @@ class TestAllowUpdatesEnabledHappyPath:
         spawn.assert_called_once_with("0.2.0")
         write_state.assert_called_once()
         assert update_service._in_flight.is_set()
+
+
+class TestMonotonicDowngradeGuard:
+    """A pending_update must never roll the node back to an older version —
+    the audit's 'no downgrade guard' gap. Only a strictly-newer target spawns."""
+
+    def _run(self, current: str, target: str):
+        pending = {"task_id": "t-dg", "target_version": target}
+        with patch.object(update_service.Config, "get_bool", return_value=True), \
+                patch.object(update_service, "is_busy", return_value=False), \
+                patch.object(
+                    update_service, "version_info",
+                    return_value=_version_info(version=current, install_mode="tarball"),
+                ), \
+                patch.object(update_service, "_spawn_upgrade") as spawn, \
+                patch.object(update_service, "_write_state"):
+            update_service.maybe_apply_update(pending)
+        return spawn
+
+    def test_refuses_a_downgrade(self):
+        spawn = self._run(current="0.1.133", target="0.1.100")
+        spawn.assert_not_called()
+
+    def test_refuses_a_major_downgrade(self):
+        spawn = self._run(current="1.2.0", target="0.9.9")
+        spawn.assert_not_called()
+
+    def test_refuses_a_replay_of_the_current_version(self):
+        spawn = self._run(current="0.1.133", target="0.1.133")
+        spawn.assert_not_called()
+
+    def test_allows_a_strictly_newer_target(self):
+        spawn = self._run(current="0.1.133", target="0.1.134")
+        spawn.assert_called_once_with("0.1.134")
+
+    def test_ignores_a_leading_v_and_dev_suffix_when_comparing(self):
+        # v-prefixed / -dev tagged versions still compare numerically.
+        spawn = self._run(current="0.1.133", target="v0.1.100-dev")
+        spawn.assert_not_called()
+
+    def test_unparseable_current_falls_back_to_equality(self):
+        # A weird/dev current version must not block a legitimate real update.
+        spawn = self._run(current="garbage", target="0.1.134")
+        spawn.assert_called_once_with("0.1.134")
+
+
+class TestParseVersion:
+    def test_parses_variants(self):
+        assert update_service._parse_version("0.1.5") == (0, 1, 5)
+        assert update_service._parse_version("v0.1.5") == (0, 1, 5)
+        assert update_service._parse_version("0.1.5-dev") == (0, 1, 5)
+        assert update_service._parse_version("0.1.5+build.7") == (0, 1, 5)
+
+    def test_returns_none_for_unparseable(self):
+        assert update_service._parse_version("") is None
+        assert update_service._parse_version(None) is None
+        assert update_service._parse_version("latest") is None
