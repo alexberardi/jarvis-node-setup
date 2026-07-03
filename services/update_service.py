@@ -152,6 +152,20 @@ def _spawn_upgrade(target_version: str) -> None:
         )
 
 
+def _parse_version(v: str | None) -> tuple[int, ...] | None:
+    """Parse a semver-ish ``X.Y.Z`` into a comparable tuple, or ``None`` if it
+    isn't parseable. A leading ``v`` and any ``-suffix`` / ``+build`` are ignored,
+    so ``v0.1.5``, ``0.1.5``, and ``0.1.5-dev`` all compare as ``(0, 1, 5)``.
+    """
+    if not v:
+        return None
+    core = v.strip().lstrip("v").split("-", 1)[0].split("+", 1)[0]
+    try:
+        return tuple(int(p) for p in core.split("."))
+    except ValueError:
+        return None
+
+
 def maybe_apply_update(pending: dict[str, Any]) -> None:
     """Act on a `pending_update` block from the heartbeat response.
 
@@ -194,7 +208,22 @@ def maybe_apply_update(pending: dict[str, Any]) -> None:
         logger.info("Deferring update — node is busy", task_id=task_id)
         return
 
-    if current.version == target_version:
+    # Monotonic guard: never downgrade or re-install. A replayed or compromised
+    # pending_update must not be able to roll the node back to an older (possibly
+    # vulnerable) version. Only a strictly-newer, parseable target proceeds; if
+    # either version is unparseable, fall back to the equality no-op.
+    cur = _parse_version(current.version)
+    tgt = _parse_version(target_version)
+    if cur is not None and tgt is not None:
+        if tgt <= cur:
+            logger.info(
+                "Refusing update — target is not newer than current (no downgrade)",
+                current=current.version,
+                target=target_version,
+                task_id=task_id,
+            )
+            return
+    elif current.version == target_version:
         logger.info("Already at target version — nothing to do", version=current.version)
         return
 
