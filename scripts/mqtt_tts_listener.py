@@ -2690,37 +2690,57 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
         transport=transport,
     )
 
-    # Retry initial connection with exponential backoff.
-    # Keepalive of 120s (was 60s): the Pi sometimes goes silent for >60s
-    # under heavy GIL contention (wake-word inference + audio capture).
-    # 120s gives the broker a 180s silence tolerance (1.5x keepalive),
-    # which is empirically enough margin even under load. Combined with
-    # offloading on_message handlers, drops should be a network issue
-    # only.
-    max_attempts: int = 5
-    for attempt in range(1, max_attempts + 1):
+    # Connect with backed-off retries that RE-RESOLVE the broker each round and
+    # re-attempt service discovery. A node that booted before config-service was
+    # ready (e.g. a full-stack restart) first resolves the localhost fallback,
+    # which reaches nothing inside a container. The old code retried that dead
+    # address a fixed 5 times and then gave up ("continuing without MQTT") —
+    # leaving the node permanently dark on MQTT until a manual restart, because
+    # service discovery is only initialised once at boot and was never retried.
+    # Here we re-init discovery and re-resolve every round, so the node is
+    # promoted to the authoritative broker URL as soon as config-service comes
+    # up, and we keep trying (capped backoff) until connected or shutting down.
+    # Runs in the MQTT thread, so blocking here never holds up the rest of the
+    # node. Keepalive 120s: the Pi can go silent >60s under GIL contention
+    # (wake-word + audio); 120s gives the broker 180s tolerance (1.5x keepalive).
+    from utils.service_discovery import is_initialized as _sd_is_initialized
+    from utils.service_discovery import init as _sd_init
+
+    attempt: int = 0
+    while _shutdown_event is None or not _shutdown_event.is_set():
+        attempt += 1
+        # init() is a no-op once initialised; retrying it lets a node that
+        # started ahead of config-service discover the real broker instead of
+        # staying stuck on the localhost fallback.
+        if not _sd_is_initialized():
+            _sd_init()
+        current = get_mqtt_config()
+        broker_host, broker_port = current["broker"], current["port"]
         try:
-            client.connect(config["broker"], config["port"], 120)
+            client.connect(broker_host, broker_port, 120)
+            logger.info(
+                "MQTT connecting", broker=broker_host, port=broker_port, attempt=attempt
+            )
             break
         except (ConnectionRefusedError, OSError) as e:
-            if attempt == max_attempts:
-                logger.error(
-                    "MQTT broker not reachable after all retries, continuing without MQTT",
-                    broker=config["broker"],
-                    attempts=max_attempts,
-                    error=str(e),
-                )
-                return
-            backoff: int = 2 ** attempt
+            backoff: int = min(2 ** min(attempt, 6), 60)
             logger.warning(
                 "MQTT connection attempt failed, retrying",
-                broker=config["broker"],
+                broker=broker_host,
+                port=broker_port,
                 attempt=attempt,
-                max_attempts=max_attempts,
                 retry_in_seconds=backoff,
                 error=str(e),
             )
-            time.sleep(backoff)
+            if _shutdown_event is not None:
+                if _shutdown_event.wait(timeout=backoff):
+                    logger.info("Shutdown requested during MQTT connect retries")
+                    return
+            else:
+                time.sleep(backoff)
+    else:
+        # Loop condition went false (shutdown) before we ever connected.
+        return
 
     _mqtt_client = client
     client.loop_forever()

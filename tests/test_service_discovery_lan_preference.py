@@ -59,6 +59,29 @@ def test_mqtt_broker_url_built_from_json_parts(discovery):
     assert mod.get_mqtt_broker_url() == "mqtt://10.0.0.107:1884"
 
 
+def test_mqtt_broker_url_from_mqtt_broker_host_key(discovery):
+    """The Docker/admin-generated configs write ``mqtt_broker_host`` /
+    ``mqtt_broker_port`` (not the legacy ``mqtt_broker`` key). Resolution MUST
+    honour them, otherwise a node whose config-service is unreachable at resolve
+    time silently misses its own broker and collapses to localhost:1884 — which
+    reaches nothing in a container, stranding the node dark on MQTT."""
+    mod, cfg = discovery
+    cfg["mqtt_broker_host"] = "jarvis-mosquitto"
+    cfg["mqtt_broker_port"] = "1883"
+    assert mod.get_mqtt_broker_url() == "mqtt://jarvis-mosquitto:1883"
+
+
+def test_mqtt_broker_url_prefers_legacy_key_when_both_present(discovery):
+    """Back-compat: when both keys exist, the legacy ``mqtt_broker`` wins so
+    existing provisioned nodes resolve exactly as before."""
+    mod, cfg = discovery
+    cfg["mqtt_broker"] = "10.0.0.107"
+    cfg["mqtt_port"] = "1884"
+    cfg["mqtt_broker_host"] = "jarvis-mosquitto"
+    cfg["mqtt_broker_port"] = "1883"
+    assert mod.get_mqtt_broker_url() == "mqtt://10.0.0.107:1884"
+
+
 def test_mqtt_broker_url_defaults_when_unconfigured(discovery):
     mod, _cfg = discovery
     # No env, no JSON → safe localhost default (never a cloud host).
