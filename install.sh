@@ -1246,6 +1246,75 @@ PY
   fi
 }
 
+# --- Restore openWakeWord models after a venv rebuild/update ---
+# The wake models live INSIDE the venv (site-packages/openwakeword/
+# resources/models/) because openwakeword downloads them into its own
+# package directory. The CI tarball's bundled venv never contains them
+# and rebuild_venv wipes them — so every update loses the models. Since
+# v0.1.130 autodownload is opt-in (default OFF), nothing re-fetches them
+# and the voice listener boots headless: wake word dead while every
+# health signal stays green. Jul-2026: the prod kitchen node updated
+# 0.1.130→0.1.135 and lost wake word exactly this way — the same
+# venv-rebuild-loses-assets class as restore_pantry_pip_deps above.
+#
+# Best-effort like restore_pantry_pip_deps: warn loudly, never abort.
+restore_wake_models() {
+  # Destination: the new venv's openwakeword package dir. Ask the venv
+  # itself so we never hardcode a python version.
+  local dest=""
+  dest=$("${INSTALL_DIR}/.venv/bin/python" - 2>/dev/null <<'PY'
+import os
+import openwakeword
+print(os.path.join(os.path.dirname(openwakeword.__file__), "resources", "models"))
+PY
+  ) || dest=""
+  if [ -z "$dest" ]; then
+    warn "openwakeword not importable in the new venv — skipping wake-model restore"
+    return 0
+  fi
+  if ! mkdir -p "$dest" 2>/dev/null; then
+    warn "Cannot create ${dest} — skipping wake-model restore"
+    return 0
+  fi
+
+  # Source: the pre-update install's venv. Its python version may differ
+  # from the new one — glob instead of hardcoding.
+  local backup="${INSTALL_DIR}.bak"
+  local src=""
+  local d
+  for d in "${backup}"/.venv/lib/python*/site-packages/openwakeword/resources/models; do
+    if [ -d "$d" ]; then
+      src="$d"
+      break
+    fi
+  done
+
+  local copied=0
+  if [ -n "$src" ]; then
+    local f base
+    for f in "$src"/*.onnx "$src"/*.tflite; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      # No clobber: never overwrite a model that's already staged (e.g.
+      # freshly downloaded by an autodownload-enabled node).
+      if [ ! -f "${dest}/${base}" ]; then
+        cp "$f" "${dest}/${base}" && copied=$((copied + 1)) || true
+      fi
+    done
+  fi
+
+  if [ "$copied" -gt 0 ]; then
+    success "Restored ${copied} wake-word model file(s) from previous install"
+  fi
+
+  # If the models still aren't staged, the node will boot voice-dead
+  # (headless: MQTT + agents only) — say so where the operator can see it.
+  if ! ls "${dest}"/*.onnx >/dev/null 2>&1; then
+    warn "No wake-word models staged and autodownload is opt-in (default off) — wake word will NOT work."
+    warn "Fix: set \"wake_word_model_autodownload_enabled\": true in ${INSTALL_DIR}/config.json (one-time download), or copy the .onnx models into ${dest}"
+  fi
+}
+
 # --- Run database migrations ---
 setup_database() {
   info "Running database migrations..."
@@ -1929,6 +1998,7 @@ main() {
   setup_config
   rebuild_venv
   restore_pantry_pip_deps
+  restore_wake_models
   setup_database
   register_commands
   migrate_to_pi_home
