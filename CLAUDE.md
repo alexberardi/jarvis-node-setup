@@ -655,7 +655,7 @@ ssh -t pi@<dev-node>.local "sudo systemctl restart jarvis-node"
 
 ## Wake Word Detection
 
-Uses [openWakeWord](https://github.com/dscripka/openWakeWord) for local, no-cloud wake-word detection. The model name is configured via the `wake_word_model` setting (defaults to `hey_jarvis`); models are downloaded on first run via `openwakeword.utils.download_models`. Audio captured from the mic at 48kHz is downsampled to 16kHz (the model's expected input rate) before scoring — see `scripts/voice_listener.py` for the loop, and `core/barge_in.py` for the parallel barge-in detector that listens during TTS playback.
+Uses [openWakeWord](https://github.com/dscripka/openWakeWord) for local, no-cloud wake-word detection. The model name is configured via the `wake_word_model` setting (defaults to `hey_jarvis`). Since v0.1.130, model download is **opt-in** (`wake_word_model_autodownload_enabled`, default off) — the models live inside the venv, so `install.sh:restore_wake_models` copies them forward from the `.bak` install on every update (they'd otherwise be lost to the venv rebuild and wake word would silently die). Audio captured from the mic at 48kHz is downsampled to 16kHz (the model's expected input rate) before scoring — see `scripts/voice_listener.py` for the loop, and `core/barge_in.py` for the parallel barge-in detector that listens during TTS playback.
 
 ## Dependencies
 
