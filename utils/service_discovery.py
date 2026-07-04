@@ -158,9 +158,19 @@ def get_mqtt_broker_url() -> str:
     if host:
         return f"{scheme}://{host}:{port}"
 
-    # JSON config fallback
-    config_host = _get_from_json_config("mqtt_broker")
-    config_port = _get_from_json_config("mqtt_port") or "1884"
+    # JSON config fallback. Accept BOTH the legacy ``mqtt_broker`` key and the
+    # ``mqtt_broker_host`` key the Docker/admin-generated configs actually write.
+    # Without the second key a node whose config-service is unreachable at
+    # resolve time (e.g. it booted before config-service on a full-stack
+    # restart) silently misses its own broker host and collapses to the
+    # localhost default below — which reaches nothing inside a container, so the
+    # node goes permanently dark on MQTT until a manual restart.
+    config_host = _get_from_json_config("mqtt_broker") or _get_from_json_config("mqtt_broker_host")
+    config_port = (
+        _get_from_json_config("mqtt_port")
+        or _get_from_json_config("mqtt_broker_port")
+        or "1884"
+    )
     config_scheme = _get_from_json_config("mqtt_scheme") or "mqtt"
     if config_host:
         return f"{config_scheme}://{config_host}:{config_port}"
