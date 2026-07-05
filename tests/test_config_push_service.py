@@ -442,3 +442,146 @@ class TestFetchPending:
 
         mock_cc_url.return_value = ""
         assert _fetch_pending() == []
+
+
+class TestDispatchNodeConfig:
+    """node_config pushes: the ONLY writable path for update/egress policy
+    keys (PR #40 consent gates). Strict allowlist + type validation; never
+    routes to the secrets store. Every push carries __issued_at, checked
+    against a persisted watermark so a compromised CC cannot replay an old
+    consent grant after the user revoked it."""
+
+    def _cfg(self, tmp_path, monkeypatch, initial=None):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps(initial or {}))
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+        return cfg
+
+    @staticmethod
+    def _push(data, issued_at=1000):
+        _dispatch_config("node_config", {"__issued_at": issued_at, **data})
+
+    def test_applies_policy_keys(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"allow_updates": True, "release_track": "dev"})
+        saved = json.loads(cfg.read_text())
+        assert saved["allow_updates"] is True
+        assert saved["release_track"] == "dev"
+
+    def test_persists_the_issued_at_watermark(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"allow_updates": True}, issued_at=1234)
+        assert json.loads(cfg.read_text())["_node_config_issued_at"] == 1234
+
+    def test_rejects_replayed_push(self, tmp_path, monkeypatch):
+        # A compromised CC re-serving an old {"allow_updates": true}
+        # ciphertext must not re-grant consent after revocation.
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"allow_updates": True}, issued_at=2000)
+        self._push({"allow_updates": False}, issued_at=3000)
+        self._push({"allow_updates": True}, issued_at=2000)  # replay
+        saved = json.loads(cfg.read_text())
+        assert saved["allow_updates"] is False
+        assert saved["_node_config_issued_at"] == 3000
+
+    def test_rejects_equal_issued_at(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"allow_updates": True}, issued_at=2000)
+        self._push({"allow_updates": False}, issued_at=2000)  # not strictly newer
+        assert json.loads(cfg.read_text())["allow_updates"] is True
+
+    def test_rejects_missing_or_invalid_issued_at(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        _dispatch_config("node_config", {"allow_updates": True})  # missing
+        _dispatch_config("node_config", {"allow_updates": True, "__issued_at": "99"})
+        _dispatch_config("node_config", {"allow_updates": True, "__issued_at": True})
+        assert "allow_updates" not in json.loads(cfg.read_text())
+
+    def test_does_not_route_to_secrets(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch)
+        with patch("services.config_push_service._dispatch_secrets") as secrets:
+            self._push({"allow_updates": True})
+        secrets.assert_not_called()
+
+    def test_rejects_unknown_and_trust_anchor_keys(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch, {"room": "office"})
+        self._push({
+            "allow_updates": True,
+            "jarvis_command_center_api_url": "http://evil:7703",  # no #43 bypass
+            "volume_percent": 50,  # preferences belong to the plaintext channel
+        })
+        saved = json.loads(cfg.read_text())
+        assert saved["allow_updates"] is True
+        assert "jarvis_command_center_api_url" not in saved
+        assert "volume_percent" not in saved
+
+    def test_rejects_non_boolean_for_bool_gates(self, tmp_path, monkeypatch):
+        # A string "false" would read back TRUTHY via Config.get_bool.
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"allow_updates": "false"})
+        assert "allow_updates" not in json.loads(cfg.read_text())
+
+    def test_rejects_invalid_release_track(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        self._push({"release_track": "yolo"})
+        assert "release_track" not in json.loads(cfg.read_text())
+
+    def test_restarts_when_autodownload_flag_changes(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch, {"wake_word_model_autodownload_enabled": False})
+        with patch("services.config_push_service.subprocess.Popen") as popen:
+            self._push({"wake_word_model_autodownload_enabled": True})
+        popen.assert_called_once()
+        # Restart is delayed behind a shell sleep so the push ACK wins the
+        # race against systemd killing the process.
+        assert "systemctl restart" in popen.call_args.args[0][-1]
+
+    def test_no_restart_when_value_unchanged_or_live_key(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch, {"wake_word_model_autodownload_enabled": True})
+        with patch("services.config_push_service.subprocess.Popen") as popen:
+            self._push({
+                "wake_word_model_autodownload_enabled": True,  # unchanged
+                "allow_updates": True,                         # live-read key
+            })
+        popen.assert_not_called()
+
+    def test_restart_spawn_failure_does_not_raise(self, tmp_path, monkeypatch):
+        # Docker/dev installs have no sudo: the spawn failing must never
+        # propagate (it would skip the push ACK and wedge the queue).
+        cfg = self._cfg(tmp_path, monkeypatch, {"wake_word_model_autodownload_enabled": False})
+        with patch(
+            "services.config_push_service.subprocess.Popen",
+            side_effect=FileNotFoundError("sudo"),
+        ):
+            self._push({"wake_word_model_autodownload_enabled": True})
+        assert json.loads(cfg.read_text())["wake_word_model_autodownload_enabled"] is True
+
+
+class TestConfigFileWriterSerialization:
+    """Concurrent config.json writers must not lose updates: a stale
+    read-modify-write spanning another writer's commit would silently
+    restore the old value — for policy keys that un-revokes consent, and
+    the old truncate-then-write pattern could even wipe node identity."""
+
+    def test_concurrent_writers_lose_no_updates(self, tmp_path, monkeypatch):
+        import threading
+
+        from utils.config_file import update_config_file
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"node_id": "n-1", "counter_a": 0, "counter_b": 0}))
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+
+        def bump(key):
+            for _ in range(100):
+                update_config_file(lambda c: c.__setitem__(key, c.get(key, 0) + 1))
+
+        threads = [threading.Thread(target=bump, args=(k,)) for k in ("counter_a", "counter_b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        saved = json.loads(cfg.read_text())
+        assert saved["counter_a"] == 100
+        assert saved["counter_b"] == 100
+        assert saved["node_id"] == "n-1"  # never wiped

@@ -91,3 +91,44 @@ class TestHandleUpdateNodeConfigPersistence:
         }})
 
         assert json.loads(cfg.read_text()) == original  # nothing written
+
+
+class TestPolicyKeysBlockedOnPlaintextChannel:
+    """Update/egress policy gates (PR #40) must not be settable over this
+    channel: it is plaintext MQTT ferried by CC, so CC (or any broker
+    publisher) could otherwise flip a consent flag. They are writable only
+    via the K2-encrypted config-push path (config_type "node_config")."""
+
+    def test_drops_every_update_policy_key(self):
+        assert _reject_trust_anchor_keys({
+            "allow_updates": True,
+            "wake_word_model_autodownload_enabled": True,
+            "release_track": "dev",
+        }) == {}
+
+    def test_policy_keys_never_persist_but_safe_keys_do(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"room": "office"}))
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+
+        handle_update_node_config({"settings": {
+            "allow_updates": True,   # policy key — must be dropped
+            "room": "kitchen",       # legit preference
+        }})
+
+        saved = json.loads(cfg.read_text())
+        assert "allow_updates" not in saved
+        assert saved["room"] == "kitchen"
+
+
+class TestUnderscoreKeysBlocked:
+    """"_"-prefixed keys are config-file internals — most importantly the K2
+    node_config replay watermark (_node_config_issued_at). If this channel
+    could write them, a broker publisher could lower the watermark and make
+    an old consent grant replayable."""
+
+    def test_drops_underscore_prefixed_keys(self):
+        assert _reject_trust_anchor_keys({
+            "_node_config_issued_at": 0,
+            "_anything_internal": "x",
+        }) == {}
