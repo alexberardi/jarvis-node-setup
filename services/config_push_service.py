@@ -6,7 +6,6 @@ This service handles the node side: poll → decrypt → dispatch → ACK.
 
 import base64
 import json
-import os
 import subprocess
 from typing import Any
 
@@ -23,6 +22,7 @@ from db import SessionLocal
 from repositories.agent_registry_repository import AgentRegistryRepository
 from repositories.command_registry_repository import CommandRegistryRepository
 from repositories.disabled_fast_path_repository import DisabledFastPathRepository
+from utils.config_file import update_config_file
 from utils.config_service import Config
 from utils.encryption_utils import get_k2
 from utils.service_discovery import get_command_center_url
@@ -180,10 +180,25 @@ def _dispatch_node_config(config_data: dict[str, Any]) -> None:
     outside UPDATE_POLICY_KEYS is rejected here (preferences belong to
     the plaintext channel; secrets to the secrets store).
 
+    Replay guard: CC stores every pushed ciphertext, so without freshness
+    a compromised CC could re-serve an old ``{"allow_updates": true}``
+    push after the user revoked consent. The mobile app embeds a
+    ``__issued_at`` timestamp INSIDE the encrypted payload; we persist a
+    monotonic watermark and reject anything not strictly newer. The
+    comparison happens under the config-file lock so two pushes can't
+    both pass the check.
+
     Type validation matters: ``Config.get_bool`` reads any non-empty
     string not in its false-set as True, so a string ``"false"`` must
     never be persisted for a boolean gate.
     """
+    issued_at = config_data.pop("__issued_at", None)
+    if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        logger.warning(
+            "node_config push rejected: missing or invalid __issued_at (replay guard)"
+        )
+        return
+
     applied: dict[str, Any] = {}
     rejected: list[str] = []
     for key, value in config_data.items():
@@ -204,41 +219,60 @@ def _dispatch_node_config(config_data: dict[str, Any]) -> None:
     if not applied:
         return
 
-    config_path = os.path.expandvars(os.path.expanduser(
-        os.environ.get("CONFIG_PATH", "config.json")
-    ))
-    try:
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            config = {}
-        changed_restart_keys = {
+    outcome: dict[str, Any] = {}
+
+    def _mutate(config: dict[str, Any]) -> None:
+        watermark = config.get("_node_config_issued_at", 0)
+        if isinstance(watermark, bool) or not isinstance(watermark, (int, float)):
+            watermark = 0
+        if issued_at <= watermark:
+            outcome["replayed"] = watermark
+            return
+        outcome["changed_restart_keys"] = {
             key for key in (set(applied) & POLICY_KEYS_REQUIRING_RESTART)
             if config.get(key) != applied[key]
         }
         config.update(applied)
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-        logger.info("Node policy config updated via K2 push", keys=sorted(applied))
+        config["_node_config_issued_at"] = issued_at
+
+    try:
+        update_config_file(_mutate)
     except OSError as e:
         logger.error("node_config push: config write failed", error=str(e))
         return
 
-    if changed_restart_keys:
+    if "replayed" in outcome:
+        logger.warning(
+            "node_config push rejected: stale __issued_at (replay guard)",
+            issued_at=issued_at,
+            watermark=outcome["replayed"],
+        )
+        return
+
+    logger.info("Node policy config updated via K2 push", keys=sorted(applied))
+
+    if outcome.get("changed_restart_keys"):
         # These keys are only consulted at service startup (e.g. the wake
         # model is only downloaded at voice-listener init) — restart so the
         # toggle visibly takes effect instead of silently waiting for the
-        # next reboot.
+        # next reboot. The sleep gives process_pending_configs time to ACK
+        # the push before systemd kills us; spawn failures (no sudo on
+        # docker/dev installs) must never skip that ACK.
         logger.info(
             "Restarting service to apply policy keys",
-            keys=sorted(changed_restart_keys),
+            keys=sorted(outcome["changed_restart_keys"]),
         )
-        subprocess.Popen(
-            ["sudo", "systemctl", "restart", "jarvis-node"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            subprocess.Popen(
+                ["sh", "-c", "sleep 3; exec sudo systemctl restart jarvis-node"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning(
+                "Policy restart spawn failed — change applies at next restart",
+                error=str(e),
+            )
 
 
 def _dispatch_command_registry(config_data: dict[str, str]) -> None:

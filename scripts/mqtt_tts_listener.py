@@ -15,6 +15,7 @@ from jarvis_log_client import JarvisLogger
 
 from constants.config_policy import UPDATE_POLICY_KEYS
 from utils.audio_volume import set_volume_percent
+from utils.config_file import update_config_file
 from utils.config_service import Config
 from utils.mqtt_credentials import fetch_and_persist_mqtt_credentials
 from core.helpers import get_tts_provider
@@ -1056,6 +1057,9 @@ def _reject_trust_anchor_keys(settings: Dict[str, Any]) -> Dict[str, Any]:
             or key in UPDATE_POLICY_KEYS
             or key.endswith("_url")
             or key.startswith("mqtt_")
+            # "_"-prefixed keys are config-file internals (e.g. the K2
+            # node_config replay watermark) — never remotely writable.
+            or key.startswith("_")
         ):
             rejected.append(key)
         else:
@@ -1135,23 +1139,11 @@ def handle_update_node_config(details: Dict[str, Any]) -> None:
             logger.warning("Mute live-apply failed", error=str(e))
 
     try:
-        config_path = os.path.expandvars(os.path.expanduser(
-            os.environ.get("CONFIG_PATH", "config.json")
-        ))
-
-        # Read current config
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            config = {}
-
-        # Merge new settings
-        config.update(settings)
-
-        # Write back
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
+        # Serialized + atomic: config.json has several concurrent writers
+        # (this handler, the K2 node_config dispatcher, volume persist,
+        # MQTT-cred persist); an unlocked read-modify-write here could
+        # silently restore a policy key another writer just changed.
+        update_config_file(lambda config: config.update(settings))
 
         logger.info("Node config updated via MQTT", keys=list(settings.keys()))
         print(f"[MQTT] update_node_config: updated {list(settings.keys())}", flush=True)

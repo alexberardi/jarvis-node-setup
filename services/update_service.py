@@ -41,9 +41,13 @@ from utils.service_discovery import get_command_center_url
 logger = JarvisLogger(service="jarvis-node")
 
 
+# Actionable for every consumer class: new mobile builds have the Enable
+# updates control; older builds / phones without this node's K2 key get the
+# config.json pointer instead of a dead end.
 _POLICY_REFUSAL_MESSAGE = (
     "Updates are disabled on this node (allow_updates is off). "
-    "Enable updates in the node's settings, then retry."
+    "Enable updates from the node's screen in the Jarvis app, or set "
+    '"allow_updates": true in the node\'s config.json, then retry.'
 )
 
 

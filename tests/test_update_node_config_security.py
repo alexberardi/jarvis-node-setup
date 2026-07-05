@@ -119,3 +119,16 @@ class TestPolicyKeysBlockedOnPlaintextChannel:
         saved = json.loads(cfg.read_text())
         assert "allow_updates" not in saved
         assert saved["room"] == "kitchen"
+
+
+class TestUnderscoreKeysBlocked:
+    """"_"-prefixed keys are config-file internals — most importantly the K2
+    node_config replay watermark (_node_config_issued_at). If this channel
+    could write them, a broker publisher could lower the watermark and make
+    an old consent grant replayable."""
+
+    def test_drops_underscore_prefixed_keys(self):
+        assert _reject_trust_anchor_keys({
+            "_node_config_issued_at": 0,
+            "_anything_internal": "x",
+        }) == {}

@@ -32,6 +32,8 @@ from functools import lru_cache
 
 from jarvis_log_client import JarvisLogger
 
+from utils.config_file import update_config_file
+
 logger = JarvisLogger(service="jarvis-node")
 
 
@@ -507,16 +509,11 @@ def persist_volume_percent(pct: int) -> bool:
     apply — callers don't usually invoke this directly.
     """
     pct = max(0, min(100, int(pct)))
-    path = _config_path()
     try:
-        try:
-            with open(path) as f:
-                config = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            config = {}
-        config["volume_percent"] = pct
-        with open(path, "w") as f:
-            json.dump(config, f, indent=2)
+        # Serialized + atomic with every other config.json writer — an
+        # unlocked read-modify-write here could silently restore a value
+        # (incl. a policy consent key) another writer just changed.
+        update_config_file(lambda config: config.__setitem__("volume_percent", pct))
         return True
     except OSError as e:
         logger.warning("persist volume_percent failed", error=str(e))

@@ -11,22 +11,15 @@ Transition-safe: if command-center has no credential yet (returns nulls) or is
 unreachable, this returns ``(None, None)`` and the caller connects anonymously,
 exactly as today.
 """
-import json
-import os
 from typing import Optional, Tuple
 
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
+from utils.config_file import update_config_file
 from utils.service_discovery import get_command_center_url
 
 logger = JarvisLogger(service="jarvis-node")
-
-
-def _config_path() -> str:
-    return os.path.expandvars(os.path.expanduser(
-        os.environ.get("CONFIG_PATH", "config.json")
-    ))
 
 
 def _persist_mqtt_credentials(username: str, password: str) -> bool:
@@ -35,17 +28,14 @@ def _persist_mqtt_credentials(username: str, password: str) -> bool:
     ``Config.get_str`` re-reads the file on every call, so the persisted values
     are visible to subsequent reads (and survive reboot) with no cache to bust.
     """
-    path = _config_path()
-    try:
-        try:
-            with open(path) as f:
-                config = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            config = {}
+    def _mutate(config: dict) -> None:
         config["mqtt_username"] = username
         config["mqtt_password"] = password
-        with open(path, "w") as f:
-            json.dump(config, f, indent=2)
+
+    try:
+        # Serialized + atomic with every other config.json writer (see
+        # utils/config_file.py for why unlocked RMW is unsafe here).
+        update_config_file(_mutate)
         return True
     except OSError as e:
         logger.warning("persist mqtt credentials failed", error=str(e))
