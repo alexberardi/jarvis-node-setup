@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 
 from jarvis_log_client import JarvisLogger
 
+from constants.config_policy import UPDATE_POLICY_KEYS
 from utils.audio_volume import set_volume_percent
 from utils.config_service import Config
 from utils.mqtt_credentials import fetch_and_persist_mqtt_credentials
@@ -1029,7 +1030,11 @@ _KEYS_REQUIRING_RESTART: set[str] = {"wake_word_model"}
 
 # Identity / credential keys an over-the-wire config update must NEVER set.
 # Endpoint URLs (``*_url``) and broker keys (``mqtt_*``) are matched by pattern
-# below so new ones are covered automatically.
+# below so new ones are covered automatically. Update/egress policy gates
+# (UPDATE_POLICY_KEYS) are rejected here too: this channel is plaintext MQTT
+# ferried by CC, so accepting them would let CC — or any broker publisher —
+# flip a consent flag. They are writable only via the K2-encrypted config
+# push (services/config_push_service, config_type "node_config").
 _CONFIG_UPDATE_FORBIDDEN_KEYS = frozenset({"node_id", "api_key"})
 
 
@@ -1046,14 +1051,20 @@ def _reject_trust_anchor_keys(settings: Dict[str, Any]) -> Dict[str, Any]:
     safe: Dict[str, Any] = {}
     rejected: List[str] = []
     for key, value in settings.items():
-        if key in _CONFIG_UPDATE_FORBIDDEN_KEYS or key.endswith("_url") or key.startswith("mqtt_"):
+        if (
+            key in _CONFIG_UPDATE_FORBIDDEN_KEYS
+            or key in UPDATE_POLICY_KEYS
+            or key.endswith("_url")
+            or key.startswith("mqtt_")
+        ):
             rejected.append(key)
         else:
             safe[key] = value
     if rejected:
         logger.warning(
-            "update_node_config: rejected trust-anchor keys — a config push may "
-            "not repoint the CC URL, node identity, or broker",
+            "update_node_config: rejected trust-anchor/policy keys — a config "
+            "push may not repoint the CC URL, node identity, or broker, nor "
+            "flip update/egress consent gates",
             rejected=rejected,
         )
     return safe

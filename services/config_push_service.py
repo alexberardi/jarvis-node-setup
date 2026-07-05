@@ -6,12 +6,19 @@ This service handles the node side: poll → decrypt → dispatch → ACK.
 
 import base64
 import json
+import os
+import subprocess
 from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
+from constants.config_policy import (
+    POLICY_KEYS_REQUIRING_RESTART,
+    UPDATE_POLICY_KEYS,
+    VALID_RELEASE_TRACKS,
+)
 from db import SessionLocal
 from repositories.agent_registry_repository import AgentRegistryRepository
 from repositories.command_registry_repository import CommandRegistryRepository
@@ -156,8 +163,82 @@ def _dispatch_config(config_type: str, config_data: dict[str, str]) -> None:
         _dispatch_agent_registry(config_data)
     elif config_type == "fast_path_registry":
         _dispatch_fast_path_registry(config_data)
+    elif config_type == "node_config":
+        _dispatch_node_config(config_data)
     else:
         _dispatch_secrets(config_data)
+
+
+def _dispatch_node_config(config_data: dict[str, Any]) -> None:
+    """Apply update/egress policy keys to config.json.
+
+    This is the ONLY writable path for the PR #40 consent gates
+    (``allow_updates``, ``wake_word_model_autodownload_enabled``,
+    ``release_track``): it is end-to-end K2-encrypted, so command-center
+    cannot forge a write — unlike the plaintext ``update_node_config``
+    MQTT channel, which rejects these keys. Strict allowlist: anything
+    outside UPDATE_POLICY_KEYS is rejected here (preferences belong to
+    the plaintext channel; secrets to the secrets store).
+
+    Type validation matters: ``Config.get_bool`` reads any non-empty
+    string not in its false-set as True, so a string ``"false"`` must
+    never be persisted for a boolean gate.
+    """
+    applied: dict[str, Any] = {}
+    rejected: list[str] = []
+    for key, value in config_data.items():
+        if key not in UPDATE_POLICY_KEYS:
+            rejected.append(key)
+        elif key == "release_track":
+            if isinstance(value, str) and value in VALID_RELEASE_TRACKS:
+                applied[key] = value
+            else:
+                rejected.append(key)
+        elif isinstance(value, bool):
+            applied[key] = value
+        else:
+            rejected.append(key)
+
+    if rejected:
+        logger.warning("node_config push: rejected keys", rejected=rejected)
+    if not applied:
+        return
+
+    config_path = os.path.expandvars(os.path.expanduser(
+        os.environ.get("CONFIG_PATH", "config.json")
+    ))
+    try:
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            config = {}
+        changed_restart_keys = {
+            key for key in (set(applied) & POLICY_KEYS_REQUIRING_RESTART)
+            if config.get(key) != applied[key]
+        }
+        config.update(applied)
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+        logger.info("Node policy config updated via K2 push", keys=sorted(applied))
+    except OSError as e:
+        logger.error("node_config push: config write failed", error=str(e))
+        return
+
+    if changed_restart_keys:
+        # These keys are only consulted at service startup (e.g. the wake
+        # model is only downloaded at voice-listener init) — restart so the
+        # toggle visibly takes effect instead of silently waiting for the
+        # next reboot.
+        logger.info(
+            "Restarting service to apply policy keys",
+            keys=sorted(changed_restart_keys),
+        )
+        subprocess.Popen(
+            ["sudo", "systemctl", "restart", "jarvis-node"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def _dispatch_command_registry(config_data: dict[str, str]) -> None:

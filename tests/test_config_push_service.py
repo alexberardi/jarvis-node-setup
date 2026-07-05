@@ -442,3 +442,67 @@ class TestFetchPending:
 
         mock_cc_url.return_value = ""
         assert _fetch_pending() == []
+
+
+class TestDispatchNodeConfig:
+    """node_config pushes: the ONLY writable path for update/egress policy
+    keys (PR #40 consent gates). Strict allowlist + type validation; never
+    routes to the secrets store."""
+
+    def _cfg(self, tmp_path, monkeypatch, initial=None):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps(initial or {}))
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+        return cfg
+
+    def test_applies_policy_keys(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        _dispatch_config("node_config", {"allow_updates": True, "release_track": "dev"})
+        saved = json.loads(cfg.read_text())
+        assert saved["allow_updates"] is True
+        assert saved["release_track"] == "dev"
+
+    def test_does_not_route_to_secrets(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch)
+        with patch("services.config_push_service._dispatch_secrets") as secrets:
+            _dispatch_config("node_config", {"allow_updates": True})
+        secrets.assert_not_called()
+
+    def test_rejects_unknown_and_trust_anchor_keys(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch, {"room": "office"})
+        _dispatch_config("node_config", {
+            "allow_updates": True,
+            "jarvis_command_center_api_url": "http://evil:7703",  # no #43 bypass
+            "volume_percent": 50,  # preferences belong to the plaintext channel
+        })
+        saved = json.loads(cfg.read_text())
+        assert saved["allow_updates"] is True
+        assert "jarvis_command_center_api_url" not in saved
+        assert "volume_percent" not in saved
+
+    def test_rejects_non_boolean_for_bool_gates(self, tmp_path, monkeypatch):
+        # A string "false" would read back TRUTHY via Config.get_bool.
+        cfg = self._cfg(tmp_path, monkeypatch)
+        _dispatch_config("node_config", {"allow_updates": "false"})
+        assert "allow_updates" not in json.loads(cfg.read_text())
+
+    def test_rejects_invalid_release_track(self, tmp_path, monkeypatch):
+        cfg = self._cfg(tmp_path, monkeypatch)
+        _dispatch_config("node_config", {"release_track": "yolo"})
+        assert "release_track" not in json.loads(cfg.read_text())
+
+    def test_restarts_when_autodownload_flag_changes(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch, {"wake_word_model_autodownload_enabled": False})
+        with patch("services.config_push_service.subprocess.Popen") as popen:
+            _dispatch_config("node_config", {"wake_word_model_autodownload_enabled": True})
+        popen.assert_called_once()
+        assert "restart" in popen.call_args.args[0]
+
+    def test_no_restart_when_value_unchanged_or_live_key(self, tmp_path, monkeypatch):
+        self._cfg(tmp_path, monkeypatch, {"wake_word_model_autodownload_enabled": True})
+        with patch("services.config_push_service.subprocess.Popen") as popen:
+            _dispatch_config("node_config", {
+                "wake_word_model_autodownload_enabled": True,  # unchanged
+                "allow_updates": True,                         # live-read key
+            })
+        popen.assert_not_called()

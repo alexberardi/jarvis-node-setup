@@ -1079,3 +1079,56 @@ class TestHandleSnapshotRequest:
 
         result = handle_snapshot_request("req-123")
         assert result is False
+
+
+class TestNodeConfigPolicyKeys:
+    """node_config must expose the PR #40 consent gates so the mobile app
+    can render the toggles (read-only here; writes arrive only via the K2
+    node_config push)."""
+
+    def _mock_services(self, mock_discovery, mock_family_discovery):
+        family = MagicMock()
+        family.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = family
+        svc = MagicMock()
+        svc.get_all_commands.return_value = {}
+        mock_discovery.return_value = svc
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_policy_gates_default_off(
+        self, mock_discovery, mock_get_secret, mock_family_discovery, tmp_path, monkeypatch
+    ):
+        self._mock_services(mock_discovery, mock_family_discovery)
+        cfg = tmp_path / "config.json"
+        cfg.write_text("{}")
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+        monkeypatch.delenv("JARVIS_ALLOW_UPDATES", raising=False)
+        monkeypatch.delenv("JARVIS_WAKE_WORD_MODEL_AUTODOWNLOAD_ENABLED", raising=False)
+
+        node_config = build_snapshot()["node_config"]
+        assert node_config["allow_updates"] is False
+        assert node_config["wake_word_model_autodownload_enabled"] is False
+        assert node_config["release_track"] == "stable"
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_policy_gates_reflect_configured_values(
+        self, mock_discovery, mock_get_secret, mock_family_discovery, tmp_path, monkeypatch
+    ):
+        self._mock_services(mock_discovery, mock_family_discovery)
+        import json as _json
+        cfg = tmp_path / "config.json"
+        cfg.write_text(_json.dumps({
+            "allow_updates": True,
+            "wake_word_model_autodownload_enabled": True,
+            "release_track": "dev",
+        }))
+        monkeypatch.setenv("CONFIG_PATH", str(cfg))
+
+        node_config = build_snapshot()["node_config"]
+        assert node_config["allow_updates"] is True
+        assert node_config["wake_word_model_autodownload_enabled"] is True
+        assert node_config["release_track"] == "dev"

@@ -47,6 +47,7 @@ class TestAllowUpdatesGate:
         pending = {"task_id": "t-1", "target_version": "0.2.0"}
 
         with patch.object(update_service.Config, "get_bool", return_value=False) as get_bool, \
+                patch.object(update_service, "_report_task_refused"), \
                 patch.object(update_service, "_spawn_upgrade") as spawn, \
                 patch.object(update_service, "_write_state") as write_state:
             update_service.maybe_apply_update(pending)
@@ -61,6 +62,7 @@ class TestAllowUpdatesGate:
         pending = {"task_id": "t-2", "target_version": "0.2.0"}
 
         with patch.object(update_service.Config, "get_bool", return_value=False), \
+                patch.object(update_service, "_report_task_refused"), \
                 patch.object(update_service, "is_busy") as is_busy, \
                 patch.object(update_service, "version_info") as version_info, \
                 patch.object(update_service, "_spawn_upgrade") as spawn, \
@@ -149,3 +151,38 @@ class TestParseVersion:
         assert update_service._parse_version("") is None
         assert update_service._parse_version(None) is None
         assert update_service._parse_version("latest") is None
+
+
+class TestPolicyRefusalReporting:
+    """A refused update must be reported to CC as a terminal failure with
+    the policy reason — otherwise the task dies ~15 minutes later as a
+    misleading sweeper 'Timeout' and the operator never learns why
+    (Jul-2026 prod kitchen incident)."""
+
+    def test_disabled_with_task_id_reports_failed(self):
+        pending = {"task_id": "t-9", "target_version": "0.2.0"}
+        with patch.object(update_service.Config, "get_bool", return_value=False), \
+                patch.object(update_service, "get_command_center_url",
+                             return_value="http://cc:7703"), \
+                patch.object(update_service.RestClient, "post",
+                             return_value={"ok": True}) as post:
+            update_service.maybe_apply_update(pending)
+
+        post.assert_called_once()
+        assert post.call_args.args[0] == "http://cc:7703/api/v0/nodes/tasks/t-9/status"
+        payload = post.call_args.kwargs["data"]
+        assert payload["state"] == "failed"
+        assert "disabled" in payload["error_message"].lower()
+
+    def test_disabled_without_task_id_does_not_post(self):
+        with patch.object(update_service.Config, "get_bool", return_value=False), \
+                patch.object(update_service.RestClient, "post") as post:
+            update_service.maybe_apply_update({"target_version": "0.2.0"})
+        post.assert_not_called()
+
+    def test_report_errors_never_propagate(self):
+        pending = {"task_id": "t-10", "target_version": "0.2.0"}
+        with patch.object(update_service.Config, "get_bool", return_value=False), \
+                patch.object(update_service, "get_command_center_url",
+                             side_effect=RuntimeError("boom")):
+            update_service.maybe_apply_update(pending)  # must not raise
