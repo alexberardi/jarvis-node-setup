@@ -31,12 +31,53 @@ from typing import Any
 
 from jarvis_log_client import JarvisLogger
 
+from clients.rest_client import RestClient
 from core.runtime_state import is_busy
 from core.version import version_info
 from utils.config_service import Config
+from utils.service_discovery import get_command_center_url
 
 
 logger = JarvisLogger(service="jarvis-node")
+
+
+# Actionable for every consumer class: new mobile builds have the Enable
+# updates control; older builds / phones without this node's K2 key get the
+# config.json pointer instead of a dead end.
+_POLICY_REFUSAL_MESSAGE = (
+    "Updates are disabled on this node (allow_updates is off). "
+    "Enable updates from the node's screen in the Jarvis app, or set "
+    '"allow_updates": true in the node\'s config.json, then retry.'
+)
+
+
+def _report_task_refused(task_id: str) -> None:
+    """Best-effort: mark the update task failed on CC with the policy reason.
+
+    Without this the task dies as a sweeper timeout ~15 minutes later and the
+    operator sees "Timeout: no heartbeat..." instead of the actual reason.
+    Never raises — the caller runs inside the heartbeat loop.
+    """
+    try:
+        base_url = get_command_center_url() or ""
+        if not base_url:
+            logger.warning(
+                "Cannot report update refusal: no command-center URL",
+                task_id=task_id,
+            )
+            return
+        url = f"{base_url.rstrip('/')}/api/v0/nodes/tasks/{task_id}/status"
+        result = RestClient.post(
+            url,
+            data={"state": "failed", "error_message": _POLICY_REFUSAL_MESSAGE},
+            timeout=10,
+        )
+        if result is None:
+            logger.warning("Update refusal report failed", task_id=task_id)
+    except Exception as e:
+        logger.warning(
+            "Update refusal report errored", task_id=task_id, error=str(e)
+        )
 
 
 def _state_file() -> Path:
@@ -184,6 +225,12 @@ def maybe_apply_update(pending: dict[str, Any]) -> None:
             "Update requested but updates are disabled by policy — ignoring",
             task_id=pending.get("task_id"),
         )
+        # Tell CC WHY, or the task dies ~15 minutes later as a misleading
+        # sweeper timeout and the operator never learns the reason
+        # (Jul-2026 prod: an update "failure" that was actually this gate).
+        refused_task_id = pending.get("task_id")
+        if refused_task_id:
+            _report_task_refused(refused_task_id)
         return
 
     if _in_flight.is_set():

@@ -661,6 +661,16 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
         "maintenance_restart_rss_ceiling_mb": Config.get_int(
             "maintenance_restart_rss_ceiling_mb", 320,
         ),
+        # PR #40 consent gates (egress opt-ins), surfaced read-only so the
+        # mobile app can render the enable-updates button / toggles. Writes
+        # are accepted ONLY via the K2-encrypted config push (config_type
+        # "node_config") — the plaintext update_node_config channel rejects
+        # these keys.
+        "allow_updates": Config.get_bool("allow_updates", False),
+        "wake_word_model_autodownload_enabled": Config.get_bool(
+            "wake_word_model_autodownload_enabled", False,
+        ),
+        "release_track": Config.get_str("release_track", "stable"),
     }
 
     # Detected hardware — surfaces ReSpeaker HAT presence + audio backend to
