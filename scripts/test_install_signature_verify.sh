@@ -79,7 +79,7 @@ run_case() {
 
   local out ec=0
   out="$(env "$@" bash -c "
-    set -uo pipefail
+    set -euo pipefail
     REPO='alexberardi/jarvis-node-setup'
     TAG='v9.9.9'
     MINISIGN_PUBKEY='$TEST_PUBKEY'
@@ -155,7 +155,7 @@ mismatch_case() {
   cp "$MISMATCH/$TARBALL_NAME" "$tarball_path"
   local out ec=0
   out="$(env "$@" bash -c "
-    set -uo pipefail
+    set -euo pipefail
     REPO='alexberardi/jarvis-node-setup'
     TAG='v9.9.9'
     MINISIGN_PUBKEY='$TEST_PUBKEY'
