@@ -465,13 +465,38 @@ def main():
     except Exception as e:
         logger.warning("Inbox backend init failed, commands cannot post inbox items", error=str(e))
 
-    # Check if node is provisioned (skip in development mode)
+    # Provisioning gate (skip in development mode). Three distinct cases —
+    # conflating them stranded the prod kitchen node on 2026-07-05:
+    #   1. No marker → fresh node → plain AP provisioning mode.
+    #   2. Marker + WiFi won't join within grace → RECOVERABLE AP mode:
+    #      the AP↔STA cycle (provisioning.recovery_watcher) keeps retrying
+    #      the known WiFi and reboots back to normal when it returns, while
+    #      still letting the user re-pair if the WiFi genuinely changed.
+    #   3. Marker + WiFi up but CC unreachable → NEVER AP mode: that's a
+    #      server/internet condition provisioning can't fix. Log, continue,
+    #      and rely on runtime retries (MQTT reconnect, heartbeat, voice).
     if not os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("true", "1", "yes"):
-        from provisioning.startup import is_provisioned
-        if not is_provisioned():
-            logger.warning("Node not provisioned or cannot reach command center")
+        from provisioning.startup import (
+            should_enter_provisioning,
+            wait_for_command_center,
+            wait_for_wifi,
+        )
+        if should_enter_provisioning():
+            logger.warning("No provisioning marker — node needs setup")
             _run_provisioning_and_restart()
             return  # Should not reach here due to os.execv
+        if not wait_for_wifi():
+            logger.warning(
+                "WiFi did not join within boot grace — entering recoverable "
+                "provisioning mode (AP↔STA cycle keeps retrying the known network)"
+            )
+            _run_provisioning_and_restart()
+            return  # Should not reach here due to os.execv
+        if not wait_for_command_center():
+            logger.warning(
+                "WiFi is up but command center is unreachable — continuing "
+                "startup; connectivity will be retried in normal operation"
+            )
     # Service discovery was already initialised at module-import time
     # (above the jarvis_log_client import so the log-client picks up
     # the correct logs URL on first instantiation — see comment block
@@ -765,13 +790,14 @@ def main():
     # was a misguided fix that actively created the very failure mode
     # it claimed to repair.
     #
-    # The legitimate "CC unreachable so re-provisioning is needed
-    # (WiFi changed)" case is still handled by the existing
-    # is_provisioned() retry-then-AP-mode flow. AP mode itself runs
-    # a recovery watcher (provisioning.recovery_watcher) that polls
-    # the saved CC URL and reboots the node if CC comes back — so a
-    # transient outage that DID happen to land during boot self-heals
-    # without manual intervention.
+    # (2026-07-05 update): the remaining instance of that same conflation
+    # — is_provisioned()'s retry-then-AP-mode flow at startup — stranded
+    # the prod kitchen node after a net-watchdog reboot and is now also
+    # removed. Provisioning is entered ONLY when the marker is absent;
+    # re-provisioning a relocated node is an explicit factory reset. The
+    # AP-mode recovery watcher could never rescue these cases anyway:
+    # AP mode's captive dnsmasq resolves every hostname to the node
+    # itself, so its CC reachability probe can never succeed.
 
     # Warm up the LLM by sending a throwaway request through the full
     # pipeline (tool registration → system prompt → KV cache).  This

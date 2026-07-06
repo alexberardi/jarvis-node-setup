@@ -100,6 +100,7 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
         logger.info("Using backend for WiFi operations", backend=backend_name)
 
     # On real Pi, scan networks BEFORE entering AP mode, then start AP
+    ap_ssid = None
     if not is_simulated:
         from provisioning.api import _get_node_id
         node_id = _get_node_id()
@@ -141,14 +142,33 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     if auto_shutdown:
         logger.info("Auto-shutdown enabled")
 
-    # AP-mode recovery watcher (v0.1.69): poll the saved CC URL and
-    # reboot when it comes back, so a transient CC outage that pushed
-    # us into AP mode self-heals without a physical reboot. See
-    # provisioning/recovery_watcher.py for full rationale.
+    # AP↔STA recovery cycle: only for a node that has been provisioned
+    # before (there IS a known WiFi to retry). Periodically drops the AP,
+    # lets the known network reconnect, and reboots on success — so a
+    # transient outage that pushed us into AP mode self-heals without a
+    # physical reboot, while a genuine WiFi change keeps the AP mostly
+    # available for re-pairing. See provisioning/recovery_watcher.py.
+    # Skipped in simulation (no real radio to cycle) and for fresh
+    # unprovisioned nodes (plain AP mode until first pairing).
     recovery_shutdown_event = threading.Event()
     try:
-        from provisioning.recovery_watcher import start_recovery_watcher
-        start_recovery_watcher(recovery_shutdown_event)
+        from provisioning.startup import has_provisioning_marker
+        if ap_ssid is not None and has_provisioning_marker():
+            from provisioning.recovery_watcher import start_recovery_watcher
+            from provisioning.models import ProvisioningState
+
+            sm = app.state.provisioning_state_machine
+
+            def _is_pairing_active() -> bool:
+                # Anything past idle AP_MODE means a phone is mid-flow.
+                return sm.state != ProvisioningState.AP_MODE
+
+            start_recovery_watcher(
+                recovery_shutdown_event,
+                wifi_manager=wifi_manager,
+                ap_ssid=ap_ssid,
+                is_pairing_active=_is_pairing_active,
+            )
     except Exception as e:
         logger.warning("Recovery watcher failed to start (non-fatal)", error=str(e))
 
