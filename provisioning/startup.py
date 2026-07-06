@@ -78,30 +78,105 @@ def has_provisioning_marker() -> bool:
 
 
 def is_provisioned() -> bool:
+    """Whether this node has completed provisioning. MARKER-ONLY.
+
+    Deliberately consults nothing but the ``.provisioned`` marker.
+    The previous implementation also required command-center
+    reachability, which stranded a provisioned node in AP mode whenever
+    CC was unreachable for ~85s at boot (2026-07-05 prod-kitchen: WiFi
+    slow to associate after a net-watchdog reboot → AP mode → NetworkManager
+    stopped → node off-network until a physical power-cycle; the AP-mode
+    recovery watcher cannot save it because the AP's captive DNS points
+    its reachability probe back at the node itself). Reachability is a
+    runtime concern — see ``wait_for_command_center``.
     """
-    Check if the node is provisioned and can reach the command center.
+    return has_provisioning_marker()
 
-    Logic:
-    1. Check if ~/.jarvis/.provisioned marker exists
-       - No → return False (needs provisioning)
-    2. Try to ping command center health endpoint with exponential backoff
-       - Success → return True (ready for normal operation)
-       - Fail after all retries → return False (network changed, needs re-provisioning)
 
-    Returns:
-        True if provisioned and command center reachable, False otherwise.
+def should_enter_provisioning() -> bool:
+    """The AP-mode gate: enter provisioning ONLY when the marker is absent.
+
+    Entering AP mode tears down the WiFi client, so a wrong "yes" is
+    unrecoverable without physical access. A provisioned node that cannot
+    reach the network keeps running (and stays SSH-able the moment WiFi
+    returns); re-provisioning a relocated node is an explicit user action
+    (factory reset via the app clears the marker), never an automatic
+    fallback.
+    """
+    return not has_provisioning_marker()
+
+
+def _has_lan_connectivity() -> bool:
+    """True when a default route exists and its gateway answers a ping."""
+    import re
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    m = re.search(r"default via (\S+)", out)
+    if not m:
+        return False
+    try:
+        return subprocess.run(
+            ["ping", "-c", "1", "-W", "2", m.group(1)],
+            capture_output=True, timeout=5,
+        ).returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+# WiFi-join grace at boot for provisioned nodes. Long enough for a slow
+# association (the 2026-07-05 kitchen boot needed more than the old 85s
+# CC window); short enough that a genuinely changed WiFi reaches the
+# recoverable AP within a few minutes.
+_WIFI_JOIN_POLL_SECONDS: float = 5.0
+_WIFI_JOIN_ATTEMPTS: int = 36  # ~3 minutes
+
+
+def wait_for_wifi() -> bool:
+    """Wait for LAN connectivity after boot (provisioned nodes only).
+
+    Distinguishes the two outage shapes that used to be conflated:
+    WiFi itself not joining (→ caller may enter the RECOVERABLE AP mode,
+    where the AP↔STA cycle keeps retrying the known network) versus WiFi
+    up but command-center unreachable (→ never AP mode; see
+    ``wait_for_command_center``).
     """
     import time
 
-    # Step 1: Check marker file
-    if not has_provisioning_marker():
-        return False
+    attempts = int(os.environ.get("JARVIS_WIFI_JOIN_ATTEMPTS", _WIFI_JOIN_ATTEMPTS))
+    for attempt in range(attempts):
+        if _has_lan_connectivity():
+            return True
+        if attempt == 0 or (attempt + 1) % 6 == 0:
+            logger.info("Waiting for WiFi/LAN", attempt=attempt + 1, max_attempts=attempts)
+        time.sleep(_WIFI_JOIN_POLL_SECONDS)
+    logger.warning("No LAN connectivity after boot grace",
+                   total_wait_seconds=attempts * _WIFI_JOIN_POLL_SECONDS)
+    return False
 
-    # Step 2: Check command center connectivity with exponential backoff
-    # Network may take time to come up after boot
+
+def wait_for_command_center() -> bool:
+    """Boot-ordering grace wait for command center. Informational only.
+
+    Gives CC ~85s (exponential backoff) to become reachable so startup
+    proceeds in a sensible order. The result must NEVER gate provisioning
+    state — callers log and continue on False; MQTT/heartbeat/voice all
+    retry at runtime.
+
+    Returns:
+        True when CC answered within the window, False otherwise.
+    """
+    import time
+
     url = _get_command_center_url()
     if not url:
-        # No URL configured, consider not provisioned
+        logger.warning("No command center URL configured — skipping boot grace wait")
         return False
 
     max_attempts: int = len(_RETRY_DELAYS)
