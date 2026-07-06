@@ -9,6 +9,12 @@
 #   --force        Reinstall even if already at latest version
 #   --version TAG  Install a specific version (e.g. v0.1.0)
 #   --local        Skip download (tarball already extracted to /opt/jarvis-node)
+#
+# Environment:
+#   JARVIS_REQUIRE_SIGNED_UPDATE=1  Refuse releases without a minisign-signed
+#                                   checksums.txt (default: warn and continue)
+#   JARVIS_ALLOW_UNSIGNED_UPDATE=1  Proceed past a FAILED signature check
+#                                   (a sha256 mismatch still always aborts)
 
 set -euo pipefail
 
@@ -459,6 +465,98 @@ load-module module-stream-restore restore_device=false restore_muted=false
   fi
 }
 
+# --- Release signature verification ---
+# Releases sign checksums.txt -> checksums.txt.minisig in CI (see
+# .github/workflows/release.yml "Sign checksums"). The tarball's sha256
+# comes from the signed checksums.txt, so a valid signature attests the
+# exact bytes we extract. Same trust anchor as jarvis-admin's
+# self-updater (minisign key id 725ba202b54fa2c9).
+#
+# Transition semantics (signing went live before any client verified):
+# older releases carry no checksums.txt/.minisig, so their ABSENCE
+# warns and continues — otherwise --version downgrades would brick.
+# JARVIS_REQUIRE_SIGNED_UPDATE=1 makes absence fatal (the future
+# default once every supported release is signed). A PRESENT but
+# INVALID signature aborts unless JARVIS_ALLOW_UNSIGNED_UPDATE=1; a
+# sha256 mismatch against checksums.txt always aborts — that's a
+# corrupt or tampered artifact, never a policy question.
+MINISIGN_PUBKEY="RWRyW6ICtU+iyX4p4RnS24ju0gRsWpxvv6B8pI9G+ZS01q8t8oupAQ8L"
+
+ensure_minisign() {
+  if command -v minisign >/dev/null 2>&1; then
+    return 0
+  fi
+  info "Installing minisign..."
+  local apt_cache="/var/cache/apt/pkgcache.bin"
+  if [ ! -f "$apt_cache" ] || [ "$(( $(date +%s) - $(stat -c %Y "$apt_cache" 2>/dev/null || echo 0) ))" -gt 3600 ]; then
+    apt-get update -qq || true
+  fi
+  if ! apt-get install -y --no-install-recommends -qq minisign > /dev/null 2>&1; then
+    return 1
+  fi
+  command -v minisign >/dev/null 2>&1
+}
+
+verify_release_signature() {
+  local tarball="$1"
+  local tarball_path="$2"
+  local checksums_path="${tarball_path}.checksums"
+  local minisig_path="${checksums_path}.minisig"
+  local base_url="https://github.com/${REPO}/releases/download/${TAG}"
+
+  rm -f "$checksums_path" "$minisig_path"
+
+  info "Fetching checksums.txt + signature for ${TAG}..."
+  if ! curl -fsSL --retry 3 --connect-timeout 30 --max-time 60 \
+        -o "$checksums_path" "${base_url}/checksums.txt" 2>/dev/null \
+     || ! curl -fsSL --retry 3 --connect-timeout 30 --max-time 60 \
+        -o "$minisig_path" "${base_url}/checksums.txt.minisig" 2>/dev/null; then
+    rm -f "$checksums_path" "$minisig_path"
+    if [ "${JARVIS_REQUIRE_SIGNED_UPDATE:-0}" = "1" ]; then
+      rm -f "$tarball_path"
+      error "Release ${TAG} has no checksums.txt/.minisig and JARVIS_REQUIRE_SIGNED_UPDATE=1 is set — refusing unsigned release"
+    fi
+    warn "WARNING: release ${TAG} is UNSIGNED (no checksums.txt + checksums.txt.minisig)"
+    warn "WARNING: installing without signature verification — set JARVIS_REQUIRE_SIGNED_UPDATE=1 to refuse unsigned releases"
+    return 0
+  fi
+
+  if ! ensure_minisign; then
+    rm -f "$checksums_path" "$minisig_path"
+    if [ "${JARVIS_REQUIRE_SIGNED_UPDATE:-0}" = "1" ]; then
+      rm -f "$tarball_path"
+      error "minisign could not be installed and JARVIS_REQUIRE_SIGNED_UPDATE=1 is set — cannot verify ${TAG}"
+    fi
+    warn "WARNING: minisign could not be installed — skipping signature verification for ${TAG}"
+    return 0
+  fi
+
+  if minisign -Vq -P "$MINISIGN_PUBKEY" -m "$checksums_path" >/dev/null 2>&1; then
+    info "checksums.txt signature verified (key 725ba202b54fa2c9)"
+  elif [ "${JARVIS_ALLOW_UNSIGNED_UPDATE:-0}" = "1" ]; then
+    warn "WARNING: checksums.txt signature is INVALID — proceeding under JARVIS_ALLOW_UNSIGNED_UPDATE=1"
+  else
+    rm -f "$checksums_path" "$minisig_path" "$tarball_path"
+    error "Signature verification FAILED for ${TAG} checksums.txt — refusing to install (JARVIS_ALLOW_UNSIGNED_UPDATE=1 overrides)"
+  fi
+
+  local expected_sha
+  expected_sha="$(awk -v f="$tarball" '$2 == f { print $1 }' "$checksums_path" | head -1)"
+  if [ -z "$expected_sha" ]; then
+    rm -f "$checksums_path" "$minisig_path" "$tarball_path"
+    error "checksums.txt for ${TAG} has no entry for ${tarball} — refusing to install"
+  fi
+
+  local actual_sha
+  actual_sha="$(sha256sum "$tarball_path" | awk '{ print $1 }')"
+  rm -f "$checksums_path" "$minisig_path"
+  if [ "$actual_sha" != "$expected_sha" ]; then
+    rm -f "$tarball_path"
+    error "Tarball sha256 mismatch: expected ${expected_sha}, got ${actual_sha} (corrupt or tampered artifact)"
+  fi
+  info "Tarball sha256 verified: ${actual_sha}"
+}
+
 # --- Download and extract tarball ---
 download_and_extract() {
   if [ "$LOCAL_MODE" -eq 1 ]; then
@@ -539,6 +637,11 @@ download_and_extract() {
     rm -f "$tarball_path"
     error "Tarball failed gzip integrity check (corrupt download)"
   fi
+
+  # Authenticity gate: minisign signature over checksums.txt, then
+  # sha256 of the tarball against it. See verify_release_signature for
+  # the advisory->mandatory transition semantics.
+  verify_release_signature "$tarball" "$tarball_path"
 
   info "Extracting ${tarball}..."
   if ! tar xzf "$tarball_path" -C /; then
