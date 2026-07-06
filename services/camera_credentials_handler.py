@@ -1,13 +1,23 @@
-"""Handle camera credential requests from CC via MQTT.
+"""Handle camera stream-source requests from CC via MQTT.
 
 Flow:
-1. CC publishes to jarvis/nodes/{node_id}/camera-credentials with {request_id, protocol, ...}
-2. This handler reads credentials from the protocol's JarvisStorage
-3. POSTs credentials back to CC at /api/v0/camera-credentials/{request_id}
+1. CC publishes to jarvis/nodes/{node_id}/camera-credentials with
+   {request_id, protocol, cloud_id, entity_id, domain}
+2. This handler resolves the device-protocol plugin for `protocol` and asks it
+   to build a go2rtc source string via IJarvisDeviceProtocol.get_stream_source()
+3. POSTs {stream_source: "..."} (or {error: "..."}) back to CC at
+   /api/v0/camera-credentials/{request_id}
+
+The node — specifically the device-protocol plugin — owns the go2rtc source
+format and the choice of streaming transport (WebRTC vs RTSP). Command-center
+registers whatever source string this returns, verbatim; it holds no protocol
+specifics.
 """
 
+import asyncio
 from typing import Any
 
+from jarvis_command_sdk import DiscoveredDevice
 from jarvis_log_client import JarvisLogger
 
 from clients.rest_client import RestClient
@@ -15,78 +25,75 @@ from utils.service_discovery import get_command_center_url
 
 logger = JarvisLogger(service="jarvis-node")
 
-# Protocol → list of secret keys needed for camera streaming
-_PROTOCOL_CREDENTIAL_KEYS: dict[str, list[str]] = {
-    "nest": [
-        "NEST_REFRESH_TOKEN",
-        "NEST_WEB_CLIENT_ID",
-        "NEST_WEB_CLIENT_SECRET",
-        "NEST_PROJECT_ID",
-    ],
-}
-
-# Protocol → mapping from secret key to response field name
-_PROTOCOL_FIELD_MAP: dict[str, dict[str, str]] = {
-    "nest": {
-        "NEST_REFRESH_TOKEN": "refresh_token",
-        "NEST_WEB_CLIENT_ID": "client_id",
-        "NEST_WEB_CLIENT_SECRET": "client_secret",
-        "NEST_PROJECT_ID": "project_id",
-    },
-}
-
 
 def run_credentials_lookup_and_upload(request_id: str, details: dict[str, Any]) -> None:
-    """Look up camera credentials and upload to CC. Runs in a background thread."""
-    protocol: str = details.get("protocol", "")
+    """Build a go2rtc stream source and upload it to CC. Runs in a background thread."""
+    try:
+        # asyncio.run() — NOT a hand-rolled new_event_loop()/loop.close() — so any
+        # ThreadPoolExecutor a protocol spins up (e.g. httpx wrapped via to_thread)
+        # is shut down rather than leaked (the 2026-06-23 "can't start new thread"
+        # node-death mode). See device_state_handler for the same pattern.
+        asyncio.run(_async_build_and_upload(request_id, details))
+    except Exception as e:
+        logger.error("Camera stream source lookup failed", request_id=request_id[:8], error=str(e))
+        _upload_result(request_id, {"error": str(e)})
 
+
+async def _async_build_and_upload(request_id: str, details: dict[str, Any]) -> None:
+    """Resolve the protocol plugin, build the go2rtc source, POST it to CC."""
+    protocol: str = details.get("protocol", "")
     if not protocol:
         _upload_result(request_id, {"error": "missing protocol"})
         return
 
-    if protocol not in _PROTOCOL_CREDENTIAL_KEYS:
-        _upload_result(request_id, {"error": f"unsupported camera protocol: {protocol}"})
+    cloud_id: str = details.get("cloud_id", "")
+    entity_id: str = details.get("entity_id", "")
+    domain: str = details.get("domain", "camera")
+
+    from utils.device_family_discovery_service import get_device_family_discovery_service
+
+    adapter = get_device_family_discovery_service().get_family(protocol)
+    if adapter is None:
+        _upload_result(request_id, {"error": f"protocol not available: {protocol}"})
         return
 
-    try:
-        from services.secret_service import get_secret_value
+    build_stream_source = getattr(adapter, "get_stream_source", None)
+    if build_stream_source is None:
+        # Older SDK without the get_stream_source hook.
+        _upload_result(request_id, {"error": f"stream source not supported by protocol: {protocol}"})
+        return
 
-        keys = _PROTOCOL_CREDENTIAL_KEYS[protocol]
-        field_map = _PROTOCOL_FIELD_MAP[protocol]
-        result: dict[str, str] = {}
-        missing: list[str] = []
+    device = DiscoveredDevice(
+        name=entity_id or "camera",
+        domain=domain,
+        manufacturer="",
+        model="",
+        protocol=protocol,
+        entity_id=entity_id,
+        cloud_id=cloud_id,
+    )
 
-        for key in keys:
-            value: str | None = get_secret_value(key, "integration")
-            if value:
-                result[field_map[key]] = value
-            else:
-                missing.append(key)
+    stream_source = await build_stream_source(device)
+    if not stream_source:
+        _upload_result(request_id, {
+            "error": "Camera not configured or not supported. Complete OAuth setup in Node Settings.",
+        })
+        return
 
-        if missing:
-            _upload_result(request_id, {
-                "error": f"Missing credentials: {', '.join(missing)}. Complete OAuth setup in Node Settings.",
-            })
-            return
-
-        logger.info("Camera credentials retrieved", protocol=protocol, request_id=request_id[:8])
-        _upload_result(request_id, result)
-
-    except Exception as e:
-        logger.error("Camera credentials lookup failed", request_id=request_id[:8], error=str(e))
-        _upload_result(request_id, {"error": str(e)})
+    logger.info("Camera stream source built", protocol=protocol, request_id=request_id[:8])
+    _upload_result(request_id, {"stream_source": stream_source})
 
 
 def _upload_result(request_id: str, data: dict[str, Any]) -> None:
-    """POST credential result to CC."""
+    """POST the stream-source result to CC."""
     cc_url = get_command_center_url()
     if not cc_url:
-        logger.error("Cannot upload credentials: CC URL not resolved")
+        logger.error("Cannot upload camera stream source: CC URL not resolved")
         return
 
     url = f"{cc_url.rstrip('/')}/api/v0/camera-credentials/{request_id}"
     result = RestClient.post(url, data=data, timeout=10)
     if result:
-        logger.debug("Camera credentials uploaded to CC", request_id=request_id[:8])
+        logger.debug("Camera stream source uploaded to CC", request_id=request_id[:8])
     else:
-        logger.error("Failed to upload camera credentials to CC", request_id=request_id[:8])
+        logger.error("Failed to upload camera stream source to CC", request_id=request_id[:8])
