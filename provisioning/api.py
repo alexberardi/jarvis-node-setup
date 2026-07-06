@@ -229,6 +229,9 @@ def create_provisioning_app(
     )
 
     state_machine = ProvisioningStateMachine()
+    # Exposed so the AP↔STA recovery cycle can pause while a pairing
+    # session is in progress (it must never yank the AP mid-provision).
+    app.state.provisioning_state_machine = state_machine
     _provisioning_lock = threading.Lock()
     _on_provisioned = on_provisioned
 

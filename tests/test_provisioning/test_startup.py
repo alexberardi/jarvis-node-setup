@@ -12,6 +12,9 @@ from provisioning.startup import (
     clear_provisioned,
     is_provisioned,
     mark_provisioned,
+    should_enter_provisioning,
+    wait_for_command_center,
+    wait_for_wifi,
 )
 
 
@@ -66,51 +69,125 @@ class TestClearProvisioned:
 
 
 class TestIsProvisioned:
-    """Test provisioning detection."""
+    """is_provisioned() is MARKER-ONLY.
+
+    REGRESSION GUARD (2026-07-05 prod-kitchen stranding): the old
+    implementation also required command-center reachability, so 85s of
+    CC unreachability at boot (WiFi slow to associate after a watchdog
+    reboot) was treated as "not provisioned" and the node entered AP
+    mode — which stops NetworkManager, and whose captive DNS makes the
+    recovery watcher's probe point at the node itself. Result: a
+    provisioned node stranded off-network until a physical power-cycle.
+    Reachability must play NO role in provisioning state.
+    """
 
     def test_returns_false_if_no_marker(self, temp_secret_dir):
         result = is_provisioned()
         assert result is False
 
-    def test_returns_false_if_no_command_center_url(self, temp_secret_dir):
+    def test_returns_true_with_marker_even_when_cc_unreachable(self, temp_secret_dir):
+        mark_provisioned()
+
+        with patch(
+            "provisioning.startup._can_reach_command_center",
+            side_effect=AssertionError("reachability must not be consulted"),
+        ):
+            assert is_provisioned() is True
+
+    def test_returns_true_with_marker_and_no_cc_url(self, temp_secret_dir):
         mark_provisioned()
 
         with patch("provisioning.startup._get_command_center_url", return_value=None):
-            result = is_provisioned()
-            assert result is False
+            assert is_provisioned() is True
 
-    def test_returns_false_if_command_center_unreachable(self, temp_secret_dir):
+
+class TestShouldEnterProvisioning:
+    """The AP-mode decision: marker presence and NOTHING else.
+
+    Entering AP mode tears down the WiFi client, so a wrong "yes" is
+    unrecoverable without physical access. Re-provisioning a relocated
+    node is an explicit user action (factory reset), never automatic.
+    """
+
+    def test_fresh_node_enters_provisioning(self, temp_secret_dir):
+        assert should_enter_provisioning() is True
+
+    def test_provisioned_node_never_enters_provisioning(self, temp_secret_dir):
         mark_provisioned()
+        assert should_enter_provisioning() is False
 
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
-            with patch("provisioning.startup._can_reach_command_center", return_value=False):
-                result = is_provisioned()
-                assert result is False
-
-    def test_returns_true_if_provisioned_and_reachable(self, temp_secret_dir):
+    def test_cc_unreachability_is_irrelevant(self, temp_secret_dir):
         mark_provisioned()
+        with patch(
+            "provisioning.startup._can_reach_command_center",
+            side_effect=AssertionError("reachability must not be consulted"),
+        ):
+            assert should_enter_provisioning() is False
 
+    def test_factory_reset_re_enables_provisioning(self, temp_secret_dir):
+        mark_provisioned()
+        clear_provisioned()
+        assert should_enter_provisioning() is True
+
+
+class TestWaitForWifi:
+    """WiFi-join grace at boot.
+
+    Failure here routes a provisioned node into the RECOVERABLE AP mode
+    (AP↔STA cycle) — never the old dead-end AP mode.
+    """
+
+    def test_true_immediately_when_lan_up(self, temp_secret_dir):
+        with patch("provisioning.startup._has_lan_connectivity", return_value=True):
+            with patch("time.sleep") as mock_sleep:
+                assert wait_for_wifi() is True
+                mock_sleep.assert_not_called()
+
+    def test_false_after_grace_when_lan_never_joins(self, temp_secret_dir):
+        with patch("provisioning.startup._has_lan_connectivity", return_value=False):
+            with patch("time.sleep"):
+                assert wait_for_wifi() is False
+
+    def test_true_when_lan_joins_late(self, temp_secret_dir):
+        # Joins on the 5th poll — a slow association must not be fatal.
+        results = [False] * 4 + [True]
+        with patch("provisioning.startup._has_lan_connectivity", side_effect=results):
+            with patch("time.sleep"):
+                assert wait_for_wifi() is True
+
+
+class TestWaitForCommandCenter:
+    """Boot-ordering grace wait — informational, never a provisioning signal."""
+
+    def test_true_immediately_when_reachable(self, temp_secret_dir):
         with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
-                result = is_provisioned()
-                assert result is True
+                with patch("time.sleep") as mock_sleep:
+                    assert wait_for_command_center() is True
+                    mock_sleep.assert_not_called()
+
+    def test_false_after_retries_when_unreachable(self, temp_secret_dir):
+        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
+            with patch("provisioning.startup._can_reach_command_center", return_value=False):
+                with patch("time.sleep"):
+                    assert wait_for_command_center() is False
+
+    def test_false_fast_when_no_url_configured(self, temp_secret_dir):
+        with patch("provisioning.startup._get_command_center_url", return_value=None):
+            with patch("time.sleep") as mock_sleep:
+                assert wait_for_command_center() is False
+                mock_sleep.assert_not_called()
 
 
 class TestCommandCenterUrl:
-    """Test command center URL resolution."""
+    """Test command center URL resolution (via the grace wait)."""
 
     def test_gets_url_from_env(self, temp_secret_dir):
-        mark_provisioned()
-
         with patch.dict(os.environ, {"COMMAND_CENTER_URL": "http://env.example.com:7703"}):
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
-                result = is_provisioned()
-                # If it uses the env URL and can reach it, should return True
-                assert result is True
+                assert wait_for_command_center() is True
 
     def test_falls_back_to_config_json(self, temp_secret_dir, tmp_path):
-        mark_provisioned()
-
         config_file = tmp_path / "config.json"
         config_file.write_text('{"jarvis_command_center_api_url": "http://config.example.com:7703"}')
 
@@ -125,8 +202,7 @@ class TestCommandCenterUrl:
                 del os.environ["COMMAND_CENTER_URL"]
 
             with patch("provisioning.startup._can_reach_command_center", return_value=True):
-                result = is_provisioned()
-                assert result is True
+                assert wait_for_command_center() is True
 
 
 class TestCanReachCommandCenter:
@@ -173,19 +249,14 @@ class TestProvisioningFlow:
         assert result is False
 
     def test_mark_then_check(self, temp_secret_dir):
-        """After marking, node should be provisioned (if command center reachable)."""
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
-            with patch("provisioning.startup._can_reach_command_center", return_value=True):
-                mark_provisioned()
-                result = is_provisioned()
-                assert result is True
+        """After marking, node is provisioned — no network required."""
+        mark_provisioned()
+        assert is_provisioned() is True
 
     def test_clear_then_check(self, temp_secret_dir):
         """After clearing, node should not be provisioned."""
-        with patch("provisioning.startup._get_command_center_url", return_value="http://localhost:7703"):
-            with patch("provisioning.startup._can_reach_command_center", return_value=True):
-                mark_provisioned()
-                assert is_provisioned() is True
+        mark_provisioned()
+        assert is_provisioned() is True
 
-                clear_provisioned()
-                assert is_provisioned() is False
+        clear_provisioned()
+        assert is_provisioned() is False
