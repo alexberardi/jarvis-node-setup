@@ -38,6 +38,9 @@ def factory_reset() -> dict:
     - WiFi credentials
     - Node database + DB encryption key
     - Config credentials (node_id, api_key reset to placeholders)
+    - MQTT broker credentials (mqtt_username/mqtt_password cleared so a fresh
+      reprovision re-fetches them from command-center instead of reusing a stale
+      password from the previous install)
     - All Pantry-installed packages (custom commands, agents, protocols, managers, routines)
     - Pantry package metadata (~/.jarvis/packages/)
 
@@ -99,11 +102,21 @@ def factory_reset() -> dict:
 
             config["node_id"] = "your-node-id"
             config["api_key"] = "your_api_key_here"
+            # Clear the shared MQTT broker credential too. It's bound to the
+            # install this node was paired with; a fresh reprovision (possibly to
+            # a different install whose broker password differs) must NOT keep the
+            # old one. The runtime fetch only refreshes creds when they're ABSENT
+            # (mqtt_tts_listener: ``if not username or not password``), so a stale
+            # value here makes the node skip the refresh and connect with the
+            # wrong password (broker rc=5, "not authorised") forever.
+            config["mqtt_username"] = ""
+            config["mqtt_password"] = ""
 
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=2)
 
             cleared.append("config_credentials")
+            cleared.append("mqtt_credentials")
         except Exception as e:
             logger.warning("Failed to reset config credentials", error=str(e))
 
