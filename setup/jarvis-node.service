@@ -48,7 +48,12 @@ Environment=XDG_RUNTIME_DIR=/run/user/__SERVICE_UID__
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=__PROJECT_DIR__
 Environment=CONFIG_PATH=__PROJECT_DIR__/config.json
-Environment=JARVIS_CONFIG_URL_STYLE=remote
+# NB: JARVIS_CONFIG_URL_STYLE is intentionally NOT set here. scripts.main
+# computes it at startup from the config-service host in config.json
+# (real IP → 'external', host.docker.internal → 'dockerized'). Hardcoding
+# 'remote' forced every Pi to a style that can't resolve container-name HTTP
+# rows off-box (command-center came back as host.docker.internal). To pin it,
+# set it here and scripts.main's setdefault will honor it.
 # Cap glibc malloc arenas to curb heap fragmentation. A ~30-thread process
 # defaults to up to 8×CPU arenas (32 on a 4-core Pi Zero 2), each fragmenting
 # independently under steady transient churn (5-min agent fetches, the ZWave

@@ -12,7 +12,16 @@ only there (that gap shipped a Pi that forced ``remote`` and couldn't reach
 container-name HTTP rows). Keep it here and call it from both.
 """
 
+import os
+from collections.abc import MutableMapping
 from urllib.parse import urlparse
+
+# ``remote`` is the retired predecessor of ``external``: it only rewrites
+# localhost-registered rows, leaving container-name HTTP rows (command-center)
+# unreachable off-box. Any node still carrying it — from a stale systemd unit
+# that a code-only update didn't regenerate — should be re-pointed at the style
+# its vantage actually implies. Treated as "unset" so we recompute over it.
+_RETIRED_STYLES = ("", "remote")
 
 
 def config_url_style_for_host(host: str) -> str | None:
@@ -38,3 +47,24 @@ def config_url_style_for_host(host: str) -> str | None:
 def config_url_style_for_url(config_url: str) -> str | None:
     """``config_url_style_for_host`` applied to a full config-service URL."""
     return config_url_style_for_host(urlparse(config_url).hostname or "")
+
+
+def apply_config_url_style(
+    config_url: str, environ: MutableMapping[str, str] | None = None
+) -> str | None:
+    """Set ``JARVIS_CONFIG_URL_STYLE`` in the environment from the config-service
+    host's vantage, and return the effective style.
+
+    An explicit ``dockerized``/``external`` already in the env wins. But an unset
+    style — or the retired ``remote`` left behind by a stale systemd unit — is
+    (re)computed from ``config_url``, so a node self-heals on a code update
+    without needing its unit regenerated.
+    """
+    if environ is None:
+        environ = os.environ
+    computed = config_url_style_for_url(config_url)
+    current = environ.get("JARVIS_CONFIG_URL_STYLE", "")
+    if computed and current in _RETIRED_STYLES:
+        environ["JARVIS_CONFIG_URL_STYLE"] = computed
+        return computed
+    return current or None

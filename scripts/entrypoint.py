@@ -78,13 +78,10 @@ def _apply_config_service_env() -> None:
     os.environ["JARVIS_CONFIG_URL"] = url
     # Choose the URL style from the vantage the config host reveals. Shared with
     # scripts.main (the Pi path) via utils.config_env so both entrypoints agree.
-    from utils.config_env import config_url_style_for_url
-    style = config_url_style_for_url(url)
-    if style:
-        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", style)
+    from utils.config_env import apply_config_url_style
+    style = apply_config_url_style(url)
     print(
-        f"[entrypoint] config service: {url} "
-        f"(style={os.environ.get('JARVIS_CONFIG_URL_STYLE', 'default')})",
+        f"[entrypoint] config service: {url} (style={style or 'default'})",
         flush=True,
     )
 
