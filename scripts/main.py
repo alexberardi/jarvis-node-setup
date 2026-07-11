@@ -45,6 +45,18 @@ if not os.environ.get("JARVIS_CONFIG_URL"):
     except (json.JSONDecodeError, KeyError) as _e:
         print(f"WARNING: Config parse error: {_e}", file=sys.stderr)
 
+# Pick the config-URL resolution style from the vantage the config-service host
+# reveals. The Pi runs `python -m scripts.main` directly and never touches
+# entrypoint.py, so this MUST happen here too — otherwise the node uses whatever
+# the systemd unit hardcodes (historically 'remote', which can't reach
+# container-name HTTP rows off-box). setdefault so an explicit env override wins.
+_cfg_url = os.environ.get("JARVIS_CONFIG_URL", "")
+if _cfg_url:
+    from utils.config_env import config_url_style_for_url
+    _cfg_style = config_url_style_for_url(_cfg_url)
+    if _cfg_style:
+        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", _cfg_style)
+
 # Initialize service discovery (jarvis-config-client) BEFORE importing
 # any jarvis_log_client consumers. JarvisLogger resolves its server URL
 # at __init__ time via ``_get_logs_url()`` — which queries
