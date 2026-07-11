@@ -1794,7 +1794,12 @@ Environment=XDG_RUNTIME_DIR=/run/user/${service_uid}
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=${INSTALL_DIR}
 Environment=CONFIG_PATH=${INSTALL_DIR}/config.json
-Environment=JARVIS_CONFIG_URL_STYLE=remote
+# NB: JARVIS_CONFIG_URL_STYLE is intentionally NOT set here. scripts.main
+# computes it at startup from the config-service host in config.json
+# (real IP → 'external', host.docker.internal → 'dockerized'). Hardcoding
+# 'remote' here forced every Pi to a style that can't resolve container-name
+# HTTP rows off-box (command-center came back as host.docker.internal). If you
+# ever need to pin it, set it here and scripts.main's setdefault will honor it.
 # Cap glibc malloc arenas to curb heap fragmentation (32 arenas on a 4-core
 # Pi Zero 2 fragment independently under steady churn → RSS+swap ratchet →
 # slow wake). Read before Python; main.py also calls mallopt() for code-only
