@@ -68,23 +68,30 @@ def _on_disconnect(client: mqtt.Client, userdata: Any, rc: int) -> None:
 def get_mqtt_config() -> Dict[str, Any]:
     """Get MQTT configuration at runtime.
 
-    Uses get_mqtt_broker_url() which checks:
-    1. Config-service (jarvis-mqtt-broker) — respects JARVIS_CONFIG_URL_STYLE
-       so Docker containers get host.docker.internal automatically
-    2. config.json fallback
-    3. Default: localhost:1884
+    Resolves the broker from config-service via get_mqtt_broker_url() — the same
+    uniform resolver used for every service (respects JARVIS_CONFIG_URL_STYLE, so
+    a Docker peer gets host.docker.internal and an off-box node gets the server
+    IP). There is deliberately NO localhost fallback: get_mqtt_broker_url() raises
+    ServiceUnresolvedError when config-service can't resolve the broker (unless the
+    node is still provisioning), and the connect loop retries with backoff rather
+    than connecting to a fabricated localhost that reaches nothing.
 
     Supported schemes: mqtt (raw TCP), mqtts (TLS TCP), ws (WebSocket),
     wss (TLS WebSocket — used by external nodes via Cloudflare Tunnel).
     """
-    from utils.service_discovery import get_mqtt_broker_url
+    from utils.service_discovery import get_mqtt_broker_url, ServiceUnresolvedError
 
     node_id: str = Config.get_str("node_id", "unknown") or "unknown"
 
-    broker_url = get_mqtt_broker_url() or "mqtt://localhost:1884"
+    broker_url = get_mqtt_broker_url()
     parsed = urlparse(broker_url)
     scheme = parsed.scheme or "mqtt"
-    broker = parsed.hostname or "localhost"
+    broker = parsed.hostname
+    if not broker:
+        raise ServiceUnresolvedError(
+            f"Resolved MQTT broker URL has no host: {broker_url!r} — refusing to "
+            "fall back to localhost."
+        )
     default_port = {"mqtt": 1883, "mqtts": 8883, "ws": 80, "wss": 443}.get(scheme, 1883)
     port = parsed.port or default_port
 
@@ -2620,7 +2627,40 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
     cleanup_thread.start()
     logger.info("Test command cleanup thread started")
 
-    config = get_mqtt_config()
+    # Resolve the broker for initial client setup. No localhost fallback: if
+    # config-service can't resolve the broker yet (node booted before the stack,
+    # or a transient outage), retry with capped backoff and re-init discovery
+    # each round until we get the real address or shutdown — never fabricate
+    # localhost. Runs in the MQTT thread, so blocking here never stalls the node.
+    from utils.service_discovery import ServiceUnresolvedError
+    from utils.service_discovery import is_initialized as _sd_is_initialized
+    from utils.service_discovery import init as _sd_init
+
+    config: Optional[Dict[str, Any]] = None
+    _init_attempt: int = 0
+    while _shutdown_event is None or not _shutdown_event.is_set():
+        _init_attempt += 1
+        if not _sd_is_initialized():
+            _sd_init()
+        try:
+            config = get_mqtt_config()
+            break
+        except ServiceUnresolvedError as e:
+            _init_backoff: int = min(2 ** min(_init_attempt, 6), 60)
+            logger.warning(
+                "MQTT broker not resolvable from config-service yet, retrying",
+                attempt=_init_attempt,
+                retry_in_seconds=_init_backoff,
+                error=str(e),
+            )
+            if _shutdown_event is not None:
+                if _shutdown_event.wait(timeout=_init_backoff):
+                    return
+            else:
+                time.sleep(_init_backoff)
+    if config is None:
+        # Shutdown requested before the broker ever resolved.
+        return
 
     # If the broker requires auth but this node has no credential yet (the
     # transition window), fetch it from command-center over the authenticated
@@ -2717,15 +2757,16 @@ def start_mqtt_listener(ma_service: MusicAssistantService) -> None:
         # staying stuck on the localhost fallback.
         if not _sd_is_initialized():
             _sd_init()
-        current = get_mqtt_config()
-        broker_host, broker_port = current["broker"], current["port"]
+        broker_host, broker_port = None, None
         try:
+            current = get_mqtt_config()
+            broker_host, broker_port = current["broker"], current["port"]
             client.connect(broker_host, broker_port, 120)
             logger.info(
                 "MQTT connecting", broker=broker_host, port=broker_port, attempt=attempt
             )
             break
-        except (ConnectionRefusedError, OSError) as e:
+        except (ConnectionRefusedError, OSError, ServiceUnresolvedError) as e:
             backoff: int = min(2 ** min(attempt, 6), 60)
             logger.warning(
                 "MQTT connection attempt failed, retrying",

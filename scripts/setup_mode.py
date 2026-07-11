@@ -210,8 +210,13 @@ async def connect_services(request: Request):
     from urllib.parse import urlparse
 
     cfg_host = urlparse(config_url).hostname or ""
-    if cfg_host and cfg_host not in ("localhost", "127.0.0.1", "host.docker.internal"):
-        params = {"style": "remote", "remote_host": cfg_host}
+    if cfg_host == "host.docker.internal":
+        params = {"style": "dockerized"}
+    elif cfg_host and cfg_host not in ("localhost", "127.0.0.1"):
+        # Off-box (Pi on the LAN / node on another host): 'external' uses each
+        # service's published coords, so container-name HTTP rows resolve too —
+        # not just localhost-registered infra. (Matches entrypoint.py.)
+        params = {"style": "external", "remote_host": cfg_host}
     elif os.path.exists("/.dockerenv"):
         params = {"style": "dockerized"}
     else:

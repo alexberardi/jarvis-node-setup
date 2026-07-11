@@ -936,9 +936,22 @@ def main():
                 error=str(e),
             )
 
-    # Start voice listener with retry (blocks until KeyboardInterrupt or audio failure)
+    # Start voice listener with retry (blocks until KeyboardInterrupt or audio
+    # failure). Two failure classes are handled DIFFERENTLY:
+    #   - ServiceUnresolvedError: config-service is unreachable, so the voice
+    #     path can't resolve command-center. Retry INDEFINITELY with backoff —
+    #     config-service comes back (cold boot / full-stack restart), and going
+    #     headless here would leave the node permanently voice-dead until a
+    #     manual reboot (systemd won't restart a process that stays alive). This
+    #     mirrors the MQTT connect loop, which already retries discovery forever.
+    #   - Any other failure (no mic / audio device error): bounded retry, then
+    #     fall through to headless — a broken mic won't self-heal.
+    from utils.service_discovery import ServiceUnresolvedError
+
     max_voice_retries: int = 3
-    for voice_attempt in range(1, max_voice_retries + 1):
+    audio_attempt: int = 0
+    discovery_attempt: int = 0
+    while _shutdown_event is None or not _shutdown_event.is_set():
         try:
             # Mark voice as active for heartbeat (main thread is the voice thread)
             heartbeat_threads["voice"] = (threading.current_thread(), None)
@@ -946,18 +959,39 @@ def main():
 
             start_voice_listener(ma_service)
             break  # Clean exit from voice listener
+        except ServiceUnresolvedError as e:
+            discovery_attempt += 1
+            backoff: int = min(2 ** min(discovery_attempt, 6), 60)
+            logger.warning(
+                "Voice listener can't resolve services yet (config-service "
+                "unreachable) — retrying, will self-heal when it returns",
+                error=str(e),
+                attempt=discovery_attempt,
+                retry_in_seconds=backoff,
+            )
+            if _shutdown_event is not None:
+                if _shutdown_event.wait(timeout=backoff):
+                    break
+            else:
+                time.sleep(backoff)
         except Exception as e:
+            audio_attempt += 1
             import traceback as _tb
             logger.error(
                 "Voice listener failed",
                 error=str(e),
                 error_type=type(e).__name__,
                 traceback=_tb.format_exc(),
-                attempt=voice_attempt,
+                attempt=audio_attempt,
                 max_attempts=max_voice_retries,
             )
-            if voice_attempt < max_voice_retries:
-                logger.info("Retrying voice listener", retry_in_seconds=10)
+            if audio_attempt >= max_voice_retries:
+                break  # non-recoverable (audio) → headless
+            logger.info("Retrying voice listener", retry_in_seconds=10)
+            if _shutdown_event is not None:
+                if _shutdown_event.wait(timeout=10):
+                    break
+            else:
                 time.sleep(10)
 
     # If voice listener exits (no mic, audio failure, etc.), keep the process
