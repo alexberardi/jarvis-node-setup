@@ -76,21 +76,12 @@ def _apply_config_service_env() -> None:
     if not url:
         return
     os.environ["JARVIS_CONFIG_URL"] = url
-    from urllib.parse import urlparse
-    host = urlparse(url).hostname or ""
-    # Choose the URL style from the vantage the config host reveals:
-    #   host.docker.internal → this node runs in Docker on the same host as the
-    #     stack (a Docker peer) → 'dockerized' (localhost → host.docker.internal).
-    #   a real IP/hostname    → this node is off-box (a Pi on the LAN, or a node
-    #     on another host) → 'external': uses each service's published coords,
-    #     rewriting BOTH the localhost-registered broker AND container-name HTTP
-    #     rows to the server host. ('remote' only fixes the localhost rows, so it
-    #     leaves container-name services unreachable off-box — that's why it was
-    #     only half-working.)
-    if host == "host.docker.internal":
-        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", "dockerized")
-    elif host and host not in ("localhost", "127.0.0.1"):
-        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", "external")
+    # Choose the URL style from the vantage the config host reveals. Shared with
+    # scripts.main (the Pi path) via utils.config_env so both entrypoints agree.
+    from utils.config_env import config_url_style_for_url
+    style = config_url_style_for_url(url)
+    if style:
+        os.environ.setdefault("JARVIS_CONFIG_URL_STYLE", style)
     print(
         f"[entrypoint] config service: {url} "
         f"(style={os.environ.get('JARVIS_CONFIG_URL_STYLE', 'default')})",
