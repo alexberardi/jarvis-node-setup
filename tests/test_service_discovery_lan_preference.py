@@ -1,152 +1,119 @@
-"""Service-discovery URL resolution tests — pins the LAN-vs-cloud behaviour
-behind the kitchen-node "offline while alive" incident.
+"""Service-discovery URL resolution tests — pins the config-service-only,
+fail-loud contract that replaced the old JSON-fallback resolution.
 
-Root cause recap: the kitchen Pi is on the SAME LAN as command-center and the
-MQTT broker (it pings the prod origin in ~2-3ms), yet its on-disk config pinned
-the Cloudflare hostnames (``command-center.jarvisautomation.io`` /
-``mqtt.jarvisautomation.io``). So BOTH the HTTP heartbeat and MQTT rode a
-fragile WAN/Cloudflare leg; when that leg degraded the node was marked offline
-and dropped messages, while SSH (LAN-direct) kept working.
+Background: nodes used to resolve service URLs through a fallback ladder
+(config-service → JSON config keys → hardcoded ``localhost``). That ladder is
+what let a node get pinned to a stale/cloud host (the kitchen-node "offline
+while alive" incident) and silently collapse to ``mqtt://localhost:1884`` when
+config-service was briefly unreachable (the "dark node after full-stack
+restart" incident).
 
-These tests:
-  1. Characterize the real resolution order (config-service > JSON fallback)
-     and the JSON-config parsing for command-center + MQTT.
-  2. Pin the ROOT CAUSE — JSON config CAN pin a node to cloud hostnames — so
-     the regression is visible and any future "prefer-LAN" change is a
-     deliberate edit to a known test.
-  3. An xfail executable-spec for the deferred "prefer-LAN for LAN-resident
-     nodes" fix, so the desired invariant is captured without breaking CI.
+New contract (what these tests pin):
+  1. **config-service is the single source of truth.** Every service —
+     command-center AND the broker — resolves through the SAME ``_get_url``
+     path. No per-service asymmetry.
+  2. **No localhost / JSON fallback for service URLs.** ``config.json`` holds
+     only the bootstrap address (``jarvis_config_service_url``); it is never a
+     service-URL fallback.
+  3. **Fail loud.** A provisioned node that can't resolve a service raises
+     ``ServiceUnresolvedError`` rather than fabricating a bogus URL — the caller
+     retries/surfaces. A node still in provisioning mode tolerates it ("").
 """
 
 import importlib
+import sys
+import types
 
 import pytest
 
 import utils.service_discovery as sd
+from utils.service_discovery import ServiceUnresolvedError
 
 
 @pytest.fixture
 def discovery(monkeypatch):
-    """Service-discovery module with config-service disabled and a controllable
-    JSON-config backend, restored after each test."""
-    # Force the JSON-fallback path (config-service not initialized).
-    monkeypatch.setattr(sd, "_initialized", False, raising=False)
+    """service_discovery wired to a controllable config-service backend.
 
-    json_cfg: dict[str, str] = {}
-    monkeypatch.setattr(sd, "_get_from_json_config", lambda key: json_cfg.get(key))
+    Injects a fake ``jarvis_config_client`` whose ``get_service_url`` reads a
+    dict the test controls, marks discovery initialized, and defaults the node
+    to *provisioned* (so unresolved services raise loudly)."""
+    services: dict[str, str] = {}
 
-    # Clear MQTT env overrides so the JSON path is exercised deterministically.
-    for var in ("JARVIS_MQTT_BROKER", "JARVIS_MQTT_PORT", "JARVIS_MQTT_SCHEME"):
-        monkeypatch.delenv(var, raising=False)
+    fake = types.ModuleType("jarvis_config_client")
+    fake.get_service_url = lambda name: services.get(name)  # type: ignore[attr-defined]
+    fake.init = lambda *a, **k: True  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "jarvis_config_client", fake)
 
-    return sd, json_cfg
+    monkeypatch.setattr(sd, "_initialized", True, raising=False)
+    monkeypatch.setattr(sd, "_in_provisioning_mode", lambda: False)
+    return sd, services
 
 
-# ── Characterization: JSON-config resolution (the fallback every node uses) ──
+# ── config-service is the single source of truth ────────────────────────────
 
 
-def test_command_center_url_from_json_config(discovery):
-    mod, cfg = discovery
-    cfg["jarvis_command_center_api_url"] = "http://10.0.0.107:7703"
+def test_command_center_resolves_from_config_service(discovery):
+    mod, services = discovery
+    services["command-center"] = "http://10.0.0.107:7703"
     assert mod.get_command_center_url() == "http://10.0.0.107:7703"
 
 
-def test_mqtt_broker_url_built_from_json_parts(discovery):
-    mod, cfg = discovery
-    cfg["mqtt_broker"] = "10.0.0.107"
-    cfg["mqtt_port"] = "1884"
-    cfg["mqtt_scheme"] = "mqtt"
+def test_broker_resolves_from_config_service(discovery):
+    mod, services = discovery
+    services["jarvis-mqtt-broker"] = "mqtt://10.0.0.107:1884"
     assert mod.get_mqtt_broker_url() == "mqtt://10.0.0.107:1884"
 
 
-def test_mqtt_broker_url_from_mqtt_broker_host_key(discovery):
-    """The Docker/admin-generated configs write ``mqtt_broker_host`` /
-    ``mqtt_broker_port`` (not the legacy ``mqtt_broker`` key). Resolution MUST
-    honour them, otherwise a node whose config-service is unreachable at resolve
-    time silently misses its own broker and collapses to localhost:1884 — which
-    reaches nothing in a container, stranding the node dark on MQTT."""
-    mod, cfg = discovery
-    cfg["mqtt_broker_host"] = "jarvis-mosquitto"
-    cfg["mqtt_broker_port"] = "1883"
-    assert mod.get_mqtt_broker_url() == "mqtt://jarvis-mosquitto:1883"
+def test_broker_and_cc_use_the_same_resolver(discovery):
+    """No CC-vs-broker asymmetry: both flow through _get_url → config-service,
+    so they succeed and fail together instead of one going dark."""
+    mod, services = discovery
+    services["command-center"] = "http://server:7703"
+    services["jarvis-mqtt-broker"] = "mqtt://server:1884"
+    assert mod.get_command_center_url() == "http://server:7703"
+    assert mod.get_mqtt_broker_url() == "mqtt://server:1884"
 
 
-def test_mqtt_broker_url_prefers_legacy_key_when_both_present(discovery):
-    """Back-compat: when both keys exist, the legacy ``mqtt_broker`` wins so
-    existing provisioned nodes resolve exactly as before."""
-    mod, cfg = discovery
-    cfg["mqtt_broker"] = "10.0.0.107"
-    cfg["mqtt_port"] = "1884"
-    cfg["mqtt_broker_host"] = "jarvis-mosquitto"
-    cfg["mqtt_broker_port"] = "1883"
-    assert mod.get_mqtt_broker_url() == "mqtt://10.0.0.107:1884"
+# ── No localhost/JSON fallback — fail loud ───────────────────────────────────
 
 
-def test_mqtt_broker_url_defaults_when_unconfigured(discovery):
-    mod, _cfg = discovery
-    # No env, no JSON → safe localhost default (never a cloud host).
-    assert mod.get_mqtt_broker_url() == "mqtt://localhost:1884"
+def test_unresolved_raises_loudly_when_provisioned(discovery):
+    """A provisioned node with an unresolvable service raises instead of
+    fabricating mqtt://localhost:1884 (the old dark-node trap)."""
+    mod, _services = discovery  # nothing registered → nothing resolves
+    with pytest.raises(ServiceUnresolvedError):
+        mod.get_mqtt_broker_url()
+    with pytest.raises(ServiceUnresolvedError):
+        mod.get_command_center_url()
 
 
-def test_mqtt_broker_url_env_overrides_json(monkeypatch, discovery):
-    mod, cfg = discovery
-    cfg["mqtt_broker"] = "10.0.0.107"  # JSON says LAN
-    monkeypatch.setenv("JARVIS_MQTT_BROKER", "mqtt-host.example")
-    monkeypatch.setenv("JARVIS_MQTT_PORT", "8883")
-    monkeypatch.setenv("JARVIS_MQTT_SCHEME", "mqtts")
-    # Env wins over JSON (resolution order in get_mqtt_broker_url).
-    assert mod.get_mqtt_broker_url() == "mqtts://mqtt-host.example:8883"
+def test_service_url_is_never_taken_from_json_config(discovery, monkeypatch):
+    """config.json is ONLY the bootstrap address. Even if a stale service URL
+    sits in the JSON config, resolution must NOT use it — it raises instead.
+    (This is exactly how nodes got pinned to stale/cloud hosts.)"""
+    mod, _services = discovery  # config-service resolves nothing
+    monkeypatch.setattr(mod, "_get_from_json_config",
+                        lambda key: "http://stale-from-json:7703")
+    with pytest.raises(ServiceUnresolvedError):
+        mod.get_command_center_url()
 
 
-# ── Root-cause pin: JSON config CAN route a LAN node over the cloud ──────────
+# ── Provisioning-mode tolerance ──────────────────────────────────────────────
 
 
-def test_json_config_can_pin_node_to_cloud_hostnames(discovery):
-    """Documents EXACTLY how the kitchen node ended up on the WAN path.
-
-    Provisioning baked the Cloudflare hostnames into the node's JSON config,
-    so resolution faithfully returns cloud URLs for a node that is physically
-    on the LAN. This is the defect to eliminate at the provisioning source;
-    until then, this is the (correct, faithful) behaviour of resolution.
-    """
-    mod, cfg = discovery
-    cfg["jarvis_command_center_api_url"] = "https://command-center.jarvisautomation.io"
-    cfg["mqtt_broker"] = "mqtt.jarvisautomation.io"
-    cfg["mqtt_port"] = "443"
-    cfg["mqtt_scheme"] = "wss"
-
-    assert mod.get_command_center_url() == "https://command-center.jarvisautomation.io"
-    assert mod.get_mqtt_broker_url() == "wss://mqtt.jarvisautomation.io:443"
+def test_unresolved_returns_empty_during_provisioning(discovery, monkeypatch):
+    """A not-yet-provisioned node isn't expected to reach config-service, so an
+    unresolved service returns '' rather than raising."""
+    mod, _services = discovery
+    monkeypatch.setattr(mod, "_in_provisioning_mode", lambda: True)
+    assert mod.get_mqtt_broker_url() == ""
+    assert mod.get_command_center_url() == ""
 
 
-# ── Deferred "prefer-LAN" invariant (executable spec, expected to fail) ──────
-
-
-@pytest.mark.xfail(
-    reason="prefer-LAN for LAN-resident nodes is deferred (node-side fix not "
-    "yet implemented). When a node can reach a LAN origin, heartbeat + MQTT "
-    "must NOT resolve to a Cloudflare host. See node-offline-mqtt root-cause.",
-    strict=False,
-)
-def test_lan_resident_node_should_not_resolve_cloud_broker(monkeypatch, discovery):
-    """DESIRED invariant: a node that advertises a LAN reachability hint must
-    never hand back a wss://*.jarvisautomation.io broker URL, even if the JSON
-    config still carries cloud hostnames. Today resolution has no LAN
-    preference, so this xfails — flip to a real assertion when prefer-LAN lands.
-    """
-    mod, cfg = discovery
-    # Node is on the LAN with the origin...
-    monkeypatch.setenv("JARVIS_PREFER_LAN", "1")
-    cfg["lan_origin_host"] = "10.0.0.107"
-    # ...but its config still points at the cloud (provisioning artifact).
-    cfg["mqtt_broker"] = "mqtt.jarvisautomation.io"
-    cfg["mqtt_port"] = "443"
-    cfg["mqtt_scheme"] = "wss"
-
-    url = mod.get_mqtt_broker_url()
-
-    assert not url.startswith("wss://"), url
-    assert "jarvisautomation.io" not in url, url
+def test_provisioning_mode_honors_skip_env(monkeypatch):
+    """JARVIS_SKIP_PROVISIONING_CHECK forces provisioning-mode tolerance."""
+    monkeypatch.setenv("JARVIS_SKIP_PROVISIONING_CHECK", "true")
+    assert sd._in_provisioning_mode() is True
 
 
 def test_module_reimports_cleanly():

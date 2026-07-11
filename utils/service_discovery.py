@@ -1,53 +1,64 @@
 """
-Service discovery configuration for jarvis-node-setup.
+Service discovery for jarvis-node-setup.
 
-Fetches service URLs from jarvis-config-service if available,
-with fallback to JSON config file values.
+Single source of truth: **jarvis-config-service**. The node bootstraps from ONE
+address it owns — ``jarvis_config_service_url`` in config.json (a stable IP; if
+the operator changes it, that's on them) — and resolves EVERY other service
+(command-center, mqtt-broker, whisper, tts, auth) live from config-service via
+one uniform code path.
+
+Design decisions (deliberate):
+- **No localhost/JSON fallback.** A node that fabricates ``mqtt://localhost:1884``
+  when config-service is unreachable looks healthy while reaching nothing —
+  that's the recurring "dark node" failure. We refuse to fabricate: a service
+  that can't be resolved raises ``ServiceUnresolvedError`` (loud), so callers
+  retry/surface instead of silently connecting to nothing.
+- **Provisioning is the one exception.** A node that isn't provisioned yet isn't
+  expected to reach config-service, so we return "" there instead of raising.
+- **Vantage is the config-client's job.** The node declares its style via
+  ``JARVIS_CONFIG_URL_STYLE`` (``external`` for an off-box Pi, ``dockerized`` for
+  an in-Docker node) — see entrypoint.py. This module just calls
+  ``get_service_url`` and trusts the client to apply the right rewrite.
 """
 
 import logging
 import os
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _initialized = False
 
-# Service name (short) -> JSON config key mapping
-_SERVICE_TO_CONFIG_KEY = {
-    "command-center": "jarvis_command_center_api_url",
-    "auth": "jarvis_auth_api_url",
-    "whisper": "jarvis_whisper_api_url",
-    "tts": "jarvis_tts_api_url",
-    # Note: mqtt-broker is NOT here because config.json stores it as
-    # separate mqtt_broker (hostname) + mqtt_port fields, not a URL.
-    # It's handled in get_mqtt_broker_url() instead.
-}
 
-# Default URLs if nothing else works
-_DEFAULTS = {
-    "jarvis-command-center": "http://localhost:7703",
-    "jarvis-auth": "http://localhost:7701",
-    "jarvis-whisper": "http://localhost:7706",
-    "jarvis-tts": "http://localhost:7707",
-    "jarvis-mqtt-broker": "mqtt://localhost:1884",
-}
+class ServiceUnresolvedError(RuntimeError):
+    """A service URL could not be resolved from config-service.
 
-# TODO: jarvis-llm-proxy is currently accessed directly by some commands
-# (story_command.py, sync_date_keys.py). This should be refactored to go
-# through jarvis-command-center instead. See jarvis_llm_proxy_api_url in
-# config files.
+    Deliberately loud. Callers MUST NOT paper over this with a localhost
+    default — retry with backoff or surface a discovery-degraded state.
+    """
+
+
+def _in_provisioning_mode() -> bool:
+    """True when the node hasn't been provisioned yet (no ``.provisioned``
+    marker) or provisioning checks are explicitly skipped. In that state we
+    tolerate unresolved services instead of raising."""
+    if os.environ.get("JARVIS_SKIP_PROVISIONING_CHECK", "").lower() in ("1", "true", "yes"):
+        return True
+    secret_dir = os.path.expandvars(os.path.expanduser(
+        os.environ.get("JARVIS_SECRET_DIRECTORY", str(Path.home() / ".jarvis"))
+    ))
+    return not Path(secret_dir, ".provisioned").exists()
 
 
 def init() -> bool:
-    """
-    Initialize service discovery from jarvis-config-service.
+    """Initialize service discovery from jarvis-config-service.
 
-    Returns True if successful, False if falling back to JSON config.
+    Reads the bootstrap address (``jarvis_config_service_url``) from config.json
+    into ``JARVIS_CONFIG_URL`` if not already set. Returns True on success.
     """
     global _initialized
 
-    # If JARVIS_CONFIG_URL isn't set, try to get it from config.json
     if not os.environ.get("JARVIS_CONFIG_URL"):
         config_url = _get_from_json_config("jarvis_config_service_url")
         if config_url:
@@ -56,17 +67,15 @@ def init() -> bool:
     try:
         from jarvis_config_client import init as init_config_client
 
-        success = init_config_client()
+        success = bool(init_config_client())
+        _initialized = success
         if success:
-            _initialized = True
             logger.info("Service discovery initialized")
-            return True
         else:
-            logger.warning("Config service unavailable - using JSON config")
-            return False
-
+            logger.warning("config-service unavailable at init — will retry on resolve")
+        return success
     except ImportError:
-        logger.debug("jarvis-config-client not installed - using JSON config")
+        logger.error("jarvis-config-client not installed — cannot discover services")
         return False
     except (OSError, RuntimeError) as e:
         logger.error("Failed to initialize service discovery: %s", e)
@@ -79,41 +88,57 @@ def is_initialized() -> bool:
 
 
 def _get_from_json_config(config_key: str) -> Optional[str]:
-    """Get URL from JSON config file."""
+    """Read a key from the JSON config file. Used ONLY for the bootstrap
+    address (jarvis_config_service_url) — never as a service-URL fallback."""
     try:
         from utils.config_service import Config
         return Config.get_str(config_key)
     except (ImportError, AttributeError):
         pass
-
     try:
         from utils.config_loader import Config
         return Config.get(config_key)
     except (ImportError, AttributeError):
         pass
-
     return None
 
 
 def _get_url(service_name: str) -> str:
-    """Get URL for a service, with fallback to JSON config."""
+    """Resolve a service URL from config-service.
+
+    Raises ``ServiceUnresolvedError`` if config-service can't resolve it — no
+    localhost fabrication — unless the node is still in provisioning mode.
+    """
     if _initialized:
         try:
             from jarvis_config_client import get_service_url
             url = get_service_url(service_name)
             if url:
                 return url
-        except (ImportError, RuntimeError):
-            pass
+            logger.warning("config-service returned no URL for %r", service_name)
+        except (ImportError, RuntimeError) as e:
+            logger.warning("config-service resolve failed for %r: %s", service_name, e)
+    else:
+        # Not initialized yet — try a one-shot (re)init so a node that booted
+        # before config-service self-heals on the next resolve.
+        if init():
+            try:
+                from jarvis_config_client import get_service_url
+                url = get_service_url(service_name)
+                if url:
+                    return url
+            except (ImportError, RuntimeError):
+                pass
 
-    # Fall back to JSON config
-    config_key = _SERVICE_TO_CONFIG_KEY.get(service_name)
-    if config_key:
-        url = _get_from_json_config(config_key)
-        if url:
-            return url
+    if _in_provisioning_mode():
+        # Not provisioned yet — not expected to reach config-service.
+        return ""
 
-    return ""
+    raise ServiceUnresolvedError(
+        f"Could not resolve {service_name!r} from config-service "
+        f"(JARVIS_CONFIG_URL={os.environ.get('JARVIS_CONFIG_URL')!r}). "
+        "config-service must be reachable — refusing to fabricate a localhost URL."
+    )
 
 
 def get_command_center_url() -> str:
@@ -137,42 +162,10 @@ def get_auth_url() -> str:
 
 
 def get_mqtt_broker_url() -> str:
-    """Get MQTT broker URL from config-service or fallbacks.
+    """Get MQTT broker URL — same uniform path as every other service.
 
-    Supports schemes: mqtt, mqtts, ws, wss. External nodes use wss:// via
-    Cloudflare Tunnel (CF terminates TLS); LAN nodes typically use mqtt://.
+    Supports mqtt/mqtts/ws/wss (external nodes use wss:// via Cloudflare Tunnel;
+    LAN nodes use mqtt://). No localhost fallback: raises if unresolved so the
+    MQTT layer retries the real broker instead of connecting to nothing.
     """
-    if _initialized:
-        try:
-            from jarvis_config_client import get_service_url
-            url = get_service_url("jarvis-mqtt-broker")
-            if url:
-                return url
-        except (ImportError, RuntimeError):
-            pass
-
-    # Env var fallback
-    host = os.environ.get("JARVIS_MQTT_BROKER")
-    port = os.environ.get("JARVIS_MQTT_PORT", "1884")
-    scheme = os.environ.get("JARVIS_MQTT_SCHEME", "mqtt")
-    if host:
-        return f"{scheme}://{host}:{port}"
-
-    # JSON config fallback. Accept BOTH the legacy ``mqtt_broker`` key and the
-    # ``mqtt_broker_host`` key the Docker/admin-generated configs actually write.
-    # Without the second key a node whose config-service is unreachable at
-    # resolve time (e.g. it booted before config-service on a full-stack
-    # restart) silently misses its own broker host and collapses to the
-    # localhost default below — which reaches nothing inside a container, so the
-    # node goes permanently dark on MQTT until a manual restart.
-    config_host = _get_from_json_config("mqtt_broker") or _get_from_json_config("mqtt_broker_host")
-    config_port = (
-        _get_from_json_config("mqtt_port")
-        or _get_from_json_config("mqtt_broker_port")
-        or "1884"
-    )
-    config_scheme = _get_from_json_config("mqtt_scheme") or "mqtt"
-    if config_host:
-        return f"{config_scheme}://{config_host}:{config_port}"
-
-    return "mqtt://localhost:1884"
+    return _get_url("jarvis-mqtt-broker")
