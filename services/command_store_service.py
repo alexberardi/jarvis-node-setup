@@ -412,17 +412,67 @@ def _get_builtin_command_names() -> set[str]:
     return names
 
 
+_OVERRIDABLE_BUILTIN_COMMAND_NAMES: set[str] | None = None
+
+
+def _get_overridable_builtin_command_names() -> set[str]:
+    """Built-in command names whose class sets ``overridable = True``.
+
+    These built-ins (e.g. ``control_device``) are explicitly designed to be
+    replaced by a Pantry package. The install allows the override and disables
+    the built-in post-install, so no ``use_external_devices`` toggle is needed
+    first.
+    """
+    global _OVERRIDABLE_BUILTIN_COMMAND_NAMES
+    if _OVERRIDABLE_BUILTIN_COMMAND_NAMES is not None:
+        return _OVERRIDABLE_BUILTIN_COMMAND_NAMES
+
+    names: set[str] = set()
+    try:
+        import commands
+        import importlib
+        import pkgutil
+        from jarvis_command_sdk import IJarvisCommand
+
+        for _, mod_name, _ in pkgutil.iter_modules(commands.__path__):
+            try:
+                module = importlib.import_module(f"commands.{mod_name}")
+            except Exception:
+                continue
+            for attr in dir(module):
+                cls = getattr(module, attr)
+                if (isinstance(cls, type)
+                        and issubclass(cls, IJarvisCommand)
+                        and cls is not IJarvisCommand
+                        and getattr(cls, "overridable", False)):
+                    try:
+                        names.add(cls().command_name)
+                    except Exception:
+                        continue
+    except ImportError:
+        pass  # Not in node context
+
+    _OVERRIDABLE_BUILTIN_COMMAND_NAMES = names
+    return names
+
+
 def _check_command_name_conflict(command_name: str) -> None:
     """Check if the command name conflicts with a built-in command.
 
-    A built-in that has been *disabled* in the command registry is intended to be
-    overridden by a Pantry package — e.g. ``control_device`` when the user enables
-    ``smart_home.use_external_devices`` (CC publishes a ``toggle_command`` that
-    disables the built-in). command_discovery_service already honors this ("allow
-    custom command to override a DISABLED built-in"), so the install-time check
-    must mirror it, otherwise the override package can never install to take over.
+    Two kinds of built-in are override-eligible and must NOT block the install:
+    - one explicitly marked ``overridable`` (e.g. ``control_device``) — the
+      install disables it post-install so the override takes effect; and
+    - one already *disabled* in the command registry (e.g. via
+      ``smart_home.use_external_devices``, which publishes a ``toggle_command``).
+    command_discovery_service already honors the disabled case ("allow custom
+    command to override a DISABLED built-in"), so the install-time check mirrors
+    it — otherwise the override package could never install to take over.
     """
     if command_name not in _get_builtin_command_names():
+        return
+
+    # A built-in explicitly designed to be replaced is always override-eligible.
+    if command_name in _get_overridable_builtin_command_names():
         return
 
     # Only enabled built-ins block an install; a disabled one is override-eligible.
@@ -1520,10 +1570,17 @@ def _do_install(
     # 12. Seed secrets
     _seed_secrets(manifest)
 
-    # 13. Enable commands in registry
+    # 13. Enable commands in registry. A command that shadows an *overridable*
+    # built-in (same name) must instead DISABLE that built-in, so discovery
+    # activates this override — the registry is keyed by name, shared between
+    # built-in and custom. Uninstall re-enables the built-in.
+    _overridable_builtins = _get_overridable_builtin_command_names()
     for comp in manifest.components:
         if comp.type == "command":
-            _enable_in_registry(comp.name)
+            if comp.name in _overridable_builtins:
+                _disable_in_registry(comp.name)
+            else:
+                _enable_in_registry(comp.name)
 
     logger.info(
         "Package installed successfully",
@@ -1979,10 +2036,17 @@ def remove(package_name: str, component_type: str | None = None) -> None:
         # Remove package metadata
         pkg_meta_path.unlink()
 
-        # Disable commands in registry
+        # Disable this package's commands. But a command that overrode an
+        # *overridable* built-in (same name) must RE-ENABLE that built-in, so
+        # removing the package restores it (e.g. direct device control returns
+        # when the Home Assistant bundle is uninstalled).
+        _overridable_builtins = _get_overridable_builtin_command_names()
         for comp in pkg_meta.get("components", []):
             if comp.get("type") == "command":
-                _disable_in_registry(comp["name"])
+                if comp["name"] in _overridable_builtins:
+                    _enable_in_registry(comp["name"])
+                else:
+                    _disable_in_registry(comp["name"])
 
         logger.info("Package removed", package=package_name)
         _refresh_discovery_caches()
