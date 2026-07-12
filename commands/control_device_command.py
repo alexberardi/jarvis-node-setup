@@ -36,6 +36,12 @@ def _get_device_loop() -> asyncio.AbstractEventLoop:
 class ControlDeviceCommand(IJarvisCommand):
     """Control smart home devices (turn on/off, play, pause, volume, etc.)."""
 
+    # Marks this built-in as replaceable by a Pantry package (e.g. the Home
+    # Assistant integration ships its own control_device). When such a package
+    # installs, command_store disables this built-in so the override takes
+    # effect — no manual "use external devices" toggle needed first.
+    overridable = True
+
     @property
     def command_name(self) -> str:
         return "control_device"
