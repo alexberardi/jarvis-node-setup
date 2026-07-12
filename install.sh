@@ -1418,6 +1418,51 @@ PY
   fi
 }
 
+# Fresh installs have no ${INSTALL_DIR}.bak for restore_wake_models to copy
+# from, and runtime autodownload is consent-gated OFF — so a first boot
+# lands voice-headless on a node that otherwise looks healthy (bit two
+# fresh bring-ups on 2026-07-12). Running install.sh is already an
+# explicit, user-initiated download from GitHub, so staging the default
+# model HERE keeps the no-silent-runtime-downloads policy intact while
+# giving fresh installs working voice out of the box.
+#
+# Best-effort like restore_wake_models: an offline/airgapped install warns
+# and continues — the node boots headless exactly as before, and the
+# startup log carries the enable-or-stage hint.
+stage_default_wake_model() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return 0
+  fi
+
+  local have=""
+  have=$("${INSTALL_DIR}/.venv/bin/python" - 2>/dev/null <<'PY'
+import glob
+import os
+import openwakeword
+d = os.path.join(os.path.dirname(openwakeword.__file__), "resources", "models")
+print("yes" if glob.glob(os.path.join(d, "*.onnx")) else "no")
+PY
+  ) || have=""
+  if [ "$have" = "yes" ]; then
+    return 0
+  fi
+  if [ -z "$have" ]; then
+    warn "openwakeword not importable in the new venv — skipping wake-model staging"
+    return 0
+  fi
+
+  info "Staging default wake-word model (hey_jarvis)..."
+  if "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import openwakeword.utils
+openwakeword.utils.download_models(model_names=["hey_jarvis"])
+PY
+  then
+    success "Default wake-word model staged"
+  else
+    warn "Could not stage wake-word model (offline?) — node will boot voice-headless until a model is staged or autodownload is enabled"
+  fi
+}
+
 # --- Run database migrations ---
 setup_database() {
   info "Running database migrations..."
@@ -2107,6 +2152,7 @@ main() {
   rebuild_venv
   restore_pantry_pip_deps
   restore_wake_models
+  stage_default_wake_model
   setup_database
   register_commands
   migrate_to_pi_home
