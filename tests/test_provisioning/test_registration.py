@@ -212,8 +212,9 @@ class TestRegisterWithCommandCenter:
             assert result is None
 
     def test_returns_none_on_network_error(self):
-        """Should return None on network errors."""
-        with patch("provisioning.registration.httpx.Client") as mock_client_cls:
+        """Should return None after exhausting retries on network errors."""
+        with patch("provisioning.registration.httpx.Client") as mock_client_cls, \
+             patch("provisioning.registration.time.sleep") as mock_sleep:
             mock_client = MagicMock()
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
@@ -227,6 +228,68 @@ class TestRegisterWithCommandCenter:
             )
 
             assert result is None
+            from provisioning.registration import _CONNECT_RETRIES
+            assert mock_client.post.call_count == _CONNECT_RETRIES
+            assert mock_sleep.call_count == _CONNECT_RETRIES - 1
+
+    def test_retries_transient_network_error_then_succeeds(self):
+        """Registration fires seconds after the WiFi join, before DHCP/routes
+        settle — a connect-level failure there is transient and must be
+        retried, not treated as terminal (regression: '[Errno 101] Network is
+        unreachable' one-shot failure stranded a fresh node at ERROR 70%)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "node_id": "node-uuid-123",
+            "node_key": "key-abc",
+        }
+
+        with patch("provisioning.registration.httpx.Client") as mock_client_cls, \
+             patch("provisioning.registration.time.sleep") as mock_sleep:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.post.side_effect = [
+                httpx.ConnectError("[Errno 101] Network is unreachable"),
+                httpx.ConnectError("[Errno -3] Temporary failure in name resolution"),
+                mock_response,
+            ]
+            mock_client_cls.return_value = mock_client
+
+            result = register_with_command_center(
+                command_center_url="http://10.0.0.1:7703",
+                node_id="node-uuid-123",
+                provisioning_token="tok_abc",
+            )
+
+            assert result is not None
+            assert result["node_key"] == "key-abc"
+            assert mock_client.post.call_count == 3
+            assert mock_sleep.call_count == 2
+
+    def test_http_rejection_does_not_retry(self):
+        """An HTTP response (e.g. 401 expired token) means the network is fine
+        — retrying can't help and would just burn the provisioning window."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        with patch("provisioning.registration.httpx.Client") as mock_client_cls, \
+             patch("provisioning.registration.time.sleep") as mock_sleep:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.post.return_value = mock_response
+            mock_client_cls.return_value = mock_client
+
+            result = register_with_command_center(
+                command_center_url="http://10.0.0.1:7703",
+                node_id="node-uuid-123",
+                provisioning_token="tok_expired",
+            )
+
+            assert result is None
+            assert mock_client.post.call_count == 1
+            mock_sleep.assert_not_called()
 
     def test_url_trailing_slash_stripped(self):
         """Trailing slash on command_center_url should be stripped."""

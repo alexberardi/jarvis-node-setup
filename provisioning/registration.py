@@ -6,10 +6,19 @@ The command center generates the node UUID at token creation time, and the
 mobile app passes both the UUID and token to the node during provisioning.
 """
 
+import time
+
 import httpx
 from jarvis_log_client import JarvisLogger
 
 logger = JarvisLogger(service="jarvis-node")
+
+# Registration runs seconds after the WiFi join, and `nmcli connection up`
+# returns on association — DHCP/routes/DNS can settle a few seconds later.
+# A connect-level failure in that window is transient, so retry over ~30s
+# before declaring the provisioning attempt failed.
+_CONNECT_RETRIES = 8
+_CONNECT_RETRY_DELAY_S = 4.0
 
 
 def register_with_command_center(
@@ -40,9 +49,10 @@ def register_with_command_center(
 
     logger.info("Registering with command center", url=url, node_id=node_id)
 
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(url, json=payload)
+    for attempt in range(1, _CONNECT_RETRIES + 1):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(url, json=payload)
 
             if response.status_code in (200, 201):
                 data = response.json()
@@ -52,6 +62,8 @@ def register_with_command_center(
                     "node_key": data.get("node_key"),
                 }
 
+            # An HTTP response means the network is fine and CC rejected us
+            # (bad/expired token, duplicate node, ...) — retrying can't help.
             logger.error(
                 "Registration failed",
                 status=response.status_code,
@@ -59,6 +71,16 @@ def register_with_command_center(
             )
             return None
 
-    except httpx.RequestError as e:
-        logger.error("Registration request failed", error=str(e))
-        return None
+        except httpx.RequestError as e:
+            if attempt < _CONNECT_RETRIES:
+                logger.warning(
+                    "Registration request failed, retrying",
+                    error=str(e),
+                    attempt=attempt,
+                    retries_left=_CONNECT_RETRIES - attempt,
+                )
+                time.sleep(_CONNECT_RETRY_DELAY_S)
+            else:
+                logger.error("Registration request failed", error=str(e))
+
+    return None
