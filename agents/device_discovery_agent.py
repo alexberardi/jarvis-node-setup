@@ -6,9 +6,11 @@ get_context_data() so the LLM knows what devices are available, and the
 control_device command can resolve entity_ids from memory without a
 network hop.
 
-Uses the agent name "home_assistant" so the existing prompt builders
-(build_agent_context_summary, etc.) pick it up with zero changes. When
-the HA Pantry package is installed, its custom agent overrides this one.
+Named "device_agent" (a core agent must not be named after a third party).
+CC's prompt builders read both "device_agent" (this built-in) and
+"home_assistant" (the HA Pantry agent), so whichever is present feeds the
+device context. With the HA integration installed and active, its agent
+supplies HA devices; this one covers direct/non-HA devices.
 """
 
 from typing import Any, Dict, List
@@ -34,8 +36,10 @@ class DeviceDiscoveryAgent(IJarvisAgent):
 
     @property
     def name(self) -> str:
-        # Same key the prompt builders look for in agents_data
-        return "home_assistant"
+        # Generic device-context key. CC's prompt builders read both
+        # "device_agent" (this built-in — direct/non-HA devices) and
+        # "home_assistant" (the HA Pantry agent), so either feeds the prompt.
+        return "device_agent"
 
     @property
     def description(self) -> str:
