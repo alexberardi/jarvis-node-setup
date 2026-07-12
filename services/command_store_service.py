@@ -413,11 +413,37 @@ def _get_builtin_command_names() -> set[str]:
 
 
 def _check_command_name_conflict(command_name: str) -> None:
-    """Check if the command name conflicts with a built-in command."""
-    if command_name in _get_builtin_command_names():
-        raise InstallError(
-            f"Command name '{command_name}' conflicts with a built-in command"
-        )
+    """Check if the command name conflicts with a built-in command.
+
+    A built-in that has been *disabled* in the command registry is intended to be
+    overridden by a Pantry package — e.g. ``control_device`` when the user enables
+    ``smart_home.use_external_devices`` (CC publishes a ``toggle_command`` that
+    disables the built-in). command_discovery_service already honors this ("allow
+    custom command to override a DISABLED built-in"), so the install-time check
+    must mirror it, otherwise the override package can never install to take over.
+    """
+    if command_name not in _get_builtin_command_names():
+        return
+
+    # Only enabled built-ins block an install; a disabled one is override-eligible.
+    try:
+        from db import SessionLocal
+        from repositories.command_registry_repository import CommandRegistryRepository
+
+        db = SessionLocal()
+        try:
+            if not CommandRegistryRepository(db).get_all().get(command_name, True):
+                return  # built-in disabled → allow the override package
+        finally:
+            db.close()
+    except Exception:
+        # Registry unavailable (e.g. not in node context) — fall back to the
+        # conservative "enabled built-in blocks" behavior.
+        pass
+
+    raise InstallError(
+        f"Command name '{command_name}' conflicts with a built-in command"
+    )
 
 
 def _check_agent_name_conflict(agent_name: str) -> None:
