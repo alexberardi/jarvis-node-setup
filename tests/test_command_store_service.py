@@ -698,6 +698,45 @@ class TestEnforceVersionFloors:
         mock_pip.assert_not_called()
 
 
+class TestOverridableBuiltinRegistryState:
+    """Installing an override of an overridable built-in keeps the name ENABLED.
+
+    Regression: v0.1.145 disabled the shared registry name at install to
+    "activate" the override, but a disabled name is filtered from advertised
+    tools, and CC command_registry config pushes re-enabled it anyway (CC
+    doesn't know about node-local overrides). Discovery now gives the custom
+    command unconditional precedence, so the name must stay enabled.
+    """
+
+    @patch("services.command_store_service._disable_in_registry")
+    @patch("services.command_store_service._enable_in_registry")
+    @patch("services.command_store_service._seed_secrets")
+    @patch("services.command_store_service._check_name_conflicts")
+    @patch("services.command_store_service._install_apt_deps")
+    @patch("services.command_store_service._install_pip_deps")
+    @patch("services.command_store_service._run_preflight_validation")
+    def test_override_install_enables_registry_name(
+        self, mock_validate, mock_pip, mock_apt, mock_conflicts, mock_seed,
+        mock_enable, mock_disable, tmp_path,
+    ):
+        repo = _create_fake_repo(tmp_path, {"min_jarvis_version": None})
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        packages_dir = tmp_path / "packages"
+        packages_dir.mkdir()
+
+        with patch("services.command_store_service._PROJECT_DIR", project_dir), \
+             patch("services.command_store_service.PACKAGES_DIR", packages_dir), \
+             patch(
+                 "services.command_store_service._get_overridable_builtin_command_names",
+                 return_value={"test_cmd"},
+             ):
+            install_from_local(repo)
+
+        mock_enable.assert_any_call("test_cmd")
+        mock_disable.assert_not_called()
+
+
 class TestPreflightValidationGate:
     """The subprocess validate gate runs after pip and before any scatter."""
 
