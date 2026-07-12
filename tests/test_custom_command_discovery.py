@@ -246,6 +246,34 @@ class TestCustomCommandDiscovery:
         )
         assert resp.context_data["source"] == "builtin"
 
+    def test_custom_wins_conflict_for_overridable_builtin_even_when_enabled(self):
+        """A custom command replaces an *overridable* built-in regardless of
+        registry state.
+
+        Regression: the HA bundle's control_device override was skipped after a
+        CC command_registry config push re-enabled the shared name (CC doesn't
+        know about node-local overrides), leaving the deviceless built-in
+        answering voice commands with "No devices available".
+        """
+        svc = _create_service()
+
+        with patch("utils.command_discovery_service._get_overridable_builtin_names", return_value={"test_builtin"}):
+            # Registry-ENABLED (both explicit and default) — overridable still loses
+            assert svc._custom_wins_conflict("test_builtin", {"test_builtin": True}, "mod") is True
+            assert svc._custom_wins_conflict("test_builtin", {}, "mod") is True
+            # And registry-disabled too, trivially
+            assert svc._custom_wins_conflict("test_builtin", {"test_builtin": False}, "mod") is True
+
+    def test_custom_wins_conflict_only_when_non_overridable_builtin_disabled(self):
+        """A non-overridable built-in yields only when registry-disabled."""
+        svc = _create_service()
+
+        with patch("utils.command_discovery_service._get_overridable_builtin_names", return_value=set()):
+            assert svc._custom_wins_conflict("test_builtin", {"test_builtin": False}, "mod") is True
+            assert svc._custom_wins_conflict("test_builtin", {"test_builtin": True}, "mod") is False
+            # Not in registry → defaults to enabled → built-in wins
+            assert svc._custom_wins_conflict("test_builtin", {}, "mod") is False
+
     def test_non_package_custom_entries_skipped(self):
         """Files (not directories) in custom_commands/ are skipped."""
         svc = _create_service()

@@ -23,6 +23,20 @@ except ImportError:
     _COMMAND_BASES = (IJarvisCommand,)
 
 
+def _get_overridable_builtin_names() -> set[str]:
+    """Built-in command names marked ``overridable = True``.
+
+    Lazy import — command_store_service imports this module's accessor at
+    install time, so a top-level import here would be circular.
+    """
+    try:
+        from services.command_store_service import _get_overridable_builtin_command_names
+        return _get_overridable_builtin_command_names()
+    except Exception as e:
+        logger.warning("Could not resolve overridable built-ins", error=str(e))
+        return set()
+
+
 class CommandDiscoveryService:
     def __init__(self):
         self._commands_cache: Dict[str, IJarvisCommand] = {}
@@ -100,20 +114,8 @@ class CommandDiscoveryService:
                             instance = cls()
                             name = instance.command_name
                             if name in new_commands:
-                                # Allow custom command to override a DISABLED built-in
-                                if not registry.get(name, True):
-                                    logger.info(
-                                        "Custom command overriding disabled built-in",
-                                        custom_command=name,
-                                        custom_module=subpkg_name,
-                                    )
+                                if self._custom_wins_conflict(name, registry, subpkg_name):
                                     new_commands[name] = instance
-                                else:
-                                    logger.warning(
-                                        "Custom command name conflicts with built-in, skipping",
-                                        custom_command=name,
-                                        custom_module=subpkg_name,
-                                    )
                                 continue
                             new_commands[name] = instance
                 except Exception as e:
@@ -154,6 +156,40 @@ class CommandDiscoveryService:
             self._commands_cache = new_commands
             self._failed_modules = new_failed
             self._last_refresh = time.time()
+
+    def _custom_wins_conflict(
+        self, name: str, registry: Dict[str, bool], subpkg_name: str
+    ) -> bool:
+        """Decide whether a custom command replaces a same-name built-in.
+
+        An *overridable* built-in always yields to an installed custom command,
+        regardless of registry state — the registry's enabled flag can't gate
+        the takeover because CC command_registry config pushes re-enable the
+        name (CC doesn't know about node-local overrides), and a disabled name
+        is filtered from advertised tools entirely. The flag governs whether
+        the (winning) command is advertised, nothing more.
+        """
+        if name in _get_overridable_builtin_names():
+            logger.info(
+                "Custom command overriding overridable built-in",
+                custom_command=name,
+                custom_module=subpkg_name,
+            )
+            return True
+        # Allow custom command to override a DISABLED built-in
+        if not registry.get(name, True):
+            logger.info(
+                "Custom command overriding disabled built-in",
+                custom_command=name,
+                custom_module=subpkg_name,
+            )
+            return True
+        logger.warning(
+            "Custom command name conflicts with built-in, skipping",
+            custom_command=name,
+            custom_module=subpkg_name,
+        )
+        return False
 
     def _scan_package(self, package, package_path: str, commands_dict: Dict[str, IJarvisCommand]) -> None:
         """Scan a package for IJarvisCommand implementations."""
