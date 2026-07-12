@@ -1570,17 +1570,16 @@ def _do_install(
     # 12. Seed secrets
     _seed_secrets(manifest)
 
-    # 13. Enable commands in registry. A command that shadows an *overridable*
-    # built-in (same name) must instead DISABLE that built-in, so discovery
-    # activates this override — the registry is keyed by name, shared between
-    # built-in and custom. Uninstall re-enables the built-in.
-    _overridable_builtins = _get_overridable_builtin_command_names()
+    # 13. Enable commands in registry — including one that shadows an
+    # *overridable* built-in. Discovery gives the custom command precedence
+    # over an overridable built-in unconditionally, so the shared registry
+    # name must stay ENABLED for the override to be advertised. (Disabling it
+    # here — the v0.1.145 approach — both hid the name from advertised tools
+    # and got clobbered by CC command_registry config pushes, which don't
+    # know about node-local overrides.)
     for comp in manifest.components:
         if comp.type == "command":
-            if comp.name in _overridable_builtins:
-                _disable_in_registry(comp.name)
-            else:
-                _enable_in_registry(comp.name)
+            _enable_in_registry(comp.name)
 
     logger.info(
         "Package installed successfully",
