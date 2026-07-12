@@ -203,3 +203,100 @@ class TestInstallFlowWiring:
             text,
             re.MULTILINE,
         ), "main flow must call restore_wake_models right after restore_pantry_pip_deps"
+
+
+def _make_stage_venv_python(
+    install_dir: Path, probe_answer: str, download_rc: int = 0
+) -> Path:
+    """Stub the venv python for stage_default_wake_model.
+
+    The function invokes python twice with a heredoc on stdin: a probe
+    (prints yes/no for models present) and the downloader. The stub
+    dispatches on the script text and records download attempts in a
+    marker file so tests can assert whether a download happened.
+    """
+    bin_dir = install_dir / ".venv" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    marker = install_dir / "download-attempted"
+    python = bin_dir / "python"
+    python.write_text(
+        "#!/bin/sh\n"
+        "script=$(cat)\n"
+        'case "$script" in\n'
+        f'  *download_models*) touch "{marker}"; exit {download_rc} ;;\n'
+        f'  *) echo "{probe_answer}" ;;\n'
+        "esac\n"
+    )
+    python.chmod(python.stat().st_mode | stat.S_IEXEC)
+    return marker
+
+
+def _run_stage(tmp_path: Path, skip_audio: int = 0) -> subprocess.CompletedProcess:
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            'info() { echo "INFO: $*"; }',
+            'warn() { echo "WARN: $*"; }',
+            'success() { echo "SUCCESS: $*"; }',
+            f'INSTALL_DIR="{tmp_path}/jarvis-node"',
+            f"SKIP_AUDIO={skip_audio}",
+            _extract_function("stage_default_wake_model"),
+            "stage_default_wake_model",
+        ]
+    )
+    return subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, timeout=30
+    )
+
+
+class TestStageDefaultWakeModel:
+    """Fresh installs have no .bak to restore from and autodownload is
+    consent-gated off, so without install-time staging the first boot is
+    voice-headless (bit the pi4 AND pi5 bring-ups on 2026-07-12). The
+    install itself is an explicit user-initiated download, so staging the
+    default model here doesn't violate the no-runtime-downloads policy."""
+
+    def test_downloads_when_no_models_staged(self, tmp_path):
+        marker = _make_stage_venv_python(tmp_path / "jarvis-node", "no")
+        result = _run_stage(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert marker.exists(), "should invoke the openwakeword downloader"
+        assert "SUCCESS" in result.stdout
+
+    def test_skips_download_when_models_already_staged(self, tmp_path):
+        marker = _make_stage_venv_python(tmp_path / "jarvis-node", "yes")
+        result = _run_stage(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), "must not re-download staged models"
+
+    def test_skips_entirely_under_no_audio(self, tmp_path):
+        marker = _make_stage_venv_python(tmp_path / "jarvis-node", "no")
+        result = _run_stage(tmp_path, skip_audio=1)
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), "--no-audio installs must not download models"
+
+    def test_download_failure_warns_but_succeeds(self, tmp_path):
+        """Offline install: warn loudly, never abort (set -euo pipefail)."""
+        _make_stage_venv_python(tmp_path / "jarvis-node", "no", download_rc=1)
+        result = _run_stage(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "WARN" in result.stdout
+
+    def test_unimportable_openwakeword_warns_but_succeeds(self, tmp_path):
+        install_dir = tmp_path / "jarvis-node"
+        bin_dir = install_dir / ".venv" / "bin"
+        bin_dir.mkdir(parents=True)
+        python = bin_dir / "python"
+        python.write_text("#!/bin/sh\ncat >/dev/null\nexit 1\n")
+        python.chmod(python.stat().st_mode | stat.S_IEXEC)
+        result = _run_stage(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "WARN" in result.stdout
+
+    def test_called_after_restore_wake_models_in_main(self):
+        text = INSTALL_SH.read_text()
+        assert re.search(
+            r"^\s*restore_wake_models\s*\n\s*stage_default_wake_model\s*$",
+            text,
+            re.MULTILINE,
+        ), "main flow must call stage_default_wake_model right after restore_wake_models"
