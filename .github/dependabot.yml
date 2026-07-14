@@ -1,0 +1,22 @@
+# Dependency updates. Added 2026-07-14: the project had no Dependabot,
+# no lockfile audit, and no automated pin bumps — a reviewer on the launch
+# thread correctly called that out.
+#
+# github-actions is the one that matters most here: third-party actions were
+# floating on tags in jobs that hold packages:write, so a tag repoint could
+# run attacker code with a token that can publish images.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
