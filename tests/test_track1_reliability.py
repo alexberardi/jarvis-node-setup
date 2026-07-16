@@ -280,6 +280,38 @@ class TestMQTTReconnect:
             else:
                 assert kwargs.get("qos", 0) == 1, f"Expected qos=1 in kwargs"
 
+    def test_on_connect_rc5_self_heals_and_does_not_subscribe(self):
+        """CONNACK rc=5 (not authorized) is a REFUSAL: the node must not
+        subscribe on the dead connection and must trigger a credential refresh
+        so it recovers instead of flapping on a stale password forever."""
+        import scripts.mqtt_tts_listener as m
+        client = MagicMock()
+
+        with patch.object(m, "_task_executor") as mock_exec:
+            m.on_connect(client, None, {}, 5)
+
+        client.subscribe.assert_not_called()
+        assert mock_exec.submit.call_count == 1
+        submitted_fn, submitted_arg = mock_exec.submit.call_args[0]
+        assert submitted_fn is m._refresh_mqtt_credentials_on_client
+        assert submitted_arg is client
+
+    def test_refresh_mqtt_credentials_applies_creds_and_cooldowns(self):
+        """The refresh applies fetched creds to the client, and a second call
+        inside the cooldown window is a no-op (so a ~1/min flap can't hammer CC)."""
+        import scripts.mqtt_tts_listener as m
+        client = MagicMock()
+        m._last_creds_refresh = 0.0  # reset cooldown for the test
+
+        with patch.object(
+            m, "fetch_and_persist_mqtt_credentials", return_value=("jarvis", "newpass")
+        ) as mock_fetch:
+            m._refresh_mqtt_credentials_on_client(client)
+            client.username_pw_set.assert_called_once_with("jarvis", "newpass")
+            # within cooldown → no second fetch
+            m._refresh_mqtt_credentials_on_client(client)
+            assert mock_fetch.call_count == 1
+
     def test_start_mqtt_listener_retries_on_failure(self):
         """start_mqtt_listener should retry connection on failure."""
         from scripts.mqtt_tts_listener import start_mqtt_listener
