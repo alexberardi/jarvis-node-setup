@@ -62,7 +62,7 @@ jobs:
               "${{ matrix.arch }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jarvis-node-${{ steps.version.outputs.version }}-${{ matrix.arch }}
           path: output/jarvis-node-*.tar.gz
@@ -236,7 +236,7 @@ jobs:
           echo "${{ steps.build.outputs.digest }}" > /tmp/digest/digest
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.image }}-${{ matrix.arch }}
           path: /tmp/digest/digest
