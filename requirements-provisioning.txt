@@ -6,7 +6,7 @@
 # Installs much faster than the full requirements-pi.txt.
 
 # Web framework for provisioning API
-fastapi>=0.100.0
+fastapi>=0.139.0
 uvicorn>=0.22.0
 pydantic
 python-dotenv

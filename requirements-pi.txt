@@ -46,7 +46,7 @@ pytz
 pydantic
 python-dotenv
 pyyaml
-fastapi>=0.100.0
+fastapi>=0.139.0
 uvicorn>=0.22.0
 packaging>=26.2
 
