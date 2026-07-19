@@ -1441,7 +1441,43 @@ def _backstop_pending_settings_requests() -> None:
         _task_executor.submit(_process_settings_request, req_id, False, None)
 
 
+# Self-heal cooldown. A broker that rejects our credential (CONNACK rc 4/5)
+# flaps on every reconnect (~once a minute); refetch fresh creds from
+# command-center at most once per this window so we don't hammer CC on the flap.
+_CREDS_REFRESH_COOLDOWN_S = 300
+_last_creds_refresh: float = 0.0
+
+
+def _refresh_mqtt_credentials_on_client(client: mqtt.Client) -> None:
+    """After a broker auth rejection, force-refetch the shared MQTT credential
+    from command-center (over the still-working HTTP channel) and apply it so
+    paho's next auto-reconnect uses it. This is what lets a node recover on its
+    own from a stale/wrong broker password — e.g. after a reprovision to a
+    different install — instead of flapping on rc=5 forever."""
+    global _last_creds_refresh
+    now = time.time()
+    if now - _last_creds_refresh < _CREDS_REFRESH_COOLDOWN_S:
+        return
+    _last_creds_refresh = now
+    user, password = fetch_and_persist_mqtt_credentials()
+    if user and password:
+        client.username_pw_set(user, password)
+        logger.info("Refreshed MQTT credentials after broker rejection; reconnecting")
+    else:
+        logger.warning("Broker rejected MQTT auth but command-center returned no credential")
+
+
 def on_connect(client: mqtt.Client, userdata: Any, flags: Dict[str, int], rc: int) -> None:
+    if rc != 0:
+        # rc != 0 is a CONNACK REFUSAL, not a success — do NOT log "connected"
+        # or subscribe on a dead connection. rc 4 (bad username/password) and
+        # rc 5 (not authorized) mean our broker credential is stale/wrong, so
+        # self-heal by refetching it from command-center.
+        logger.warning("MQTT connection refused by broker", result_code=rc)
+        if rc in (4, 5):
+            _task_executor.submit(_refresh_mqtt_credentials_on_client, client)
+        return
+
     logger.info("MQTT connected", result_code=rc)
     topic = get_mqtt_config()["topic"]
     client.subscribe(topic, qos=1)
