@@ -1768,6 +1768,12 @@ def _handle_routines_sync_notification(raw_payload: bytes) -> None:
         logger.error("Routines sync failed", error=str(e))
 
 
+def _handle_context_topic(request_topic: str, raw_payload: bytes, op: str) -> None:
+    """Plan-time context query from command-center (see services/context_handler)."""
+    from services.context_handler import handle_context_request
+    handle_context_request(_mqtt_client, request_topic, raw_payload, op)
+
+
 def _handle_command_data_topic(request_topic: str, raw_payload: bytes, op: str) -> None:
     """Dispatch a mobile command-data browser request to the handler module.
 
@@ -2430,6 +2436,16 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
     if msg.topic.endswith("/factory-reset"):
         _offload(_handle_factory_reset, msg.payload)
         return
+
+    if "/context/" in msg.topic and "/response/" not in msg.topic:
+        op = msg.topic.rsplit("/context/", 1)[-1]
+        # Routable ops derive from the handler so the two never drift; the
+        # context OPERATION itself travels in the payload, so a newly
+        # installed provider needs no listener change.
+        from services.context_handler import SUPPORTED_OPS as CONTEXT_OPS
+        if op in CONTEXT_OPS:
+            _offload(_handle_context_topic, msg.topic, msg.payload, op)
+            return
 
     if "/command-data/" in msg.topic and "/response/" not in msg.topic:
         op = msg.topic.rsplit("/command-data/", 1)[-1]
