@@ -489,7 +489,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                 secrets_list_a = _build_secrets_list(
                     g.get(lambda: agent.required_secrets, [], "required_secrets"),
                     include_values=include_values,
-                    user_id=None,
+                    user_id=user_id,
                     log_ctx={"agent": agent_name},
                     errors=g.errors,
                 )
@@ -558,7 +558,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                 secrets_list_u = _build_secrets_list(
                     g.get(lambda: agent.required_secrets, [], "required_secrets"),
                     include_values=include_values,
-                    user_id=None,
+                    user_id=user_id,
                     log_ctx={"agent": agent_name},
                     errors=g.errors,
                 )

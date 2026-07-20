@@ -1132,3 +1132,150 @@ class TestNodeConfigPolicyKeys:
         assert node_config["allow_updates"] is True
         assert node_config["wake_word_model_autodownload_enabled"] is True
         assert node_config["release_track"] == "dev"
+
+
+class TestAgentUserScopedSecrets:
+    """Agent secrets are resolved for the requesting user, exactly like command
+    secrets.
+
+    An agent that re-declares a command's user-scoped key (e.g. calendar_alerts
+    re-declaring CALENDAR_USERNAME) shares one storage slot with that command.
+    Building the agent's entry with user_id=None looked the key up with no user
+    context, so it always came back is_set=False with no value — mobile showed
+    a blank, apparently-unconfigured field for a credential that was set.
+    """
+
+    def _agent_mocks(self, mock_agent_discovery, mock_repo_cls, mock_service_map,
+                     *, agents=None, unconfigured=None):
+        agent_service = MagicMock()
+        agent_service.get_all_agents.return_value = agents or {}
+        agent_service.get_unconfigured_agents.return_value = unconfigured or {}
+        agent_service.get_failed_modules.return_value = {}
+        mock_agent_discovery.return_value = agent_service
+
+        mock_repo = MagicMock()
+        mock_repo.get_all.return_value = {}
+        mock_repo_cls.return_value = mock_repo
+
+        mock_service_map.return_value = {}
+
+    @staticmethod
+    def _secret_lookup(key, scope, user_id=None):
+        """Only user 7 has a calendar username stored."""
+        if key == "CALENDAR_USERNAME" and scope == "user" and user_id == 7:
+            return "alex@example.com"
+        return None
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_agent_user_scoped_secret_resolves_for_requesting_user(
+        self, mock_cmd_discovery, mock_get_secret, mock_family_discovery,
+        mock_agent_discovery, mock_session_local, mock_repo_cls, mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        mock_get_secret.side_effect = self._secret_lookup
+
+        agent = _make_mock_agent("calendar_alerts", "Calendar reminders")
+        agent.required_secrets = [
+            _make_mock_secret(
+                "CALENDAR_USERNAME", "user", "Apple ID", "string", False
+            )
+        ]
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            agents={"calendar_alerts": agent},
+        )
+
+        snapshot = build_snapshot(user_id=7)
+
+        secret = snapshot["agents"][0]["secrets"][0]
+        assert secret["key"] == "CALENDAR_USERNAME"
+        assert secret["is_set"] is True
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_other_users_secret_stays_unset(
+        self, mock_cmd_discovery, mock_get_secret, mock_family_discovery,
+        mock_agent_discovery, mock_session_local, mock_repo_cls, mock_service_map,
+    ):
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        mock_get_secret.side_effect = self._secret_lookup
+
+        agent = _make_mock_agent("calendar_alerts", "Calendar reminders")
+        agent.required_secrets = [
+            _make_mock_secret(
+                "CALENDAR_USERNAME", "user", "Apple ID", "string", False
+            )
+        ]
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            agents={"calendar_alerts": agent},
+        )
+
+        snapshot = build_snapshot(user_id=8)
+
+        assert snapshot["agents"][0]["secrets"][0]["is_set"] is False
+
+    @patch("services.settings_snapshot_service._build_agent_to_service_map")
+    @patch("services.settings_snapshot_service.AgentRegistryRepository")
+    @patch("services.settings_snapshot_service.SessionLocal")
+    @patch("services.settings_snapshot_service.get_agent_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_unconfigured_agent_path_also_resolves_for_the_user(
+        self, mock_cmd_discovery, mock_get_secret, mock_family_discovery,
+        mock_agent_discovery, mock_session_local, mock_repo_cls, mock_service_map,
+    ):
+        """The needs-setup listing builds its secrets separately — it must not
+        regress back to a user-less lookup."""
+        mock_cmd_service = MagicMock()
+        mock_cmd_service.get_all_commands.return_value = {}
+        mock_cmd_discovery.return_value = mock_cmd_service
+
+        mock_family_service = MagicMock()
+        mock_family_service.get_all_families_for_snapshot.return_value = {}
+        mock_family_discovery.return_value = mock_family_service
+
+        mock_get_secret.side_effect = self._secret_lookup
+
+        agent = _make_mock_agent("calendar_alerts", "Calendar reminders")
+        agent.required_secrets = [
+            _make_mock_secret(
+                "CALENDAR_USERNAME", "user", "Apple ID", "string", False
+            )
+        ]
+        self._agent_mocks(
+            mock_agent_discovery, mock_repo_cls, mock_service_map,
+            unconfigured={"calendar_alerts": (agent, ["CALENDAR_PASSWORD"])},
+        )
+
+        snapshot = build_snapshot(user_id=7)
+
+        entry = snapshot["agents"][0]
+        assert entry["unconfigured"] is True
+        assert entry["secrets"][0]["is_set"] is True
