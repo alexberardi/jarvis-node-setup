@@ -18,6 +18,13 @@ Four signals, evaluated in order:
      always overheard narration.
   4. Whisper segment shape — one long run-on (≥4 s single segment) OR
      gap-less multi-segment (all gaps <300 ms) past the word threshold.
+     **Only applies when the recording hit max duration.** If the listener
+     stopped because the speaker stopped, that endpoint IS the evidence of
+     a deliberate command; ambient narration keeps going and gets cut at
+     the cap. Without this gate the signal punished fluency: a spoken
+     14-word request with no pause ("can you make an appointment at Total
+     Patient Care for me one day this week?") is one 5 s segment and was
+     silently dropped (live 2026-07-19, blocked every phone-call request).
 
 Signals 3 + 4 are overridden by direct addressing ("jarvis" anywhere
 in the text) — a real multi-sentence request that names the assistant
@@ -90,6 +97,30 @@ def looks_like_narration_by_segments(
     return max_gap < _FALSE_WAKE_NARRATION_MAX_GAP_MS
 
 
+def _looks_like_a_deliberate_utterance(
+    raw: str, recording: RecordingResult
+) -> bool:
+    """Does this transcript look like someone finishing a sentence at us?
+
+    Whisper reliably capitalises the first word and punctuates the end of a
+    complete utterance. Overheard speech is typically a fragment: it starts
+    mid-thought (lowercase) or trails off with no terminal mark. Combined
+    with an endpoint the SPEAKER caused (the recording did not run into
+    ``max_seconds``), that is a deliberate command — even a long, fluent,
+    pause-free one.
+
+    This exists because the segment-shape signal punished fluency: a 14-word
+    request spoken without pausing is one >4 s segment, which looked
+    identical to run-on narration (live 2026-07-19 — it silently dropped
+    four consecutive phone-call requests).
+    """
+    if recording.hit_max_duration:
+        return False  # never stopped talking — narration runs into the cap
+    if not raw:
+        return False
+    return raw[0].isupper() and raw.rstrip().endswith((".", "?", "!"))
+
+
 def is_false_wake(
     transcription: str,
     recording: RecordingResult,
@@ -135,7 +166,12 @@ def is_false_wake(
         return True
 
     # Signal 4: whisper segment shape (PRD #3, segment-level variant).
-    if looks_like_narration_by_segments(word_count, segments):
+    # Gated on hit_max_duration — see the module docstring. A recording that
+    # ended on its own means the speaker finished a thought and stopped,
+    # which is what a command looks like; narration runs into the cap.
+    if not _looks_like_a_deliberate_utterance(
+        raw, recording
+    ) and looks_like_narration_by_segments(word_count, segments):
         return True
 
     return False
