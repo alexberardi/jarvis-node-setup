@@ -186,15 +186,29 @@ class TestIsFalseWakeJarvisOverride:
 
 
 class TestIsFalseWakeShape:
-    """Signals 3 + 4 — narration shape (multi-sentence past threshold,
-    or whisper segment-shape continuous run-on)."""
+    """The shape signals are GONE (2026-07-20).
+
+    Multi-sentence-past-8-words and whisper segment shape both encoded
+    "real commands are short". They dropped long fluent commands at the
+    node, where nothing downstream could recover them. These cases are now
+    command-center's call: it sees the tool list and a pre-wake direction
+    hint, and a <not_for_me/> there fails silently and re-arms.
+
+    The corpus is KEPT rather than deleted — these are real recordings, and
+    they are the regression set for whatever classifies them next.
+    """
 
     def test_real_prod_false_wake_2026_06_03(self):
         # The actual transcript captured by prod kitchen at 18:41:07 —
         # ambient TV / family conversation that triggered a false wake.
-        # Multi-sentence + word count past threshold.
+        #
+        # Capitalised, punctuated, 10 words: no acoustic tell at all, only
+        # sentence shape. It now reaches CC, which should answer with
+        # <not_for_me/> — this text is not a command in any tool's terms.
+        # Worth watching in the kitchen: this is the case the node used to
+        # absorb for free.
         text = "I'm playing the outside of it. I know a con."
-        assert is_false_wake(text, _rec(duration=2.4)) is True
+        assert is_false_wake(text, _rec(duration=2.4)) is False
 
     def test_single_sentence_under_threshold_passes(self):
         # Short single-sentence command — the happy path.
@@ -204,14 +218,16 @@ class TestIsFalseWakeShape:
         # 2 sentences but only 7 words = under the multi-sentence threshold.
         assert is_false_wake("ok. turn the lights on now.", _rec()) is False
 
-    def test_segment_shape_single_long_run_on(self):
-        # No terminal punctuation; signal 3 doesn't fire; signal 4 does.
+    def test_segment_shape_no_longer_drops_a_long_run_on(self):
+        # Trails off mid-thought, so it really is overheard — but the only
+        # evidence was one long segment, which is also what a fluent command
+        # looks like. Deferred to CC rather than guessed at here.
         text = (
             "well I think we should go to the store and get some milk "
             "and then maybe stop by"
         )
         segs = [{"t0_ms": 0, "t1_ms": 4500}]
-        assert is_false_wake(text, _rec(duration=4.5), segments=segs) is True
+        assert is_false_wake(text, _rec(duration=4.5), segments=segs) is False
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +303,15 @@ class TestFluentCommandsSurvive:
         ]
         assert is_false_wake(text, _rec(duration=5.0, hit_max=False), segments=segments) is False
 
-    def test_fragment_shape_is_still_caught_without_hit_max(self):
-        """The discriminator is utterance SHAPE, not merely 'speaker stopped'.
-        Overheard speech that trails off is still a false wake even when the
-        recording ended on its own."""
+    def test_fragment_shape_is_no_longer_caught_without_hit_max(self):
+        """Shape alone no longer decides.
+
+        A lowercase, trailing-off fragment IS overheard speech, but the node
+        cannot separate that from a real command without also punishing
+        length — and this corpus writes real commands in lowercase too
+        ("turn on the kitchen lights"), so a lowercase-start rule would drop
+        them. Left to CC, which has better evidence.
+        """
         text = (
             "well I think we should go to the store and get some milk "
             "and then maybe stop by"
@@ -298,15 +319,67 @@ class TestFluentCommandsSurvive:
         assert is_false_wake(
             text, _rec(duration=4.5, hit_max=False),
             segments=[{"t0_ms": 0, "t1_ms": 4500}],
-        ) is True
+        ) is False
 
-    def test_other_signals_still_fire_without_hit_max(self):
-        """Gating signal 4 must not weaken signals 1-3."""
-        # Abort phrase
+    def test_abort_phrases_still_fire_without_hit_max(self):
+        """Explicit intent survives; inferred narration does not."""
+        # Abort phrase — unambiguous, stays at the node.
         assert is_false_wake("never mind", _rec(), segments=None) is True
-        # Multi-sentence narration past the word threshold (signal 3)
+        # Multi-sentence narration: shape only, so CC decides now.
         assert is_false_wake(
             "he went to the store. then he came back and made dinner for us.",
             _rec(duration=6.0, hit_max=False),
             segments=[{"t0_ms": 0, "t1_ms": 6000}],
-        ) is True
+        ) is False
+
+
+class TestLongCommandsSurvive:
+    """Length is not evidence of intent.
+
+    Live 2026-07-20: 'Order a pepperoni pizza from J&G Pizza to be delivered
+    to my house.' transcribed perfectly, then died at the node — 13 words,
+    one 5.8s whisper segment. Phone-call requests are inherently this long,
+    which made the whole feature unusable by voice.
+    """
+
+    def test_the_dropped_pizza_order(self):
+        text = (
+            "Order a pepperoni pizza from J&G Pizza to be delivered "
+            "to my house."
+        )
+        assert is_false_wake(
+            text, _rec(duration=5.84, hit_max=False),
+            segments=[{"t0_ms": 0, "t1_ms": 5840}],
+        ) is False
+
+    def test_the_dropped_appointment_request(self):
+        # The 2026-07-19 variant, same shape, same silent drop.
+        text = (
+            "Can you make an appointment at Total Patient Care for me "
+            "one day this week?"
+        )
+        assert is_false_wake(
+            text, _rec(duration=5.0, hit_max=False),
+            segments=[{"t0_ms": 0, "t1_ms": 5000}],
+        ) is False
+
+    def test_a_long_multi_sentence_command_survives(self):
+        # Two sentences, 19 words, one segment: every old shape signal at
+        # once. A person really does talk like this.
+        text = (
+            "Order a large pepperoni for pickup. Tell them it's under "
+            "my name and I'll be there at six."
+        )
+        assert is_false_wake(
+            text, _rec(duration=7.0, hit_max=False),
+            segments=[{"t0_ms": 0, "t1_ms": 7000}],
+        ) is False
+
+    def test_a_recording_that_ran_into_the_cap_is_still_caught(self):
+        # The one acoustic signal we kept: the speaker never stopped.
+        text = (
+            "so anyway i told him that the whole thing was going to fall "
+            "apart and he just kept talking about the game and then she "
+            "came in and said something about dinner"
+        )
+        assert is_false_wake(text, _rec(duration=7.0, hit_max=True)) is True
