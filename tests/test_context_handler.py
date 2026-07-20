@@ -300,3 +300,88 @@ class TestDispatch:
         )
         body = _response(mqtt_client)
         assert body["ok"] is False and "too large" in body["error"]
+
+
+class _SpeakerAwareCommand(_BaseCommand):
+    """Mirrors the real calendar provider: per-speaker credentials, so it
+    refuses outright when no user identity reached it."""
+
+    @property
+    def command_name(self) -> str:
+        return "speaker_calendar"
+
+    @property
+    def context_operations(self):
+        return [AVAILABILITY]
+
+    def execute_context_operation(self, operation, params):
+        from jarvis_command_sdk import get_current_user_id
+
+        user_id = get_current_user_id()
+        if user_id is None:
+            return ContextResult.failed("unknown speaker — no personal calendar")
+        return ContextResult(data={"free": [f"user-{user_id} Thu 14:00-15:30"], "busy": []})
+
+
+class TestSpeakerIdentity:
+    """CC sends the speaker in the payload; the handler must put it on the SDK
+    ContextVar before dispatch.
+
+    Live 2026-07-20: CC sent no identity and the handler set none, so the real
+    calendar provider could only answer "unknown speaker" and every phone-call
+    plan silently fell back to "(calendar unavailable — fill in your
+    availability)". Both halves of this seam are pinned here.
+    """
+
+    @pytest.fixture
+    def discovery(self):
+        by_name = {"speaker_calendar": _SpeakerAwareCommand()}
+        fake = MagicMock()
+        fake.get_command.side_effect = lambda n: by_name.get(n)
+        fake.get_all_commands.return_value = by_name
+        with patch.object(context_handler, "_discovery", return_value=fake):
+            yield fake
+
+    def test_user_id_reaches_the_provider(self, mqtt_client, discovery):
+        _request(mqtt_client, TOPIC, "query", {
+            "operation": "availability",
+            "params": {"start": "2026-07-20", "end": "2026-07-27"},
+            "user_id": 7,
+            "correlation_id": CID,
+        })
+        body = _response(mqtt_client)
+        assert body["ok"] is True
+        assert body["data"]["free"] == ["user-7 Thu 14:00-15:30"]
+
+    def test_missing_user_id_still_answers_honestly(self, mqtt_client, discovery):
+        _request(mqtt_client, TOPIC, "query", {
+            "operation": "availability",
+            "params": {"start": "2026-07-20", "end": "2026-07-27"},
+            "correlation_id": CID,
+        })
+        body = _response(mqtt_client)
+        assert body["ok"] is False
+        assert "unknown speaker" in body["error"]
+
+    def test_malformed_user_id_is_treated_as_absent(self, mqtt_client, discovery):
+        _request(mqtt_client, TOPIC, "query", {
+            "operation": "availability",
+            "params": {"start": "2026-07-20", "end": "2026-07-27"},
+            "user_id": "not-an-int",
+            "correlation_id": CID,
+        })
+        body = _response(mqtt_client)
+        assert body["ok"] is False  # refused, not crashed
+
+    def test_context_var_restored_between_requests(self, mqtt_client, discovery):
+        """The listener thread serves every node request — one caller's
+        identity must never leak into the next."""
+        from jarvis_command_sdk import get_current_user_id
+
+        _request(mqtt_client, TOPIC, "query", {
+            "operation": "availability",
+            "params": {"start": "2026-07-20", "end": "2026-07-27"},
+            "user_id": 7,
+            "correlation_id": CID,
+        })
+        assert get_current_user_id() is None
