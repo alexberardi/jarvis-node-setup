@@ -34,7 +34,11 @@ import paho.mqtt.client as mqtt
 
 from jarvis_log_client import JarvisLogger
 
-from jarvis_command_sdk import IJarvisCommand
+from jarvis_command_sdk import (
+    IJarvisCommand,
+    get_current_user_id,
+    set_current_user_id,
+)
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -223,31 +227,48 @@ def _op_query(
         )
         return
 
+    # Providers whose data is per-person (calendar, email) read their
+    # credentials through the SDK's user ContextVar, exactly as they do on
+    # the voice path. Without this the caller's identity never reaches them
+    # and they can only refuse ("unknown speaker"), so the planner silently
+    # degrades to a fill-me-in placeholder. Always restore the previous
+    # value — this listener thread serves every node request.
+    raw_user = payload.get("user_id")
     try:
-        result = cmd.execute_context_operation(operation, params)
-    except Exception as exc:  # noqa: BLE001 — provider errors are data, not crashes
-        logger.error(
-            "context operation raised",
-            command=cmd.command_name,
-            operation=operation,
-            error=str(exc),
-        )
-        _publish(
-            client,
-            request_topic,
-            correlation_id,
-            {"ok": False, "error": f"{cmd.command_name}.{operation} failed: {exc}"},
-        )
-        return
+        user_id = int(raw_user) if raw_user is not None else None
+    except (TypeError, ValueError):
+        user_id = None
 
-    body = (
-        result.to_dict()
-        if hasattr(result, "to_dict")
-        else {"ok": True, "data": result, "error": None}
-    )
-    body["command_name"] = cmd.command_name
-    body["operation"] = operation
-    _publish(client, request_topic, correlation_id, body)
+    previous_user = get_current_user_id()
+    set_current_user_id(user_id)
+    try:
+        try:
+            result = cmd.execute_context_operation(operation, params)
+        except Exception as exc:  # noqa: BLE001 — provider errors are data, not crashes
+            logger.error(
+                "context operation raised",
+                command=cmd.command_name,
+                operation=operation,
+                error=str(exc),
+            )
+            _publish(
+                client,
+                request_topic,
+                correlation_id,
+                {"ok": False, "error": f"{cmd.command_name}.{operation} failed: {exc}"},
+            )
+            return
+
+        body = (
+            result.to_dict()
+            if hasattr(result, "to_dict")
+            else {"ok": True, "data": result, "error": None}
+        )
+        body["command_name"] = cmd.command_name
+        body["operation"] = operation
+        _publish(client, request_topic, correlation_id, body)
+    finally:
+        set_current_user_id(previous_user)
 
 
 _OP_HANDLERS = {
