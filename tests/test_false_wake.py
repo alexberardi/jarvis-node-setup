@@ -231,3 +231,82 @@ class TestIsFalseWakeEdgeCases:
     def test_no_recording_metadata_still_safe(self):
         # hit_max=False, duration arbitrary — short text is fine.
         assert is_false_wake("yes", _rec(duration=0.3)) is False
+
+
+# ---------------------------------------------------------------------------
+# Regression: the narration-shape signal must not punish fluent speech.
+#
+# Live 2026-07-19 — four consecutive phone-call requests were silently
+# dropped. Each was a complete, correctly-transcribed sentence spoken
+# without pausing, so whisper returned ONE segment over 4 s and the
+# segment-shape signal called it ambient narration. Phone-call commands are
+# inherently this long ("make an appointment at X for me this week"), so the
+# feature was unusable by voice.
+#
+# The distinguishing evidence: hit_max_duration was False on every one — the
+# listener stopped because the SPEAKER stopped. Narration runs into the cap.
+# ---------------------------------------------------------------------------
+
+
+class TestFluentCommandsSurvive:
+    REAL_UTTERANCES = [
+        "Can you make an appointment at Total Patient Care for me one day this week?",
+        "Make an appointment at Total Patient Care one day this week.",
+        "Can you call and make an appointment at Total Patient Care for this week?",
+        "Call Tony's Pizzeria and order a large pepperoni for pickup.",
+    ]
+
+    @pytest.mark.parametrize("text", REAL_UTTERANCES)
+    def test_long_single_segment_command_is_not_a_false_wake(self, text):
+        """One 5 s segment, speaker stopped on their own → a command."""
+        segments = [{"t0_ms": 0, "t1_ms": 5440}]
+        assert is_false_wake(text, _rec(duration=5.44, hit_max=False), segments=segments) is False
+
+    def test_narration_still_caught_when_recording_hit_the_cap(self):
+        """Same shape, but the speaker never stopped → still ambient."""
+        text = "so then he told me the whole story about the thing at work yesterday"
+        segments = [{"t0_ms": 0, "t1_ms": 9000}]
+        assert is_false_wake(text, _rec(duration=9.0, hit_max=True), segments=segments) is True
+
+    def test_gapless_multi_segment_still_caught_at_the_cap(self):
+        text = "and then she said we should go and I said maybe later this week sometime"
+        segments = [
+            {"t0_ms": 0, "t1_ms": 3000},
+            {"t0_ms": 3100, "t1_ms": 6000},
+            {"t0_ms": 6150, "t1_ms": 9000},
+        ]
+        assert is_false_wake(text, _rec(duration=9.0, hit_max=True), segments=segments) is True
+
+    def test_gapless_multi_segment_survives_when_speaker_stopped(self):
+        """A fluent multi-clause command with no long pauses is still a command."""
+        # As whisper actually returns it: capitalised, terminally punctuated.
+        text = "Call the pharmacy and ask them to refill my prescription for this month."
+        segments = [
+            {"t0_ms": 0, "t1_ms": 2500},
+            {"t0_ms": 2600, "t1_ms": 5000},
+        ]
+        assert is_false_wake(text, _rec(duration=5.0, hit_max=False), segments=segments) is False
+
+    def test_fragment_shape_is_still_caught_without_hit_max(self):
+        """The discriminator is utterance SHAPE, not merely 'speaker stopped'.
+        Overheard speech that trails off is still a false wake even when the
+        recording ended on its own."""
+        text = (
+            "well I think we should go to the store and get some milk "
+            "and then maybe stop by"
+        )
+        assert is_false_wake(
+            text, _rec(duration=4.5, hit_max=False),
+            segments=[{"t0_ms": 0, "t1_ms": 4500}],
+        ) is True
+
+    def test_other_signals_still_fire_without_hit_max(self):
+        """Gating signal 4 must not weaken signals 1-3."""
+        # Abort phrase
+        assert is_false_wake("never mind", _rec(), segments=None) is True
+        # Multi-sentence narration past the word threshold (signal 3)
+        assert is_false_wake(
+            "he went to the store. then he came back and made dinner for us.",
+            _rec(duration=6.0, hit_max=False),
+            segments=[{"t0_ms": 0, "t1_ms": 6000}],
+        ) is True
