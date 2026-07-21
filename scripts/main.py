@@ -368,6 +368,43 @@ def _lock_pages_in_ram() -> None:
     logger.warning("mlockall not supported on this kernel; skipping")
 
 
+def _run_boot_warmup(timeout_s: float = 20.0) -> bool:
+    """Prime the LLM KV cache at boot without ever blocking the wake listener.
+
+    Runs a TEXT-ONLY warmup (``parse_voice_command`` — tool registration + an
+    LLM prefill pass, but NO audio playback) on a daemon thread and waits at
+    most ``timeout_s`` for it. Two failure modes this guards against, both of
+    which previously left the node wake-dead:
+
+    * a wedged ALSA sink making the old ``process_voice_command`` "hello" reply
+      hang forever in aplay (eliminated outright by going text-only), and
+    * a slow/unreachable command-center or LLM making the warmup network call
+      hang (bounded here by the join timeout — we log and continue).
+
+    Returns True if the warmup finished within the timeout, False otherwise.
+    """
+    logger.info("Warming up LLM pipeline")
+
+    def _warm() -> None:
+        try:
+            from utils.command_execution_service import CommandExecutionService
+            CommandExecutionService().parse_voice_command("hello")
+        except Exception as e:
+            logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+
+    warm_thread = threading.Thread(target=_warm, daemon=True, name="boot-warmup")
+    warm_thread.start()
+    warm_thread.join(timeout_s)
+    if warm_thread.is_alive():
+        logger.warning(
+            "LLM warmup did not finish within timeout; continuing to voice listener",
+            timeout_s=timeout_s,
+        )
+        return False
+    logger.info("LLM warmup complete")
+    return True
+
+
 def main():
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGTERM, _handle_shutdown)
