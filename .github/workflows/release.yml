@@ -93,9 +93,15 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          for dir in artifacts/*/; do
-            cp "$dir"/*.tar.gz release/
-          done
+          # download-artifact@v4 lays a lone matched artifact FLAT in artifacts/
+          # (single-arch build), but nests each into artifacts/<name>/ when
+          # several match. find handles both — the old `for dir in artifacts/*/`
+          # glob silently found nothing in the flat case and cp failed.
+          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          if ! ls release/*.tar.gz >/dev/null 2>&1; then
+            echo "::error::no tarball artifacts found under artifacts/ — refusing to publish an empty release" >&2
+            exit 1
+          fi
           cp install.sh release/
 
           cd release
