@@ -80,3 +80,17 @@ def test_warmup_uses_text_only_path_no_audio():
     assert result is True
     svc.parse_voice_command.assert_called_once_with("hello")
     svc.process_voice_command.assert_not_called()
+
+
+def test_main_wires_up_the_bounded_warmup_helper():
+    """Regression guard: main() must call _run_boot_warmup and must NOT call the
+    old audio warmup directly. (v0.1.150 defined the helper but never wired it,
+    so process_voice_command kept running and hung boot.)"""
+    import inspect
+
+    import scripts.main as main_mod
+
+    src = inspect.getsource(main_mod.main)
+    assert "_run_boot_warmup()" in src, "main() must call _run_boot_warmup()"
+    assert "process_voice_command" not in src, \
+        "main() must not call the audio warmup (process_voice_command) directly"
