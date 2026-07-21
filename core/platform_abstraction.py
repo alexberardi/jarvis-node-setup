@@ -23,6 +23,16 @@ from utils.config_service import Config
 
 logger = JarvisLogger(service="jarvis-node")
 
+# A blocking ``aplay`` stdin write hangs forever when the ALSA sink wedges into
+# SUSPENDED mid-stream (aplay stops draining → its pipe fills → our write
+# blocks). We have watched 88 KB "play" for 476 s this way, pinning whatever
+# thread drives playback. If a single write stalls past this threshold we kill
+# aplay so the blocked write raises and playback bails out. 15 s is ~15× the
+# worst-case backpressure delay for a healthy real-time stream, so it never
+# fires on normal playback.
+_APLAY_WRITE_STALL_TIMEOUT_S = 15.0
+_APLAY_WATCHDOG_POLL_S = 0.5
+
 
 @lru_cache(maxsize=1)
 def _default_output_device() -> str:
@@ -261,6 +271,36 @@ class AudioProvider(ABC):
             total_bytes = 0
             chunk_count = 0
             assert proc.stdin is not None
+            # Watchdog: kill aplay if a single stdin write blocks longer than
+            # the stall threshold (a wedged/SUSPENDED sink stops draining and
+            # our write would otherwise hang forever). ``write_started_at`` holds
+            # the monotonic start time of an in-flight write, or None between
+            # writes — so a merely-slow upstream iterator (None) never trips it,
+            # only a genuinely stuck write does.
+            write_started_at: list[float | None] = [None]
+            watchdog_stop = threading.Event()
+
+            def _stall_watchdog() -> None:
+                while not watchdog_stop.wait(_APLAY_WATCHDOG_POLL_S):
+                    started = write_started_at[0]
+                    if (
+                        started is not None
+                        and _time.monotonic() - started > _APLAY_WRITE_STALL_TIMEOUT_S
+                    ):
+                        logger.warning(
+                            "aplay stdin write stalled — killing (wedged sink?)",
+                            stalled_s=round(_time.monotonic() - started, 1),
+                        )
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                        return
+
+            watchdog = threading.Thread(
+                target=_stall_watchdog, daemon=True, name="aplay-stall-watchdog"
+            )
+            watchdog.start()
             try:
                 for chunk in pcm_iterator:
                     if not chunk:
@@ -270,16 +310,20 @@ class AudioProvider(ABC):
                         break
                     chunk_count += 1
                     total_bytes += len(chunk)
+                    write_started_at[0] = _time.monotonic()
                     try:
                         proc.stdin.write(chunk)
-                    except BrokenPipeError:
+                    except (BrokenPipeError, OSError):
                         logger.warning("aplay pipe closed early")
                         break
+                    finally:
+                        write_started_at[0] = None
             finally:
+                watchdog_stop.set()
                 self._clear_playback_proc()
                 try:
                     proc.stdin.close()
-                except BrokenPipeError:
+                except (BrokenPipeError, OSError):
                     pass
                 # Wait for aplay to drain the buffer. 30s is way more than
                 # any realistic message length.
