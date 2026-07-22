@@ -179,6 +179,25 @@ Key environment variables (see `.env.example`):
 | `NODE_API_KEY` | API key for authentication |
 | `WAKE_WORD` | Wake word to listen for (default `hey_jarvis`; configured via `wake_word_model` setting) |
 | `MQTT_BROKER` | MQTT broker for TTS |
+| `JARVIS_<SERVICE>_LAN_URL` | Per-service LAN override (see below) |
+| `JARVIS_CONFIG_URL` | Config-service URL — optional LAN override (e.g. `http://10.0.0.107:7700`) |
+
+### LAN routing (co-located nodes)
+
+By default the node resolves every service (command-center, etc.) from
+config-service, which returns the **cloud relay** URLs. If a node sits on the
+same LAN as the server, that relay adds ~1.9s to each audio upload (vs ~7ms
+direct). Override per service to keep traffic on the LAN:
+
+```bash
+# in .env — LAN nodes only; leave unset on remote nodes (cloud is unaffected)
+JARVIS_COMMAND_CENTER_LAN_URL=http://10.0.0.107:7703
+```
+
+Only `command-center` matters for the voice hot path — the node proxies whisper
+and TTS through it. The override is per-node and per-service, so remote /
+multi-household access over the relay is untouched. This alone cuts a typical
+turn from ~4.5s to ~2.4s.
 
 ## Testing
 

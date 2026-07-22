@@ -23,8 +23,9 @@ Coverage focus:
     where the cached play raises but the file is still cleaned up.
 
   * ``handle_keyword_detected`` — the wake callback that fires the LED
-    transitions, plays the ack (or sleeps when audio is disabled), and
-    submits ``fetch_next_wake_response`` to the bg executor.
+    transitions and plays the ack (or sleeps when audio is disabled). It does
+    NOT prefetch the next greeting — that's deferred to the wake loop's idle
+    path (core/wake_loop.py) so its LLM call can't evict the warmed KV cache.
 
   * ``fetch_next_wake_response`` — no provider → no-op; provider
     returns text → writes WAKE_FILE + cached audio; provider raises →
@@ -399,8 +400,10 @@ class TestPlayWakeAck:
 class TestHandleKeywordDetected:
 
     def test_full_path_with_audio_enabled(self, monkeypatch, _isolate_wake_response):
-        # Audio enabled: LED purple, play_wake_ack, LED blue, submit
-        # fetch_next_wake_response to the bg executor.
+        # Audio enabled: LED purple, play_wake_ack, LED blue. The next-greeting
+        # prefetch is deliberately NOT submitted here — it's deferred to the wake
+        # loop's idle path so its LLM call can't land between the warmup and the
+        # command's first inference and evict the warmed KV cache.
         led_calls: list[str | None] = []
         monkeypatch.setattr(
             wake_response, "set_led_transient",
@@ -421,9 +424,9 @@ class TestHandleKeywordDetected:
         # Both LED transitions fired, in order.
         assert led_calls == ["wake_detected", "listening"]
         assert play_calls == [True]
-        # fetch_next_wake_response was submitted.
+        # The wake-response prefetch must NOT run on the wake critical path.
         fns = [s[0] for s in _isolate_wake_response.submitted]
-        assert wake_response.fetch_next_wake_response in fns
+        assert wake_response.fetch_next_wake_response not in fns
 
     def test_audio_disabled_sleeps_then_transitions(self, monkeypatch, _isolate_wake_response):
         led_calls: list[str | None] = []
