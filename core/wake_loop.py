@@ -70,6 +70,7 @@ from core.wake_detector import (
 )
 from core.wake_response import (
     fetch_next_processing_ack,
+    fetch_next_wake_response,
     handle_keyword_detected,
     play_processing_ack,
     run_warmup,
@@ -668,4 +669,12 @@ def run_wake_loop(
             pass
         if _bg_executor is not None:
             _bg_executor.submit(fetch_next_processing_ack)
+            # Prefetch the NEXT wake greeting here, at idle — NOT on the wake
+            # critical path. Its LLM call would otherwise land between the wake
+            # warmup and the command's first inference and evict the warmed KV
+            # cache (single llama.cpp slot), making iter-1 cold. At idle the LLM
+            # is free and the next wake re-warms before its command. Gated: only
+            # prefetch when the ack audio is actually played.
+            if Config.get_bool("wake_ack_audio_enabled", True):
+                _bg_executor.submit(fetch_next_wake_response)
         print(f"Ready — say '{wake_word_model.replace('_', ' ')}'")
