@@ -20,7 +20,7 @@ tqdm
 zeroconf
 pyatv
 manuf
-cryptography>=41.0
+cryptography>=49.0.0
 sqlcipher3
 sqlalchemy
 alembic
