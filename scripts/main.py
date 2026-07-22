@@ -30,6 +30,17 @@ try:
 except Exception as _malloc_err:  # non-glibc (e.g. macOS dev) — harmless no-op
     print(f"glibc malloc tuning skipped: {_malloc_err}", file=sys.stderr)
 
+# Load .env early — before the config-URL bootstrap below and any service
+# resolution — so env overrides in /opt/jarvis-node/.env take effect:
+#   JARVIS_CONFIG_URL         -> point config-service at the LAN box
+#   JARVIS_<SERVICE>_LAN_URL   -> per-service LAN override (utils/service_discovery)
+# For a node co-located with the server this skips the cloud relay round-trip.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+except Exception as _dotenv_err:  # dotenv optional / .env absent — harmless
+    print(f".env load skipped: {_dotenv_err}", file=sys.stderr)
+
 # Set config service URL from config.json before any library imports,
 # so jarvis-config-client uses the right URL instead of localhost
 if not os.environ.get("JARVIS_CONFIG_URL"):
@@ -848,13 +859,12 @@ def main():
     # AP mode's captive dnsmasq resolves every hostname to the node
     # itself, so its CC reachability probe can never succeed.
 
-    # Warm up the LLM by sending a throwaway request through the full
-    # pipeline (tool registration → system prompt → KV cache).  This
-    # primes llama.cpp's prefix cache so the first real voice command is fast.
-    # SKIP on install-triggered restart: `process_voice_command` streams a
-    # TTS reply back through the speaker, which is fine to hear once at
-    # boot but annoying on every package install. The first voice command
-    # after install will be a beat slower; acceptable trade-off.
+    # Warm up the LLM to prime llama.cpp's prefix/KV cache so the first real
+    # voice command is fast. _run_boot_warmup uses the TEXT-ONLY warmup path
+    # (parse_voice_command — no audio playback) on a bounded daemon thread, so
+    # neither a wedged ALSA sink nor a hung command-center/LLM can keep boot
+    # from reaching the wake listener below. Still SKIP entirely on
+    # install/maintenance restarts to stay quiet.
     if _silent_restart:
         reason = (
             "install-triggered" if _install_restart else "maintenance-triggered"
@@ -864,14 +874,7 @@ def main():
             reason=reason,
         )
     else:
-        try:
-            from utils.command_execution_service import CommandExecutionService
-            warmup_service = CommandExecutionService()
-            logger.info("Warming up LLM pipeline")
-            warmup_service.process_voice_command("hello")
-            logger.info("LLM warmup complete")
-        except Exception as e:
-            logger.warning("LLM warmup failed (non-fatal)", error=str(e))
+        _run_boot_warmup()
 
     # Flush any package install/uninstall result deferred by the previous
     # process. This deliberately runs AFTER agent scheduler init and the

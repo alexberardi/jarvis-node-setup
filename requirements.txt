@@ -4,7 +4,7 @@ httpx
 # to avoid pulling ai-edge-litert (no aarch64 wheel).
 # These are the openwakeword deps we actually need (onnx inference):
 onnxruntime>=1.24.3,!=1.25.1,<2
-scikit-learn>=1,<2
+scikit-learn>=1.7.2,<2
 pyaudio
 vosk
 sounddevice
@@ -20,7 +20,7 @@ tqdm
 zeroconf
 pyatv
 manuf
-cryptography>=41.0
+cryptography>=49.0.0
 sqlcipher3
 sqlalchemy
 alembic

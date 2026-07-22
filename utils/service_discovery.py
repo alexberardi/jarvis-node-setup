@@ -106,9 +106,20 @@ def _get_from_json_config(config_key: str) -> Optional[str]:
 def _get_url(service_name: str) -> str:
     """Resolve a service URL from config-service.
 
+    A per-service LAN override (``JARVIS_<SERVICE>_LAN_URL``, e.g.
+    ``JARVIS_COMMAND_CENTER_LAN_URL=http://10.0.0.107:7703``) short-circuits
+    config-service entirely. For a node co-located with the server this skips the
+    cloud round-trip — the relay adds ~1.9s to an audio upload vs ~7ms on the LAN.
+    Set it only on LAN nodes; remote nodes leave it unset and resolve via the
+    cloud exactly as before, so multi-household remote access is untouched.
+
     Raises ``ServiceUnresolvedError`` if config-service can't resolve it — no
     localhost fabrication — unless the node is still in provisioning mode.
     """
+    lan_override = os.getenv(f"JARVIS_{service_name.upper().replace('-', '_')}_LAN_URL")
+    if lan_override:
+        return lan_override
+
     if _initialized:
         try:
             from jarvis_config_client import get_service_url

@@ -74,6 +74,39 @@ def test_broker_and_cc_use_the_same_resolver(discovery):
     assert mod.get_mqtt_broker_url() == "mqtt://server:1884"
 
 
+# ── LAN override (co-located nodes) ──────────────────────────────────────────
+
+
+def test_lan_override_short_circuits_config_service(discovery, monkeypatch):
+    """JARVIS_<SERVICE>_LAN_URL bypasses config-service entirely so a node on the
+    same LAN as the server skips the cloud relay round-trip (~1.9s → ~7ms)."""
+    mod, services = discovery
+    services["command-center"] = "https://command-center.jarvisautomation.io:443"  # cloud
+    monkeypatch.setenv("JARVIS_COMMAND_CENTER_LAN_URL", "http://10.0.0.107:7703")
+    assert mod.get_command_center_url() == "http://10.0.0.107:7703"
+
+
+def test_lan_override_unset_falls_through_to_config_service(discovery, monkeypatch):
+    """Without the override, resolution is unchanged — remote/multi-household
+    nodes leave it unset and keep using the cloud URLs from config-service."""
+    mod, services = discovery
+    monkeypatch.delenv("JARVIS_COMMAND_CENTER_LAN_URL", raising=False)
+    services["command-center"] = "https://command-center.jarvisautomation.io:443"
+    assert mod.get_command_center_url() == "https://command-center.jarvisautomation.io:443"
+
+
+def test_lan_override_is_per_service(discovery, monkeypatch):
+    """The override key derives from the service name — only the overridden
+    service is redirected; others still resolve via config-service."""
+    mod, services = discovery
+    services["command-center"] = "https://cc.cloud:443"
+    services["whisper"] = "https://whisper.cloud:443"
+    monkeypatch.setenv("JARVIS_COMMAND_CENTER_LAN_URL", "http://10.0.0.107:7703")
+    monkeypatch.delenv("JARVIS_WHISPER_LAN_URL", raising=False)
+    assert mod.get_command_center_url() == "http://10.0.0.107:7703"   # overridden
+    assert mod.get_whisper_url() == "https://whisper.cloud:443"        # not overridden
+
+
 # ── No localhost/JSON fallback — fail loud ───────────────────────────────────
 
 
