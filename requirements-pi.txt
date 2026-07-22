@@ -11,7 +11,7 @@ httpx
 # installed best-effort in build-tarball.sh (wake word detection is
 # unavailable on armv7l if this fails).
 onnxruntime>=1.24.3,!=1.25.1
-scikit-learn>=1,<2
+scikit-learn>=1.7.2,<2
 # speexdsp-ns: no armv7l wheel or source dist available, skipped
 # noise suppression is optional for openwakeword
 
@@ -38,7 +38,7 @@ aiohttp
 tqdm
 zeroconf
 manuf
-cryptography>=41.0
+cryptography>=49.0.0
 sqlcipher3
 sqlalchemy
 alembic

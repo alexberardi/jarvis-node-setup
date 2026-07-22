@@ -8,6 +8,6 @@ vosk
 # openwakeword installed separately with --no-deps (avoids ai-edge-litert,
 # which has no wheel on these arches)
 onnxruntime>=1.24.3,!=1.25.1,<2
-scikit-learn>=1,<2
+scikit-learn>=1.7.2,<2
 scipy
 numpy

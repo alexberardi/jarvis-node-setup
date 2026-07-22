@@ -237,9 +237,11 @@ def handle_keyword_detected():
         # we transition to the listening color.
         time.sleep(0.2)
 
-    # Fetch the next wake response in the background if provider is configured
-    if _bg_executor is not None:
-        _bg_executor.submit(fetch_next_wake_response)
+    # NOTE: the NEXT wake greeting is prefetched at IDLE by the wake loop (after
+    # the cycle completes), NOT here. Running its LLM call on the wake critical
+    # path lands it between the warmup and the command's first inference and
+    # evicts the warmed KV cache (single llama.cpp slot) — a cold iter-1. It is
+    # also gated on wake_ack_audio_enabled there. See core/wake_loop.py.
 
     # Wake response audio is done — recording starts next. Flip from purple
     # (wake acknowledgment) to blue (actively listening for the command).
