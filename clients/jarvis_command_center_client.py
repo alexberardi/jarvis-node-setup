@@ -129,6 +129,7 @@ class JarvisCommandCenterClient:
         conversation_id: str,
         speaker_user_id: int | None = None,
         pre_wake_speech_seconds: float | None = None,
+        affect: dict[str, Any] | None = None,
     ) -> tuple[str, Any]:
         """Send a voice command to the unified streaming endpoint.
 
@@ -145,6 +146,9 @@ class JarvisCommandCenterClient:
                             detected just before the wake word fired
                             (from the node's pre-wake VAD ring buffer).
                             CC surfaces this to the LLM as a direction hint.
+            affect: Optional acoustic-affect read from whisper
+                            (``{read, arousal, confidence}``). Opaque to the
+                            node; CC turns it into a per-turn tone hint.
 
         Returns:
             A tuple of (tag, payload):
@@ -160,6 +164,8 @@ class JarvisCommandCenterClient:
             payload["speaker_user_id"] = speaker_user_id
         if pre_wake_speech_seconds is not None:
             payload["pre_wake_speech_seconds"] = pre_wake_speech_seconds
+        if affect is not None:
+            payload["affect"] = affect
 
         logger.info(
             "Sending unified voice command",

@@ -60,6 +60,11 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
             text = result.get("text", "")
             segments_raw = result.get("segments") or []
             segments = segments_raw if isinstance(segments_raw, list) else []
+            # Acoustic affect (whisper's voice.emotion_enabled). Forwarded as an
+            # opaque dict; only accept a dict so a null / malformed value never
+            # travels downstream.
+            affect_raw = result.get("affect")
+            affect = affect_raw if isinstance(affect_raw, dict) else None
             speaker = result.get("speaker")
             if speaker and isinstance(speaker, dict):
                 return TranscriptionResult(
@@ -67,8 +72,9 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
                     speaker_user_id=speaker.get("user_id"),
                     speaker_confidence=speaker.get("confidence", 0.0),
                     segments=segments,
+                    affect=affect,
                 )
-            return TranscriptionResult(text=text, segments=segments)
+            return TranscriptionResult(text=text, segments=segments, affect=affect)
         return TranscriptionResult(text="")
 
     def _call_whisper(
