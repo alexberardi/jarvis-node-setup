@@ -129,3 +129,51 @@ class TestJarvisWhisperClientTranscribeWithSpeaker:
             result = client.transcribe_with_speaker("audio.wav")
 
         assert result.segments == []
+
+
+class TestAffectPassthrough:
+    """The node forwards whisper's opaque `affect` block without interpreting it."""
+
+    def test_result_affect_defaults_none(self):
+        assert TranscriptionResult(text="hi").affect is None
+
+    def _client(self):
+        from stt_providers.jarvis_whisper_client import JarvisWhisperClient
+        return JarvisWhisperClient()
+
+    def test_affect_forwarded_when_present(self):
+        client = self._client()
+        affect = {"read": "subdued — flat pitch", "arousal": "low", "confidence": 0.72}
+        with patch.object(client, "_call_whisper", return_value={
+            "text": "how do i get miles to sleep",
+            "speaker": {"user_id": 1, "confidence": 0.9},
+            "affect": affect,
+        }):
+            result = client.transcribe_with_speaker("audio.wav")
+        assert result.affect == affect
+
+    def test_affect_forwarded_without_speaker(self):
+        client = self._client()
+        affect = {"read": "animated", "arousal": "high", "confidence": 0.6}
+        with patch.object(client, "_call_whisper", return_value={"text": "hi", "affect": affect}):
+            result = client.transcribe_with_speaker("audio.wav")
+        assert result.affect == affect
+
+    def test_null_affect_becomes_none(self):
+        client = self._client()
+        with patch.object(client, "_call_whisper", return_value={"text": "hi", "affect": None}):
+            result = client.transcribe_with_speaker("audio.wav")
+        assert result.affect is None
+
+    def test_malformed_affect_ignored(self):
+        # A non-dict affect (bug / older whisper) must never travel downstream.
+        client = self._client()
+        with patch.object(client, "_call_whisper", return_value={"text": "hi", "affect": "high"}):
+            result = client.transcribe_with_speaker("audio.wav")
+        assert result.affect is None
+
+    def test_absent_affect_is_none(self):
+        client = self._client()
+        with patch.object(client, "_call_whisper", return_value={"text": "hi"}):
+            result = client.transcribe_with_speaker("audio.wav")
+        assert result.affect is None

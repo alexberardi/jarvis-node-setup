@@ -551,6 +551,7 @@ class CommandExecutionService:
         warmup_result: Optional[Dict[str, Any]] = None,
         skip_ack: bool = False,
         pre_wake_speech_seconds: Optional[float] = None,
+        affect: Optional[Dict[str, Any]] = None,
         on_llm_fallback: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
         """

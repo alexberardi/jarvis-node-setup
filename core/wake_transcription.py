@@ -251,6 +251,9 @@ def send_for_transcription(
     # has already returned.
     transcription = result.text
     speaker_user_id = result.speaker_user_id
+    # Capture the acoustic-affect read now — ``result`` is reassigned below to the
+    # command-processing return value.
+    affect = result.affect
     if speaker_user_id:
         _last_speaker_user_id = speaker_user_id
         _last_speaker_confidence = result.speaker_confidence
@@ -273,6 +276,7 @@ def send_for_transcription(
             warmup_result=warmup_result,
             skip_ack=skip_ack or audio_acks_disabled,
             pre_wake_speech_seconds=pre_wake_speech_seconds,
+            affect=affect,
         )
     except (ConnectionError, OSError, TimeoutError) as e:
         logger.error("Command center unreachable", error=str(e))

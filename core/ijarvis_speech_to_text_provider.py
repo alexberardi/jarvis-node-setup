@@ -17,6 +17,12 @@ class TranscriptionResult:
     speaker_user_id: int | None = None
     speaker_confidence: float = 0.0
     segments: list[dict[str, Any]] = field(default_factory=list)
+    # Opaque acoustic-affect read from whisper (``{read, arousal, confidence}``)
+    # when voice.emotion_enabled is on, else None. The node does NOT interpret it
+    # — it forwards it to command-center on the voice command, which turns it into
+    # a per-turn tone hint for the LLM. None when the feature is off or the read
+    # was withheld (low confidence / non-speech).
+    affect: dict[str, Any] | None = None
 
 
 class IJarvisSpeechToTextProvider(ABC):
