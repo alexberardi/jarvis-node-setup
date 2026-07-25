@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from jarvis_command_sdk import IJarvisCommand
 from .responses.jarvis_command_center import DateContext, ToolCallingResponse, ValidationRequest
 from .rest_client import RestClient
-from utils.config_loader import Config
 from utils.timezone_util import get_user_timezone
 
 logger = JarvisLogger(service="jarvis-node")
@@ -563,10 +562,6 @@ class JarvisCommandCenterClient:
         if date_context is None:
             date_context = self.get_date_context()
 
-        # Check if we should skip warmup inference (useful for vLLM which doesn't cache KV)
-        skip_warmup_raw = Config.get("skip_warmup_inference", "false")
-        skip_warmup = str(skip_warmup_raw).lower() in ("true", "1", "yes")
-
         node_context = {
             "timezone": get_user_timezone()
         }
@@ -616,7 +611,6 @@ class JarvisCommandCenterClient:
             "node_context": node_context,
             "available_commands": available_commands,
             "client_tools": client_tools,
-            "skip_warmup_inference": skip_warmup
         }
         if adapter_settings:
             payload["adapter_settings"] = adapter_settings
