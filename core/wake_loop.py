@@ -669,12 +669,20 @@ def run_wake_loop(
             pass
         if _bg_executor is not None:
             _bg_executor.submit(fetch_next_processing_ack)
-            # Prefetch the NEXT wake greeting here, at idle — NOT on the wake
-            # critical path. Its LLM call would otherwise land between the wake
-            # warmup and the command's first inference and evict the warmed KV
-            # cache (single llama.cpp slot), making iter-1 cold. At idle the LLM
-            # is free and the next wake re-warms before its command. Gated: only
-            # prefetch when the ack audio is actually played.
-            if Config.get_bool("wake_ack_audio_enabled", True):
-                _bg_executor.submit(fetch_next_wake_response)
+        # Generate the NEXT wake greeting here, at true idle — after the
+        # command and follow-up window, before re-arming the wake word.
+        # This MUST run SYNCHRONOUSLY, not via _bg_executor: submitted to the
+        # pool it gets starved during the blocking wake-wait and its greeting
+        # LLM call fires LATE — landing between the next turn's warmup and the
+        # command's first inference, evicting the warmed KV prefix (single
+        # llama.cpp slot) and forcing a cold iter-1 (~1.4s). Running it inline
+        # guarantees it completes before the next wake, so the warmup survives
+        # and iter-1 stays warm. Cost: ~0.3s of not-listening right after a
+        # completed turn — negligible. Gated on wake_ack_audio_enabled: only
+        # generate when the greeting is actually going to be played.
+        if Config.get_bool("wake_ack_audio_enabled", True):
+            try:
+                fetch_next_wake_response()
+            except Exception as e:
+                logger.warning("Idle wake-greeting generation failed", error=str(e))
         print(f"Ready — say '{wake_word_model.replace('_', ' ')}'")
