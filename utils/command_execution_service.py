@@ -931,6 +931,9 @@ class CommandExecutionService:
             "conversation_id": conversation_id,
             "wait_for_input": wait_for_input,
             "clear_history": clear_history,
+            # CC stripped <exchange_complete/> from the reply — terminal.
+            # The follow-up loop skips/closes its window on this flag.
+            "end_of_exchange": bool(getattr(response, "end_of_exchange", False)),
             "on_response_complete": (
                 last_tool_result.on_response_complete if last_tool_result else None
             ),

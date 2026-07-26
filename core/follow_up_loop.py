@@ -135,6 +135,14 @@ def follow_up_loop(
         logger.info("Initial result signalled not_for_me, skipping follow-up loop")
         return
 
+    # The model marked its reply terminal (<exchange_complete/> → CC set
+    # end_of_exchange). Don't open the window at all — return to idle.
+    # A wrong close costs one re-wake; a lingering window costs the room
+    # being listened to and answered.
+    if initial_result and initial_result.get("end_of_exchange"):
+        logger.info("Initial result signalled end_of_exchange, skipping follow-up loop")
+        return
+
     conversation_id: str | None = None
     if initial_result and initial_result.get("success") and not initial_result.get("pre_routed"):
         # A pre-routed initial turn never registered a CC conversation, so we
@@ -341,6 +349,9 @@ def follow_up_loop(
                 if result.get("not_for_me"):
                     logger.info("Follow-up result signalled not_for_me, ending follow-up")
                     should_break = True
+                if result.get("end_of_exchange"):
+                    logger.info("Follow-up result signalled end_of_exchange, ending follow-up")
+                    should_break = True
             else:
                 # No conversation context — start fresh. Still a follow-up
                 # capture (no wake word fired), so CC keeps the strict
@@ -358,6 +369,9 @@ def follow_up_loop(
                     should_break = True
                 if result.get("not_for_me"):
                     logger.info("Follow-up result signalled not_for_me, ending follow-up")
+                    should_break = True
+                if result.get("end_of_exchange"):
+                    logger.info("Follow-up result signalled end_of_exchange, ending follow-up")
                     should_break = True
 
             # Capture TTS-end timestamp HERE (right after speak_result), not
