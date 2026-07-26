@@ -41,22 +41,35 @@ class JarvisCommandCenterClient:
             logger.error("Failed to get date context", error=str(e))
             return None
 
-    def send_command(self, voice_command: str, conversation_id: str) -> Optional[ToolCallingResponse]:
+    def send_command(
+        self,
+        voice_command: str,
+        conversation_id: str,
+        turn_source: str | None = None,
+        follow_up_iteration: int | None = None,
+    ) -> Optional[ToolCallingResponse]:
         """
         Send a voice command to the Command Center for processing
-        
+
         Args:
             voice_command: The transcribed voice command
             conversation_id: Unique conversation identifier
-            
+            turn_source: How the mic came to be open ("wake"/"follow_up").
+                        CC uses it to pick the not_for_me posture.
+            follow_up_iteration: 1-based follow-up window iteration.
+
         Returns:
             ToolCallingResponse with stop_reason, tool_calls, validation, or final message
         """
-        payload = {
+        payload: dict[str, Any] = {
             "voice_command": voice_command,
             "conversation_id": conversation_id
         }
-            
+        if turn_source is not None:
+            payload["turn_source"] = turn_source
+        if follow_up_iteration is not None:
+            payload["follow_up_iteration"] = follow_up_iteration
+
         logger.info("Sending voice command", command=voice_command, conversation_id=conversation_id)
 
         try:
@@ -129,6 +142,9 @@ class JarvisCommandCenterClient:
         speaker_user_id: int | None = None,
         pre_wake_speech_seconds: float | None = None,
         affect: dict[str, Any] | None = None,
+        turn_source: str | None = None,
+        wake_confidence: float | None = None,
+        follow_up_iteration: int | None = None,
     ) -> tuple[str, Any]:
         """Send a voice command to the unified streaming endpoint.
 
@@ -148,6 +164,11 @@ class JarvisCommandCenterClient:
             affect: Optional acoustic-affect read from whisper
                             (``{read, arousal, confidence}``). Opaque to the
                             node; CC turns it into a per-turn tone hint.
+            turn_source: How the mic came to be open — "wake" (wake-word
+                            fire) or "follow_up" (window kept open after
+                            TTS). Selects CC's not_for_me posture.
+            wake_confidence: OWW detection score for the wake fire (0-1).
+            follow_up_iteration: 1-based follow-up window iteration.
 
         Returns:
             A tuple of (tag, payload):
@@ -165,6 +186,12 @@ class JarvisCommandCenterClient:
             payload["pre_wake_speech_seconds"] = pre_wake_speech_seconds
         if affect is not None:
             payload["affect"] = affect
+        if turn_source is not None:
+            payload["turn_source"] = turn_source
+        if wake_confidence is not None:
+            payload["wake_confidence"] = wake_confidence
+        if follow_up_iteration is not None:
+            payload["follow_up_iteration"] = follow_up_iteration
 
         logger.info(
             "Sending unified voice command",
