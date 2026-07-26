@@ -523,6 +523,7 @@ def run_wake_loop(
                     skip_ack=ack_played,
                     pre_wake_speech_seconds=pre_wake_speech_seconds,
                     wake_audio_path=wake_audio_path,
+                    wake_confidence=score_at_wake,
                 )
                 # Feed the auto-calibrator: wake scores that produced a
                 # real interaction (not the not_for_me silent abort)

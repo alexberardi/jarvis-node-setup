@@ -553,6 +553,9 @@ class CommandExecutionService:
         pre_wake_speech_seconds: Optional[float] = None,
         affect: Optional[Dict[str, Any]] = None,
         on_llm_fallback: Optional[Callable[[], None]] = None,
+        turn_source: Optional[str] = None,
+        wake_confidence: Optional[float] = None,
+        follow_up_iteration: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -632,6 +635,10 @@ class CommandExecutionService:
             tag, payload = self.client.send_command_unified(
                 voice_command, conversation_id, speaker_user_id=speaker_user_id,
                 pre_wake_speech_seconds=pre_wake_speech_seconds,
+                affect=affect,
+                turn_source=turn_source,
+                wake_confidence=wake_confidence,
+                follow_up_iteration=follow_up_iteration,
             )
 
             # Signal the ack thread: the main response is here. If the ack
@@ -683,6 +690,8 @@ class CommandExecutionService:
         conversation_id: str,
         message: str,
         validation_handler: Optional[Callable[[ValidationRequest], str]] = None,
+        turn_source: Optional[str] = None,
+        follow_up_iteration: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Send a follow-up message to an existing conversation.
@@ -702,7 +711,11 @@ class CommandExecutionService:
         logger.info("Continuing conversation", conversation_id=conversation_id, follow_up=message)
 
         try:
-            response = self.client.send_command(message, conversation_id)
+            response = self.client.send_command(
+                message, conversation_id,
+                turn_source=turn_source,
+                follow_up_iteration=follow_up_iteration,
+            )
 
             if not response:
                 return self._handle_error("Failed to communicate with Command Center", conversation_id)

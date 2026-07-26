@@ -314,7 +314,10 @@ class TestContinueConversation:
 
         result = service.continue_conversation("conv-existing", "tell me more")
 
-        mock_deps["client"].send_command.assert_called_once_with("tell me more", "conv-existing")
+        mock_deps["client"].send_command.assert_called_once_with(
+            "tell me more", "conv-existing",
+            turn_source=None, follow_up_iteration=None,
+        )
         assert result["success"] is True
         assert result["conversation_id"] == "conv-existing"
 

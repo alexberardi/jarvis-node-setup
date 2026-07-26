@@ -328,7 +328,9 @@ def follow_up_loop(
             elif conversation_id:
                 # Continue existing conversation
                 result = command_service.continue_conversation(
-                    conversation_id, text, validation_handler
+                    conversation_id, text, validation_handler,
+                    turn_source="follow_up",
+                    follow_up_iteration=iteration,
                 )
                 command_service.speak_result(result)
                 last_assistant_text = extract_assistant_text(result) or last_assistant_text
@@ -340,9 +342,13 @@ def follow_up_loop(
                     logger.info("Follow-up result signalled not_for_me, ending follow-up")
                     should_break = True
             else:
-                # No conversation context — start fresh
+                # No conversation context — start fresh. Still a follow-up
+                # capture (no wake word fired), so CC keeps the strict
+                # not_for_me posture for it.
                 result = command_service.process_voice_command(
-                    text, validation_handler, speaker_user_id=speaker_user_id
+                    text, validation_handler, speaker_user_id=speaker_user_id,
+                    turn_source="follow_up",
+                    follow_up_iteration=iteration,
                 )
                 command_service.speak_result(result)
                 last_assistant_text = extract_assistant_text(result) or last_assistant_text
