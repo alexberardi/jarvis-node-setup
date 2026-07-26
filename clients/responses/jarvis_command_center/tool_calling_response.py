@@ -71,7 +71,8 @@ class ToolCallingResponse(BaseModel):
     assistant_message: Optional[str] = Field(None, description="Message from the assistant")
     tool_calls: Optional[List[ToolCall]] = Field(None, description="List of tools to execute (when stop_reason is 'tool_calls')")
     validation_request: Optional[ValidationRequest] = Field(None, description="Validation request (when stop_reason is 'validation_required')")
-    
+    end_of_exchange: bool = Field(False, description="Server stripped the model's <exchange_complete/> marker — this reply is terminal; skip the follow-up window")
+
     def is_final(self) -> bool:
         """Check if this is a final response (conversation is complete)"""
         return self.stop_reason == "complete" if self.stop_reason else False
