@@ -16,9 +16,13 @@ Two independent triggers:
    so a clock anomaly can't fire twice in the same minute.
 
 2. **RSS ceiling** — if the process's resident set crosses
-   ``maintenance_restart_rss_ceiling_mb`` (default 320 MB), exit early.
-   Belt-and-braces against a future regression that drives the leak rate
-   above what the daily restart bounds. Logged loudly so we notice.
+   ``maintenance_restart_rss_ceiling_mb``, exit early. Belt-and-braces
+   against a future regression that drives the leak rate above what the
+   daily restart bounds. Logged loudly so we notice. The default scales
+   with the node's RAM — ``max(320 MB, 35% of MemTotal)`` — because a
+   flat 320 MB (tuned for the Pi Zero 2W) sits BELOW the process's
+   natural baseline on a Pi 5 (~330-340 MB with onnxruntime), which put
+   the 2026-08-03 kitchen node in a permanent 80-second restart loop.
 
 Both are gated by ``maintenance_restart_enabled``. Setting it to false
 disables the whole subsystem at runtime (poll picks up the change on
@@ -151,6 +155,39 @@ def _read_rss_mb() -> Optional[int]:
     return None
 
 
+def _read_total_ram_mb() -> Optional[int]:
+    """Total system RAM in MB from /proc/meminfo, or None where it doesn't
+    exist (macOS dev) or can't be read."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _default_rss_ceiling_mb() -> int:
+    """RAM-aware default for the RSS emergency ceiling.
+
+    ``max(floor, 35% of MemTotal)``: the Pi Zero 2W (416 MB) keeps the
+    historic 320 MB, a 2 GB Pi 5 lands at ~703 MB (validated on prod
+    jarvis-pi5, comfortably above its ~340 MB baseline), and unknown RAM
+    falls back to the floor. An explicit
+    ``maintenance_restart_rss_ceiling_mb`` in config always wins.
+    """
+    total_mb = _read_total_ram_mb()
+    if total_mb is None:
+        return MaintenanceRestartService.DEFAULT_RSS_CEILING_MB
+    return max(
+        MaintenanceRestartService.DEFAULT_RSS_CEILING_MB,
+        int(total_mb * MaintenanceRestartService.RSS_CEILING_RAM_FRACTION),
+    )
+
+
 # ── Service ──────────────────────────────────────────────────────────────
 
 
@@ -163,12 +200,17 @@ class MaintenanceRestartService:
 
     # Defaults — overridden by settings when present in config.json.
     DEFAULT_TIME = "03:00"
+    # Floor + fallback for the RSS ceiling; the effective default is
+    # RAM-aware (see _default_rss_ceiling_mb).
     DEFAULT_RSS_CEILING_MB = 320
+    RSS_CEILING_RAM_FRACTION = 0.35
     POLL_INTERVAL_SECONDS = 60
 
     def __init__(self) -> None:
         self._thread: Optional[threading.Thread] = None
         self._shutdown = threading.Event()
+        # RAM doesn't change at runtime — compute the default once.
+        self._default_ceiling_mb = _default_rss_ceiling_mb()
         # Once-per-day guard: stamp the date we triggered on so a stuck
         # clock reading the same minute twice can't double-fire.
         self._last_triggered_date: Optional[datetime.date] = None
@@ -220,7 +262,7 @@ class MaintenanceRestartService:
 
         # 1) RSS ceiling — emergency stop.
         ceiling_mb = Config.get_int(
-            "maintenance_restart_rss_ceiling_mb", self.DEFAULT_RSS_CEILING_MB,
+            "maintenance_restart_rss_ceiling_mb", self._default_ceiling_mb,
         )
         rss_mb = _read_rss_mb()
         if rss_mb is not None and ceiling_mb > 0 and rss_mb >= ceiling_mb:
