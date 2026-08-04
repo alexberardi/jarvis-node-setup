@@ -7,7 +7,7 @@
 
 # Web framework for provisioning API
 fastapi>=0.140.7
-uvicorn>=0.51.0
+uvicorn>=0.52.0
 pydantic
 python-dotenv
 
