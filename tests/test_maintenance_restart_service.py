@@ -61,6 +61,62 @@ class TestParseHHMM:
         assert _parse_hhmm(300) is None  # type: ignore[arg-type]
 
 
+# ── RAM-aware default ceiling ────────────────────────────────────────────
+
+
+class TestRamAwareDefaultCeiling:
+    """The RSS-ceiling *default* scales with the node's RAM. A flat 320 MB
+    was tuned for the Pi Zero 2W (416 MB) but sits BELOW the process's
+    natural baseline on a Pi 5 (~330-340 MB with onnxruntime), which put
+    the 2026-08-03 kitchen node in a permanent 80-second restart loop. An
+    explicit ``maintenance_restart_rss_ceiling_mb`` still wins."""
+
+    def test_pi_zero_total_keeps_historic_floor(self) -> None:
+        with patch.object(mrs, "_read_total_ram_mb", return_value=416):
+            assert mrs._default_rss_ceiling_mb() == 320
+
+    def test_pi5_2gb_scales_up(self) -> None:
+        with patch.object(mrs, "_read_total_ram_mb", return_value=2010):
+            # 35% of 2 GB ≈ 703 — the value validated on prod jarvis-pi5,
+            # comfortably above the ~340 MB baseline.
+            assert mrs._default_rss_ceiling_mb() == 703
+
+    def test_4gb_scales_further(self) -> None:
+        with patch.object(mrs, "_read_total_ram_mb", return_value=4046):
+            assert mrs._default_rss_ceiling_mb() == 1416
+
+    def test_unreadable_meminfo_falls_back_to_floor(self) -> None:
+        # macOS dev boxes have no /proc/meminfo — behave like the old flat default.
+        with patch.object(mrs, "_read_total_ram_mb", return_value=None):
+            assert mrs._default_rss_ceiling_mb() == 320
+
+    def test_check_once_uses_ram_aware_default(self) -> None:
+        """The computed value must reach Config.get_int as the DEFAULT, so a
+        node with no explicit setting gets the RAM-aware ceiling while an
+        explicit config value still takes precedence."""
+        with patch.object(mrs, "_read_total_ram_mb", return_value=2010):
+            svc = MaintenanceRestartService()
+        reasons = _patch_exit(svc)
+        with patch("services.maintenance_restart_service.Config") as mock_cfg, \
+             patch(
+                 "services.maintenance_restart_service._read_rss_mb",
+                 return_value=100,
+             ):
+            mock_cfg.get_bool.return_value = True
+            mock_cfg.get_int.side_effect = lambda _key, default: default
+            mock_cfg.get_str.return_value = "03:00"
+            with patch(
+                "services.maintenance_restart_service.datetime.datetime",
+                wraps=datetime.datetime,
+            ) as mock_dt_cls:
+                mock_dt_cls.now = lambda: datetime.datetime(2026, 6, 9, 14, 30)
+                svc._check_once()
+        assert reasons == []
+        mock_cfg.get_int.assert_called_once_with(
+            "maintenance_restart_rss_ceiling_mb", 703,
+        )
+
+
 # ── Scheduler iteration ──────────────────────────────────────────────────
 
 
