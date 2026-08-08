@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import json
 import ast
 
@@ -72,6 +72,19 @@ class ToolCallingResponse(BaseModel):
     tool_calls: Optional[List[ToolCall]] = Field(None, description="List of tools to execute (when stop_reason is 'tool_calls')")
     validation_request: Optional[ValidationRequest] = Field(None, description="Validation request (when stop_reason is 'validation_required')")
     end_of_exchange: bool = Field(False, description="Server stripped the model's <exchange_complete/> marker — this reply is terminal; skip the follow-up window")
+
+    @field_validator("end_of_exchange", mode="before")
+    @classmethod
+    def _coerce_end_of_exchange(cls, v: Any) -> bool:
+        """Treat a missing/``null`` value as ``False``.
+
+        CC serializes ``end_of_exchange`` as ``null`` for any non-terminal
+        reply (its own field is ``Optional[bool] = None``). Semantically
+        ``None`` means "normal follow-up window" — the same as ``False`` —
+        so coerce it rather than hard-failing validation (which would drop
+        the entire response, e.g. every tool-call / light command).
+        """
+        return False if v is None else v
 
     def is_final(self) -> bool:
         """Check if this is a final response (conversation is complete)"""
