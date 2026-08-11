@@ -47,7 +47,7 @@ pydantic
 python-dotenv
 pyyaml
 fastapi>=0.140.7
-uvicorn>=0.51.0
+uvicorn>=0.52.1
 packaging>=26.2
 
 # Local jarvis packages (relative to /home/pi/projects/)
