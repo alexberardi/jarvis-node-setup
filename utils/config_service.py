@@ -105,6 +105,16 @@ class Config:
         except (ValueError, TypeError):
             return default
 
+    @staticmethod
+    def get_dict(key: str, default: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Get a dict value from config (e.g. the CC-injected home_context). No env
+        override — env vars are strings. Returns ``default`` when absent or not a dict."""
+        Config._load_config()
+        if Config._config_json is None:
+            return default
+        value = Config._config_json.get(key, default)
+        return value if isinstance(value, dict) else default
+
     # Legacy method for backward compatibility
     @staticmethod
     def get(key: str, default: Optional[str] = None) -> Optional[str]:

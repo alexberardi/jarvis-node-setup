@@ -986,6 +986,7 @@ class CommandExecutionService:
                         conversation_id=conversation_id,
                         is_validation_response=False,
                         user_id=user_id,
+                        home_context=Config.get_dict("home_context"),
                     )
 
                     from jarvis_command_sdk.context import set_current_user_id
@@ -1117,6 +1118,7 @@ class CommandExecutionService:
             conversation_id=conversation_id,
             is_validation_response=False,
             user_id=user_id,
+            home_context=Config.get_dict("home_context"),
         )
 
         from jarvis_command_sdk.context import set_current_user_id
@@ -1269,6 +1271,7 @@ class CommandExecutionService:
                     is_validation_response=False,
                     user_id=speaker_user_id,
                     is_pre_routed=True,
+                    home_context=Config.get_dict("home_context"),
                 )
 
                 from jarvis_command_sdk.context import set_current_user_id

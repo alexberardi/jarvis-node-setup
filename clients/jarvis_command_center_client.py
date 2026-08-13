@@ -646,11 +646,37 @@ class JarvisCommandCenterClient:
             response = RestClient.post(f"{self.base_url}/api/v0/conversation/start", timeout=30, data=payload)
             if response and response.get("status") == "success":
                 logger.info("Successfully registered tools", count=len(client_tools))
+                self._persist_home_context(response.get("home_context"))
                 return True
             return False
         except Exception as e:
             logger.error("Failed to start conversation", error=str(e))
             return False
+
+    def _persist_home_context(self, home_context: Optional[dict]) -> None:
+        """Persist the household home_context command-center injected (location, ...)
+        into config.json — ONE node-local source that both commands (via
+        RequestInformation.home_context) and background agents (via the SDK
+        ContextVar / Config.get_dict) read, so neither needs a duplicated location
+        secret nor a round-trip back to CC. Diff-guarded to avoid disk churn; every
+        conversation/start reasserts the value (self-healing). Best-effort — a
+        failure here never fails conversation start."""
+        try:
+            from utils.config_service import Config
+            from utils.config_file import update_config_file
+
+            new = home_context or None
+            if new == (Config.get_dict("home_context") or None):
+                return  # unchanged
+            def _mutate(cfg: dict) -> None:
+                if new:
+                    cfg["home_context"] = new
+                else:
+                    cfg.pop("home_context", None)
+            update_config_file(_mutate)
+            logger.info("Updated home_context", location=(new or {}).get("location"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to persist home_context", error=str(e))
 
     def end_conversation(self, conversation_id: str) -> bool:
         """Notify CC that this wake-cycle is complete.

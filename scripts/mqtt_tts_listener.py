@@ -387,6 +387,7 @@ def handle_callback(details: Dict[str, Any]) -> None:
             voice_command=voice_command,
             conversation_id=conversation_id,
             user_id=user_id,
+            home_context=Config.get_dict("home_context"),
         )
         response = callback_fn(data, request_info)
 
@@ -889,6 +890,7 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
             voice_command=voice_command,
             conversation_id=tool_call_id or "mobile",
             user_id=user_id,
+            home_context=Config.get_dict("home_context"),
         )
 
         logger.info("Executing tool call", command=command_name, args=list(arguments.keys()), user_id=user_id)
@@ -952,6 +954,7 @@ def handle_routine(details: Dict[str, Any]) -> None:
             voice_command=voice_command,
             conversation_id=reply_request_id,
             user_id=user_id,
+            home_context=Config.get_dict("home_context"),
         )
 
         logger.info("Executing routine", routine=routine_name, user_id=user_id)
