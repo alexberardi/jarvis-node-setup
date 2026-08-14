@@ -1222,16 +1222,30 @@ class CommandExecutionService:
 
     @staticmethod
     def _safe_pre_route(command, voice_command: str, disabled_ids: set[str]):
-        """Call command.pre_route() honoring the disabled set, with a
-        graceful fallback for any override that pre-dates the kwarg."""
+        """Call command.pre_route() honoring the disabled set, fully fault-isolated.
+
+        Back-compat: falls back to the no-kwarg signature for overrides that
+        pre-date the disabled_pattern_ids kwarg. Fault isolation: ANY error from a
+        single command's pre_route (a bad regex, a raising fast_path_patterns or
+        handler, a broken override) returns None so that one command simply
+        doesn't fast-path — it must never abort node-side pre-routing for every
+        OTHER command that turn (the same all-or-nothing failure class as the
+        conversation-start schema bug)."""
         try:
-            return command.pre_route(
-                voice_command, disabled_pattern_ids=disabled_ids
+            try:
+                return command.pre_route(
+                    voice_command, disabled_pattern_ids=disabled_ids
+                )
+            except TypeError as e:
+                if "disabled_pattern_ids" not in str(e):
+                    raise
+                return command.pre_route(voice_command)  # legacy signature
+        except Exception as e:
+            logger.warning(
+                "pre_route failed — skipping fast-path for this command",
+                command=getattr(command, "command_name", "?"), error=str(e),
             )
-        except TypeError as e:
-            if "disabled_pattern_ids" not in str(e):
-                raise
-            return command.pre_route(voice_command)
+            return None
 
     def try_pre_route(self, voice_command: str, conversation_id: str, speaker_user_id: int | None = None) -> Dict[str, Any] | None:
         """Try node-side pre-routing across all discovered commands.

@@ -175,6 +175,7 @@ class ReminderCommand(IJarvisCommand):
             ),
         ]
 
+    @property
     def proposable_actions(self) -> List[ProposableAction]:
         # Opt a set-a-reminder-at-an-absolute-time action in to being surfaced as a
         # confirm card by ANY agent (e.g. the drive-time agent's "leave by" proposal).

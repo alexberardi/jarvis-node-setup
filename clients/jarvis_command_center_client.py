@@ -619,19 +619,60 @@ class JarvisCommandCenterClient:
             except Exception as e:
                 logger.warning("Failed to get agent context", error=str(e))
 
-        # Build available commands metadata for server-side tools
+        # Build both the server-side command metadata (prompt schema) and the
+        # OpenAI-format client tool schema for each command — together, per
+        # command, and fault-isolated. If EITHER schema fails to build for a
+        # command, that command is dropped from BOTH lists (kept aligned) with a
+        # loud warning, instead of the exception taking down the whole tool set
+        # and failing the entire voice turn. A third-party command with any
+        # schema-time bug degrades to "that one command is unavailable this turn",
+        # never "no response from command center".
         available_commands = []
-        for cmd in commands.values():
-            schema = cmd.get_command_schema(date_context)
-            logger.debug("Warmup keywords", command=schema.get('command_name'), keywords=schema.get('keywords', []))
-            available_commands.append(schema)
-
-        # Build client tools array in OpenAI format
         client_tools = []
-        for cmd in commands.values():
-            logger.debug("Registering tool", tool=cmd.command_name)
-            tool_schema = cmd.to_openai_tool_schema(date_context)
+        skipped: list[str] = []
+        for name, cmd in commands.items():
+            try:
+                schema = cmd.get_command_schema(date_context)
+                tool_schema = cmd.to_openai_tool_schema(date_context)
+                # A command that returns a non-dict schema WITHOUT raising is just
+                # as broken as one that raises — handle it uniformly (skip), so the
+                # malformed schema isn't advertised and the log reads below can't
+                # throw past the isolation point.
+                if not isinstance(schema, dict) or not isinstance(tool_schema, dict):
+                    raise TypeError(
+                        f"schema/tool_schema must be dicts, got "
+                        f"{type(schema).__name__}/{type(tool_schema).__name__}"
+                    )
+                cmd_name = schema.get('command_name')
+                keywords = schema.get('keywords', [])
+            except Exception as e:
+                skipped.append(name)
+                logger.error(
+                    "Skipping command with invalid schema — unavailable this turn",
+                    command=name, error=str(e),
+                )
+                continue
+            # Both schemas built cleanly — append together so the two lists stay
+            # aligned (never a tool in one list but missing from the other).
+            logger.debug("Warmup keywords", command=cmd_name, keywords=keywords)
+            available_commands.append(schema)
+            logger.debug("Registering tool", tool=name)
             client_tools.append(tool_schema)
+
+        if skipped:
+            logger.warning(
+                "Some commands were skipped during registration",
+                skipped=skipped, registered=len(client_tools),
+            )
+        # Total-failure blind spot: commands existed but every one was dropped.
+        # That warms a zero-tool conversation (LLM can call nothing) — a silent
+        # capability blackout, so surface it at error level for alerting rather
+        # than returning a quiet "success".
+        if commands and not client_tools:
+            logger.error(
+                "All commands failed schema-building — registering an EMPTY toolset",
+                command_count=len(commands), skipped=skipped,
+            )
 
         payload = {
             "conversation_id": conversation_id,

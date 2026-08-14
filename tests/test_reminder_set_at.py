@@ -24,7 +24,7 @@ def _reminder():
 
 
 def test_proposable_action_declared():
-    actions = ReminderCommand().proposable_actions()
+    actions = ReminderCommand().proposable_actions
     assert len(actions) == 1
     action = actions[0]
     assert action.callback == "set_at"
