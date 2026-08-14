@@ -7,11 +7,11 @@ aiohttp
 sqlalchemy
 alembic
 sqlcipher3
-cryptography>=49.0.0
+cryptography>=50.0.0
 pydantic
 python-dotenv
-fastapi>=0.140.7
-uvicorn>=0.51.0
+fastapi>=0.141.1
+uvicorn>=0.52.1
 packaging>=26.2
 pytz
 tqdm

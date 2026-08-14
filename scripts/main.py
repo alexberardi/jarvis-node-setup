@@ -525,6 +525,13 @@ def main():
     except Exception as e:
         logger.warning("Inbox backend init failed, commands cannot post inbox items", error=str(e))
 
+    # Register SDK signals backend (producers emit to command-center's Signal Bus)
+    try:
+        from services.signals_backend import init_signals_backend
+        init_signals_backend()
+    except Exception as e:
+        logger.warning("Signals backend init failed, producers cannot emit signals", error=str(e))
+
     # Provisioning gate (skip in development mode). Three distinct cases —
     # conflating them stranded the prod kitchen node on 2026-07-05:
     #   1. No marker → fresh node → plain AP provisioning mode.
