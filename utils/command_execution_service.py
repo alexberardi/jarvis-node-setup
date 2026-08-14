@@ -1090,20 +1090,37 @@ class CommandExecutionService:
                 context_data={"message": "I couldn't find those items in what I just showed you."},
             )
 
-        # Destructive verbs (delete/archive/send/...) require an explicit
-        # confirmation round-trip, which isn't wired yet — v1 surfaces only
-        # non-destructive actions (mark_read). Refuse rather than act without
-        # confirmation. (See follow-on: spoken confirm turn for destructive verbs.)
+        # Destructive verbs (delete/archive/send/...) stay default-closed: they
+        # dispatch ONLY when every selected item's RECORDED attrs carry
+        # `confirm_offered: True` (prds/osx-api.md decision #14). The flag is
+        # command-controlled — a command sets it only on items whose spoken turn
+        # explicitly offered the action as a direct question ("want me to send
+        # this?"), so the user's follow-up ("send it") IS the confirmation. The
+        # LLM cannot fabricate the flag: attrs come from
+        # _record_referenceable_items' node-side store, never from the tool-call
+        # payload (ref_ids only *select* recorded items), and the recent-items
+        # TTL bounds staleness. Every existing command remains refused — none
+        # set the flag.
         if action in _DESTRUCTIVE_ACTIONS:
-            logger.info("act_on_items: refusing destructive action without confirmation", action=action)
-            return CommandResponse.error_response(
-                error_details=f"'{action}' needs confirmation and isn't available by voice yet.",
-                context_data={
-                    "message": (
-                        f"I can't {action.replace('_', ' ')} those by voice yet — "
-                        "you can do that from the app."
-                    )
-                },
+            confirm_offered = all(
+                (meta.get("attrs") or {}).get("confirm_offered") is True for _rid, meta in known
+            )
+            if not confirm_offered:
+                logger.info(
+                    "act_on_items: refusing destructive action without confirmation", action=action
+                )
+                return CommandResponse.error_response(
+                    error_details=f"'{action}' needs confirmation and isn't available by voice yet.",
+                    context_data={
+                        "message": (
+                            f"I can't {action.replace('_', ' ')} those by voice yet — "
+                            "you can do that from the app."
+                        )
+                    },
+                )
+            logger.info(
+                "act_on_items: destructive action allowed (confirm_offered on all selected)",
+                action=action, ref_count=len(known),
             )
 
         # Group by owning command and dispatch each group to its @callback.
