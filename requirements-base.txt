@@ -7,7 +7,7 @@ aiohttp
 sqlalchemy
 alembic
 sqlcipher3
-cryptography>=49.0.0
+cryptography>=50.0.0
 pydantic
 python-dotenv
 fastapi>=0.141.1
