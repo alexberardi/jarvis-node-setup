@@ -223,6 +223,7 @@ def send_for_transcription(
     try:
         result = stt_provider.transcribe_with_speaker(
             recording.audio_file, speaker_audio_path=speaker_audio_path,
+            conversation_id=conversation_id,
         )
     except (ConnectionError, OSError, TimeoutError) as e:
         logger.error("STT connection failed", error=str(e))
