@@ -17,15 +17,17 @@ in strict order:
      18 ``wake-suppressed-music-bleed`` events vs 4 fires on the prod
      kitchen node).
 
-  2. **Debounce gate** — atomic under ``voice_filters._wake_gate_lock``.
-     If ``_wake_min_next_ts`` is in the future, suppress (probably the
-     same OWW utterance double-firing on consecutive 80 ms chunks). If
-     in the past, advance the gate by ``_WAKE_DEBOUNCE_SEC`` and let
-     the fire through.
+  2. **Debounce/cool-down gate** — atomic under
+     ``voice_filters._wake_gate_lock``. If ``_wake_min_next_ts`` is in
+     the future, suppress — UNLESS the gate is soft (armed by a CC
+     ``not_for_me`` verdict) and the score clears the override
+     threshold, in which case a deliberate, clearly spoken wake punches
+     through. On any fire-through, advance the gate by
+     ``_WAKE_DEBOUNCE_SEC`` (hard) and let the fire through.
 
-The previous, much longer ``not_for_me`` cool-down gate that armed
-after a CC misclassification is gone — see the voice_filters module
-docstring for the rationale.
+The ``not_for_me`` cool-down was removed 2026-06-04 and restored as a
+SOFT gate 2026-08-15 — see the voice_filters module docstring for the
+full arc and rationale.
 """
 
 from __future__ import annotations
@@ -135,15 +137,34 @@ def decide_wake_fire(
     if fire_wake:
         with voice_filters._wake_gate_lock:
             cooldown_remaining = voice_filters._wake_min_next_ts - now_mono
-            if cooldown_remaining > 0:
+            override = voice_filters._wake_gate_override_threshold
+            if cooldown_remaining > 0 and override is not None and score >= override:
+                # Soft gate (not_for_me cool-down): a decisive wake score
+                # punches through — the user is clearly addressing us, so
+                # the cool-down must not lock them out. Disarm the
+                # cool-down and treat as a normal fire.
+                logger.info(
+                    "wake-override-cooldown",
+                    score=round(float(score), 3),
+                    override_threshold=override,
+                    cooldown_remaining_sec=round(cooldown_remaining, 2),
+                )
+                voice_filters._wake_gate_override_threshold = None
+                voice_filters._wake_min_next_ts = now_mono + _WAKE_DEBOUNCE_SEC
+            elif cooldown_remaining > 0:
                 fire_wake = False
                 if score > 0.3:
                     logger.info(
                         "wake-suppressed-gate",
                         score=round(float(score), 3),
                         cooldown_remaining_sec=round(cooldown_remaining, 2),
+                        soft_override_threshold=override,
                     )
             else:
+                # Gate expired — a fresh fire re-arms only the hard
+                # same-utterance debounce; any stale soft override is
+                # cleared with it.
+                voice_filters._wake_gate_override_threshold = None
                 voice_filters._wake_min_next_ts = (
                     now_mono + _WAKE_DEBOUNCE_SEC
                 )

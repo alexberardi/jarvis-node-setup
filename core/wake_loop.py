@@ -81,6 +81,7 @@ from core.wake_transcription import (
     send_for_transcription,
     try_capture_wake_audio,
 )
+from core import voice_filters
 from scripts.speech_to_text import listen
 from utils.config_service import Config
 
@@ -532,13 +533,18 @@ def run_wake_loop(
                 # — a wake that CC rejected might have been a real
                 # false-positive and including it would lower the bar
                 # for genuine false positives.
-                #
-                # not_for_me used to arm a multi-second cooldown gate
-                # here. Removed: a probabilistic verdict shouldn't lock
-                # the room out. TTS is already skipped upstream; the
-                # next wake fires normally.
                 if isinstance(result, dict) and not result.get("not_for_me"):
                     record_legitimate_wake_score(score_at_wake)
+                elif isinstance(result, dict) and result.get("not_for_me"):
+                    # CC says the room wasn't talking to us — arm the SOFT
+                    # cool-down so the next sentence of the same side
+                    # conversation can't immediately re-fire wake. A
+                    # deliberate wake still punches through at
+                    # not_for_me_override_threshold (see voice_filters).
+                    voice_filters.arm_not_for_me_cooldown(
+                        now_mono=time.monotonic(),
+                        config_get_float=Config.get_float,
+                    )
                 # Capture TTS-end time RIGHT after send_for_transcription
                 # returns (which is right after speak_result completes).
                 # The follow-up loop uses this to know how far back to look

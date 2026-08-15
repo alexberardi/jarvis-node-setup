@@ -45,18 +45,43 @@ class FakeExecutor:
         return f
 
 
+class _ExhaustedExitQueue(queue.Queue):
+    """Blocking get on an exhausted queue raises KeyboardInterrupt.
+
+    The real wake loop polls ``get(timeout=0.5)`` and continues forever on
+    an idle mic. Tests prepare a FINITE chunk list, so an empty queue on a
+    blocking get means the test's audio is fully consumed — exit the loop
+    deterministically instead of spinning. (Before the drain-to-newest
+    change, tests exited by raising from oww.predict after N calls; the
+    drain collapses a queued burst into one predict, so those counts are
+    never reached and the loop spun on the empty queue.) Non-blocking gets
+    — the drain pass itself — keep normal queue.Empty semantics.
+    """
+
+    def get(self, block=True, timeout=None):
+        try:
+            return super().get(block=False)
+        except queue.Empty:
+            if block:
+                raise KeyboardInterrupt
+            raise
+
+
 class FakeBus:
     """Mock AudioBus — yields prepared chunk bytes via a Queue."""
 
     def __init__(self, rate: int = 48000, chunks=None) -> None:
         self.rate = rate
-        self._q: queue.Queue = queue.Queue()
+        self._q: queue.Queue = _ExhaustedExitQueue()
         for c in (chunks or []):
             self._q.put(c)
         self.subscribe_calls: list[str] = []
         self.unsubscribe_calls: list[str] = []
 
-    def subscribe(self, tag: str) -> queue.Queue:
+    def subscribe(self, tag: str, maxsize: int | None = None) -> queue.Queue:
+        # ``maxsize`` accepted to match AudioBus.subscribe (the wake loop
+        # passes maxsize=4 for drain-to-newest); the fake's queue stays
+        # unbounded — tests enqueue everything up front.
         self.subscribe_calls.append(tag)
         return self._q
 
@@ -265,7 +290,11 @@ def test_high_score_fires_wake_and_triggers_full_chain(monkeypatch):
 
 def test_not_for_me_result_skips_calibration(monkeypatch):
     """A not_for_me=True verdict from CC should NOT feed the auto-calibrator
-    (we don't want to lower the bar based on probabilistic misfires)."""
+    (we don't want to lower the bar based on probabilistic misfires) — and
+    it MUST arm the soft wake cool-down so the same side conversation can't
+    immediately re-fire wake."""
+    from core import voice_filters
+
     monkeypatch.setattr(
         wake_loop, "send_for_transcription",
         lambda *a, **kw: {"text": "", "not_for_me": True},
@@ -274,12 +303,19 @@ def test_not_for_me_result_skips_calibration(monkeypatch):
     record = MagicMock()
     monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
     monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", record)
+    voice_filters.reset_wake_gate()
 
     bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
     oww = FakeOWW(scores=[0.9])
-    _run(bus, oww)
+    try:
+        _run(bus, oww)
 
-    record.assert_not_called()
+        record.assert_not_called()
+        # Soft cool-down armed: gate pushed well past the 8s debounce, with
+        # an override threshold so a decisive wake can still punch through.
+        assert voice_filters.get_wake_gate_override_threshold() is not None
+    finally:
+        voice_filters.reset_wake_gate()
 
 
 def test_legit_result_records_calibration_with_snapshot(monkeypatch):
@@ -380,8 +416,8 @@ def test_wake_paused_skips_chunks_without_scoring(monkeypatch):
             self._max_gets = max_gets
             self._gets = 0
 
-        def subscribe(self, tag):
-            super().subscribe(tag)
+        def subscribe(self, tag, maxsize=None):
+            super().subscribe(tag, maxsize=maxsize)
             outer = self
 
             class _CountingQ:
@@ -390,6 +426,11 @@ def test_wake_paused_skips_chunks_without_scoring(monkeypatch):
                     if outer._gets > outer._max_gets:
                         raise KeyboardInterrupt
                     return outer._q.get(timeout=timeout)
+
+                def get_nowait(self):
+                    # Drain-to-newest pass: plain Empty semantics, not
+                    # counted toward the exit budget.
+                    return outer._q.get(block=False)
 
             return _CountingQ()
 
@@ -420,8 +461,8 @@ def test_resume_after_pause_resets_oww(monkeypatch):
     class _ResumeBus(FakeBus):
         """Returns a queue whose get() flips _wake_paused after N reads."""
 
-        def subscribe(self, tag):
-            super().subscribe(tag)
+        def subscribe(self, tag, maxsize=None):
+            super().subscribe(tag, maxsize=maxsize)
             outer = self
             ev = paused
 
@@ -436,6 +477,14 @@ def test_resume_after_pause_resets_oww(monkeypatch):
                     if self.n > 4:
                         raise KeyboardInterrupt
                     return outer._q.get(timeout=timeout)
+
+                def get_nowait(self):
+                    # Refuse to drain: this test depends on one chunk per
+                    # blocking get so the pause→resume schedule (flip on
+                    # n==2, oww.reset on the first post-resume chunk)
+                    # plays out — a real drain would consume the whole
+                    # burst during the paused first iteration.
+                    raise queue.Empty
 
             return _Q()
 
