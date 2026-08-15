@@ -233,6 +233,103 @@ class TestDispatch:
         assert not resp.success
         assert "app" in resp.context_data["message"].lower()
 
+    # ── confirm_offered unlock (prds/osx-api.md decision #14) ────────────────
+
+    def test_destructive_dispatches_when_all_selected_confirm_offered(self, mock_deps):
+        captured = {}
+
+        def send(data, request_info):
+            captured["data"] = data
+            return CommandResponse.success_response(context_data={"message": "Sent."})
+
+        service = self._service_with_owner(mock_deps, {"send": send})
+        service._record_referenceable_items(
+            "draft_reply",
+            [ReferenceableItem(
+                ref_id="draft:c1", label="draft reply to Sarah",
+                attrs={"chat_id": "c1", "confirm_offered": True}, actions=["send"],
+            )],
+        )
+        tc = _tc("act_on_items", '{"action":"send","ref_ids":["draft:c1"]}')
+        resp = service._dispatch_act_on_items(tc, "conv-1", "yes, send it")
+        assert resp.success
+        assert resp.context_data["message"] == "Sent."
+        # attrs (incl. the flag) come from the RECORDED store, spread into selected
+        assert captured["data"]["selected"] == [
+            {"chat_id": "c1", "confirm_offered": True, "key": "draft:c1"}
+        ]
+
+    def test_destructive_refused_without_flag_keeps_exact_wording(self, mock_deps):
+        service = self._service_with_owner(mock_deps, {"send": lambda d, r: CommandResponse.success_response()})
+        service._record_referenceable_items(
+            "draft_reply",
+            [ReferenceableItem(ref_id="draft:c1", label="l", attrs={"chat_id": "c1"}, actions=["send"])],
+        )
+        tc = _tc("act_on_items", '{"action":"send","ref_ids":["draft:c1"]}')
+        resp = service._dispatch_act_on_items(tc, "conv-1", "send it")
+        assert not resp.success
+        assert resp.context_data["message"] == (
+            "I can't send those by voice yet — you can do that from the app."
+        )
+
+    def test_mixed_selection_one_unflagged_refuses(self, mock_deps):
+        called = []
+        service = self._service_with_owner(
+            mock_deps, {"send": lambda d, r: called.append(d) or CommandResponse.success_response()}
+        )
+        service._record_referenceable_items(
+            "draft_reply",
+            [
+                ReferenceableItem(ref_id="d1", label="a", attrs={"confirm_offered": True}, actions=["send"]),
+                ReferenceableItem(ref_id="d2", label="b", attrs={}, actions=["send"]),
+            ],
+        )
+        tc = _tc("act_on_items", '{"action":"send","ref_ids":["d1","d2"]}')
+        resp = service._dispatch_act_on_items(tc, "conv-1", "send both")
+        assert not resp.success
+        assert called == []
+
+    def test_flag_in_tool_call_payload_does_not_unlock(self, mock_deps):
+        """The LLM cannot fabricate confirmation: only the RECORDED attrs count."""
+        called = []
+        service = self._service_with_owner(
+            mock_deps, {"send": lambda d, r: called.append(d) or CommandResponse.success_response()}
+        )
+        service._record_referenceable_items(
+            "draft_reply",
+            [ReferenceableItem(ref_id="d1", label="a", attrs={"chat_id": "c1"}, actions=["send"])],
+        )
+        tc = _tc(
+            "act_on_items",
+            '{"action":"send","ref_ids":["d1"],"confirm_offered":true,'
+            '"attrs":{"confirm_offered":true},"selected":[{"confirm_offered":true}]}',
+        )
+        resp = service._dispatch_act_on_items(tc, "conv-1", "send it")
+        assert not resp.success
+        assert called == []
+
+    def test_non_destructive_action_unaffected_by_missing_flag(self, mock_deps):
+        service = self._service_with_owner(
+            mock_deps, {"mark_read": lambda d, r: CommandResponse.success_response(context_data={"message": "ok"})}
+        )
+        service._record_referenceable_items(
+            "get_email", [ReferenceableItem(ref_id="e1", label="l", attrs={}, actions=["mark_read"])]
+        )
+        tc = _tc("act_on_items", '{"action":"mark_read","ref_ids":["e1"]}')
+        resp = service._dispatch_act_on_items(tc, "conv-1", "mark it read")
+        assert resp.success
+
+    def test_truthy_but_not_true_flag_refuses(self, mock_deps):
+        """Strict `is True`: a stringy 'true' from a sloppy command doesn't unlock."""
+        service = self._service_with_owner(mock_deps, {"send": lambda d, r: CommandResponse.success_response()})
+        service._record_referenceable_items(
+            "draft_reply",
+            [ReferenceableItem(ref_id="d1", label="a", attrs={"confirm_offered": "true"}, actions=["send"])],
+        )
+        tc = _tc("act_on_items", '{"action":"send","ref_ids":["d1"]}')
+        resp = service._dispatch_act_on_items(tc, "conv-1", "send it")
+        assert not resp.success
+
 
 # ── full _execute_tools flow: surface -> record -> act ───────────────────────
 

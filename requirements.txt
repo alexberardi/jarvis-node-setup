@@ -20,14 +20,14 @@ tqdm
 zeroconf
 pyatv
 manuf
-cryptography>=49.0.0
+cryptography>=50.0.0
 sqlcipher3
 sqlalchemy
 alembic
 pytz
 pydantic
 dotenv
-fastapi>=0.140.7
+fastapi>=0.141.1
 uvicorn>=0.52.1
-packaging>=26.2
+packaging>=26.3
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82

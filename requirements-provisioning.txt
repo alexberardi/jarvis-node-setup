@@ -6,13 +6,13 @@
 # Installs much faster than the full requirements-pi.txt.
 
 # Web framework for provisioning API
-fastapi>=0.140.7
+fastapi>=0.141.1
 uvicorn>=0.52.1
 pydantic
 python-dotenv
 
 # Encrypted credential storage
-cryptography>=49.0.0
+cryptography>=50.0.0
 
 # Local jarvis packages (relative to /home/pi/projects/)
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82
