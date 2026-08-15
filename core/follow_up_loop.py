@@ -54,6 +54,7 @@ from core.vad_thresholds import (
     barge_in_energy_threshold,
     barge_in_threshold,
 )
+from core import voice_filters
 from core.voice_filters import is_non_speech
 from core.wake_response import set_led_transient
 from core.wake_transcription import try_build_speaker_audio
@@ -182,10 +183,13 @@ def follow_up_loop(
 
         # Layer 2: Decaying timeout — later iterations wait less for onset.
         # Real follow-ups happen quickly; long silences with eventual noise
-        # are almost certainly ambient.
+        # are almost certainly ambient. Config-overridable so busy rooms
+        # (the prod kitchen) can shrink the tail without a code deploy.
         iter_timeout = max(
-            FOLLOW_UP_MIN_TIMEOUT,
-            follow_up_seconds - (iteration - 1) * FOLLOW_UP_TIMEOUT_DECAY,
+            Config.get_float("follow_up_min_timeout_secs", FOLLOW_UP_MIN_TIMEOUT),
+            follow_up_seconds
+            - (iteration - 1)
+            * Config.get_float("follow_up_timeout_decay_secs", FOLLOW_UP_TIMEOUT_DECAY),
         )
 
         # TTS-tail drain is now handled inside listen_for_follow_up() via
@@ -348,6 +352,13 @@ def follow_up_loop(
                     should_break = True
                 if result.get("not_for_me"):
                     logger.info("Follow-up result signalled not_for_me, ending follow-up")
+                    # The room is talking to itself — arm the soft wake
+                    # cool-down too, or the same conversation immediately
+                    # re-fires wake after this loop exits.
+                    voice_filters.arm_not_for_me_cooldown(
+                        now_mono=time.monotonic(),
+                        config_get_float=Config.get_float,
+                    )
                     should_break = True
                 if result.get("end_of_exchange"):
                     logger.info("Follow-up result signalled end_of_exchange, ending follow-up")
@@ -369,6 +380,11 @@ def follow_up_loop(
                     should_break = True
                 if result.get("not_for_me"):
                     logger.info("Follow-up result signalled not_for_me, ending follow-up")
+                    # Same soft cool-down as the continue-conversation branch.
+                    voice_filters.arm_not_for_me_cooldown(
+                        now_mono=time.monotonic(),
+                        config_get_float=Config.get_float,
+                    )
                     should_break = True
                 if result.get("end_of_exchange"):
                     logger.info("Follow-up result signalled end_of_exchange, ending follow-up")
