@@ -726,6 +726,37 @@ class CommandExecutionService:
             logger.error("Error continuing conversation", error=str(e))
             return self._handle_error(f"Error continuing conversation: {str(e)}", conversation_id)
 
+    def _not_for_me_result(self, conversation_id: str) -> Dict[str, Any]:
+        """Terminal silent-abort for the server's ``<not_for_me/>`` verdict.
+
+        The wake word fired on ambient speech (TV, separate conversation,
+        etc.). Skip TTS, briefly flash the orange not_for_me LED so the user
+        knows the wake fired and was dismissed, and signal the follow-up loop
+        to exit immediately (and arm the wake cool-down) via the dedicated
+        ``not_for_me`` flag. The sentinel is terminal on EVERY server
+        round-trip — initial, tool-results continue, and validation continue.
+
+        Note: we deliberately do NOT set clear_history here, because many
+        normal one-shot commands (timers, lamp toggles) set it and the
+        follow-up loop must still run after those.
+        """
+        logger.info("Server signaled not-for-me — silent abort",
+                    conversation_id=conversation_id)
+        try:
+            from services.led_service import get_led_service
+            get_led_service().preview_pattern("not_for_me", duration_seconds=1.2)
+        except Exception:
+            pass
+        return {
+            "success": True,
+            "message": "",
+            "conversation_id": conversation_id,
+            "wait_for_input": False,
+            "clear_history": False,
+            "audio_played": True,
+            "not_for_me": True,
+        }
+
     def _run_conversation_loop(
         self,
         response: ToolCallingResponse,
@@ -755,22 +786,7 @@ class CommandExecutionService:
         # many normal one-shot commands (timers, lamp toggles) set it and
         # the follow-up loop must still run after those.
         if response.is_not_for_me():
-            logger.info("Server signaled not-for-me — silent abort",
-                        conversation_id=conversation_id)
-            try:
-                from services.led_service import get_led_service
-                get_led_service().preview_pattern("not_for_me", duration_seconds=1.2)
-            except Exception:
-                pass
-            return {
-                "success": True,
-                "message": "",
-                "conversation_id": conversation_id,
-                "wait_for_input": False,
-                "clear_history": False,
-                "audio_played": True,
-                "not_for_me": True,
-            }
+            return self._not_for_me_result(conversation_id)
 
         max_iterations = 10
         iteration = 0
@@ -855,6 +871,17 @@ class CommandExecutionService:
                 if not response:
                     return self._handle_error("Failed to send tool results", conversation_id)
 
+                # The sentinel is terminal on EVERY server round-trip, not just
+                # the initial response. This check must come BEFORE the
+                # wait_for_input break: a not_for_me arriving on the continue
+                # round used to fall through to the break, get discarded by the
+                # terminal result-builder (no not_for_me key), and the follow-up
+                # loop kept listening — and spoke the tool message it should
+                # have suppressed (prod 2026-08-15 23:07 UTC, iteration 3 ran
+                # after CC's verdict).
+                if response.is_not_for_me():
+                    return self._not_for_me_result(conversation_id)
+
                 # If any tool wants follow-up input, break AFTER sending results.
                 # This gives the LLM one chance to generate a text response from
                 # the tool result, while preventing infinite tool-call loops.
@@ -881,6 +908,10 @@ class CommandExecutionService:
 
                 if not response:
                     return self._handle_error("Failed to send validation response", conversation_id)
+
+                # Same terminal-sentinel rule as the tool-results round above.
+                if response.is_not_for_me():
+                    return self._not_for_me_result(conversation_id)
 
             else:
                 return self._handle_error(f"Unknown stop_reason: {response.stop_reason}", conversation_id)
