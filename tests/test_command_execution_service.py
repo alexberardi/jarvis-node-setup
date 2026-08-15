@@ -461,6 +461,66 @@ class TestNotForMeSilentAbort:
         validation_handler.assert_not_called()
         mock_deps["discovery"].get_command.assert_not_called()
 
+    def test_not_for_me_on_tool_results_round_is_terminal(self, mock_deps):
+        """The sentinel arriving on the CONTINUE round (send_tool_results)
+        must be terminal — before this fix it fell through to the
+        wait_for_input break, the terminal dict carried no not_for_me key,
+        and the follow-up loop kept listening AND spoke the tool message it
+        should have suppressed (prod 2026-08-15 23:07 UTC)."""
+        service = CommandExecutionService()
+
+        mock_command = MagicMock()
+        mock_command.execute.return_value = CommandResponse(
+            context_data={"msg": "chatty"},
+            success=True,
+            wait_for_input=True,
+            clear_history=False,
+        )
+        mock_deps["discovery"].get_command.return_value = mock_command
+
+        tool_call = _make_tool_call("chat", '{"message": "hm"}')
+        mock_deps["client"].send_command.return_value = _make_tool_calls_response([tool_call])
+        mock_deps["client"].send_tool_results.return_value = ToolCallingResponse(
+            stop_reason="not_for_me",
+            assistant_message=None,
+        )
+
+        result = service.continue_conversation("conv-cont", "ambient chatter")
+
+        assert result["not_for_me"] is True
+        assert result["message"] == ""
+        assert result["audio_played"] is True
+        # wait_for_input from the tool must NOT survive the sentinel — the
+        # follow-up loop exits on not_for_me, it doesn't wait for input.
+        assert result["wait_for_input"] is False
+
+    def test_not_for_me_on_validation_round_is_terminal(self, mock_deps):
+        """Same terminal rule for the validation continue round."""
+        service = CommandExecutionService()
+
+        validation_response = ToolCallingResponse(
+            stop_reason="validation_required",
+            validation_request=ValidationRequest(
+                question="Which room?",
+                parameter_name="room",
+                tool_call_id="tc-1",
+            ),
+        )
+        mock_deps["client"].send_command.return_value = validation_response
+        mock_deps["client"].send_validation_response.return_value = ToolCallingResponse(
+            stop_reason="not_for_me",
+            assistant_message=None,
+        )
+
+        validation_handler = MagicMock(return_value="the kitchen")
+        result = service.continue_conversation(
+            "conv-val", "turn it off", validation_handler=validation_handler,
+        )
+
+        assert result["not_for_me"] is True
+        assert result["message"] == ""
+        assert result["wait_for_input"] is False
+
 
 # ---------- _build_secrets tests ----------
 
