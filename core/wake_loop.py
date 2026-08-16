@@ -52,8 +52,10 @@ from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor, oww_lock as _oww_lock
 from core.follow_up_loop import follow_up_loop
 from core.music_control import (
+    is_self_playing,
     pause_active_playback,
     resume_active_playback,
+    set_self_playing,
 )
 from core.platform_audio import platform_audio
 from core.vad_thresholds import (
@@ -343,6 +345,16 @@ def run_wake_loop(
                     # (after CC's not_for_me verdict) to decide whether
                     # this wake counts as a "legitimate" data point.
                     score_at_wake = float(score)
+                    # Self-playback evidence, snapshotted at fire time so
+                    # every consumer of THIS fire (VAD-calibration
+                    # bypass, silence-threshold bypass, CC payload,
+                    # calibration exclusion) sees one coherent value.
+                    # Cheap cached read — refreshed by the duck's
+                    # sink-input enumeration each wake and set by the
+                    # deferred-play hook; an externally-initiated session
+                    # (AirPlay from a phone with no voice command) lags
+                    # one wake (documented caveat in music_control).
+                    self_playback = is_self_playing()
                     # Diagnostic RMS stats for threshold calibration —
                     # also the input to the pre-wake VAD auto-calibrator.
                     if pre_wake_rms_values:
@@ -367,10 +379,21 @@ def run_wake_loop(
                     # is verifiable from Loki per fire.
                     effective_vad_threshold = pre_wake_vad_threshold
                     vad_threshold_source = "static"
-                    auto_vad_threshold = _auto_pre_wake_vad_threshold(rms_stats)
-                    if auto_vad_threshold is not None:
-                        effective_vad_threshold = auto_vad_threshold
-                        vad_threshold_source = "auto"
+                    # Self-playback bypass: during the node's own music
+                    # the pre-wake window is music bleed, so the auto
+                    # calibrator would set its "ambient floor" from the
+                    # music itself and classify pre_wake_speech≈0 — the
+                    # false-wake fingerprint — off a poisoned baseline.
+                    # Keep the static threshold and still SEND the raw
+                    # value; the self_playback flag tells CC the number
+                    # is unreliable rather than us suppressing it here.
+                    if self_playback:
+                        vad_threshold_source = "static_self_playback"
+                    else:
+                        auto_vad_threshold = _auto_pre_wake_vad_threshold(rms_stats)
+                        if auto_vad_threshold is not None:
+                            effective_vad_threshold = auto_vad_threshold
+                            vad_threshold_source = "auto"
                     speech_frames = sum(
                         1 for r in pre_wake_rms_values
                         if r > effective_vad_threshold
@@ -390,13 +413,32 @@ def run_wake_loop(
                         vad_threshold_static=pre_wake_vad_threshold,
                         rms_stats=rms_stats,
                         drained_chunks=drained_chunks_cycle,
+                        self_playback=self_playback,
                     )
                     # Lock the per-cycle silence threshold to the ambient
                     # noise floor observed RIGHT before wake. Used below
                     # for the command listen() (and follow-up listens),
                     # so a static config value can't be wrong for the
                     # current room state.
-                    adaptive_silence_threshold = _adaptive_silence_threshold(rms_stats)
+                    #
+                    # Self-playback bypass (post-duck capture hygiene):
+                    # the pre-wake window this calibrates on is the
+                    # PRE-duck LOUD music, but the recording happens over
+                    # ducked (much quieter) music — a threshold lifted to
+                    # a multiple of the music floor would treat the
+                    # user's speech tail as silence-or-noise wrongly.
+                    # Passing None lets listen() fall back to the static
+                    # config default for this recording session.
+                    if self_playback:
+                        adaptive_silence_threshold = None
+                        logger.info(
+                            "Adaptive silence threshold bypassed "
+                            "(self-playback: pre-duck window is music-"
+                            "contaminated; using static default)",
+                            ambient_median_rms=rms_stats.get("median"),
+                        )
+                    else:
+                        adaptive_silence_threshold = _adaptive_silence_threshold(rms_stats)
                     if adaptive_silence_threshold is not None:
                         logger.info(
                             "Adaptive silence threshold",
@@ -609,6 +651,8 @@ def run_wake_loop(
                     pre_wake_speech_seconds=pre_wake_speech_seconds,
                     wake_audio_path=wake_audio_path,
                     wake_confidence=score_at_wake,
+                    self_playback=self_playback,
+                    self_playback_kind="music" if self_playback else None,
                 )
                 # Feed the auto-calibrator: wake scores that produced a
                 # real interaction (not the not_for_me silent abort)
@@ -617,7 +661,18 @@ def run_wake_loop(
                 # — a wake that CC rejected might have been a real
                 # false-positive and including it would lower the bar
                 # for genuine false positives.
-                if isinstance(result, dict) and not result.get("not_for_me"):
+                #
+                # Self-playback fires are ALSO excluded: OWW scores
+                # during music are scored against a music-degraded
+                # signal, and folding them into the sample set would
+                # poison the auto-threshold (a p20 anchored on music-
+                # time scores drags the threshold toward music-time
+                # false-positive territory for quiet-room wakes).
+                if (
+                    isinstance(result, dict)
+                    and not result.get("not_for_me")
+                    and not self_playback
+                ):
                     record_legitimate_wake_score(score_at_wake)
                 elif isinstance(result, dict) and result.get("not_for_me"):
                     # CC says the room wasn't talking to us — arm the SOFT
@@ -724,6 +779,11 @@ def run_wake_loop(
                         )
                     try:
                         on_complete()
+                        # Deferred play just started the node's own
+                        # music — record it so the NEXT fire's
+                        # self-playback snapshot is right even before
+                        # the duck enumeration refreshes the flag.
+                        set_self_playing(True)
                     except Exception as e:
                         logger.warning(
                             "on_response_complete callback raised",

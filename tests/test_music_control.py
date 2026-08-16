@@ -50,6 +50,49 @@ def _entry(index: int, binary: str, corked: bool = False) -> dict:
     }
 
 
+def _entry_with_volume(
+    index: int, binary: str, pct: int, corked: bool = False,
+) -> dict:
+    """A sink-input carrying pactl's per-channel volume block."""
+    channel = {
+        "value": int(65536 * pct / 100),
+        "value_percent": f"{pct}%",
+        "db": "0.00 dB",
+    }
+    e = _entry(index, binary, corked)
+    e["volume"] = {"front-left": dict(channel), "front-right": dict(channel)}
+    return e
+
+
+@pytest.fixture(autouse=True)
+def _reset_duck_state():
+    """Duck state (saved volumes + self-playing flag) is module-level —
+    reset around every test so ordering can't leak state."""
+    music_control._saved_sink_input_volumes.clear()
+    music_control.set_self_playing(False)
+    yield
+    music_control._saved_sink_input_volumes.clear()
+    music_control.set_self_playing(False)
+
+
+@pytest.fixture
+def _duck_20(monkeypatch):
+    """Pin music_duck_percent to the default 20 regardless of env/config."""
+    monkeypatch.setattr(
+        music_control.Config, "get_int",
+        staticmethod(lambda key, default: 20 if key == "music_duck_percent" else default),
+    )
+
+
+@pytest.fixture
+def _duck_0(monkeypatch):
+    """music_duck_percent=0 — the legacy full-mute opt-out."""
+    monkeypatch.setattr(
+        music_control.Config, "get_int",
+        staticmethod(lambda key, default: 0 if key == "music_duck_percent" else default),
+    )
+
+
 # ---------------------------------------------------------------------------
 # is_playing — PA cork state is the source of truth, not process existence.
 # ---------------------------------------------------------------------------
@@ -378,6 +421,259 @@ class TestResumeActivePlayback:
             and "11" in cmd and "0" in cmd
             for cmd in calls
         )
+
+
+# ---------------------------------------------------------------------------
+# Volume duck (mute-only class) — duck to music_duck_percent, save the
+# original volume, restore it exactly once. SIGSTOP class is untouched.
+# ---------------------------------------------------------------------------
+
+
+class TestVolumeDuck:
+
+    def _runner_with(self, sink_inputs_json: str, calls: list):
+        def runner(cmd, **kw):
+            calls.append(list(cmd))
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return _proc(stdout=sink_inputs_json)
+            return _proc()
+        return runner
+
+    def test_mute_class_ducked_not_muted(self, monkeypatch, _duck_20):
+        """go-librespot at 61% gets set-sink-input-volume 20%, no mute;
+        the original 61% is saved for the restore."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "20%"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-mute"] for cmd in calls
+        ), "duck path must not fall back to mute when volume is readable"
+        assert music_control._saved_sink_input_volumes == {"11": 61}
+
+    def test_sigstop_class_unaffected_by_duck(self, monkeypatch, _duck_20):
+        """mpv keeps the exact move-to-null + SIGSTOP treatment; the duck
+        never touches its volume."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(10, "/usr/bin/mpv", 100),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert any(
+            cmd[:2] == ["pactl", "move-sink-input"]
+            and "10" in cmd and "jarvis_duck_null" in cmd
+            for cmd in calls
+        )
+        assert any(
+            cmd[:3] == ["pkill", "-STOP", "-x"] and "mpv" in cmd
+            for cmd in calls
+        )
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_repeat_duck_does_not_reread_ducked_volume(self, monkeypatch, _duck_20):
+        """The duck fires N times per turn (wake fire + follow-up
+        re-ducks). The second fire sees the ALREADY-DUCKED 20% in pactl —
+        it must keep the saved 61%, not overwrite it with 20 (which would
+        make the restore 'restore' music to duck level)."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+        assert music_control._saved_sink_input_volumes == {"11": 61}
+
+        # Second fire: pactl now reports the ducked volume.
+        calls.clear()
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 20),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert music_control._saved_sink_input_volumes == {"11": 61}, \
+            "idempotence guard: saved original must survive repeat ducks"
+        # Re-asserting the duck level itself is fine (and harmless).
+        assert ["pactl", "set-sink-input-volume", "11", "20%"] in calls
+
+    def test_resume_restores_saved_volume_and_clears(self, monkeypatch, _duck_20):
+        """Restore sets the saved original back (NOT a flat 100% — the
+        phone's volume slider maps onto this sink-input) and clears the
+        dict so the next turn re-captures fresh."""
+        music_control._saved_sink_input_volumes["11"] = 61
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 20),
+            ), calls),
+        )
+        music_control.resume_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "61%"] in calls
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_resume_clears_saved_volumes_even_when_pactl_raises(self, monkeypatch):
+        """Fail-open: a raising restore path must still clear the dict —
+        a stale entry would poison the NEXT turn's idempotence guard with
+        a volume from a dead sink-input."""
+        music_control._saved_sink_input_volumes["11"] = 61
+
+        def explode(cmd, **kw):
+            raise FileNotFoundError("pactl")
+
+        monkeypatch.setattr(music_control.subprocess, "run", explode)
+        music_control.resume_active_playback()  # must not raise
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_duck_percent_zero_keeps_legacy_mute(self, monkeypatch, _duck_0):
+        """music_duck_percent=0 is the explicit opt-out: full mute, no
+        volume writes, nothing saved."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-mute", "11", "1"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_unreadable_volume_falls_back_to_mute(self, monkeypatch, _duck_20):
+        """No parsable volume block → mute that sink-input instead of
+        ducking it (ducking without a saved original would strand the
+        stream at duck level; the unconditional unmute on restore always
+        recovers a mute)."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry(11, "/usr/bin/go-librespot"),   # no "volume" key
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-mute", "11", "1"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_resume_restores_multiple_saved_volumes(self, monkeypatch, _duck_20):
+        """Two ducked streams (AirPlay + mpd) each get their own original
+        back."""
+        music_control._saved_sink_input_volumes.update({"11": 61, "12": 85})
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with("[]", calls),
+        )
+        music_control.resume_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "61%"] in calls
+        assert ["pactl", "set-sink-input-volume", "12", "85%"] in calls
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_volume_percent_parser_handles_mono_and_garbage(self):
+        assert music_control._volume_percent_from_item(
+            {"volume": {"mono": {"value_percent": "40%"}}}
+        ) == 40
+        # Max across mismatched channels.
+        assert music_control._volume_percent_from_item(
+            {"volume": {
+                "front-left": {"value_percent": "30%"},
+                "front-right": {"value_percent": "50%"},
+            }}
+        ) == 50
+        assert music_control._volume_percent_from_item({}) is None
+        assert music_control._volume_percent_from_item(
+            {"volume": "garbage"}
+        ) is None
+        assert music_control._volume_percent_from_item(
+            {"volume": {"mono": {"value_percent": "loud"}}}
+        ) is None
+
+
+# ---------------------------------------------------------------------------
+# Self-playing cached flag — refreshed from the duck's enumeration.
+# ---------------------------------------------------------------------------
+
+
+class TestSelfPlayingFlag:
+
+    def test_set_and_get(self):
+        assert music_control.is_self_playing() is False
+        music_control.set_self_playing(True)
+        assert music_control.is_self_playing() is True
+        music_control.set_self_playing(False)
+        assert music_control.is_self_playing() is False
+
+    def test_pause_refreshes_flag_true_on_uncorked_player(self, monkeypatch, _duck_20):
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else _sink_inputs(
+                    _entry_with_volume(11, "/usr/bin/go-librespot", 61,
+                                       corked=False),
+                )
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is True
+
+    def test_pause_refreshes_flag_false_when_idle(self, monkeypatch, _duck_20):
+        """A stale True (music stopped externally since the last turn) is
+        corrected by the next duck's enumeration."""
+        music_control.set_self_playing(True)
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else "[]"
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is False
+
+    def test_corked_daemon_does_not_set_flag(self, monkeypatch, _duck_20):
+        """spotifyd idling (corked sink-input) is not self-playback."""
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else _sink_inputs(_entry(42, "/usr/bin/spotifyd", corked=True))
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is False
 
 
 # ---------------------------------------------------------------------------

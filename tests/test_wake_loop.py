@@ -151,6 +151,10 @@ def _isolate_loop(monkeypatch):
     monkeypatch.setattr(wake_loop, "fetch_next_processing_ack", lambda: None)
     monkeypatch.setattr(wake_loop, "pause_active_playback", lambda: None)
     monkeypatch.setattr(wake_loop, "resume_active_playback", lambda: None)
+    # Self-playback flag defaults to "not playing" so tests are hermetic
+    # against music_control's module state.
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: False)
+    monkeypatch.setattr(wake_loop, "set_self_playing", lambda v: None)
     monkeypatch.setattr(wake_loop, "drain_alert_announcements", MagicMock())
     monkeypatch.setattr(wake_loop, "follow_up_loop", MagicMock())
     monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", MagicMock())
@@ -721,6 +725,112 @@ def test_wake_fire_falls_back_to_static_vad_threshold(monkeypatch):
     _run(bus, oww)
 
     assert sft.call_args.kwargs["pre_wake_speech_seconds"] == 0.0
+
+
+def test_wake_fire_reports_self_playback_false_by_default(monkeypatch):
+    """Quiet-room fire: self_playback rides the send_for_transcription
+    call as False (explicitly, so CC can distinguish "node says no" from
+    "old node that doesn't know"), with no kind attached."""
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    assert sft.call_args.kwargs["self_playback"] is False
+    assert sft.call_args.kwargs["self_playback_kind"] is None
+
+
+def test_self_playback_bypasses_auto_vad_calibration(monkeypatch):
+    """During self-playback the pre-wake window is music bleed, so the
+    auto VAD calibrator (which would set its "ambient floor" from the
+    music) must be bypassed: the static threshold classifies the window,
+    the raw value is STILL sent, and the payload carries the flag +
+    kind so CC knows the number is unreliable."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    # Auto calibrator would say 100 → the 300-RMS chunk would count as
+    # speech. Bypassed, the static 500 keeps it ambient → 0.0.
+    auto = MagicMock(return_value=100.0)
+    monkeypatch.setattr(wake_loop, "_auto_pre_wake_vad_threshold", auto)
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_distinct_chunk(300)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    auto.assert_not_called()
+    assert sft.call_args.kwargs["pre_wake_speech_seconds"] == 0.0
+    assert sft.call_args.kwargs["self_playback"] is True
+    assert sft.call_args.kwargs["self_playback_kind"] == "music"
+
+
+def test_self_playback_bypasses_adaptive_silence_threshold(monkeypatch):
+    """The adaptive silence threshold calibrates on the PRE-duck loud
+    window, but the recording happens over ducked music — during
+    self-playback it must be bypassed so listen() falls back to its
+    static config default."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    adaptive = MagicMock(return_value=800)
+    monkeypatch.setattr(wake_loop, "_adaptive_silence_threshold", adaptive)
+    listen_mock = MagicMock(return_value="/tmp/cmd.wav")
+    monkeypatch.setattr(wake_loop, "listen", listen_mock)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    adaptive.assert_not_called()
+    assert listen_mock.call_args.kwargs["silence_threshold"] is None
+    # The follow-up loop inherits the same static fallback.
+    assert fu.call_args.kwargs["silence_threshold"] is None
+
+
+def test_adaptive_silence_threshold_used_when_not_self_playing(monkeypatch):
+    """Control for the bypass test: without self-playback the adaptive
+    threshold flows to listen() exactly as before."""
+    adaptive = MagicMock(return_value=800)
+    monkeypatch.setattr(wake_loop, "_adaptive_silence_threshold", adaptive)
+    listen_mock = MagicMock(return_value="/tmp/cmd.wav")
+    monkeypatch.setattr(wake_loop, "listen", listen_mock)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    adaptive.assert_called_once()
+    assert listen_mock.call_args.kwargs["silence_threshold"] == 800
+
+
+def test_self_playback_fire_excluded_from_wake_calibration(monkeypatch):
+    """A legitimate (non not_for_me) result during self-playback must
+    NOT feed the wake-threshold auto-calibrator — music-time OWW scores
+    are measured against a degraded signal and would poison the
+    quiet-room sample set."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    monkeypatch.setattr(
+        wake_loop, "send_for_transcription",
+        lambda *a, **kw: {"text": "hello", "tool_calls": []},
+    )
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    record = MagicMock()
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+    monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", record)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    record.assert_not_called()
 
 
 def test_high_score_suppressed_then_alert_drains(monkeypatch):

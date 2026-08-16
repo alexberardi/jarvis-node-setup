@@ -23,7 +23,8 @@ treatment because of process / protocol constraints:
     real sink in SUSPENDED. The null sink absorbs whatever PA pulls.
 
   * **Mute-only** (shairport-sync, go-librespot): leave the sink-input
-    on the real sink and mute it. Moving these to null pollutes PA's
+    on the real sink and duck its volume to ``music_duck_percent``
+    (default 20%; 0 = legacy full mute). Moving these to null pollutes PA's
     module-stream-restore database (which remembers per-app sink
     preference) — the NEXT sink-input the app creates would land on
     the null sink even after restore. These players also can't be
@@ -42,10 +43,13 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 
 from jarvis_log_client import JarvisLogger
+
+from utils.config_service import Config
 
 
 logger = JarvisLogger(service="jarvis-node")
@@ -96,6 +100,135 @@ _PLAYER_BINARIES: tuple[str, ...] = (
 # by reloading module-alsa-card. Moving to null eliminates the underrun.
 _DUCK_NULL_SINK_NAME = "jarvis_duck_null"
 
+# Saved sink-input volumes for the volume-duck path (mute-only class):
+# {sink_input_id: original_volume_pct}, captured at duck time and restored
+# by :func:`resume_active_playback`. This is the ONE piece of module state
+# the "deliberately stateless" note in pause_active_playback tolerates,
+# because it has a hard lifecycle guarantee: it is populated only inside
+# pause_active_playback and cleared unconditionally (pop-before-restore,
+# so even a raising restore path clears it) inside the finally-driven
+# resume_active_playback of the same wake cycle. The idempotence guard —
+# an id already present is NOT re-read — matters because the duck fires
+# multiple times per turn (wake-fire submit + per-follow-up-iteration
+# re-duck in follow_up_loop): re-reading on the second fire would capture
+# the already-ducked value and both double-duck and clobber the original.
+#
+# Why save originals at all instead of restoring a flat 100%:
+# go-librespot (Spotify Connect) and shairport-sync (AirPlay) map the
+# phone's volume slider onto the PA sink-input volume — restoring 100%
+# would clobber the user's chosen level.
+_saved_sink_input_volumes: dict[str, int] = {}
+_duck_state_lock = threading.Lock()
+
+# Cached "the node believes its own music is playing" flag (slice 2 of
+# the wake-during-music work). Refreshed for free from the sink-input
+# enumeration the duck already performs at every wake fire, and set True
+# by the wake loop's deferred-play hook when a media command starts
+# playback. Deliberately NO low-frequency background poll: pactl
+# round-trips are not free on the Pi Zero and the flag only needs to be
+# right at wake time. Known caveat: an EXTERNALLY-initiated session
+# (e.g. the user AirPlays to the node from a phone while the node is
+# idle) is not seen until the next wake fire's duck enumeration runs —
+# so the very first wake into such a session reads a stale False. The
+# fields this flag feeds are evidence/hints, never gates, so a stale
+# read degrades to today's behavior rather than suppressing anything.
+_self_playing: bool = False
+
+
+def is_self_playing() -> bool:
+    """Cheap cached read of "is the node's own music playing?".
+
+    See the ``_self_playing`` comment for freshness semantics (refreshed
+    at wake-fire duck time + deferred-play; externally-initiated
+    sessions lag one wake).
+    """
+    return _self_playing
+
+
+def set_self_playing(value: bool) -> None:
+    """Set the cached self-playing flag.
+
+    Called by the wake loop's deferred-play hook (a media command just
+    started playback) and by the duck-time refresh.
+    """
+    global _self_playing
+    _self_playing = bool(value)
+
+
+def _duck_percent() -> int:
+    """Duck depth for the mute-only player class, as a PA volume percent.
+
+    ``music_duck_percent`` follows the same Config access pattern as the
+    other voice-loop tunables (``silence_threshold_auto`` etc.). 0 (or
+    negative) selects the legacy full-mute behavior.
+    """
+    return Config.get_int("music_duck_percent", 20)
+
+
+def _list_sink_inputs() -> list[dict]:
+    """One ``pactl -f json list sink-inputs`` round-trip, parsed.
+
+    Shared by the state query, the id filters, and the duck path (which
+    also reuses the same enumeration to refresh the self-playing flag —
+    one subprocess per duck, not three). Fail-open: any subprocess or
+    parse failure returns an empty list.
+    """
+    try:
+        result = subprocess.run(
+            ["pactl", "-f", "json", "list", "sink-inputs"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        items = json.loads(result.stdout or "[]")
+    except (ValueError, TypeError):
+        return []
+    return items if isinstance(items, list) else []
+
+
+def _item_binary_basename(item: dict) -> str:
+    """Basename of the sink-input's producing process binary.
+
+    PA reports the absolute path on Linux (e.g.
+    /home/pi/.jarvis/spotify/bin/go-librespot) — match on basename so
+    custom-install locations don't slip past the filter.
+    """
+    props = item.get("properties") or {}
+    return os.path.basename(props.get("application.process.binary") or "")
+
+
+def _items_for(items: list[dict], binaries: tuple[str, ...]) -> list[dict]:
+    """Filter parsed sink-inputs to those produced by ``binaries``."""
+    return [i for i in items if _item_binary_basename(i) in binaries]
+
+
+def _volume_percent_from_item(item: dict) -> int | None:
+    """Extract the sink-input's volume as an int percent from pactl JSON.
+
+    pactl reports per-channel dicts (``{"front-left": {"value_percent":
+    "61%", ...}, ...}`` or ``{"mono": {...}}``); we take the max across
+    channels. Returns None when the shape is unrecognized — callers fall
+    back to the legacy mute for that sink-input, which the unconditional
+    unmute on restore always recovers from.
+    """
+    volume = item.get("volume")
+    if not isinstance(volume, dict):
+        return None
+    percents: list[int] = []
+    for channel in volume.values():
+        if not isinstance(channel, dict):
+            continue
+        raw = channel.get("value_percent")
+        if isinstance(raw, str) and raw.endswith("%"):
+            try:
+                percents.append(int(raw.rstrip("%").strip()))
+            except ValueError:
+                continue
+    return max(percents) if percents else None
+
 
 def is_playing() -> bool:
     """True if any tracked media-player has an UNCORKED PulseAudio sink-input.
@@ -108,31 +241,16 @@ def is_playing() -> bool:
     in the same state until SIGCONT). Falls back to False on any pactl
     failure rather than raising the wake threshold unnecessarily.
     """
-    try:
-        result = subprocess.run(
-            ["pactl", "-f", "json", "list", "sink-inputs"],
-            capture_output=True, text=True, timeout=2.0,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-    if result.returncode != 0:
-        return False
-    try:
-        items = json.loads(result.stdout or "[]")
-    except (ValueError, TypeError):
-        return False
-    for item in items:
-        props = item.get("properties") or {}
-        binary = props.get("application.process.binary") or ""
-        # PA reports the absolute path on Linux (e.g.
-        # /home/pi/.jarvis/spotify/bin/go-librespot) — match on basename
-        # so custom-install locations don't slip past the filter.
-        if (
-            os.path.basename(binary) in _PLAYER_BINARIES
-            and not item.get("corked", True)
-        ):
-            return True
-    return False
+    return _any_player_uncorked(_list_sink_inputs())
+
+
+def _any_player_uncorked(items: list[dict]) -> bool:
+    """The :func:`is_playing` predicate over an already-parsed listing."""
+    return any(
+        _item_binary_basename(item) in _PLAYER_BINARIES
+        and not item.get("corked", True)
+        for item in items
+    )
 
 
 def player_sink_input_ids() -> list[str]:
@@ -156,27 +274,11 @@ def player_sink_input_ids_for(binaries: tuple[str, ...]) -> list[str]:
     underrun-induced sink wedge; mute-only for protocol-sensitive
     players whose HTTP/RTSP responsiveness would be broken by SIGSTOP).
     """
-    try:
-        result = subprocess.run(
-            ["pactl", "-f", "json", "list", "sink-inputs"],
-            capture_output=True, text=True, timeout=2.0,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
-    if result.returncode != 0:
-        return []
-    try:
-        items = json.loads(result.stdout or "[]")
-    except (ValueError, TypeError):
-        return []
     ids: list[str] = []
-    for item in items:
-        props = item.get("properties") or {}
-        binary = props.get("application.process.binary") or ""
-        if os.path.basename(binary) in binaries:
-            sid = item.get("index")
-            if sid is not None:
-                ids.append(str(sid))
+    for item in _items_for(_list_sink_inputs(), binaries):
+        sid = item.get("index")
+        if sid is not None:
+            ids.append(str(sid))
     return ids
 
 
@@ -208,17 +310,36 @@ def ensure_duck_null_sink() -> None:
 
 
 def pause_active_playback() -> None:
-    """Silence any active media-player subprocesses immediately.
+    """Silence (or duck) any active media-player subprocesses immediately.
 
-    See module docstring for the two-class treatment. No internal
-    "is-paused" flag: a previous version tracked state in a global so
-    overlapping wake events wouldn't double-pause, but the flag drifted
-    out of sync when wake events landed without any player running,
-    then stuck at True. pkill/pactl against missing targets is harmless.
+    See module docstring for the two-class treatment. The SIGSTOP class
+    is fully paused (null-sink park + SIGSTOP) exactly as before. The
+    mute-only class is DUCKED to ``music_duck_percent`` (default 20%)
+    instead of hard-muted, so the room keeps low-level music continuity
+    through the exchange; setting it to 0 restores the legacy full-mute
+    behavior. Original volumes are saved for the restore — see the
+    ``_saved_sink_input_volumes`` comment for the lifecycle and the
+    multi-fire idempotence guard.
+
+    No internal "is-paused" flag: a previous version tracked state in a
+    global so overlapping wake events wouldn't double-pause, but the
+    flag drifted out of sync when wake events landed without any player
+    running, then stuck at True. pkill/pactl against missing targets is
+    harmless. (The saved-volume dict is not that flag reborn — it never
+    gates whether the duck runs, it only remembers what to restore, and
+    it is cleared unconditionally on every restore.)
     """
     ensure_duck_null_sink()
+    items = _list_sink_inputs()
+    # Slice-2 freshness for free: this enumeration is the same data the
+    # cached self-playing flag needs, so refresh it here instead of
+    # spending a second pactl round-trip anywhere else.
+    set_self_playing(_any_player_uncorked(items))
     parked: list[str] = []
-    for sink_input_id in player_sink_input_ids_for(_SIGSTOP_PLAYER_BINARIES):
+    for item in _items_for(items, _SIGSTOP_PLAYER_BINARIES):
+        if item.get("index") is None:
+            continue
+        sink_input_id = str(item.get("index"))
         try:
             r = subprocess.run(
                 ["pactl", "move-sink-input", sink_input_id, _DUCK_NULL_SINK_NAME],
@@ -228,17 +349,51 @@ def pause_active_playback() -> None:
                 parked.append(sink_input_id)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    duck_pct = _duck_percent()
     muted: list[str] = []
-    for sink_input_id in player_sink_input_ids_for(_MUTE_ONLY_PLAYER_BINARIES):
-        try:
-            r = subprocess.run(
-                ["pactl", "set-sink-input-mute", sink_input_id, "1"],
-                timeout=2.0, capture_output=True,
-            )
-            if r.returncode == 0:
-                muted.append(sink_input_id)
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+    ducked: list[str] = []
+    for item in _items_for(items, _MUTE_ONLY_PLAYER_BINARIES):
+        if item.get("index") is None:
+            continue
+        sink_input_id = str(item.get("index"))
+        original_pct: int | None = None
+        if duck_pct > 0:
+            with _duck_state_lock:
+                if sink_input_id in _saved_sink_input_volumes:
+                    # Idempotence guard: the duck fires N times per turn
+                    # (wake fire + each follow-up iteration). A repeat
+                    # fire must NOT re-read the volume — it would capture
+                    # the ducked value, then "restore" music to 20%.
+                    original_pct = _saved_sink_input_volumes[sink_input_id]
+                else:
+                    original_pct = _volume_percent_from_item(item)
+                    if original_pct is not None:
+                        _saved_sink_input_volumes[sink_input_id] = original_pct
+        if duck_pct > 0 and original_pct is not None:
+            try:
+                r = subprocess.run(
+                    ["pactl", "set-sink-input-volume", sink_input_id,
+                     f"{duck_pct}%"],
+                    timeout=2.0, capture_output=True,
+                )
+                if r.returncode == 0:
+                    ducked.append(sink_input_id)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+        else:
+            # Legacy full-mute path: duck depth 0 (explicit opt-out) or
+            # an unreadable original volume (ducking without a saved
+            # original would strand the stream at duck level — the
+            # unconditional unmute on restore always recovers a mute).
+            try:
+                r = subprocess.run(
+                    ["pactl", "set-sink-input-mute", sink_input_id, "1"],
+                    timeout=2.0, capture_output=True,
+                )
+                if r.returncode == 0:
+                    muted.append(sink_input_id)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
     stopped: list[str] = []
     for binary in _SIGSTOP_PLAYER_BINARIES:
         try:
@@ -254,7 +409,10 @@ def pause_active_playback() -> None:
         "pause_active_playback",
         parked_sink_inputs=parked,
         muted_sink_inputs=muted,
+        ducked_sink_inputs=ducked,
+        duck_percent=duck_pct,
         sigstopped=stopped,
+        self_playing=is_self_playing(),
     )
 
 
@@ -296,11 +454,34 @@ def resume_active_playback() -> None:
                 unmuted.append(sink_input_id)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    # Volume-duck restore: put every saved original volume back. The dict
+    # is drained UP FRONT (pop-all under the lock) so it is cleared on
+    # every path through here — including a raising pactl — and a
+    # concurrent duck can never observe half-restored state as "already
+    # saved". A sink-input that vanished mid-turn just fails its pactl
+    # call harmlessly; the entry is gone from the dict either way.
+    with _duck_state_lock:
+        saved_volumes = dict(_saved_sink_input_volumes)
+        _saved_sink_input_volumes.clear()
+    unducked: list[str] = []
+    for sink_input_id, original_pct in saved_volumes.items():
+        try:
+            r = subprocess.run(
+                ["pactl", "set-sink-input-volume", sink_input_id,
+                 f"{original_pct}%"],
+                timeout=2.0, capture_output=True,
+            )
+            if r.returncode == 0:
+                unducked.append(sink_input_id)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
     logger.info(
         "resume_active_playback",
         sigcont=resumed,
         restored_sink_inputs=restored,
         unmuted_sink_inputs=unmuted,
+        unducked_sink_inputs=unducked,
+        restored_volumes=saved_volumes,
     )
 
 
@@ -399,27 +580,10 @@ def _active_player_binaries() -> set[str]:
     every matched binary basename — we need the full set so the takeover
     helper knows which strategies to invoke.
     """
-    try:
-        result = subprocess.run(
-            ["pactl", "-f", "json", "list", "sink-inputs"],
-            capture_output=True, text=True, timeout=2.0,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return set()
-    if result.returncode != 0:
-        return set()
-    try:
-        items = json.loads(result.stdout or "[]")
-    except (ValueError, TypeError):
-        return set()
-    active: set[str] = set()
-    for item in items:
-        props = item.get("properties") or {}
-        binary = props.get("application.process.binary") or ""
-        basename = os.path.basename(binary)
-        if basename in _PLAYER_BINARIES:
-            active.add(basename)
-    return active
+    return {
+        _item_binary_basename(item)
+        for item in _items_for(_list_sink_inputs(), _PLAYER_BINARIES)
+    }
 
 
 def stop_other_music_players(except_binary: str | None = None) -> None:

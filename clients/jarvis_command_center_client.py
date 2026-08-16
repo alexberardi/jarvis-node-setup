@@ -145,6 +145,8 @@ class JarvisCommandCenterClient:
         turn_source: str | None = None,
         wake_confidence: float | None = None,
         follow_up_iteration: int | None = None,
+        self_playback: bool | None = None,
+        self_playback_kind: str | None = None,
     ) -> tuple[str, Any]:
         """Send a voice command to the unified streaming endpoint.
 
@@ -169,6 +171,15 @@ class JarvisCommandCenterClient:
                             TTS). Selects CC's not_for_me posture.
             wake_confidence: OWW detection score for the wake fire (0-1).
             follow_up_iteration: 1-based follow-up window iteration.
+            self_playback: Whether the node believes its OWN media
+                            playback was active at wake-fire time. Tells
+                            CC that pre_wake_speech_seconds (and the
+                            wake score) were measured over music bleed
+                            and are unreliable as not_for_me evidence.
+                            Additive field — older CC versions ignore it.
+            self_playback_kind: What kind of self-playback ("music" is
+                            the only kind emitted today). Only sent when
+                            self_playback is true.
 
         Returns:
             A tuple of (tag, payload):
@@ -192,6 +203,10 @@ class JarvisCommandCenterClient:
             payload["wake_confidence"] = wake_confidence
         if follow_up_iteration is not None:
             payload["follow_up_iteration"] = follow_up_iteration
+        if self_playback is not None:
+            payload["self_playback"] = self_playback
+        if self_playback_kind is not None:
+            payload["self_playback_kind"] = self_playback_kind
 
         logger.info(
             "Sending unified voice command",

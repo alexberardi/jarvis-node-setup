@@ -248,6 +248,8 @@ def send_for_transcription(
     pre_wake_speech_seconds: float | None = None,
     wake_audio_path: str | None = None,
     wake_confidence: float | None = None,
+    self_playback: bool | None = None,
+    self_playback_kind: str | None = None,
 ) -> Dict[str, Any] | None:
     global _last_speaker_user_id, _last_speaker_confidence
 
@@ -323,6 +325,8 @@ def send_for_transcription(
             affect=affect,
             turn_source="wake",
             wake_confidence=wake_confidence,
+            self_playback=self_playback,
+            self_playback_kind=self_playback_kind,
         )
     except (ConnectionError, OSError, TimeoutError) as e:
         logger.error("Command center unreachable", error=str(e))
