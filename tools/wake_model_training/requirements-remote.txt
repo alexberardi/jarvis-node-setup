@@ -1,0 +1,31 @@
+# Dependencies installed ON the RunPod pod (torch ships with the image:
+# runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04).
+#
+# openWakeWord itself is installed editable from the PINNED clone in
+# remote_train_wake.py stage_setup (pip install -e /workspace/openwakeword),
+# and piper-sample-generator's own requirements.txt is installed there too —
+# this file covers the training extras the automatic_model_training.ipynb
+# notebook installs on top.
+
+pyyaml
+numpy
+scipy
+huggingface_hub
+
+# openWakeWord training extras (per notebooks/automatic_model_training.ipynb
+# at the pinned ref):
+mutagen
+torchinfo
+torchmetrics
+speechbrain
+audiomentations
+torch-audiomentations
+acoustics
+pronouncing
+datasets
+deep-phonemizer
+
+# .tflite export path in train.py
+tensorflow-cpu
+onnx
+onnx_tf
