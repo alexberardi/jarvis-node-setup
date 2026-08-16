@@ -137,11 +137,15 @@ settings alongside the threshold when deploying.
 - The node selects its model via the **`wake_word_model` setting**
   (default `hey_jarvis`) — set it to `hey_jarvis_music` per node for the
   staged rollout (dev node → kitchen).
-- Model files live inside the venv; **`install.sh:restore_wake_models`**
-  already copies them forward across updates (autodownload is opt-in and
-  off by default). Getting `hey_jarvis_music.onnx`/`.tflite` into the
-  models dir ships via the normal release + install.sh path — no new
-  distribution machinery.
+- **Bundled distribution (`models/wake/`)**: commit
+  `hey_jarvis_music.onnx` (+ `.tflite` + `hey_jarvis_music.metadata.json`)
+  to `models/wake/` — see `models/wake/README.md` for the naming/metadata
+  contract. `core/wake_models.py` resolves bundled models first, the
+  release tarball includes `models/`, and the repo tree IS the install
+  tree at `/opt/jarvis-node` — so the model ships with every install
+  automatically, with no venv-resident copy, no
+  `install.sh:restore_wake_models` dance, and no autodownload. (Those
+  mechanisms remain only for package-resident stock models.)
 - The per-fire "Wake fired" structured log already carries
   `oww_score` / `self_playback` / `vad_threshold_source`; after rollout the
   same telemetry compares the models in production. Tag the deployed model

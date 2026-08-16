@@ -1368,6 +1368,14 @@ PY
 # 0.1.130→0.1.135 and lost wake word exactly this way — the same
 # venv-rebuild-loses-assets class as restore_pantry_pip_deps above.
 #
+# Bundled models are exempt from all of this: models committed to the repo
+# at models/wake/<name>.onnx ship inside the tarball (build-tarball.sh
+# copies models/) and land at ${INSTALL_DIR}/models/wake/ on every
+# install/update — they need no restore, no staging, no autodownload
+# (core/wake_models.py resolves them first). This function remains only
+# for PACKAGE-RESIDENT models (venv site-packages), e.g. a wake_word_model
+# setting naming a stock openwakeword model that isn't bundled.
+#
 # Best-effort like restore_pantry_pip_deps: warn loudly, never abort.
 restore_wake_models() {
   # Destination: the new venv's openwakeword package dir. Ask the venv
@@ -1420,9 +1428,16 @@ PY
 
   # If the models still aren't staged, the node will boot voice-dead
   # (headless: MQTT + agents only) — say so where the operator can see it.
+  # Bundled repo models (models/wake/*.onnx, resolved first at runtime)
+  # cover this when wake_word_model names one of them, so downgrade the
+  # warning in that case instead of crying wolf.
   if ! ls "${dest}"/*.onnx >/dev/null 2>&1; then
-    warn "No wake-word models staged and autodownload is opt-in (default off) — wake word will NOT work."
-    warn "Fix: set \"wake_word_model_autodownload_enabled\": true in ${INSTALL_DIR}/config.json (one-time download), or copy the .onnx models into ${dest}"
+    if ls "${INSTALL_DIR}"/models/wake/*.onnx >/dev/null 2>&1; then
+      info "No package-resident wake models, but bundled models exist (models/wake/) — wake word works if the wake_word_model setting names a bundled model"
+    else
+      warn "No wake-word models staged and autodownload is opt-in (default off) — wake word will NOT work."
+      warn "Fix: set \"wake_word_model_autodownload_enabled\": true in ${INSTALL_DIR}/config.json (one-time download), or copy the .onnx models into ${dest}"
+    fi
   fi
 }
 
@@ -1439,6 +1454,14 @@ PY
 # startup log carries the enable-or-stage hint.
 stage_default_wake_model() {
   if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return 0
+  fi
+
+  # Bundled models make staging moot: models/wake/hey_jarvis.onnx (shipped
+  # in the tarball) is resolved FIRST by core/wake_models.py, so downloading
+  # a package-resident copy of the same model would be dead weight.
+  if [ -f "${INSTALL_DIR}/models/wake/hey_jarvis.onnx" ]; then
+    info "Bundled wake model present (models/wake/hey_jarvis.onnx) — skipping default-model staging"
     return 0
   fi
 

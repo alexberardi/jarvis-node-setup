@@ -22,7 +22,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Iterator
 
-import openwakeword
 from openwakeword.model import Model as OWWModel
 
 from jarvis_log_client import JarvisLogger
@@ -35,6 +34,7 @@ from core import wake_loop
 from core import wake_response
 from core.follow_up_loop import follow_up_loop
 from core.wake_detector import current_wake_threshold
+from core.wake_models import prepare_wake_model
 from core.wake_loop import run_wake_loop
 from core.wake_response import (
     fetch_next_processing_ack,
@@ -237,19 +237,22 @@ def start_voice_listener(ma_service):
     didn't create.
     """
     try:
-        # Egress is opt-in: only reach out to download the openWakeWord model
-        # when explicitly enabled. When off, load whatever is already staged
-        # locally; if it's absent, OWWModel raises and we fall through to the
-        # keyboard/exception fallback below.
-        if Config.get_bool("wake_word_model_autodownload_enabled", False):
-            openwakeword.utils.download_models(model_names=[WAKE_WORD_MODEL])
-        else:
-            logger.info(
-                "Skipping openWakeWord model download (autodownload disabled by policy) — "
-                "loading locally staged model only",
-                model=WAKE_WORD_MODEL,
-            )
-        oww = OWWModel(wakeword_models=[WAKE_WORD_MODEL], inference_framework="onnx")
+        # Resolution order (core/wake_models.py): a bundled repo model at
+        # models/wake/<name>.onnx wins and never downloads; otherwise the
+        # previous package-resident behavior applies unchanged — egress is
+        # opt-in (download only when explicitly enabled), and when off we
+        # load whatever is already staged locally. If nothing is staged,
+        # OWWModel raises and we fall through to the keyboard/exception
+        # fallback below.
+        resolved = prepare_wake_model(
+            WAKE_WORD_MODEL,
+            autodownload_enabled=bool(
+                Config.get_bool("wake_word_model_autodownload_enabled", False)
+            ),
+        )
+        oww = OWWModel(
+            wakeword_models=[resolved.model_ref], inference_framework="onnx"
+        )
     except Exception as e:
         logger.warning(
             "openWakeWord init failed, falling back to keyboard trigger — "
