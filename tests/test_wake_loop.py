@@ -128,6 +128,9 @@ def _isolate_loop(monkeypatch):
     monkeypatch.setattr(
         wake_loop, "_adaptive_silence_threshold", lambda stats: None
     )
+    monkeypatch.setattr(
+        wake_loop, "_auto_pre_wake_vad_threshold", lambda stats: None
+    )
 
     # Make decide_wake_fire delegate the score check — score > threshold
     # is the simplest characterization of the production gate. The full
@@ -153,6 +156,9 @@ def _isolate_loop(monkeypatch):
     monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", MagicMock())
     monkeypatch.setattr(wake_loop, "locked_oww_reset", lambda o: None)
     monkeypatch.setattr(wake_loop, "try_capture_wake_audio", lambda b: None)
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames", lambda f, b: None
+    )
     monkeypatch.setattr(wake_loop, "get_last_speaker", lambda: (None, None))
     monkeypatch.setattr(wake_loop, "run_warmup", lambda *a, **kw: None)
     monkeypatch.setattr(wake_loop, "listen", lambda *a, **kw: "/tmp/r.wav")
@@ -576,6 +582,145 @@ def test_send_for_transcription_exception_falls_through_to_follow_up(monkeypatch
     args, kwargs = fu.call_args
     # result is positional arg 1 (after bus).
     assert args[1] is None
+
+
+# ---------------------------------------------------------------------------
+# Wake-clip capture — consumed-chunks primary path + bus-snapshot fallback
+# ---------------------------------------------------------------------------
+
+
+def _distinct_chunk(value: int, samples: int = 1280) -> bytes:
+    """One 80 ms chunk whose samples are all ``value`` — distinguishable
+    from its siblings so clip-content assertions can check ordering."""
+    return np.full(samples, value, dtype=np.int16).tobytes()
+
+
+def test_wake_clip_built_from_consumed_chunks_including_drained(monkeypatch):
+    """The wake clip must be written from EVERY chunk the loop pulled off
+    its queue — including chunks the drain-to-newest pass skipped scoring.
+    This is the keystone of the clip fix: by construction the clip equals
+    the audio stream around the fire, so producer catch-up bursts can
+    never evict the wake phrase the way the ring-buffer snapshot allowed.
+    """
+    chunks = [_distinct_chunk(v) for v in (1, 2, 3, 4)]
+    captured: dict = {}
+
+    def _capture(frames, bus):
+        captured["frames"] = list(frames)
+        return "/tmp/wake.wav"
+
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames", _capture,
+    )
+    fallback = MagicMock(return_value="/tmp/fallback.wav")
+    monkeypatch.setattr(wake_loop, "try_capture_wake_audio", fallback)
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    # All four chunks are enqueued up front: the first blocking get pulls
+    # chunk 1, the drain pass pulls 2-4, and OWW scores only the newest.
+    bus = FakeBus(rate=16000, chunks=chunks)
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    assert captured["frames"] == chunks  # drain-skipped chunks included
+    fallback.assert_not_called()         # primary path succeeded
+    assert sft.call_args.kwargs["wake_audio_path"] == "/tmp/wake.wav"
+
+
+def test_wake_clip_falls_back_to_bus_snapshot(monkeypatch):
+    """If the consumed-chunks write fails (returns None), the bus-ring
+    snapshot must still be attempted and its path used downstream."""
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames",
+        lambda frames, bus: None,
+    )
+    fallback = MagicMock(return_value="/tmp/fallback.wav")
+    monkeypatch.setattr(wake_loop, "try_capture_wake_audio", fallback)
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    fallback.assert_called_once()
+    assert sft.call_args.kwargs["wake_audio_path"] == "/tmp/fallback.wav"
+
+
+def test_wake_clip_deque_keeps_only_last_two_seconds(monkeypatch):
+    """The clip deque is bounded to ~WAKE_CLIP_SECONDS of chunks (25 at
+    80 ms) — older chunks roll off so the clip stays wake-phrase-sized."""
+    n = 30
+    chunks = [_distinct_chunk(v + 1) for v in range(n)]
+    captured: dict = {}
+
+    def _capture(frames, bus):
+        captured["frames"] = list(frames)
+        return "/tmp/wake.wav"
+
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames", _capture,
+    )
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=chunks)
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    # FakeBus exposes no chunk_samples, so the loop sizes the deque off
+    # the OWW frame length: 2.0 s / 0.08 s = 25 chunks, newest kept.
+    assert len(captured["frames"]) == 25
+    assert captured["frames"] == chunks[-25:]
+
+
+# ---------------------------------------------------------------------------
+# Pre-wake VAD auto-calibration wiring
+# ---------------------------------------------------------------------------
+
+
+def test_wake_fire_uses_auto_vad_threshold_when_available(monkeypatch):
+    """When the auto-calibrator produces a threshold, speech frames are
+    classified against IT — not the static default. A 300-RMS chunk is
+    speech under an auto threshold of 100 even though the static 500
+    (provably dead on the prod mic) would have scored the window 0.00."""
+    monkeypatch.setattr(
+        wake_loop, "_auto_pre_wake_vad_threshold", lambda stats: 100.0,
+    )
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_distinct_chunk(300)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    assert sft.call_args.kwargs["pre_wake_speech_seconds"] == pytest.approx(
+        0.08,
+    )
+
+
+def test_wake_fire_falls_back_to_static_vad_threshold(monkeypatch):
+    """Auto-calibrator returning None (disabled / no stats) keeps the
+    static threshold: the same 300-RMS chunk is below the fixture's
+    static 500 and counts as ambient."""
+    # Fixture default: _auto_pre_wake_vad_threshold → None, static 500.
+    sft = MagicMock(return_value={"text": "hi"})
+    monkeypatch.setattr(wake_loop, "send_for_transcription", sft)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_distinct_chunk(300)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    assert sft.call_args.kwargs["pre_wake_speech_seconds"] == 0.0
 
 
 def test_high_score_suppressed_then_alert_drains(monkeypatch):

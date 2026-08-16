@@ -182,15 +182,18 @@ class TestIsFollowUpNoise:
     @pytest.mark.parametrize("word", [
         "stop", "pause", "resume", "help", "repeat",
         "louder", "quieter", "cancel", "continue",
+        # Bare confirmations/denials — CC asks yes/no questions in
+        # follow-up; suppressing the answer strands the exchange.
+        "yes", "no", "yeah", "sure",
     ])
     def test_each_valid_single_word_passes(self, word):
         assert is_follow_up_noise(word, None) is False
 
     def test_invalid_single_word_is_noise(self):
         # Whisper occasionally emits a lone generic word from noise —
-        # "okay" / "yeah" / "uh" land here. Not in the valid set → noise.
+        # "okay" / "uh" land here. Not in the valid set → noise.
         assert is_follow_up_noise("okay", None) is True
-        assert is_follow_up_noise("yeah", None) is True
+        assert is_follow_up_noise("uh", None) is True
 
     def test_multi_word_passes(self):
         # Anything past one word skips the single-word noise gate.

@@ -43,6 +43,7 @@ from scripts.speech_to_text import (
     concat_wav_files,
     listen,
     snapshot_bus_to_wav,
+    write_frames_to_wav,
 )
 from utils.config_service import Config
 from utils.encryption_utils import get_cache_dir
@@ -70,6 +71,11 @@ _WAKE_AUDIO_PATH = _cache_dir / "wake.wav"
 _SPEAKER_AUDIO_PATH = _cache_dir / "speaker.wav"
 _WAKE_SNAPSHOT_SECONDS = 2.0
 
+# Public alias for the wake loop: it sizes its consumed-chunks clip
+# deque (the primary wake-clip source since v0.2.4) off the same
+# duration the fallback bus snapshot uses.
+WAKE_CLIP_SECONDS = _WAKE_SNAPSHOT_SECONDS
+
 
 # Last identified speaker so parallel warmup can load their memories
 # and CC can use it for per-node stickiness on short follow-up
@@ -95,8 +101,44 @@ def get_last_speaker() -> tuple[int | None, float | None]:
 # ---------------------------------------------------------------------------
 
 
+def try_capture_wake_audio_from_frames(
+    frames, bus: AudioBus,
+) -> str | None:
+    """Write wake.wav from the exact chunks the wake loop scored.
+
+    Primary wake-clip path (v0.2.4). The loop hands over the deque of
+    chunks it pulled from its subscriber queue — including any the
+    drain-to-newest pass skipped scoring — so the clip is BY
+    CONSTRUCTION the audio openWakeWord fired on. The ring-buffer
+    snapshot (:func:`try_capture_wake_audio`) survives as the fallback:
+    it cuts a variable wall-time after the fire, and post-turn producer
+    catch-up bursts can evict the wake phrase from the ring by then —
+    prod clips came back as post-phrase ambient ("in journals.") on
+    real 0.97+ wakes, and wake verification then suppressed two REAL
+    commands off those garbage clips.
+
+    Returns the wake WAV path on success, None if there were no frames
+    or the write failed (callers fall back to the bus snapshot).
+    """
+    if not frames:
+        return None
+    try:
+        write_frames_to_wav(str(_WAKE_AUDIO_PATH), list(frames), bus)
+    except Exception as e:
+        logger.warning(
+            "Wake-clip write from consumed chunks failed "
+            "(falling back to bus snapshot)",
+            error=str(e),
+        )
+        return None
+    return str(_WAKE_AUDIO_PATH)
+
+
 def try_capture_wake_audio(bus: AudioBus) -> str | None:
     """Snapshot the wake-word audio from the bus ring buffer.
+
+    Fallback path — see :func:`try_capture_wake_audio_from_frames` for
+    why the consumed-chunks clip is preferred.
 
     Returns the wake WAV path on success, None if nothing was captured
     or the write failed (callers proceed without speaker_audio in that

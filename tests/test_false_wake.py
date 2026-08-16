@@ -121,11 +121,24 @@ class TestIsFalseWakeAbortPhrases:
 
     def test_abort_phrase_as_prefix(self):
         # Matches startswith — user trails off after the abort.
-        assert is_false_wake("cancel that please", _rec()) is True
+        assert is_false_wake("nevermind that was nothing", _rec()) is True
+        assert is_false_wake("forget it, sorry", _rec()) is True
 
     def test_abort_phrase_is_case_insensitive(self):
         assert is_false_wake("Cancel", _rec()) is True
         assert is_false_wake("NEVERMIND", _rec()) is True
+
+    def test_cancel_only_matches_as_bare_utterance(self):
+        # "cancel" is also an ordinary command verb. Prefix-matching it
+        # killed real commands node-side — "cancel my 3pm meeting" died
+        # here and CC never saw it. Only the bare word aborts; anything
+        # longer is CC's call (fail-open: a wrong suppression is worse
+        # than a wasted round trip).
+        assert is_false_wake("cancel", _rec()) is True
+        assert is_false_wake("Cancel.", _rec()) is True
+        assert is_false_wake("cancel my 3pm meeting", _rec()) is False
+        assert is_false_wake("cancel that please", _rec()) is False
+        assert is_false_wake("cancel the timer", _rec()) is False
 
 
 class TestIsFalseWakeHitMax:

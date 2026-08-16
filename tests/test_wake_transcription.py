@@ -106,6 +106,51 @@ class TestTryCaptureWakeAudio:
 
 
 # ---------------------------------------------------------------------------
+# try_capture_wake_audio_from_frames — consumed-chunks → WAV (primary path)
+# ---------------------------------------------------------------------------
+
+
+class TestTryCaptureWakeAudioFromFrames:
+
+    def test_frames_written_returns_path(self, monkeypatch):
+        bus = MagicMock()
+        written: dict = {}
+
+        def _write(path, frames, b):
+            written["path"] = path
+            written["frames"] = frames
+
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", _write)
+        result = wake_transcription.try_capture_wake_audio_from_frames(
+            [b"aa", b"bb"], bus,
+        )
+        assert result == str(wake_transcription._WAKE_AUDIO_PATH)
+        assert written["path"] == str(wake_transcription._WAKE_AUDIO_PATH)
+        assert written["frames"] == [b"aa", b"bb"]
+
+    def test_empty_frames_returns_none(self, monkeypatch):
+        bus = MagicMock()
+        write = MagicMock()
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", write)
+        assert wake_transcription.try_capture_wake_audio_from_frames(
+            [], bus,
+        ) is None
+        write.assert_not_called()
+
+    def test_write_raises_returns_none(self, monkeypatch):
+        # Must not raise — the caller falls back to the bus snapshot.
+        bus = MagicMock()
+
+        def boom(*a, **kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", boom)
+        assert wake_transcription.try_capture_wake_audio_from_frames(
+            [b"aa"], bus,
+        ) is None
+
+
+# ---------------------------------------------------------------------------
 # try_build_speaker_audio — concat wake + command WAVs
 # ---------------------------------------------------------------------------
 
