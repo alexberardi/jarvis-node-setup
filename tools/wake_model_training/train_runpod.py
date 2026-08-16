@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -70,8 +71,43 @@ POD_CONFIG = {
     "min_memory_in_gb": 32,
     "ports": "22/tcp",
     "docker_args": "",
+    # PUBLIC_KEY is injected into the pod's authorized_keys by the runpod
+    # pytorch template — this keeps the harness self-contained instead of
+    # depending on SSH keys registered in the RunPod account settings
+    # (which is how the first launch failed: account had no key for this
+    # machine). Populated at runtime in main().
     "env": {},
 }
+
+
+def _local_ssh_public_key() -> str | None:
+    """Best-effort public key matching a default private key.
+
+    Reads the .pub sibling when present and non-empty (an empty .pub has
+    been observed in the wild and silently disabled key injection); falls
+    back to deriving the public key from the private key via ssh-keygen -y.
+    """
+    for name in ("id_ed25519.pub", "id_rsa.pub"):
+        path = os.path.expanduser(f"~/.ssh/{name}")
+        if os.path.exists(path):
+            with open(path) as f:
+                content = f.read().strip()
+            if content:
+                return content
+    for name in ("id_ed25519", "id_rsa"):
+        priv = os.path.expanduser(f"~/.ssh/{name}")
+        if os.path.exists(priv):
+            try:
+                out = subprocess.run(
+                    ["ssh-keygen", "-y", "-f", priv],
+                    capture_output=True, text=True, timeout=10,
+                    stdin=subprocess.DEVNULL,
+                )
+                if out.returncode == 0 and out.stdout.strip():
+                    return out.stdout.strip()
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+    return None
 
 FALLBACK_GPU_TYPES = [
     "NVIDIA GeForce RTX 3090",
@@ -138,15 +174,30 @@ def get_ssh_connection(pod: dict, ssh_key_path: str | None):
         os.path.expanduser("~/.ssh/id_ed25519"),
         os.path.expanduser("~/.ssh/id_rsa"),
     ] if p and os.path.exists(p)]
-    for key_path in key_paths:
-        try:
-            client.connect(hostname=ssh_host, port=ssh_port, username="root",
-                           key_filename=key_path, timeout=30)
-            print(f"   ✅ SSH connected via {key_path}")
-            return client
-        except paramiko.AuthenticationException:
-            continue
-    raise ConnectionError("SSH authentication failed with all available keys")
+
+    # The pod reports RUNNING (with the port mapped) before the container's
+    # start script has written the PUBLIC_KEY env into authorized_keys and
+    # (sometimes) before sshd accepts connections — a single-shot auth
+    # attempt lands in that gap and fails spuriously. Retry the whole key
+    # ring for a few minutes; AuthenticationException here usually means
+    # "not provisioned yet", not "wrong key".
+    deadline = time.time() + 900
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        for key_path in key_paths:
+            try:
+                client.connect(hostname=ssh_host, port=ssh_port,
+                               username="root", key_filename=key_path,
+                               timeout=30)
+                print(f"   ✅ SSH connected via {key_path}")
+                return client
+            except (paramiko.AuthenticationException, paramiko.SSHException,
+                    OSError) as e:
+                last_error = e
+        print("   ⏳ SSH not ready yet, retrying...", end="\r")
+        time.sleep(15)
+    raise ConnectionError(
+        f"SSH failed for 900s with all available keys (last: {last_error})")
 
 
 def ssh_exec(client, cmd: str, timeout: int = 3600) -> tuple[str, str, int]:
@@ -279,6 +330,12 @@ def main() -> int:
             pod = wait_for_pod_ready(runpod, pod_id)
         else:
             print("🚀 Creating RunPod instance...")
+            pub_key = _local_ssh_public_key()
+            if pub_key:
+                POD_CONFIG["env"] = {**POD_CONFIG["env"], "PUBLIC_KEY": pub_key}
+            else:
+                print("   ⚠️ no local SSH public key found — relying on "
+                      "account-registered keys")
             try:
                 pod = runpod.create_pod(**POD_CONFIG)
                 pod_id = pod["id"]
