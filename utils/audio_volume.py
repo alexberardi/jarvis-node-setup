@@ -307,6 +307,64 @@ def ensure_adc_hpf_enabled() -> None:
         )
 
 
+# ── Capture PGA (TLV320AIC3104 mic gain) ────────────────────────────────────
+
+# The codec's programmable-gain amplifier on the mic input path. install.sh
+# sets the baseline to 49% (+29 dB) — the June-2026 wake-during-music
+# measurements (prds/wake-during-music/findings-2026-06-03.md) showed the
+# older 60% (+35.5 dB) default digitally clips the ADC during music
+# playback (capture peak 0 dBFS, flat factor 13.9), cratering OWW scores,
+# while 49% stays clean with real wakes scoring 0.338-0.792 through music.
+#
+# core.music_control uses these primitives to run a *music-time gain
+# profile*: drop to ``music_pga_percent`` while the node's own music is
+# playing, restore the normal gain when it stops. Same amixer control
+# name as install.sh's mixer-baseline block ('PGA' on seeed2micvoicec).
+
+_TLV320_PGA_CONTROL = "PGA"
+
+
+def get_capture_pga_percent() -> int | None:
+    """Current capture PGA gain as an amixer percent (0-100), or None.
+
+    None when the codec is absent (macOS dev node, plain Pi without the
+    HAT) or the mixer is unreadable. Takes the max across channels —
+    install.sh always sets both channels together, so they agree in
+    practice.
+    """
+    card = get_audio_card()
+    if card != "seeed2micvoicec":
+        return None
+    result = _run(["amixer", "-c", card, "sget", _TLV320_PGA_CONTROL])
+    if result is None or result.returncode != 0:
+        return None
+    # Channel lines look like:
+    #   Front Left: Capture 58 [49%] [29.00dB] [on]
+    matches = re.findall(r"Capture\s+\d+\s+\[(\d+)%\]", result.stdout)
+    if not matches:
+        return None
+    return max(int(m) for m in matches)
+
+
+def set_capture_pga_percent(pct: int) -> bool:
+    """Set the capture PGA gain (both channels) to ``pct`` percent.
+
+    Returns True on success, False when the codec is absent or amixer
+    fails. Clamped to [0, 100]. NOT persisted via alsactl — the music
+    profile is deliberately transient; the install baseline (and the
+    boot-time normalization in core.music_control) define the resting
+    value.
+    """
+    pct = max(0, min(100, int(pct)))
+    card = get_audio_card()
+    if card != "seeed2micvoicec":
+        return False
+    result = _run([
+        "amixer", "-c", card, "sset", _TLV320_PGA_CONTROL, f"{pct}%",
+    ])
+    return result is not None and result.returncode == 0
+
+
 # ── Codec self-heal (TLV320AIC3104 output mixer baseline) ───────────────────
 
 # install.sh sets the codec's output mixer to a calibrated baseline at

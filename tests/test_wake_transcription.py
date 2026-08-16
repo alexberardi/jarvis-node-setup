@@ -475,6 +475,29 @@ class TestSendForTranscriptionCc:
         cs.process_voice_command.assert_called_once()
         cs.speak_result.assert_called_once_with({"reply": "It's 5pm."})
 
+    def test_self_playback_passthrough_to_process_voice_command(
+        self, monkeypatch, _no_concat, _stable_config,
+    ):
+        """self_playback / self_playback_kind flow through untouched to
+        process_voice_command (and from there to the CC payload)."""
+        stt = _stt_returning(TranscriptionResult(text="turn it up"))
+        cs = _command_service_returning({"reply": "ok"})
+        monkeypatch.setattr(
+            wake_transcription, "is_false_wake",
+            lambda text, recording, segments: False,
+        )
+        wake_transcription.send_for_transcription(
+            recording=_recording("/tmp/cmd.wav"),
+            command_service=cs,
+            stt_provider=stt,
+            validation_handler=lambda v: "",
+            self_playback=True,
+            self_playback_kind="music",
+        )
+        kwargs = cs.process_voice_command.call_args.kwargs
+        assert kwargs["self_playback"] is True
+        assert kwargs["self_playback_kind"] == "music"
+
     def test_success_updates_module_speaker_state(self, monkeypatch, _no_concat, _stable_config):
         stt = _stt_returning(TranscriptionResult(
             text="what time",

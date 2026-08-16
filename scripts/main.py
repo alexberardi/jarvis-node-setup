@@ -508,6 +508,30 @@ def main():
     except Exception as e:
         logger.warning("Output baseline self-heal failed (non-fatal)", error=str(e))
 
+    # Capture-PGA boot normalization: if the previous run crashed while
+    # the self-playback mic-gain profile was engaged (PGA lowered to
+    # music_pga_percent during the node's own music), the mic would stay
+    # at the lowered gain forever — degraded wake detection in a quiet
+    # room. Conservative: only restores when the current gain sits
+    # exactly at the music-profile value (see music_control).
+    try:
+        from core.music_control import normalize_capture_pga_on_startup
+        normalize_capture_pga_on_startup()
+    except Exception as e:
+        logger.warning("Capture PGA boot normalization failed (non-fatal)", error=str(e))
+
+    # Echo-cancel boot normalization: the PA daemon outlives this
+    # process, so a crash while music echo-cancel was engaged strands
+    # module-echo-cancel (and its webrtc CPU cost) in the daemon.
+    # Unloads ONLY modules carrying our jarvis_ec_source marker — never
+    # bluetooth's loopbacks or anyone else's modules (see
+    # core/echo_cancel.py).
+    try:
+        from core.echo_cancel import normalize_on_startup as _ec_normalize
+        _ec_normalize()
+    except Exception as e:
+        logger.warning("Echo-cancel boot normalization failed (non-fatal)", error=str(e))
+
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 
