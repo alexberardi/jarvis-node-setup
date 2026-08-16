@@ -49,11 +49,25 @@ import urllib.request
 
 from jarvis_log_client import JarvisLogger
 
+from utils import audio_volume
 from utils.config_service import Config
 
 
 logger = JarvisLogger(service="jarvis-node")
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# ⚠️  INVARIANT — CONTROL-API REACHABILITY (prod incident 2026-08-15):
+# daemon players with control APIs (go-librespot, mpd, shairport-sync)
+# must NEVER be SIGSTOP-class — a frozen daemon's API deadlocks the very
+# voice command sent to control it. The node historically SIGSTOP'd
+# go-librespot, freezing its localhost:3678 HTTP API mid-turn so "stop
+# the music" handlers timed out ("can't reach the music player" ×3 in
+# the kitchen). Any player that answers a local/remote control protocol
+# belongs in _MUTE_ONLY_PLAYER_BINARIES below. A regression test
+# (TestControlApiReachability in tests/test_music_control.py) pins this
+# so a refactor can't silently move them.
+# ═══════════════════════════════════════════════════════════════════════
 
 # Binaries that can be safely SIGSTOP'd while ducking — unidirectional
 # consumers that read from an upstream source and write to PA. Pausing
@@ -67,7 +81,9 @@ _SIGSTOP_PLAYER_BINARIES: tuple[str, ...] = (
 )
 
 # Binaries that must NOT be SIGSTOP'd because they participate in a
-# request/response protocol with a remote peer expecting timely ACKs.
+# request/response protocol with a remote peer expecting timely ACKs —
+# see the CONTROL-API REACHABILITY invariant above: freezing any of
+# these deadlocks the voice command sent to control it.
 # Muting the PA sink-input is sufficient — the process keeps running
 # and answering its protocol; audio reaches a muted sink during voice.
 _MUTE_ONLY_PLAYER_BINARIES: tuple[str, ...] = (
@@ -145,14 +161,28 @@ def is_self_playing() -> bool:
     return _self_playing
 
 
-def set_self_playing(value: bool) -> None:
+def set_self_playing(value: bool, *, trigger: str = "unspecified") -> None:
     """Set the cached self-playing flag.
 
     Called by the wake loop's deferred-play hook (a media command just
-    started playback) and by the duck-time refresh.
+    started playback) and by the duck-time refresh. ``trigger`` names
+    the caller for the mic-gain-profile breadcrumb logs.
+
+    Edge-triggered side effect: the False→True transition engages the
+    music-time capture PGA profile; True→False restores the normal
+    gain. Both call sites sit OUTSIDE the capture-critical section
+    (duck submit time / post-turn restore) — never call this from
+    inside an active ``listen()`` recording, a mid-recording gain step
+    would corrupt the capture.
     """
     global _self_playing
-    _self_playing = bool(value)
+    new = bool(value)
+    old = _self_playing
+    _self_playing = new
+    if new and not old:
+        engage_music_pga(trigger=trigger)
+    elif old and not new:
+        restore_normal_pga(trigger=trigger)
 
 
 def _duck_percent() -> int:
@@ -165,28 +195,210 @@ def _duck_percent() -> int:
     return Config.get_int("music_duck_percent", 20)
 
 
-def _list_sink_inputs() -> list[dict]:
-    """One ``pactl -f json list sink-inputs`` round-trip, parsed.
+# ───────────────────────────────────────────────────────────────────────
+# Self-playback mic-gain (PGA) profile — the wake-during-music detection
+# lever. June-2026 measurements (prds/wake-during-music/findings-
+# 2026-06-03.md): the historical install-default capture PGA of 60%
+# (+35.5 dB) digitally CLIPS the ADC while music plays — OWW scores
+# crater and detection is "horrible at any non-low volume" — while 49%
+# (+29 dB) is clean, with real wakes scoring 0.338-0.792 through music.
+#
+# When self-playback STARTS (deferred-play hook, or the duck enumeration
+# finding active players), lower the ReSpeaker capture PGA to
+# ``music_pga_percent``; restore the normal gain when self-playback
+# ends. All transitions run at duck-submit / restore time — both sit
+# outside the capture-critical listen() section, so the gain never
+# steps mid-recording.
+# ───────────────────────────────────────────────────────────────────────
 
-    Shared by the state query, the id filters, and the duck path (which
-    also reuses the same enumeration to refresh the self-playing flag —
-    one subprocess per duck, not three). Fail-open: any subprocess or
-    parse failure returns an empty list.
+# Profile state. ``_pga_engaged`` makes the per-duck ensure a cheap flag
+# check instead of an amixer round-trip; ``_saved_normal_pga_percent``
+# is the pre-music gain read at engage time (preserves a hand-tuned
+# value across the turn). Both are guarded by ``_pga_lock`` — the duck
+# (bg executor), the deferred-play hook (bg executor), and startup can
+# race.
+_pga_lock = threading.Lock()
+_pga_engaged: bool = False
+_saved_normal_pga_percent: int | None = None
+
+
+def _music_pga_percent() -> int:
+    """Music-time capture PGA percent. 0 (or negative) disables the
+    profile entirely. Same Config pattern as ``music_duck_percent``."""
+    return Config.get_int("music_pga_percent", 49)
+
+
+def _normal_pga_percent() -> int:
+    """Resting capture PGA percent, used when no saved pre-music value
+    exists (boot-time normalization after a crash). Default mirrors the
+    install.sh mixer-baseline value (49% = +29 dB)."""
+    return Config.get_int("capture_pga_normal_percent", 49)
+
+
+def engage_music_pga(trigger: str) -> None:
+    """Drop the capture PGA to the music profile (idempotent).
+
+    No-op when: the profile is disabled (``music_pga_percent`` <= 0),
+    already engaged, or the codec is absent/unreadable (macOS dev node,
+    plain Pi without the HAT). The pre-music gain is saved for the
+    restore. Every actual gain change is logged with (old%, new%,
+    trigger) — these are the calibration breadcrumbs.
+    """
+    global _pga_engaged, _saved_normal_pga_percent
+    music_pct = _music_pga_percent()
+    if music_pct <= 0:
+        return
+    with _pga_lock:
+        if _pga_engaged:
+            return
+        old_pct = audio_volume.get_capture_pga_percent()
+        if old_pct is None:
+            return
+        if old_pct == music_pct:
+            # Already at the music gain (the default case on a current
+            # install, where the baseline IS 49%). Mark engaged so the
+            # restore path stays symmetric, but there is no transition
+            # to log — and nothing saved, so restore falls back to the
+            # configured normal (which equals this value by default).
+            _pga_engaged = True
+            _saved_normal_pga_percent = None
+            return
+        if not audio_volume.set_capture_pga_percent(music_pct):
+            # NOT marked engaged — the next duck retries.
+            logger.warning(
+                "music PGA engage failed (amixer sset error)",
+                old_percent=old_pct,
+                target_percent=music_pct,
+                trigger=trigger,
+            )
+            return
+        _saved_normal_pga_percent = old_pct
+        _pga_engaged = True
+        logger.info(
+            "music PGA engaged",
+            old_percent=old_pct,
+            new_percent=music_pct,
+            trigger=trigger,
+        )
+
+
+def restore_normal_pga(trigger: str) -> None:
+    """Restore the normal capture PGA after self-playback ends.
+
+    Restores the gain saved at engage time; falls back to the
+    configured ``capture_pga_normal_percent`` when nothing was saved
+    (engage found the gain already at the music level). No-op when the
+    profile never engaged.
+    """
+    global _pga_engaged, _saved_normal_pga_percent
+    with _pga_lock:
+        if not _pga_engaged:
+            return
+        _pga_engaged = False
+        saved = _saved_normal_pga_percent
+        _saved_normal_pga_percent = None
+        target = saved if saved is not None else _normal_pga_percent()
+        old_pct = audio_volume.get_capture_pga_percent()
+        if old_pct == target:
+            return
+        if not audio_volume.set_capture_pga_percent(target):
+            logger.warning(
+                "normal PGA restore failed (amixer sset error) — mic gain "
+                "may be stuck at the music profile until next boot",
+                old_percent=old_pct,
+                target_percent=target,
+                trigger=trigger,
+            )
+            return
+        logger.info(
+            "music PGA restored",
+            old_percent=old_pct,
+            new_percent=target,
+            trigger=trigger,
+        )
+
+
+def normalize_capture_pga_on_startup() -> None:
+    """Boot-time gain normalization: a crash mid-music-profile must not
+    leave the mic at a lowered gain forever (deaf-ish wake detection in
+    a quiet room). Called once from scripts/main.py startup.
+
+    Conservative: only acts when the current gain sits EXACTLY at the
+    music profile value while that value differs from the configured
+    normal — i.e. clear evidence of a crashed profile. A hand-tuned
+    gain that matches neither is left alone.
+    """
+    music_pct = _music_pga_percent()
+    normal_pct = _normal_pga_percent()
+    if music_pct <= 0 or music_pct == normal_pct:
+        # Disabled, or profile == normal (the default): a crash cannot
+        # have left a wrong gain behind.
+        return
+    current = audio_volume.get_capture_pga_percent()
+    if current is None or current != music_pct:
+        return
+    if audio_volume.set_capture_pga_percent(normal_pct):
+        logger.warning(
+            "capture PGA was stuck at the music profile at boot — "
+            "restored normal gain (prior run likely crashed mid-music)",
+            old_percent=current,
+            new_percent=normal_pct,
+            trigger="startup",
+        )
+    else:
+        logger.warning(
+            "capture PGA stuck at music profile at boot and restore "
+            "FAILED — wake detection may be degraded",
+            old_percent=current,
+            target_percent=normal_pct,
+            trigger="startup",
+        )
+
+
+def _list_sink_inputs_verbose() -> tuple[list[dict], str | None]:
+    """One ``pactl -f json list sink-inputs`` round-trip, parsed, with a
+    failure classification.
+
+    Returns ``(items, failure)`` — ``failure`` is None on success, or a
+    short class string (``timeout`` / ``exec_error:<Exc>`` /
+    ``nonzero_exit:<rc>`` / ``parse_error``) when the enumeration
+    failed and the empty list is a LIE, not "no players". The duck path
+    logs that distinction (prod incident 2026-08-15: the duck logged
+    "parked=[] muted=[] sigstopped=[]" while Spotify was audibly
+    playing, and the failure was invisible).
     """
     try:
         result = subprocess.run(
             ["pactl", "-f", "json", "list", "sink-inputs"],
             capture_output=True, text=True, timeout=2.0,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
+    except subprocess.TimeoutExpired:
+        return [], "timeout"
+    except (FileNotFoundError, OSError) as e:
+        return [], f"exec_error:{type(e).__name__}"
     if result.returncode != 0:
-        return []
+        return [], f"nonzero_exit:{result.returncode}"
     try:
         items = json.loads(result.stdout or "[]")
     except (ValueError, TypeError):
-        return []
-    return items if isinstance(items, list) else []
+        return [], "parse_error"
+    if not isinstance(items, list):
+        return [], "parse_error"
+    return items, None
+
+
+def _list_sink_inputs() -> list[dict]:
+    """One ``pactl -f json list sink-inputs`` round-trip, parsed.
+
+    Shared by the state query, the id filters, and the duck path (which
+    also reuses the same enumeration to refresh the self-playing flag —
+    one subprocess per duck, not three). Fail-open: any subprocess or
+    parse failure returns an empty list (use
+    :func:`_list_sink_inputs_verbose` where the failure must be
+    visible).
+    """
+    items, _failure = _list_sink_inputs_verbose()
+    return items
 
 
 def _item_binary_basename(item: dict) -> str:
@@ -330,11 +542,30 @@ def pause_active_playback() -> None:
     it is cleared unconditionally on every restore.)
     """
     ensure_duck_null_sink()
-    items = _list_sink_inputs()
+    items, enumeration_failure = _list_sink_inputs_verbose()
+    if enumeration_failure is not None:
+        # NEVER silently treat an enumeration failure as "no players" —
+        # that was the invisible half of the 2026-08-15 kitchen
+        # incident (duck logged empty lists while music audibly
+        # played). The duck still proceeds fail-open (empty items), but
+        # the failure class is now in Loki.
+        logger.warning(
+            "pause_active_playback: sink-input enumeration FAILED — "
+            "proceeding as if no players, music may stay loud",
+            failure=enumeration_failure,
+        )
     # Slice-2 freshness for free: this enumeration is the same data the
     # cached self-playing flag needs, so refresh it here instead of
     # spending a second pactl round-trip anywhere else.
-    set_self_playing(_any_player_uncorked(items))
+    uncorked = _any_player_uncorked(items)
+    set_self_playing(uncorked, trigger="duck_enumeration")
+    if uncorked:
+        # Mic-gain profile ensure: set_self_playing above only engages
+        # on the False→True EDGE. If the flag was already True but a
+        # previous engage failed (codec busy), this idempotent re-try
+        # covers it — and the flag-transition path covers externally-
+        # started sessions (AirPlay from a phone) at their first wake.
+        engage_music_pga(trigger="duck_active_players")
     parked: list[str] = []
     for item in _items_for(items, _SIGSTOP_PLAYER_BINARIES):
         if item.get("index") is None:
@@ -405,6 +636,16 @@ def pause_active_playback() -> None:
                 stopped.append(binary)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    # Blind-spot visibility: total count of ALL sink-inputs (not just
+    # matched players) + the deduped basenames we did NOT match. An
+    # unknown player binary — the case where music audibly plays while
+    # parked/muted/ducked are all empty — is immediately visible in
+    # Loki. Binary names only, deduped, to keep log volume sane.
+    unmatched_binaries = sorted({
+        b
+        for b in (_item_binary_basename(item) for item in items)
+        if b and b not in _PLAYER_BINARIES
+    })
     logger.info(
         "pause_active_playback",
         parked_sink_inputs=parked,
@@ -413,6 +654,9 @@ def pause_active_playback() -> None:
         duck_percent=duck_pct,
         sigstopped=stopped,
         self_playing=is_self_playing(),
+        total_sink_inputs=len(items),
+        unmatched_binaries=unmatched_binaries,
+        enumeration_failure=enumeration_failure,
     )
 
 

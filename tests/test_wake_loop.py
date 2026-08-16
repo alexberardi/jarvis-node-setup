@@ -154,7 +154,7 @@ def _isolate_loop(monkeypatch):
     # Self-playback flag defaults to "not playing" so tests are hermetic
     # against music_control's module state.
     monkeypatch.setattr(wake_loop, "is_self_playing", lambda: False)
-    monkeypatch.setattr(wake_loop, "set_self_playing", lambda v: None)
+    monkeypatch.setattr(wake_loop, "set_self_playing", lambda v, **kw: None)
     monkeypatch.setattr(wake_loop, "drain_alert_announcements", MagicMock())
     monkeypatch.setattr(wake_loop, "follow_up_loop", MagicMock())
     monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", MagicMock())

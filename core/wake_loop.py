@@ -782,8 +782,11 @@ def run_wake_loop(
                         # Deferred play just started the node's own
                         # music — record it so the NEXT fire's
                         # self-playback snapshot is right even before
-                        # the duck enumeration refreshes the flag.
-                        set_self_playing(True)
+                        # the duck enumeration refreshes the flag. The
+                        # False→True edge also engages the music-time
+                        # capture-PGA profile (we're in the bg executor
+                        # after the turn — outside any recording).
+                        set_self_playing(True, trigger="deferred_play")
                     except Exception as e:
                         logger.warning(
                             "on_response_complete callback raised",
