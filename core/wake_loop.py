@@ -50,6 +50,10 @@ from core.alert_announcer import (
 )
 from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor, oww_lock as _oww_lock
+from core.echo_cancel import (
+    is_active as echo_cancel_is_active,
+    note_capture_chunk as note_echo_cancel_chunk,
+)
 from core.follow_up_loop import follow_up_loop
 from core.music_control import (
     is_self_playing,
@@ -364,6 +368,16 @@ def run_wake_loop(
                 rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
                 pre_wake_rms_values.append(rms)
 
+                # Echo-cancel silent-capture watchdog feed — reuses this
+                # RMS (the cheapest existing per-chunk signal) to detect
+                # a dead EC source right after engage. The callee never
+                # raises; the extra guard makes EC machinery
+                # categorically unable to kill the wake loop.
+                try:
+                    note_echo_cancel_chunk(rms)
+                except Exception:
+                    pass
+
                 if resample_down > 1:
                     resampled = _get_resample_poly()(samples, up=1, down=resample_down)
                     samples = np.clip(resampled, -32768, 32767).astype(np.int16)
@@ -517,6 +531,13 @@ def run_wake_loop(
                     pre_wake_speech_seconds = round(
                         speech_frames * _CHUNK_SECONDS, 2,
                     )
+                    # Per-fire echo-cancel telemetry (peel-back data for
+                    # the EC layer). Guarded read — telemetry must never
+                    # take down a fire.
+                    try:
+                        echo_cancel_active = bool(echo_cancel_is_active())
+                    except Exception:
+                        echo_cancel_active = False
                     logger.info(
                         "Wake fired",
                         score=round(score_at_wake, 3),
@@ -531,14 +552,16 @@ def run_wake_loop(
                         drained_chunks=drained_chunks_cycle,
                         self_playback=self_playback,
                         # Per-fire layer tags: which threshold profile
-                        # admitted this fire (Layer A) and whether a
-                        # tentative duck was involved (Layer B) — so
-                        # each detection layer can be peeled back with
-                        # data from Loki.
+                        # admitted this fire (Layer A), whether a
+                        # tentative duck was involved (Layer B), and
+                        # whether PA echo-cancel was engaged (EC layer)
+                        # — so each detection layer can be peeled back
+                        # with data from Loki.
                         threshold_used=wake_threshold,
                         threshold_profile=wake_threshold_profile,
                         tentative_triggered=tentative_triggered_cycle,
                         tentative_completed=tentative_completed,
+                        echo_cancel_active=echo_cancel_active,
                     )
                     # Lock the per-cycle silence threshold to the ambient
                     # noise floor observed RIGHT before wake. Used below

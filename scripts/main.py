@@ -520,6 +520,18 @@ def main():
     except Exception as e:
         logger.warning("Capture PGA boot normalization failed (non-fatal)", error=str(e))
 
+    # Echo-cancel boot normalization: the PA daemon outlives this
+    # process, so a crash while music echo-cancel was engaged strands
+    # module-echo-cancel (and its webrtc CPU cost) in the daemon.
+    # Unloads ONLY modules carrying our jarvis_ec_source marker — never
+    # bluetooth's loopbacks or anyone else's modules (see
+    # core/echo_cancel.py).
+    try:
+        from core.echo_cancel import normalize_on_startup as _ec_normalize
+        _ec_normalize()
+    except Exception as e:
+        logger.warning("Echo-cancel boot normalization failed (non-fatal)", error=str(e))
+
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 

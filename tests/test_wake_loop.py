@@ -162,6 +162,10 @@ def _isolate_loop(monkeypatch):
     # against music_control's module state.
     monkeypatch.setattr(wake_loop, "is_self_playing", lambda: False)
     monkeypatch.setattr(wake_loop, "set_self_playing", lambda v, **kw: None)
+    # Echo-cancel layer defaults to "inactive / no-op" so tests are
+    # hermetic against core.echo_cancel module state.
+    monkeypatch.setattr(wake_loop, "echo_cancel_is_active", lambda: False)
+    monkeypatch.setattr(wake_loop, "note_echo_cancel_chunk", lambda rms: None)
     monkeypatch.setattr(wake_loop, "drain_alert_announcements", MagicMock())
     monkeypatch.setattr(wake_loop, "follow_up_loop", MagicMock())
     monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", MagicMock())
@@ -1207,3 +1211,69 @@ def test_high_score_suppressed_then_alert_drains(monkeypatch):
 
     drain.assert_called_once()   # alert drained despite the high suppressed score
     handle.assert_not_called()   # NOT treated as a wake
+
+
+# ---------------------------------------------------------------------------
+# Echo-cancel isolation — EC machinery must never take down the wake loop
+# ---------------------------------------------------------------------------
+
+
+def test_echo_cancel_watchdog_exception_never_propagates(monkeypatch):
+    """A raising note_echo_cancel_chunk (the per-chunk EC watchdog feed)
+    must not kill scoring or the fire chain — the wrapper in the loop
+    swallows it and the wake still fires."""
+    monkeypatch.setattr(
+        wake_loop, "note_echo_cancel_chunk",
+        MagicMock(side_effect=RuntimeError("ec machinery exploded")),
+    )
+    handle = MagicMock()
+    fu = MagicMock(side_effect=KeyboardInterrupt())  # exit after one cycle
+    monkeypatch.setattr(wake_loop, "handle_keyword_detected", handle)
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    handle.assert_called_once()
+    fu.assert_called_once()
+
+
+def test_echo_cancel_telemetry_exception_never_blocks_fire(monkeypatch):
+    """A raising echo_cancel_is_active at fire-telemetry time degrades to
+    echo_cancel_active=False instead of aborting the fire."""
+    monkeypatch.setattr(
+        wake_loop, "echo_cancel_is_active",
+        MagicMock(side_effect=RuntimeError("telemetry read failed")),
+    )
+    handle = MagicMock()
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "handle_keyword_detected", handle)
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    handle.assert_called_once()
+    fu.assert_called_once()
+
+
+def test_wake_fired_log_carries_echo_cancel_active(monkeypatch):
+    """Per-fire telemetry: the 'Wake fired' structured log carries
+    echo_cancel_active so the EC layer can be peeled back with data."""
+    monkeypatch.setattr(wake_loop, "echo_cancel_is_active", lambda: True)
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    wake_fired = [
+        c for c in log.info.call_args_list if c.args and c.args[0] == "Wake fired"
+    ]
+    assert len(wake_fired) == 1
+    assert wake_fired[0].kwargs["echo_cancel_active"] is True

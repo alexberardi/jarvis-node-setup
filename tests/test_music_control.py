@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core import music_control
+from core import echo_cancel, music_control
 
 
 def _proc(stdout: str = "", returncode: int = 0) -> MagicMock:
@@ -76,8 +76,14 @@ def _reset_duck_state(monkeypatch):
     "no codec present" so tests never spawn real amixer subprocesses
     (audio_volume has its own subprocess access, which the per-test
     ``music_control.subprocess`` patches don't cover); PGA-specific
-    tests override these."""
+    tests override these. The echo-cancel edge hooks are stubbed to
+    no-ops for the same reason (echo_cancel runs its own pactl
+    subprocesses); EC-specific integration lives in
+    tests/test_echo_cancel.py."""
     _reset_pga_state()
+    echo_cancel._reset_state_for_tests()
+    monkeypatch.setattr(echo_cancel, "engage_for_music", lambda **kw: None)
+    monkeypatch.setattr(echo_cancel, "disengage_for_music", lambda **kw: None)
     music_control._saved_sink_input_volumes.clear()
     music_control.set_self_playing(False)
     monkeypatch.setattr(

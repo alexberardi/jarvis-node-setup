@@ -181,8 +181,33 @@ def set_self_playing(value: bool, *, trigger: str = "unspecified") -> None:
     _self_playing = new
     if new and not old:
         engage_music_pga(trigger=trigger)
+        _echo_cancel_edge(engage=True, trigger=trigger)
     elif old and not new:
         restore_normal_pga(trigger=trigger)
+        _echo_cancel_edge(engage=False, trigger=trigger)
+
+
+def _echo_cancel_edge(*, engage: bool, trigger: str) -> None:
+    """Mirror the self-playing edge into the PA echo-cancel layer.
+
+    Same hook points as the PGA profile (see :func:`set_self_playing`).
+    Lazy import: ``core.echo_cancel`` reuses this module's sink-input
+    enumeration, so a top-level cross-import would be circular. The
+    echo-cancel entry points are themselves exception-proof; this
+    wrapper only guards the import so EC machinery can categorically
+    never break the duck/PGA path it rides on.
+    """
+    try:
+        from core import echo_cancel
+
+        if engage:
+            echo_cancel.engage_for_music(trigger=trigger)
+        else:
+            echo_cancel.disengage_for_music(trigger=trigger)
+    except Exception as e:
+        logger.warning(
+            "echo cancel edge hook crashed", engage=engage, error=str(e),
+        )
 
 
 def _duck_percent() -> int:
@@ -660,6 +685,23 @@ def pause_active_playback() -> None:
     )
 
 
+def _duck_restore_sink_target() -> str:
+    """Sink the duck's restore path moves un-parked sink-inputs to.
+
+    ``jarvis_ec_sink`` while the echo-cancel layer is engaged — a
+    stream restored to the raw sink mid-music would bypass the AEC's
+    reference path — otherwise the PA default. Lazy import for the
+    same circularity reason as :func:`_echo_cancel_edge`; falls back
+    to the default sink on any failure.
+    """
+    try:
+        from core.echo_cancel import restore_sink_target
+
+        return restore_sink_target()
+    except Exception:
+        return "@DEFAULT_SINK@"
+
+
 def resume_active_playback() -> None:
     """Reverse the duck: SIGCONT first, then move parked / unmute muted."""
     # SIGCONT BEFORE moves/unmutes — pulse buffers anything the resumed
@@ -677,10 +719,11 @@ def resume_active_playback() -> None:
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
     restored: list[str] = []
+    restore_sink = _duck_restore_sink_target()
     for sink_input_id in player_sink_input_ids_for(_SIGSTOP_PLAYER_BINARIES):
         try:
             r = subprocess.run(
-                ["pactl", "move-sink-input", sink_input_id, "@DEFAULT_SINK@"],
+                ["pactl", "move-sink-input", sink_input_id, restore_sink],
                 timeout=2.0, capture_output=True,
             )
             if r.returncode == 0:
@@ -722,6 +765,7 @@ def resume_active_playback() -> None:
     logger.info(
         "resume_active_playback",
         sigcont=resumed,
+        restore_sink=restore_sink,
         restored_sink_inputs=restored,
         unmuted_sink_inputs=unmuted,
         unducked_sink_inputs=unducked,
