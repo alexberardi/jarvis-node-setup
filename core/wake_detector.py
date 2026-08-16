@@ -4,18 +4,19 @@ The wake-fire pipeline is the spine of every voice command. Two gates
 in strict order:
 
   1. **Score gate** — ``oww.predict()`` must clear the configured static
-     / auto-calibrated threshold (~0.40), in every condition. There is no
-     separate music threshold: in practice the static threshold already
-     separates the two cases — speaker bleed makes OWW score ~0.10–0.18
-     even with nobody speaking, well below 0.40, while a genuine "Hey
-     Jarvis" over playback scores comfortably above it (0.66–0.99 observed
-     on the dev node). This retired the whole music-mode energy gate — the
-     lowered ~0.12 music threshold, the RMS-spike-over-baseline check, and
-     the ``wake_music_trust_score`` bypass. That machinery only existed to
-     make the lowered music threshold usable without firing on bleed, and
-     it was actively discarding real wakes (PRD ``prds/wake-during-music.md``:
+     / auto-calibrated threshold (~0.40) — or, during self-playback, the
+     music-profile threshold ``wake_word_threshold_music`` (default 0.30;
+     see :func:`current_wake_threshold_with_profile`). The music profile
+     is a PURE threshold swap keyed off the cached self-playing flag —
+     nothing else. It is explicitly NOT the June-2026 energy gate reborn:
+     that machinery (the ~0.12 lowered threshold + RMS-spike-over-baseline
+     check + ``wake_music_trust_score`` bypass) was retired because it
+     actively discarded real wakes (PRD ``prds/wake-during-music.md``:
      18 ``wake-suppressed-music-bleed`` events vs 4 fires on the prod
-     kitchen node).
+     kitchen node). 0.30 needs no compensating energy gate: speaker bleed
+     scores 0.10–0.18, comfortably below it, while loud music caps real
+     wakes at 0.14–0.43 — 0.30 recovers the top of that band. CC clip
+     verification absorbs the extra false fires (fail-open doctrine).
 
   2. **Debounce/cool-down gate** — atomic under
      ``voice_filters._wake_gate_lock``. If ``_wake_min_next_ts`` is in
@@ -39,6 +40,7 @@ from jarvis_log_client import JarvisLogger
 
 from core import voice_filters
 from core.barge_in import oww_lock as _oww_lock
+from core.music_control import is_self_playing
 from core.voice_filters import _WAKE_DEBOUNCE_SEC
 from core.wake_calibration import auto_calibrated_wake_threshold
 from utils.config_service import Config
@@ -53,23 +55,52 @@ logger = JarvisLogger(service="jarvis-node")
 
 
 def current_wake_threshold() -> float:
-    """Wake-word detection threshold.
+    """Wake-word detection threshold (float-only compat wrapper).
 
-    A single threshold for all conditions. There is no music-mode
-    variant: the static threshold (~0.40) already rejects speaker bleed,
-    which OWW scores well below it (~0.10–0.18), while a genuine "Hey
-    Jarvis" over playback scores above it — so the same threshold that
-    works in a quiet room works over music.
+    See :func:`current_wake_threshold_with_profile` for the full
+    semantics — this wrapper exists for call sites that only need the
+    number (status prints in voice_listener).
+    """
+    threshold, _profile = current_wake_threshold_with_profile()
+    return threshold
 
-    When ``wake_word_threshold_auto`` is enabled, the threshold is
-    derived from observed wake scores via ``auto_calibrated_wake_threshold``
-    — per-node, per-mic, per-room. Default off so existing nodes' static
-    threshold isn't silently replaced.
+
+def current_wake_threshold_with_profile() -> tuple[float, str]:
+    """Wake-word detection threshold + which profile produced it.
+
+    THE single choke point for the wake threshold. Two profiles:
+
+    * ``"normal"`` — the static ``wake_word_threshold`` (~0.40), or the
+      auto-calibrated value when ``wake_word_threshold_auto`` is on.
+
+    * ``"music"`` — during self-playback (``is_self_playing()``, the
+      cached flag — no pactl round-trip here), the threshold drops to
+      ``wake_word_threshold_music`` (default 0.30). Loud-music physics
+      (June-2026 data): OWW caps at 0.14–0.43 while music plays, so the
+      normal 0.40 discards most real wakes; speaker-bleed-only scores
+      sit at 0.10–0.18. 0.30 sits above the bleed band and harvests the
+      recoverable top of the cap band. This is a pure threshold swap —
+      deliberately NO RMS/energy checks and NO trust scores (the sins
+      of the retired June energy gate; see module docstring). Extra
+      false fires this admits are absorbed by CC verification (clip
+      phrase-match), which is the fail-open backstop. Set
+      ``wake_word_threshold_music`` <= 0 to disable the profile and use
+      the normal threshold during music.
+
+    The profile string is tagged onto the 'Wake fired' structured log
+    (``threshold_profile``) so music-profile fires can be peeled apart
+    from normal fires in Loki per-fire telemetry.
     """
     static_default = Config.get_float("wake_word_threshold", 0.4)
     if Config.get_bool("wake_word_threshold_auto", False):
-        return auto_calibrated_wake_threshold(static_default)
-    return static_default
+        normal = auto_calibrated_wake_threshold(static_default)
+    else:
+        normal = static_default
+    if is_self_playing():
+        music = Config.get_float("wake_word_threshold_music", 0.30)
+        if music > 0:
+            return music, "music"
+    return normal, "normal"
 
 
 def locked_oww_reset(oww_model) -> None:

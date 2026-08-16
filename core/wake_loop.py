@@ -68,7 +68,7 @@ from core.vad_thresholds import (
 )
 from core.wake_calibration import record_legitimate_wake_score
 from core.wake_detector import (
-    current_wake_threshold,
+    current_wake_threshold_with_profile,
     decide_wake_fire,
     locked_oww_reset,
 )
@@ -135,6 +135,15 @@ def _get_resample_poly():
 _bg_executor: ThreadPoolExecutor | None = None
 _wake_paused: threading.Event | None = None
 
+# Two-stage tentative-wake (duck-assisted completion) rolling cool-down:
+# monotonic timestamp of the last tentative trigger. Module-level (not
+# per-outer-iteration) so the "max one tentative per rolling
+# tentative_wake_cooldown_seconds" guard survives wake cycles — a
+# lyric-induced score dip must not strobe the music with duck/resume
+# pairs across consecutive cycles either. Only the wake-loop thread
+# writes it; tests reset it directly.
+_tentative_last_trigger_ts: float = float("-inf")
+
 
 def set_runtime(
     *,
@@ -183,7 +192,8 @@ def run_wake_loop(
         _clip_chunk_samples / bus.rate
         if _clip_chunk_samples else _CHUNK_SECONDS
     )
-    wake_clip_maxlen = max(1, round(WAKE_CLIP_SECONDS / _clip_chunk_secs))
+
+    global _tentative_last_trigger_ts
 
     while True:
         # Safety net: ensure no stale cancel state from a prior
@@ -192,8 +202,55 @@ def run_wake_loop(
 
         # Re-read the wake threshold each outer iteration so mobile-app
         # updates apply without a service restart. Using a local also
-        # keeps the inner loop hot path off the disk.
-        wake_threshold = current_wake_threshold()
+        # keeps the inner loop hot path off the disk. The profile
+        # ('normal'|'music') is the Layer-A music threshold swap —
+        # snapshotted here alongside the value for per-fire telemetry.
+        wake_threshold, wake_threshold_profile = (
+            current_wake_threshold_with_profile()
+        )
+
+        # Two-stage tentative-wake (duck-assisted completion) tunables —
+        # read per outer iteration like every other voice-loop knob
+        # (Config.get_* hits disk; NEVER read these per chunk). During
+        # self-playback, a chunk scoring in
+        # [tentative_threshold, wake_threshold) triggers a TENTATIVE
+        # duck: the user is likely mid-phrase ("hey jar–" duck "–vis"),
+        # and once the music drops to duck level the remaining frames
+        # arrive clean, letting the cumulative OWW score complete the
+        # fire that loud music would otherwise cap below threshold.
+        # <= 0 disables the layer entirely.
+        tentative_threshold = Config.get_float(
+            "wake_word_tentative_threshold", 0.20,
+        )
+        tentative_window = Config.get_float(
+            "tentative_wake_window_seconds", 1.6,
+        )
+        tentative_cooldown = Config.get_float(
+            "tentative_wake_cooldown_seconds", 10.0,
+        )
+        # Per-cycle tentative state (pure score comparisons on the hot
+        # path — the only side effects are the bg-executor duck/resume
+        # submits at trigger/expiry, never per chunk).
+        tentative_active = False
+        tentative_started_ts = 0.0
+        tentative_score_peak = 0.0
+        tentative_triggered_cycle = False
+
+        # Consumed-chunks wake-clip deque sizing. Normally
+        # ~WAKE_CLIP_SECONDS of the bus's chunk cadence (80 ms chunks →
+        # 25). When the tentative layer is armed (enabled + self-playback
+        # right now), extend coverage by the tentative window: a fire can
+        # land up to tentative_window after the duck triggered, and the
+        # clip must still contain the FULL phrase including the pre-duck
+        # chunks ("hey jar–"). Bounded: default 2.0 s + 1.6 s = 3.6 s ≈
+        # 45 chunks (~340 KB at 48 kHz mono int16).
+        _tentative_clip_extra = (
+            tentative_window
+            if (tentative_threshold > 0 and is_self_playing()) else 0.0
+        )
+        wake_clip_maxlen = max(1, round(
+            (WAKE_CLIP_SECONDS + _tentative_clip_extra) / _clip_chunk_secs
+        ))
 
         # Small queue (4 * 80ms = 320ms) on the latency-critical wake path.
         # The default 128-deep (~10.24s) drop-oldest FIFO let a sustained
@@ -331,14 +388,73 @@ def run_wake_loop(
                 # so we don't double-fire on the next 80 ms chunk of the
                 # same OWW utterance.
                 now_mono = time.monotonic()
+                # ── Tentative-wake bookkeeping (Layer B) ──────────────
+                # Pure comparisons on the hot path. Peak-track while a
+                # tentative window is open; expire it quietly (resume
+                # the music, structured log, NO ack / NO LED work) when
+                # the window lapses without a completing fire.
+                if tentative_active:
+                    if score > tentative_score_peak:
+                        tentative_score_peak = float(score)
+                    if now_mono - tentative_started_ts >= tentative_window:
+                        tentative_active = False
+                        if _bg_executor is not None:
+                            _bg_executor.submit(resume_active_playback)
+                        logger.info(
+                            "tentative wake expired",
+                            score_peak=round(tentative_score_peak, 3),
+                            window=tentative_window,
+                            threshold_used=wake_threshold,
+                            threshold_profile=wake_threshold_profile,
+                            tentative_threshold=tentative_threshold,
+                        )
                 verdict = decide_wake_fire(
                     score=score,
                     threshold=wake_threshold,
                     now_mono=now_mono,
                 )
                 fire_wake = verdict.should_fire
+                if (
+                    not fire_wake
+                    and not tentative_active
+                    and tentative_threshold > 0
+                    and tentative_threshold <= score < wake_threshold
+                    and now_mono - _tentative_last_trigger_ts
+                        >= tentative_cooldown
+                    and is_self_playing()  # cached flag — no pactl here
+                ):
+                    # Score landed in the tentative band during
+                    # self-playback: duck the music NOW and keep scoring.
+                    # A tentative is NOT a fire — no debounce arming, no
+                    # ack, no calibration recording, no LEDs. The
+                    # rolling cool-down (module-level, survives cycles)
+                    # keeps lyric-induced dips from strobing the music.
+                    tentative_active = True
+                    tentative_triggered_cycle = True
+                    tentative_started_ts = now_mono
+                    tentative_score_peak = float(score)
+                    _tentative_last_trigger_ts = now_mono
+                    if _bg_executor is not None:
+                        _bg_executor.submit(pause_active_playback)
+                    logger.info(
+                        "tentative wake triggered",
+                        score=round(float(score), 3),
+                        tentative_threshold=tentative_threshold,
+                        threshold_used=wake_threshold,
+                        threshold_profile=wake_threshold_profile,
+                        window=tentative_window,
+                    )
                 if fire_wake:
                     t_wake_fired = now_mono
+                    # Tentative completion: the fire landed while a
+                    # tentative duck window was open — the music was
+                    # already ducked, so the normal fire path below is
+                    # smoother/faster (its own pause_active_playback
+                    # submit is idempotent against the tentative's; the
+                    # saved-volume guard in music_control prevents
+                    # double-duck). Consume the window either way.
+                    tentative_completed = tentative_active
+                    tentative_active = False
                     # Snapshot the score for the auto-calibrator. The
                     # ``score`` variable will be overwritten when the
                     # outer loop iterates again; we need it later
@@ -414,6 +530,15 @@ def run_wake_loop(
                         rms_stats=rms_stats,
                         drained_chunks=drained_chunks_cycle,
                         self_playback=self_playback,
+                        # Per-fire layer tags: which threshold profile
+                        # admitted this fire (Layer A) and whether a
+                        # tentative duck was involved (Layer B) — so
+                        # each detection layer can be peeled back with
+                        # data from Loki.
+                        threshold_used=wake_threshold,
+                        threshold_profile=wake_threshold_profile,
+                        tentative_triggered=tentative_triggered_cycle,
+                        tentative_completed=tentative_completed,
                     )
                     # Lock the per-cycle silence threshold to the ambient
                     # noise floor observed RIGHT before wake. Used below
@@ -488,6 +613,22 @@ def run_wake_loop(
         # suppressed high score still needs to fall through to the alert
         # drain rather than be treated as a wake.
         if not fired:
+            # A tentative duck that was still open when the alert-check
+            # broke the inner loop must not leave the music ducked
+            # through the alert drain and beyond — expire it here.
+            if tentative_active:
+                tentative_active = False
+                if _bg_executor is not None:
+                    _bg_executor.submit(resume_active_playback)
+                logger.info(
+                    "tentative wake expired",
+                    score_peak=round(tentative_score_peak, 3),
+                    window=tentative_window,
+                    threshold_used=wake_threshold,
+                    threshold_profile=wake_threshold_profile,
+                    tentative_threshold=tentative_threshold,
+                    reason="alert_drain_break",
+                )
             try:
                 drain_alert_announcements(
                     bus, command_service, stt_provider, validation_handler,

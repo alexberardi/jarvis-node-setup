@@ -123,7 +123,14 @@ def _isolate_loop(monkeypatch):
     monkeypatch.setattr(wake_loop, "_wake_paused", paused)
 
     # Threshold + config helpers
-    monkeypatch.setattr(wake_loop, "current_wake_threshold", lambda: 0.5)
+    monkeypatch.setattr(
+        wake_loop, "current_wake_threshold_with_profile",
+        lambda: (0.5, "normal"),
+    )
+    # Reset the tentative-wake rolling cool-down so cases are hermetic.
+    monkeypatch.setattr(
+        wake_loop, "_tentative_last_trigger_ts", float("-inf")
+    )
     monkeypatch.setattr(wake_loop, "_pre_wake_vad_threshold", lambda: 500.0)
     monkeypatch.setattr(
         wake_loop, "_adaptive_silence_threshold", lambda stats: None
@@ -831,6 +838,341 @@ def test_self_playback_fire_excluded_from_wake_calibration(monkeypatch):
     _run(bus, oww)
 
     record.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Layer A telemetry — threshold_used / threshold_profile on 'Wake fired'
+# ---------------------------------------------------------------------------
+
+
+def _wake_fired_calls(logger_mock):
+    """All structured 'Wake fired' logger.info calls."""
+    return [
+        c for c in logger_mock.info.call_args_list
+        if c.args and c.args[0] == "Wake fired"
+    ]
+
+
+def _log_calls(logger_mock, message: str):
+    return [
+        c for c in logger_mock.info.call_args_list
+        if c.args and c.args[0] == message
+    ]
+
+
+def test_wake_fired_log_tags_normal_threshold_profile(monkeypatch):
+    """Quiet-room fire: 'Wake fired' carries threshold_used +
+    threshold_profile='normal' and the Layer-B fields as False."""
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    calls = _wake_fired_calls(log)
+    assert len(calls) == 1
+    kw = calls[0].kwargs
+    assert kw["threshold_used"] == pytest.approx(0.5)
+    assert kw["threshold_profile"] == "normal"
+    assert kw["tentative_triggered"] is False
+    assert kw["tentative_completed"] is False
+
+
+def test_wake_fired_log_tags_music_threshold_profile(monkeypatch):
+    """Music-profile fire: the profile string and the effective (music)
+    threshold ride the per-fire telemetry so Layer A can be peeled back
+    with data."""
+    monkeypatch.setattr(
+        wake_loop, "current_wake_threshold_with_profile",
+        lambda: (0.3, "music"),
+    )
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.35])  # below normal 0.4/0.5, above music 0.3
+    _run(bus, oww)
+
+    calls = _wake_fired_calls(log)
+    assert len(calls) == 1
+    kw = calls[0].kwargs
+    assert kw["threshold_used"] == pytest.approx(0.3)
+    assert kw["threshold_profile"] == "music"
+
+
+# ---------------------------------------------------------------------------
+# Layer B — two-stage tentative wake (duck-assisted completion)
+# ---------------------------------------------------------------------------
+
+
+class NoDrainBus(FakeBus):
+    """One chunk per blocking get: the drain-to-newest pass sees an
+    empty queue, so every enqueued chunk is scored in sequence — the
+    shape tentative-wake tests need (trigger chunk, then completion or
+    expiry chunks)."""
+
+    def subscribe(self, tag: str, maxsize: int | None = None):
+        FakeBus.subscribe(self, tag, maxsize=maxsize)
+        outer = self
+
+        class _Q:
+            def get(self, timeout=None):
+                return outer._q.get(timeout=timeout)
+
+            def get_nowait(self):
+                raise queue.Empty
+
+        return _Q()
+
+
+def _tentative_config(monkeypatch, **overrides):
+    """Config.get_float with tentative-layer overrides on top of prod
+    defaults (tentative 0.20, window 1.6 s, cooldown 10 s)."""
+    values = dict(overrides)
+    monkeypatch.setattr(
+        wake_loop.Config, "get_float",
+        classmethod(lambda cls, key, default=0.0: values.get(key, default)),
+    )
+
+
+def test_tentative_duck_then_completion_fires_once(monkeypatch):
+    """A tentative-band score during self-playback submits the duck
+    (pause_active_playback) WITHOUT firing; when a subsequent score
+    crosses the threshold inside the window, the normal fire path runs
+    exactly once and 'Wake fired' carries tentative_triggered=True +
+    tentative_completed=True."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    pause = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+    handle = MagicMock()
+    monkeypatch.setattr(wake_loop, "handle_keyword_detected", handle)
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = NoDrainBus(
+        rate=16000, chunks=[_chunk_bytes(1280), _chunk_bytes(1280)],
+    )
+    oww = FakeOWW(scores=[0.25, 0.9])
+    _run(bus, oww)
+
+    # Duck submitted at tentative time AND by the normal fire path
+    # (idempotent in music_control) — the tentative one came first.
+    assert pause.call_count == 2
+    handle.assert_called_once()
+    assert len(_log_calls(log, "tentative wake triggered")) == 1
+    calls = _wake_fired_calls(log)
+    assert len(calls) == 1
+    assert calls[0].kwargs["tentative_triggered"] is True
+    assert calls[0].kwargs["tentative_completed"] is True
+    # No expiry line — the window completed.
+    assert _log_calls(log, "tentative wake expired") == []
+
+
+def test_tentative_expiry_restores_music_and_plays_no_ack(monkeypatch):
+    """A tentative that never completes must resume the music quietly:
+    structured expiry line with score_peak + window, NO wake response
+    (no ack), no fire, no calibration recording."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    _tentative_config(monkeypatch, tentative_wake_window_seconds=0.0)
+    pause = MagicMock()
+    resume = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+    monkeypatch.setattr(wake_loop, "resume_active_playback", resume)
+    handle = MagicMock()
+    monkeypatch.setattr(wake_loop, "handle_keyword_detected", handle)
+    record = MagicMock()
+    monkeypatch.setattr(wake_loop, "record_legitimate_wake_score", record)
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+
+    # Chunk 1 triggers the tentative (0.25 in [0.2, 0.5)); chunk 2's
+    # low score arrives after the (zero-length) window → expiry.
+    bus = NoDrainBus(
+        rate=16000, chunks=[_chunk_bytes(1280), _chunk_bytes(1280)],
+    )
+    oww = FakeOWW(scores=[0.25, 0.05])
+    _run(bus, oww)
+
+    pause.assert_called_once()      # the tentative duck
+    resume.assert_called_once()     # the quiet restore on expiry
+    handle.assert_not_called()      # NO ack for a tentative
+    record.assert_not_called()      # a tentative is NOT a fire
+    expiries = _log_calls(log, "tentative wake expired")
+    assert len(expiries) == 1
+    assert expiries[0].kwargs["score_peak"] == pytest.approx(0.25)
+    assert expiries[0].kwargs["window"] == 0.0
+    assert _wake_fired_calls(log) == []
+
+
+def test_tentative_cooldown_limits_to_one_per_window(monkeypatch):
+    """Max one tentative per rolling cooldown: after a trigger+expiry,
+    another tentative-band score inside the cooldown must NOT re-duck
+    (lyric-induced dips can't strobe the music)."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    _tentative_config(monkeypatch, tentative_wake_window_seconds=0.0)
+    pause = MagicMock()
+    resume = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+    monkeypatch.setattr(wake_loop, "resume_active_playback", resume)
+
+    # trigger → expire → in-band again (inside the 10 s cooldown) → quiet
+    bus = NoDrainBus(
+        rate=16000, chunks=[_chunk_bytes(1280) for _ in range(4)],
+    )
+    oww = FakeOWW(scores=[0.25, 0.05, 0.3, 0.05])
+    _run(bus, oww)
+
+    pause.assert_called_once()
+    resume.assert_called_once()
+
+
+def test_tentative_disabled_by_config(monkeypatch):
+    """wake_word_tentative_threshold <= 0 disables the layer: an
+    in-band score during self-playback never ducks."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    _tentative_config(monkeypatch, wake_word_tentative_threshold=0.0)
+    pause = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+
+    bus = NoDrainBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.25])
+    _run(bus, oww)
+
+    pause.assert_not_called()
+
+
+def test_tentative_requires_self_playback(monkeypatch):
+    """Quiet room (is_self_playing False): tentative-band scores never
+    trigger a duck — the layer exists only under self-playback."""
+    pause = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+
+    bus = NoDrainBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.25])
+    _run(bus, oww)
+
+    pause.assert_not_called()
+
+
+def test_debounce_suppressed_high_score_does_not_trigger_tentative(monkeypatch):
+    """A score AT/ABOVE the wake threshold whose fire was suppressed by
+    the debounce gate is not 'tentative band' — no duck. The tentative
+    band is [tentative_threshold, wake_threshold) only."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+
+    class _NoFire:
+        should_fire = False
+
+    monkeypatch.setattr(wake_loop, "decide_wake_fire", lambda **kw: _NoFire())
+    pause = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+
+    bus = NoDrainBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    pause.assert_not_called()
+
+
+def test_alert_break_expires_open_tentative(monkeypatch):
+    """If the alert-check breaks the inner loop while a tentative window
+    is open, the music must be resumed (not left ducked through the
+    alert drain)."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    pause = MagicMock()
+    resume = MagicMock()
+    monkeypatch.setattr(wake_loop, "pause_active_playback", pause)
+    monkeypatch.setattr(wake_loop, "resume_active_playback", resume)
+    log = MagicMock()
+    monkeypatch.setattr(wake_loop, "logger", log)
+
+    # First iteration triggers the tentative; the second iteration's
+    # alert check breaks the loop with the window still open.
+    checks = {"n": 0}
+
+    def _alerts_pending():
+        checks["n"] += 1
+        return checks["n"] >= 2
+
+    monkeypatch.setattr(wake_loop, "_ALERT_CHECK_INTERVAL", 0)
+    monkeypatch.setattr(
+        wake_loop, "has_pending_high_priority_alerts", _alerts_pending,
+    )
+    drain = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "drain_alert_announcements", drain)
+
+    bus = NoDrainBus(rate=16000, chunks=[_chunk_bytes(1280)])
+    oww = FakeOWW(scores=[0.25])
+    _run(bus, oww)
+
+    pause.assert_called_once()
+    resume.assert_called_once()
+    expiries = _log_calls(log, "tentative wake expired")
+    assert len(expiries) == 1
+    assert expiries[0].kwargs["reason"] == "alert_drain_break"
+    drain.assert_called_once()
+
+
+def test_clip_deque_extended_by_tentative_window_during_music(monkeypatch):
+    """During self-playback with the tentative layer enabled, the
+    consumed-chunks clip deque covers WAKE_CLIP_SECONDS + the tentative
+    window (2.0 + 1.6 = 3.6 s → 45 chunks at 80 ms) so the clip still
+    contains the FULL phrase including the pre-duck chunks when a fire
+    lands late in the window. Memory stays bounded (maxlen)."""
+    monkeypatch.setattr(wake_loop, "is_self_playing", lambda: True)
+    n = 50
+    chunks = [_distinct_chunk(v + 1) for v in range(n)]
+    captured: dict = {}
+
+    def _capture(frames, bus):
+        captured["frames"] = list(frames)
+        return "/tmp/wake.wav"
+
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames", _capture,
+    )
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=chunks)
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    # (2.0 + 1.6) / 0.08 = 45 chunks, newest kept.
+    assert len(captured["frames"]) == 45
+    assert captured["frames"] == chunks[-45:]
+
+
+def test_clip_deque_not_extended_in_quiet_room(monkeypatch):
+    """Control: without self-playback the deque stays at the classic
+    WAKE_CLIP_SECONDS sizing (25 chunks) even with the tentative layer
+    enabled by default — no memory growth for the common case."""
+    n = 30
+    chunks = [_distinct_chunk(v + 1) for v in range(n)]
+    captured: dict = {}
+
+    def _capture(frames, bus):
+        captured["frames"] = list(frames)
+        return "/tmp/wake.wav"
+
+    monkeypatch.setattr(
+        wake_loop, "try_capture_wake_audio_from_frames", _capture,
+    )
+    fu = MagicMock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
+
+    bus = FakeBus(rate=16000, chunks=chunks)
+    oww = FakeOWW(scores=[0.9])
+    _run(bus, oww)
+
+    assert len(captured["frames"]) == 25
 
 
 def test_high_score_suppressed_then_alert_drains(monkeypatch):
