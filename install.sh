@@ -443,10 +443,18 @@ unload-module module-suspend-on-idle
 # Spotify after a wake leaves playback silent until the user (or this CLI)
 # manually unmutes it. Observed 2026-06-09 on dev Pi.
 #
-# Disabling restore_muted is the correct knob — PA still remembers per-app
-# volume (a useful UX win for non-jarvis apps), but never re-applies a saved
+# Disabling restore_muted is the correct knob — PA never re-applies a saved
 # mute to a new stream. restore_device=false was already set upstream;
 # preserve it so we don't regress the existing sink-routing behavior.
+#
+# restore_volume=false joined 2026-08 with the volume-duck change: the duck
+# now sets the mute-class sink-input VOLUME to music_duck_percent instead of
+# muting, so PA's cache can capture the ducked volume the same way it
+# captured mute=yes above — a respawned app stream (fresh go-librespot
+# sink-input after a track change / stop-start) would inherit ~20% volume
+# permanently. The cost is PA no longer remembering per-app volume for
+# non-jarvis apps, which is acceptable: go-librespot/shairport re-assert the
+# phone-slider volume on their own streams anyway.
 configure_pulseaudio_stream_restore() {
   if [ "$SKIP_AUDIO" -eq 1 ]; then
     return
@@ -456,7 +464,7 @@ configure_pulseaudio_stream_restore() {
   mkdir -p "$cfg_dir"
   local content=".nofail
 unload-module module-stream-restore
-load-module module-stream-restore restore_device=false restore_muted=false
+load-module module-stream-restore restore_device=false restore_muted=false restore_volume=false
 "
   if [ ! -f "$cfg_file" ] || [ "$(cat "$cfg_file")" != "$content" ]; then
     printf '%s' "$content" > "$cfg_file"

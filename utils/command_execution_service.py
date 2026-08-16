@@ -556,6 +556,8 @@ class CommandExecutionService:
         turn_source: Optional[str] = None,
         wake_confidence: Optional[float] = None,
         follow_up_iteration: Optional[int] = None,
+        self_playback: Optional[bool] = None,
+        self_playback_kind: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a voice command through the unified streaming endpoint.
@@ -639,6 +641,8 @@ class CommandExecutionService:
                 turn_source=turn_source,
                 wake_confidence=wake_confidence,
                 follow_up_iteration=follow_up_iteration,
+                self_playback=self_playback,
+                self_playback_kind=self_playback_kind,
             )
 
             # Signal the ack thread: the main response is here. If the ack

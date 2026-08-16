@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from core import music_control
+from core import echo_cancel, music_control
 
 
 def _proc(stdout: str = "", returncode: int = 0) -> MagicMock:
@@ -48,6 +48,72 @@ def _entry(index: int, binary: str, corked: bool = False) -> dict:
         "corked": corked,
         "properties": {"application.process.binary": binary},
     }
+
+
+def _entry_with_volume(
+    index: int, binary: str, pct: int, corked: bool = False,
+) -> dict:
+    """A sink-input carrying pactl's per-channel volume block."""
+    channel = {
+        "value": int(65536 * pct / 100),
+        "value_percent": f"{pct}%",
+        "db": "0.00 dB",
+    }
+    e = _entry(index, binary, corked)
+    e["volume"] = {"front-left": dict(channel), "front-right": dict(channel)}
+    return e
+
+
+def _reset_pga_state():
+    music_control._pga_engaged = False
+    music_control._saved_normal_pga_percent = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_duck_state(monkeypatch):
+    """Duck + PGA state is module-level — reset around every test so
+    ordering can't leak state. Also stub the amixer PGA primitives to
+    "no codec present" so tests never spawn real amixer subprocesses
+    (audio_volume has its own subprocess access, which the per-test
+    ``music_control.subprocess`` patches don't cover); PGA-specific
+    tests override these. The echo-cancel edge hooks are stubbed to
+    no-ops for the same reason (echo_cancel runs its own pactl
+    subprocesses); EC-specific integration lives in
+    tests/test_echo_cancel.py."""
+    _reset_pga_state()
+    echo_cancel._reset_state_for_tests()
+    monkeypatch.setattr(echo_cancel, "engage_for_music", lambda **kw: None)
+    monkeypatch.setattr(echo_cancel, "disengage_for_music", lambda **kw: None)
+    music_control._saved_sink_input_volumes.clear()
+    music_control.set_self_playing(False)
+    monkeypatch.setattr(
+        music_control.audio_volume, "get_capture_pga_percent", lambda: None,
+    )
+    monkeypatch.setattr(
+        music_control.audio_volume, "set_capture_pga_percent", lambda pct: False,
+    )
+    yield
+    _reset_pga_state()
+    music_control._saved_sink_input_volumes.clear()
+    music_control.set_self_playing(False)
+
+
+@pytest.fixture
+def _duck_20(monkeypatch):
+    """Pin music_duck_percent to the default 20 regardless of env/config."""
+    monkeypatch.setattr(
+        music_control.Config, "get_int",
+        staticmethod(lambda key, default: 20 if key == "music_duck_percent" else default),
+    )
+
+
+@pytest.fixture
+def _duck_0(monkeypatch):
+    """music_duck_percent=0 — the legacy full-mute opt-out."""
+    monkeypatch.setattr(
+        music_control.Config, "get_int",
+        staticmethod(lambda key, default: 0 if key == "music_duck_percent" else default),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +447,259 @@ class TestResumeActivePlayback:
 
 
 # ---------------------------------------------------------------------------
+# Volume duck (mute-only class) — duck to music_duck_percent, save the
+# original volume, restore it exactly once. SIGSTOP class is untouched.
+# ---------------------------------------------------------------------------
+
+
+class TestVolumeDuck:
+
+    def _runner_with(self, sink_inputs_json: str, calls: list):
+        def runner(cmd, **kw):
+            calls.append(list(cmd))
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return _proc(stdout=sink_inputs_json)
+            return _proc()
+        return runner
+
+    def test_mute_class_ducked_not_muted(self, monkeypatch, _duck_20):
+        """go-librespot at 61% gets set-sink-input-volume 20%, no mute;
+        the original 61% is saved for the restore."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "20%"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-mute"] for cmd in calls
+        ), "duck path must not fall back to mute when volume is readable"
+        assert music_control._saved_sink_input_volumes == {"11": 61}
+
+    def test_sigstop_class_unaffected_by_duck(self, monkeypatch, _duck_20):
+        """mpv keeps the exact move-to-null + SIGSTOP treatment; the duck
+        never touches its volume."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(10, "/usr/bin/mpv", 100),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert any(
+            cmd[:2] == ["pactl", "move-sink-input"]
+            and "10" in cmd and "jarvis_duck_null" in cmd
+            for cmd in calls
+        )
+        assert any(
+            cmd[:3] == ["pkill", "-STOP", "-x"] and "mpv" in cmd
+            for cmd in calls
+        )
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_repeat_duck_does_not_reread_ducked_volume(self, monkeypatch, _duck_20):
+        """The duck fires N times per turn (wake fire + follow-up
+        re-ducks). The second fire sees the ALREADY-DUCKED 20% in pactl —
+        it must keep the saved 61%, not overwrite it with 20 (which would
+        make the restore 'restore' music to duck level)."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+        assert music_control._saved_sink_input_volumes == {"11": 61}
+
+        # Second fire: pactl now reports the ducked volume.
+        calls.clear()
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 20),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert music_control._saved_sink_input_volumes == {"11": 61}, \
+            "idempotence guard: saved original must survive repeat ducks"
+        # Re-asserting the duck level itself is fine (and harmless).
+        assert ["pactl", "set-sink-input-volume", "11", "20%"] in calls
+
+    def test_resume_restores_saved_volume_and_clears(self, monkeypatch, _duck_20):
+        """Restore sets the saved original back (NOT a flat 100% — the
+        phone's volume slider maps onto this sink-input) and clears the
+        dict so the next turn re-captures fresh."""
+        music_control._saved_sink_input_volumes["11"] = 61
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 20),
+            ), calls),
+        )
+        music_control.resume_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "61%"] in calls
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_resume_clears_saved_volumes_even_when_pactl_raises(self, monkeypatch):
+        """Fail-open: a raising restore path must still clear the dict —
+        a stale entry would poison the NEXT turn's idempotence guard with
+        a volume from a dead sink-input."""
+        music_control._saved_sink_input_volumes["11"] = 61
+
+        def explode(cmd, **kw):
+            raise FileNotFoundError("pactl")
+
+        monkeypatch.setattr(music_control.subprocess, "run", explode)
+        music_control.resume_active_playback()  # must not raise
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_duck_percent_zero_keeps_legacy_mute(self, monkeypatch, _duck_0):
+        """music_duck_percent=0 is the explicit opt-out: full mute, no
+        volume writes, nothing saved."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-mute", "11", "1"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_unreadable_volume_falls_back_to_mute(self, monkeypatch, _duck_20):
+        """No parsable volume block → mute that sink-input instead of
+        ducking it (ducking without a saved original would strand the
+        stream at duck level; the unconditional unmute on restore always
+        recovers a mute)."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with(_sink_inputs(
+                _entry(11, "/usr/bin/go-librespot"),   # no "volume" key
+            ), calls),
+        )
+        music_control.pause_active_playback()
+
+        assert ["pactl", "set-sink-input-mute", "11", "1"] in calls
+        assert not any(
+            cmd[:2] == ["pactl", "set-sink-input-volume"] for cmd in calls
+        )
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_resume_restores_multiple_saved_volumes(self, monkeypatch, _duck_20):
+        """Two ducked streams (AirPlay + mpd) each get their own original
+        back."""
+        music_control._saved_sink_input_volumes.update({"11": 61, "12": 85})
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            self._runner_with("[]", calls),
+        )
+        music_control.resume_active_playback()
+
+        assert ["pactl", "set-sink-input-volume", "11", "61%"] in calls
+        assert ["pactl", "set-sink-input-volume", "12", "85%"] in calls
+        assert music_control._saved_sink_input_volumes == {}
+
+    def test_volume_percent_parser_handles_mono_and_garbage(self):
+        assert music_control._volume_percent_from_item(
+            {"volume": {"mono": {"value_percent": "40%"}}}
+        ) == 40
+        # Max across mismatched channels.
+        assert music_control._volume_percent_from_item(
+            {"volume": {
+                "front-left": {"value_percent": "30%"},
+                "front-right": {"value_percent": "50%"},
+            }}
+        ) == 50
+        assert music_control._volume_percent_from_item({}) is None
+        assert music_control._volume_percent_from_item(
+            {"volume": "garbage"}
+        ) is None
+        assert music_control._volume_percent_from_item(
+            {"volume": {"mono": {"value_percent": "loud"}}}
+        ) is None
+
+
+# ---------------------------------------------------------------------------
+# Self-playing cached flag — refreshed from the duck's enumeration.
+# ---------------------------------------------------------------------------
+
+
+class TestSelfPlayingFlag:
+
+    def test_set_and_get(self):
+        assert music_control.is_self_playing() is False
+        music_control.set_self_playing(True)
+        assert music_control.is_self_playing() is True
+        music_control.set_self_playing(False)
+        assert music_control.is_self_playing() is False
+
+    def test_pause_refreshes_flag_true_on_uncorked_player(self, monkeypatch, _duck_20):
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else _sink_inputs(
+                    _entry_with_volume(11, "/usr/bin/go-librespot", 61,
+                                       corked=False),
+                )
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is True
+
+    def test_pause_refreshes_flag_false_when_idle(self, monkeypatch, _duck_20):
+        """A stale True (music stopped externally since the last turn) is
+        corrected by the next duck's enumeration."""
+        music_control.set_self_playing(True)
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else "[]"
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is False
+
+    def test_corked_daemon_does_not_set_flag(self, monkeypatch, _duck_20):
+        """spotifyd idling (corked sink-input) is not self-playback."""
+        monkeypatch.setattr(
+            music_control.subprocess, "run",
+            lambda cmd, **kw: _proc(stdout=(
+                "123\tjarvis_duck_null\tmodule-null-sink\n"
+                if cmd[:3] == ["pactl", "list", "short"]
+                else _sink_inputs(_entry(42, "/usr/bin/spotifyd", corked=True))
+            )),
+        )
+        music_control.pause_active_playback()
+        assert music_control.is_self_playing() is False
+
+
+# ---------------------------------------------------------------------------
 # _resolve_takeover_binary — SDK property wins; falls back to legacy map.
 # ---------------------------------------------------------------------------
 
@@ -570,3 +889,448 @@ class TestStopOtherMusicPlayers:
         music_control.stop_other_music_players(except_binary=None)
         # mpv still got SIGINT despite mpd's strategy raising
         assert pkilled == ["mpv"]
+
+
+# ---------------------------------------------------------------------------
+# Control-API reachability invariant (prod incident 2026-08-15): daemon
+# players with control APIs must NEVER be SIGSTOP-class — a frozen
+# daemon's API deadlocks the very voice command sent to control it
+# ("stop the music" → localhost:3678 timeout ×3 in the kitchen). This
+# regression test pins the class membership so a future refactor can't
+# silently move them.
+# ---------------------------------------------------------------------------
+
+
+class TestControlApiReachability:
+
+    @pytest.mark.parametrize(
+        "binary", ["go-librespot", "mpd", "shairport-sync"],
+    )
+    def test_control_api_daemons_are_duck_class(self, binary):
+        assert binary in music_control._MUTE_ONLY_PLAYER_BINARIES, (
+            f"{binary} must stay in the mute/duck class — it answers a "
+            f"control protocol that voice commands depend on"
+        )
+
+    @pytest.mark.parametrize(
+        "binary", ["go-librespot", "mpd", "shairport-sync"],
+    )
+    def test_control_api_daemons_never_sigstop_class(self, binary):
+        assert binary not in music_control._SIGSTOP_PLAYER_BINARIES, (
+            f"{binary} in the SIGSTOP set would freeze its control API "
+            f"mid-turn — 'stop the music' would deadlock (2026-08-15 "
+            f"kitchen incident class)"
+        )
+
+    def test_player_classes_are_disjoint(self):
+        overlap = set(music_control._SIGSTOP_PLAYER_BINARIES) & set(
+            music_control._MUTE_ONLY_PLAYER_BINARIES
+        )
+        assert overlap == set(), (
+            f"a binary in both classes would be muted AND frozen: {overlap}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Duck blind-spot logging (prod incident 2026-08-15): the duck logged
+# "parked=[] muted=[] sigstopped=[]" while Spotify audibly played —
+# either the enumeration failed silently or the player binary wasn't in
+# our match set. Both cases must now be visible in the logs.
+# ---------------------------------------------------------------------------
+
+
+class _LogRecorder:
+    """Drop-in for music_control.logger capturing (msg, kwargs) pairs."""
+
+    def __init__(self) -> None:
+        self.infos: list[tuple[str, dict]] = []
+        self.warnings: list[tuple[str, dict]] = []
+
+    def info(self, msg, **kw):
+        self.infos.append((msg, kw))
+
+    def warning(self, msg, **kw):
+        self.warnings.append((msg, kw))
+
+    def debug(self, msg, **kw):
+        pass
+
+    def error(self, msg, **kw):
+        pass
+
+
+def _pause_log(recorder: _LogRecorder) -> dict:
+    """The kwargs of the final pause_active_playback summary log."""
+    return next(
+        kw for msg, kw in recorder.infos if msg == "pause_active_playback"
+    )
+
+
+class TestDuckBlindSpotLogging:
+
+    def _run_pause(self, monkeypatch, json_handler) -> _LogRecorder:
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        def runner(cmd, **kw):
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return json_handler(cmd)
+            return _proc()
+
+        monkeypatch.setattr(music_control.subprocess, "run", runner)
+        music_control.pause_active_playback()
+        return recorder
+
+    def test_enumeration_timeout_logs_warning(self, monkeypatch, _duck_20):
+        def handler(cmd):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=2.0)
+
+        recorder = self._run_pause(monkeypatch, handler)
+        assert any(
+            "enumeration FAILED" in msg and kw.get("failure") == "timeout"
+            for msg, kw in recorder.warnings
+        ), "a pactl timeout must produce a WARNING with the failure class"
+        assert _pause_log(recorder)["enumeration_failure"] == "timeout"
+
+    def test_enumeration_nonzero_exit_logs_warning(self, monkeypatch, _duck_20):
+        recorder = self._run_pause(
+            monkeypatch, lambda cmd: _proc(returncode=1),
+        )
+        assert any(
+            kw.get("failure") == "nonzero_exit:1"
+            for _msg, kw in recorder.warnings
+        )
+        assert _pause_log(recorder)["enumeration_failure"] == "nonzero_exit:1"
+
+    def test_enumeration_parse_error_logs_warning(self, monkeypatch, _duck_20):
+        recorder = self._run_pause(
+            monkeypatch, lambda cmd: _proc(stdout="not json"),
+        )
+        assert any(
+            kw.get("failure") == "parse_error"
+            for _msg, kw in recorder.warnings
+        )
+        assert _pause_log(recorder)["enumeration_failure"] == "parse_error"
+
+    def test_success_logs_total_and_unmatched_deduped(self, monkeypatch, _duck_20):
+        """The blind-spot case made visible: an unknown player binary
+        shows up in unmatched_binaries; total_sink_inputs counts ALL
+        sink-inputs, not just matched players; names are deduped."""
+        recorder = self._run_pause(
+            monkeypatch,
+            lambda cmd: _proc(stdout=_sink_inputs(
+                _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+                _entry(20, "/usr/bin/firefox"),
+                _entry(21, "/usr/bin/firefox"),        # dup binary
+                _entry(22, "/opt/spotify/spotify"),    # the blind spot
+            )),
+        )
+        assert recorder.warnings == [], "successful enumeration must not warn"
+        log = _pause_log(recorder)
+        assert log["total_sink_inputs"] == 4
+        assert log["unmatched_binaries"] == ["firefox", "spotify"]
+        assert log["enumeration_failure"] is None
+
+    def test_success_with_no_sink_inputs_logs_zero_total(self, monkeypatch, _duck_20):
+        """A genuinely-empty enumeration is distinguishable from a failed
+        one: total=0 and enumeration_failure=None."""
+        recorder = self._run_pause(monkeypatch, lambda cmd: _proc(stdout="[]"))
+        assert recorder.warnings == []
+        log = _pause_log(recorder)
+        assert log["total_sink_inputs"] == 0
+        assert log["unmatched_binaries"] == []
+        assert log["enumeration_failure"] is None
+
+
+# ---------------------------------------------------------------------------
+# Self-playback mic-gain (PGA) profile — drop the capture PGA to
+# music_pga_percent while the node's own music plays (the 60%/+35.5dB
+# install-era default clips the ADC during music; 49%/+29dB is clean —
+# prds/wake-during-music/findings-2026-06-03.md), restore the normal
+# gain when it stops.
+# ---------------------------------------------------------------------------
+
+
+class _FakePga:
+    """Stand-in for the amixer PGA primitives in utils.audio_volume."""
+
+    def __init__(self, current: int | None) -> None:
+        self.current = current
+        self.set_calls: list[int] = []
+        self.fail_set = False
+
+    def install(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            music_control.audio_volume, "get_capture_pga_percent",
+            lambda: self.current,
+        )
+
+        def _set(pct: int) -> bool:
+            self.set_calls.append(pct)
+            if self.fail_set:
+                return False
+            self.current = pct
+            return True
+
+        monkeypatch.setattr(
+            music_control.audio_volume, "set_capture_pga_percent", _set,
+        )
+
+
+def _pga_config(monkeypatch, music=49, normal=49, duck=20) -> None:
+    values = {
+        "music_pga_percent": music,
+        "capture_pga_normal_percent": normal,
+        "music_duck_percent": duck,
+    }
+    monkeypatch.setattr(
+        music_control.Config, "get_int",
+        staticmethod(lambda key, default: values.get(key, default)),
+    )
+
+
+class TestMusicPgaProfile:
+
+    def test_engage_on_deferred_play_transition(self, monkeypatch):
+        """False→True flag transition (deferred-play hook) lowers the PGA
+        to the music profile and saves the pre-music gain."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        music_control.set_self_playing(True, trigger="deferred_play")
+
+        assert pga.set_calls == [49]
+        assert music_control._pga_engaged is True
+        assert music_control._saved_normal_pga_percent == 60
+        msg, kw = next(
+            (m, k) for m, k in recorder.infos if m == "music PGA engaged"
+        )
+        assert kw == {
+            "old_percent": 60, "new_percent": 49, "trigger": "deferred_play",
+        }
+
+    def test_restore_on_flag_clear_transition(self, monkeypatch):
+        """True→False transition (duck enumeration finds no players)
+        restores the saved pre-music gain — not a flat config value."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        music_control.set_self_playing(True, trigger="deferred_play")
+        music_control.set_self_playing(False, trigger="duck_enumeration")
+
+        assert pga.set_calls == [49, 60]
+        assert music_control._pga_engaged is False
+        assert music_control._saved_normal_pga_percent is None
+        _msg, kw = next(
+            (m, k) for m, k in recorder.infos if m == "music PGA restored"
+        )
+        assert kw == {
+            "old_percent": 49, "new_percent": 60,
+            "trigger": "duck_enumeration",
+        }
+
+    def test_engage_is_idempotent(self, monkeypatch):
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+
+        music_control.engage_music_pga(trigger="a")
+        music_control.engage_music_pga(trigger="b")
+
+        assert pga.set_calls == [49], "second engage must be a no-op"
+        assert music_control._saved_normal_pga_percent == 60
+
+    def test_restore_without_engage_is_noop(self, monkeypatch):
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        music_control.restore_normal_pga(trigger="duck_enumeration")
+        assert pga.set_calls == []
+
+    def test_zero_setting_disables_profile(self, monkeypatch):
+        """music_pga_percent=0 is the opt-out: no amixer traffic at all."""
+        _pga_config(monkeypatch, music=0)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        music_control.set_self_playing(True, trigger="deferred_play")
+        assert pga.set_calls == []
+        assert music_control._pga_engaged is False
+
+    def test_no_codec_is_noop(self, monkeypatch):
+        """macOS dev node / Pi without the HAT: gain unreadable → no-op
+        (and not marked engaged, so nothing to restore later)."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=None)
+        pga.install(monkeypatch)
+        music_control.set_self_playing(True, trigger="deferred_play")
+        assert pga.set_calls == []
+        assert music_control._pga_engaged is False
+
+    def test_already_at_music_gain_no_amixer_write_no_breadcrumb(self, monkeypatch):
+        """Fresh installs already sit at 49% — engage marks the profile
+        active without an amixer write or a misleading transition log,
+        and restore is symmetric (target == current → no write)."""
+        _pga_config(monkeypatch, music=49, normal=49)
+        pga = _FakePga(current=49)
+        pga.install(monkeypatch)
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        music_control.set_self_playing(True, trigger="deferred_play")
+        assert music_control._pga_engaged is True
+        assert pga.set_calls == []
+
+        music_control.set_self_playing(False, trigger="duck_enumeration")
+        assert pga.set_calls == []
+        assert music_control._pga_engaged is False
+        assert not any(
+            m in ("music PGA engaged", "music PGA restored")
+            for m, _k in recorder.infos
+        )
+
+    def test_failed_engage_not_marked_and_duck_retries(self, monkeypatch, ):
+        """amixer failure at engage time must NOT mark the profile
+        engaged — the next duck's idempotent ensure retries it (covers
+        the 'flag already True but gain still normal' case)."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.fail_set = True
+        pga.install(monkeypatch)
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        music_control.set_self_playing(True, trigger="deferred_play")
+        assert music_control._pga_engaged is False
+        assert any(
+            m == "music PGA engage failed (amixer sset error)"
+            for m, _k in recorder.warnings
+        )
+
+        # Next wake's duck: player still uncorked, flag already True →
+        # no transition, but the explicit ensure retries the engage.
+        pga.fail_set = False
+
+        def runner(cmd, **kw):
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return _proc(stdout=_sink_inputs(
+                    _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+                ))
+            return _proc()
+
+        monkeypatch.setattr(music_control.subprocess, "run", runner)
+        music_control.pause_active_playback()
+
+        assert pga.set_calls == [49, 49]
+        assert music_control._pga_engaged is True
+        assert music_control._saved_normal_pga_percent == 60
+
+    def test_externally_started_session_engages_at_first_wake(self, monkeypatch):
+        """AirPlay/Spotify Connect started from a phone with no voice
+        command: the flag is False until the duck enumeration sees the
+        uncorked player — that first wake must engage the profile."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+
+        def runner(cmd, **kw):
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return _proc(stdout=_sink_inputs(
+                    _entry_with_volume(11, "/usr/bin/go-librespot", 61),
+                ))
+            return _proc()
+
+        monkeypatch.setattr(music_control.subprocess, "run", runner)
+        assert music_control.is_self_playing() is False
+        music_control.pause_active_playback()
+
+        assert pga.set_calls == [49]
+        assert music_control._pga_engaged is True
+
+    def test_duck_with_no_players_restores_gain(self, monkeypatch):
+        """Music stopped between turns: the wake-time enumeration finds
+        no players → flag True→False → gain restored."""
+        _pga_config(monkeypatch, music=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        music_control.set_self_playing(True, trigger="deferred_play")
+        assert pga.set_calls == [49]
+
+        def runner(cmd, **kw):
+            if cmd[:3] == ["pactl", "list", "short"]:
+                return _proc(stdout="123\tjarvis_duck_null\tmodule-null-sink\n")
+            if cmd[:4] == ["pactl", "-f", "json", "list"]:
+                return _proc(stdout="[]")
+            return _proc()
+
+        monkeypatch.setattr(music_control.subprocess, "run", runner)
+        music_control.pause_active_playback()
+
+        assert pga.set_calls == [49, 60]
+        assert music_control._pga_engaged is False
+
+    # ── Boot-time normalization (crash recovery) ────────────────────────
+
+    def test_startup_restores_crashed_music_profile(self, monkeypatch):
+        """Node crashed mid-music with the PGA at the music value: boot
+        restores the configured normal so the mic isn't left deaf."""
+        _pga_config(monkeypatch, music=30, normal=49)
+        pga = _FakePga(current=30)
+        pga.install(monkeypatch)
+        recorder = _LogRecorder()
+        monkeypatch.setattr(music_control, "logger", recorder)
+
+        music_control.normalize_capture_pga_on_startup()
+
+        assert pga.set_calls == [49]
+        _msg, kw = next(
+            (m, k) for m, k in recorder.warnings if "stuck at the music" in m
+        )
+        assert kw["old_percent"] == 30
+        assert kw["new_percent"] == 49
+        assert kw["trigger"] == "startup"
+
+    def test_startup_leaves_hand_tuned_gain_alone(self, monkeypatch):
+        """A gain matching neither profile (hand-tuned 60%) is not
+        evidence of a crash — leave it alone."""
+        _pga_config(monkeypatch, music=30, normal=49)
+        pga = _FakePga(current=60)
+        pga.install(monkeypatch)
+        music_control.normalize_capture_pga_on_startup()
+        assert pga.set_calls == []
+
+    def test_startup_noop_when_profile_equals_normal(self, monkeypatch):
+        """Default config (music == normal == 49): a crash can't have
+        left a wrong gain, so boot doesn't even read the mixer."""
+        _pga_config(monkeypatch, music=49, normal=49)
+        reads: list[bool] = []
+        monkeypatch.setattr(
+            music_control.audio_volume, "get_capture_pga_percent",
+            lambda: reads.append(True) or 49,
+        )
+        pga_sets: list[int] = []
+        monkeypatch.setattr(
+            music_control.audio_volume, "set_capture_pga_percent",
+            lambda pct: pga_sets.append(pct) or True,
+        )
+        music_control.normalize_capture_pga_on_startup()
+        assert reads == []
+        assert pga_sets == []
+
+    def test_startup_noop_when_disabled(self, monkeypatch):
+        _pga_config(monkeypatch, music=0, normal=49)
+        pga = _FakePga(current=0)
+        pga.install(monkeypatch)
+        music_control.normalize_capture_pga_on_startup()
+        assert pga.set_calls == []
