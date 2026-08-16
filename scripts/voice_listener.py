@@ -269,7 +269,13 @@ def start_voice_listener(ma_service):
     bus: AudioBus | None = None
     for attempt, delay in enumerate(_audio_retry_delays):
         try:
-            bus = AudioBus(rate=MIC_RATE, chunk_samples=MIC_CHUNK, history_secs=2.0)
+            # history_secs=4.0 (was 2.0): the wake-clip fallback snapshot
+            # reads WAKE_CLIP_SECONDS (2.0 s) from this ring — with the
+            # ring AT 2.0 s the snapshot equaled the entire ring with
+            # zero margin, so any producer catch-up burst between fire
+            # and snapshot evicted the wake phrase entirely. 4 s gives
+            # the fallback 2 s of slack (~192 KB extra at 48 kHz int16).
+            bus = AudioBus(rate=MIC_RATE, chunk_samples=MIC_CHUNK, history_secs=4.0)
             bus.start()
             break
         except OSError as e:

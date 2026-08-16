@@ -4,10 +4,11 @@ Owns the long-running ``while True`` that drives every wake cycle on
 the node: outer iteration setup (threshold, deques),
 inner per-chunk scoring (resample → openWakeWord predict →
 ``decide_wake_fire``), the alert-drain break-out path, and the
-post-fire orchestration chain (``bus.unsubscribe`` → ``oww.reset``
-in the background → ``pause_active_playback`` → wake-audio capture
-→ ``handle_keyword_detected`` → warmup thread → ``listen`` →
-processing ack → ``send_for_transcription`` → ``follow_up_loop``).
+post-fire orchestration chain (wake-clip write at fire time →
+``bus.unsubscribe`` → ``oww.reset`` in the background →
+``pause_active_playback`` → ``handle_keyword_detected`` → warmup
+thread → ``listen`` → processing ack → ``send_for_transcription``
+→ ``follow_up_loop``).
 
 This module is the orchestrator of the modules that came out of the
 earlier refactor phases — it owns no logic of its own beyond glue
@@ -57,6 +58,7 @@ from core.music_control import (
 from core.platform_audio import platform_audio
 from core.vad_thresholds import (
     adaptive_silence_threshold as _adaptive_silence_threshold,
+    auto_pre_wake_vad_threshold as _auto_pre_wake_vad_threshold,
     barge_in_enabled,
     barge_in_energy_threshold,
     barge_in_threshold,
@@ -77,9 +79,11 @@ from core.wake_response import (
     set_led_transient,
 )
 from core.wake_transcription import (
+    WAKE_CLIP_SECONDS,
     get_last_speaker,
     send_for_transcription,
     try_capture_wake_audio,
+    try_capture_wake_audio_from_frames,
 )
 from core import voice_filters
 from scripts.speech_to_text import listen
@@ -168,6 +172,17 @@ def run_wake_loop(
     resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
     alert_check_counter = 0
 
+    # Size of the consumed-chunks wake-clip deque: ~WAKE_CLIP_SECONDS of
+    # the bus's chunk cadence (80 ms chunks → 25). Derived from the bus
+    # when it exposes chunk_samples; the OWW frame length otherwise
+    # (test fakes only expose rate).
+    _clip_chunk_samples = getattr(bus, "chunk_samples", None)
+    _clip_chunk_secs = (
+        _clip_chunk_samples / bus.rate
+        if _clip_chunk_samples else _CHUNK_SECONDS
+    )
+    wake_clip_maxlen = max(1, round(WAKE_CLIP_SECONDS / _clip_chunk_secs))
+
     while True:
         # Safety net: ensure no stale cancel state from a prior
         # barge-in prevents wake-response or other audio.
@@ -192,17 +207,26 @@ def run_wake_loop(
         # discriminator would route a suppressed wake into wake handling
         # and silently drop the pending alert.
         fired = False
-        # Pre-wake VAD ring buffer — one bool per 80 ms chunk, last
-        # PRE_WAKE_VAD_FRAMES kept. On wake fire we sum it and report
-        # how many seconds of speech happened in the window before wake.
-        # Fresh per outer iteration so prior interactions don't leak in.
-        pre_wake_speech_frames: deque[bool] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
-        # Parallel RMS-value deque used only for the wake-fire diagnostic
-        # log — lets us see the actual mic baseline so the threshold can
-        # be tuned per room without guessing.
+        # Pre-wake RMS ring buffer — one raw RMS per 80 ms chunk, last
+        # PRE_WAKE_VAD_FRAMES kept. On wake fire the frames are
+        # classified against the (possibly auto-calibrated) speech
+        # threshold and reported as pre_wake_speech_seconds. Fresh per
+        # outer iteration so prior interactions don't leak in. Storing
+        # the raw values (not pre-classified bools) lets the threshold
+        # be computed AT fire time from the same window's ambient floor.
         pre_wake_rms_values: deque[float] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
         pre_wake_vad_threshold: float = _pre_wake_vad_threshold()
         pre_wake_speech_seconds: float | None = None
+        # Every chunk this loop pulls off its queue — INCLUDING chunks
+        # the drain-to-newest pass skips scoring — so the wake clip can
+        # be written from the exact audio OWW fired on. The ring-buffer
+        # snapshot path this replaces cut wake.wav a variable wall-time
+        # after the fire; producer catch-up bursts evicted the wake
+        # phrase by then and the clip came back as post-phrase ambient.
+        wake_clip_frames: deque[bytes] = deque(maxlen=wake_clip_maxlen)
+        # Chunks the drain pass skipped scoring this cycle — logged on
+        # fire so every clip is auto-labeled for the wake-model dataset.
+        drained_chunks_cycle = 0
         try:
             was_paused = False
             _last_skip_log_ts = 0.0
@@ -218,6 +242,7 @@ def run_wake_loop(
                     raw_data = wake_q.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                wake_clip_frames.append(raw_data)
 
                 # Stay CURRENT under a transient over-budget stall: drain any
                 # backlog and keep only the newest chunk. With the shallow
@@ -228,17 +253,23 @@ def run_wake_loop(
                 # fresh contiguous chunks that follow — so the wake word is
                 # never scored across the gap, and we avoid the ~1.3s post-
                 # reset priming blind-spot that frequent skips would create.
+                # Skipped chunks still land in wake_clip_frames: they're
+                # part of the audio stream around the fire even though
+                # they were never scored, and the clip must stay gapless.
                 skipped = 0
                 while True:
                     try:
                         raw_data = wake_q.get_nowait()
+                        wake_clip_frames.append(raw_data)
                         skipped += 1
                     except queue.Empty:
                         break
+                drained_chunks_cycle += skipped
                 if skipped and time.monotonic() - _last_skip_log_ts > 10.0:
                     logger.info(
                         "wake loop dropped stale audio backlog to stay current",
                         skipped_chunks=skipped,
+                        skipped_chunks_cycle=drained_chunks_cycle,
                     )
                     _last_skip_log_ts = time.monotonic()
 
@@ -253,13 +284,17 @@ def run_wake_loop(
                 # state. Without this, residual context from before the
                 # pause (often the wake response audio echoing back)
                 # immediately re-triggers a wake event. Also drop the
-                # pre-wake VAD buffer — frames from before the pause
-                # are no longer "the room before this wake".
+                # pre-wake VAD buffer and the wake-clip frames — audio
+                # from before the pause is no longer "the room before
+                # this wake".
                 if was_paused:
                     with _oww_lock:
                         oww.reset()
-                    pre_wake_speech_frames.clear()
                     pre_wake_rms_values.clear()
+                    wake_clip_frames.clear()
+                    # The CURRENT chunk was appended before this clear
+                    # ran, and it IS about to be scored — keep it.
+                    wake_clip_frames.append(raw_data)
                     was_paused = False
 
                 samples = np.frombuffer(raw_data, dtype=np.int16)
@@ -268,7 +303,6 @@ def run_wake_loop(
                 # the raw 48 kHz samples (before resample/clip) so the
                 # energy reading is unmodified mic input. Tiny cost.
                 rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-                pre_wake_speech_frames.append(rms > pre_wake_vad_threshold)
                 pre_wake_rms_values.append(rms)
 
                 if resample_down > 1:
@@ -309,11 +343,8 @@ def run_wake_loop(
                     # (after CC's not_for_me verdict) to decide whether
                     # this wake counts as a "legitimate" data point.
                     score_at_wake = float(score)
-                    speech_frames = sum(pre_wake_speech_frames)
-                    pre_wake_speech_seconds = round(
-                        speech_frames * _CHUNK_SECONDS, 2,
-                    )
-                    # Diagnostic RMS stats for threshold calibration.
+                    # Diagnostic RMS stats for threshold calibration —
+                    # also the input to the pre-wake VAD auto-calibrator.
                     if pre_wake_rms_values:
                         rms_sorted = sorted(pre_wake_rms_values)
                         rms_n = len(rms_sorted)
@@ -326,14 +357,39 @@ def run_wake_loop(
                         }
                     else:
                         rms_stats = {}
+                    # Pre-wake speech classification. The static 2500
+                    # default sat above real speech RMS on the prod mic
+                    # (pre_wake_speech_seconds pinned at 0.00 for 14
+                    # days), so by default the threshold auto-calibrates
+                    # off this window's own ambient floor. The static
+                    # value stays the fallback (auto disabled / no
+                    # stats). Logged with its source so the calibration
+                    # is verifiable from Loki per fire.
+                    effective_vad_threshold = pre_wake_vad_threshold
+                    vad_threshold_source = "static"
+                    auto_vad_threshold = _auto_pre_wake_vad_threshold(rms_stats)
+                    if auto_vad_threshold is not None:
+                        effective_vad_threshold = auto_vad_threshold
+                        vad_threshold_source = "auto"
+                    speech_frames = sum(
+                        1 for r in pre_wake_rms_values
+                        if r > effective_vad_threshold
+                    )
+                    pre_wake_speech_seconds = round(
+                        speech_frames * _CHUNK_SECONDS, 2,
+                    )
                     logger.info(
                         "Wake fired",
-                        score=round(float(score), 3),
+                        score=round(score_at_wake, 3),
+                        oww_score=round(score_at_wake, 3),
                         pre_wake_speech_seconds=pre_wake_speech_seconds,
                         pre_wake_window_seconds=PRE_WAKE_VAD_WINDOW_SECS,
-                        buffered_frames=len(pre_wake_speech_frames),
-                        vad_threshold=pre_wake_vad_threshold,
+                        buffered_frames=len(pre_wake_rms_values),
+                        vad_threshold=round(effective_vad_threshold, 1),
+                        vad_threshold_source=vad_threshold_source,
+                        vad_threshold_static=pre_wake_vad_threshold,
                         rms_stats=rms_stats,
+                        drained_chunks=drained_chunks_cycle,
                     )
                     # Lock the per-cycle silence threshold to the ambient
                     # noise floor observed RIGHT before wake. Used below
@@ -347,6 +403,34 @@ def run_wake_loop(
                             silence_threshold=adaptive_silence_threshold,
                             ambient_median_rms=rms_stats.get("median"),
                         )
+                    # Write the wake clip NOW, synchronously, from the
+                    # exact chunks this loop just scored — before ANY
+                    # post-fire bookkeeping. The old ring-buffer snapshot
+                    # ran a variable wall-time after the fire and
+                    # producer catch-up bursts evicted the wake phrase
+                    # by then (prod clips transcribed as post-phrase
+                    # ambient on real 0.97+ wakes, and wake verification
+                    # then suppressed two REAL commands). The consumed-
+                    # chunks deque can't be evicted: it IS the scored
+                    # audio. Bus snapshot survives as the fallback.
+                    _t_clip_start = time.monotonic()
+                    wake_audio_path = try_capture_wake_audio_from_frames(
+                        wake_clip_frames, bus,
+                    )
+                    wake_clip_source = "consumed_chunks"
+                    if wake_audio_path is None:
+                        wake_audio_path = try_capture_wake_audio(bus)
+                        wake_clip_source = "bus_snapshot_fallback"
+                    _t_clip_end = time.monotonic()
+                    logger.info(
+                        "⏱️ wake-step | wake clip captured",
+                        clip_source=wake_clip_source,
+                        clip_frames=len(wake_clip_frames),
+                        fire_to_clip_ms=int((_t_clip_end - t_wake_fired) * 1000),
+                        clip_write_ms=int((_t_clip_end - _t_clip_start) * 1000),
+                        oww_score=round(score_at_wake, 3),
+                        captured=wake_audio_path is not None,
+                    )
                     fired = True
                     break
         finally:
@@ -401,12 +485,12 @@ def run_wake_loop(
             f"{int((time.monotonic() - _t_duck_start) * 1000)}ms"
         )
 
-        # Snapshot the wake-word audio from the bus *now* — before
-        # handle_keyword_detected plays the TTS ack which can take
-        # 500-1500ms. The bus only holds ~2s of history so any later
-        # snapshot risks falling outside that window. The same
-        # snapshot is reused for every follow-up in this conversation.
-        wake_audio_path = try_capture_wake_audio(bus)
+        # NOTE: wake_audio_path was already written inside the fire
+        # branch above, synchronously from the consumed-chunks deque
+        # (with the bus-ring snapshot as fallback) — before any of the
+        # post-fire bookkeeping could let the producer catch up and
+        # evict the wake phrase. The same clip is reused for every
+        # follow-up in this conversation.
 
         # Initialize ``result`` up-front so the outer ``finally``'s
         # ``result.get("on_response_complete")`` is always safe — without

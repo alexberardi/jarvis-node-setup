@@ -55,6 +55,14 @@ _ABORT_PHRASES: set[str] = {
     "ignore that", "ignore me",
 }
 
+# Abort words that are ALSO ordinary command verbs. Prefix-matching
+# these killed real commands node-side — "cancel my 3pm meeting" died
+# here and CC never saw it. Only the bare word (trailing punctuation
+# aside) counts as an abort; anything longer goes to CC, which can
+# cancel a meeting or a timer just as well as it can abort a turn.
+# ("stop" would belong here too if it were ever added to the set.)
+_ABORT_EXACT_ONLY: set[str] = {"cancel"}
+
 _FALSE_WAKE_MULTI_SENTENCE_WORD_THRESHOLD = 8
 _FALSE_WAKE_NARRATION_SINGLE_SEGMENT_MIN_MS = 4000
 _FALSE_WAKE_NARRATION_MAX_GAP_MS = 300
@@ -125,8 +133,16 @@ def is_false_wake(
     raw = transcription.strip()
     text = raw.lower()
 
-    # Signal 1: abort phrases — explicit user intent.
+    # Signal 1: abort phrases — explicit user intent. Multi-use words
+    # (see _ABORT_EXACT_ONLY) only match as the bare utterance; the
+    # rest keep prefix matching for "nevermind, that was dumb"-style
+    # trail-offs.
+    bare = text.rstrip(".!?,")
     for phrase in _ABORT_PHRASES:
+        if phrase in _ABORT_EXACT_ONLY:
+            if bare == phrase:
+                return True
+            continue
         if text == phrase or text.startswith(phrase):
             return True
 

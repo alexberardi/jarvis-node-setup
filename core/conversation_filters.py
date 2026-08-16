@@ -26,11 +26,14 @@ import re
 
 
 # Words that are valid as standalone single-word follow-ups (control
-# verbs the LLM doesn't need to disambiguate). Used by the follow-up
-# loop's local noise gate, not by is_non_speech.
+# verbs the LLM doesn't need to disambiguate, plus bare confirmations/
+# denials — CC asks yes/no questions in follow-up and suppressing the
+# one-word answer strands the exchange). Used by the follow-up loop's
+# local noise gate, not by is_non_speech.
 _VALID_FOLLOW_UP_WORDS: set[str] = {
     "stop", "pause", "resume", "help", "repeat",
     "louder", "quieter", "cancel", "continue",
+    "yes", "no", "yeah", "sure",
 }
 
 

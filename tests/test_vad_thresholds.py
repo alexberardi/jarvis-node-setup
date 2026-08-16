@@ -111,12 +111,24 @@ class _ConfigStub:
         multiplier: float = 2.0,
         floor: int = 200,
         ceiling: int = 1000,
+        vad_auto: bool = True,
+        vad_multiplier: float = 3.0,
+        vad_min: int = 300,
+        vad_max: int = 2500,
     ):
-        self._bool = {"silence_threshold_auto": auto}
-        self._float = {"silence_threshold_auto_multiplier": multiplier}
+        self._bool = {
+            "silence_threshold_auto": auto,
+            "pre_wake_vad_auto": vad_auto,
+        }
+        self._float = {
+            "silence_threshold_auto_multiplier": multiplier,
+            "pre_wake_vad_auto_multiplier": vad_multiplier,
+        }
         self._int = {
             "silence_threshold_auto_floor": floor,
             "silence_threshold_auto_ceiling": ceiling,
+            "pre_wake_vad_auto_min": vad_min,
+            "pre_wake_vad_auto_max": vad_max,
         }
 
     def get_bool(self, key, default):
@@ -209,3 +221,93 @@ class TestAdaptiveSilenceThreshold:
         # The signature is `dict[str, float]` but ints are valid floats.
         _patch_config(monkeypatch, _ConfigStub())
         assert vad_thresholds.adaptive_silence_threshold({"median": 300}) == 600
+
+
+# ---------------------------------------------------------------------------
+# auto_pre_wake_vad_threshold — ambient-floor calibration for the pre-wake
+# speech signal. Median × multiplier, clamped to [min, max]. Returns None
+# for "use the static threshold". Default ON: the static 2500 default sat
+# above real speech RMS on the prod mic and reported 0.00 for 14 days.
+# ---------------------------------------------------------------------------
+
+
+class TestAutoPreWakeVadThreshold:
+
+    def test_auto_disabled_returns_none(self, monkeypatch):
+        _patch_config(monkeypatch, _ConfigStub(vad_auto=False))
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 500.0},
+        ) is None
+
+    def test_default_is_enabled(self, monkeypatch):
+        # No setting → auto ON. Unlike silence auto-tune (which refines
+        # a working static value) this replaces a provably dead default,
+        # so opting OUT is the setting.
+        stub = _ConfigStub()
+
+        def get_bool(key, default):
+            return default  # simulate unset settings DB
+
+        monkeypatch.setattr(vad_thresholds.Config, "get_bool", get_bool)
+        monkeypatch.setattr(vad_thresholds.Config, "get_float", stub.get_float)
+        monkeypatch.setattr(vad_thresholds.Config, "get_int", stub.get_int)
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 400.0},
+        ) == 1200.0
+
+    def test_non_dict_returns_none(self, monkeypatch):
+        _patch_config(monkeypatch, _ConfigStub())
+        assert vad_thresholds.auto_pre_wake_vad_threshold(None) is None       # type: ignore[arg-type]
+        assert vad_thresholds.auto_pre_wake_vad_threshold([]) is None         # type: ignore[arg-type]
+
+    def test_missing_or_bad_median_returns_none(self, monkeypatch):
+        _patch_config(monkeypatch, _ConfigStub())
+        assert vad_thresholds.auto_pre_wake_vad_threshold({}) is None
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": "loud"},
+        ) is None
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 0},
+        ) is None
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": -10.0},
+        ) is None
+
+    def test_normal_case_median_times_multiplier(self, monkeypatch):
+        # median 400 × 3.0 = 1200; within [300, 2500].
+        _patch_config(monkeypatch, _ConfigStub())
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 400.0},
+        ) == 1200.0
+
+    def test_below_min_clamps_up(self, monkeypatch):
+        # Dead-quiet room: median 50 × 3.0 = 150, below min 300 → 300.
+        # Below the min, ordinary quiet-room flutter counts as speech.
+        _patch_config(monkeypatch, _ConfigStub())
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 50.0},
+        ) == 300.0
+
+    def test_above_max_clamps_down(self, monkeypatch):
+        # Loud room: median 2000 × 3.0 = 6000 → clamp to 2500 (the old
+        # static default). Auto can never be MORE deaf than the value it
+        # replaces.
+        _patch_config(monkeypatch, _ConfigStub())
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 2000.0},
+        ) == 2500.0
+
+    def test_custom_multiplier(self, monkeypatch):
+        _patch_config(monkeypatch, _ConfigStub(vad_multiplier=2.0))
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 400.0},
+        ) == 800.0
+
+    def test_custom_clamp_band(self, monkeypatch):
+        _patch_config(monkeypatch, _ConfigStub(vad_min=100, vad_max=900))
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 20.0},
+        ) == 100.0
+        assert vad_thresholds.auto_pre_wake_vad_threshold(
+            {"median": 5000.0},
+        ) == 900.0
