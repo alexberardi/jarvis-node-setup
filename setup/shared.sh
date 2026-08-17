@@ -90,7 +90,7 @@ setup_python_venv() {
         # speexdsp-ns) are listed directly in requirements-pi.txt.
         if [ "$req_file" != "$PROJECT_ROOT/requirements-provisioning.txt" ]; then
             log_info "Installing openwakeword (--no-deps, onnx inference only)..."
-            $use_sudo "$venv_path/bin/python" -m pip install openwakeword --no-deps $pip_extra_args --quiet
+            $use_sudo "$venv_path/bin/python" -m pip install openwakeword==0.6.0 --no-deps $pip_extra_args --quiet
             log_success "openwakeword installed"
 
             # Install jarvis-command-sdk from monorepo sibling (if present)
