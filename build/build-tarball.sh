@@ -76,7 +76,7 @@ fi
 
 echo "==> Installing openwakeword (--no-deps)"
 "${INSTALL_DIR}/.venv/bin/python" -m pip install \
-  openwakeword --no-deps \
+  openwakeword==0.6.0 --no-deps \
   ${PIP_EXTRA_ARGS} \
   --quiet
 
