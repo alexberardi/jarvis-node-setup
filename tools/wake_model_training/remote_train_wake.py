@@ -147,10 +147,24 @@ def stage_setup(ws: Path) -> None:
             f"repo_type='dataset', local_dir='{ws}/mit_rirs')\"",
             timeout=3600,
         )
+        # openWakeWord's augmentation globs EVERY file in the RIR dir into
+        # soundfile — the HF snapshot's README.md/.gitattributes/.cache
+        # crash feature generation mid-run (caught live 2026-08-17).
+        sh(f"find {ws}/mit_rirs -type f ! -name '*.wav' -delete && "
+           f"rm -rf {ws}/mit_rirs/.cache")
+        # ...and FLATTEN: the snapshot nests WAVs under 16khz/, but
+        # openWakeWord's RIR loader globs the top level non-recursively and
+        # feeds even subdirectories to soundfile (second live failure).
+        sh(f"if [ -d {ws}/mit_rirs/16khz ]; then "
+           f"mv {ws}/mit_rirs/16khz/*.wav {ws}/mit_rirs/ && "
+           f"rmdir {ws}/mit_rirs/16khz; fi")
     sh(f"pip install -e {ws}/openwakeword")
-    psg_reqs = ws / "piper-sample-generator" / "requirements.txt"
-    if psg_reqs.is_file():
-        sh(f"pip install -r {psg_reqs}")
+    # Do NOT install piper-sample-generator's requirements.txt wholesale:
+    # at the pinned pre-package revision it pins torch<2 and numpy<2, which
+    # would replace the pod's CUDA torch with a CPU 1.x build (caught live
+    # 2026-08-17 mid-download). generate_samples.py needs only piper-tts on
+    # top of the pod's stack — verified by an actual GPU generation run.
+    sh("pip install piper-tts")
 
 
 def stage_positives(ws: Path, tools: Path, n: int) -> None:
@@ -289,7 +303,9 @@ def stage_features(ws: Path, yaml_path: Path) -> None:
 
 def stage_train(ws: Path, yaml_path: Path) -> None:
     train_py = ws / "openwakeword" / "openwakeword" / "train.py"
-    sh(f"python {train_py} --training_config {yaml_path} --train_model",
+    # ulimit: torch DataLoader workers exhaust the pod's default 1024 FDs
+    # over the mmap'd feature sets (RuntimeError: Too many open files).
+    sh(f"ulimit -n 65535 && python {train_py} --training_config {yaml_path} --train_model",
        timeout=14400)
 
 

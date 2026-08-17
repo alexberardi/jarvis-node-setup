@@ -146,6 +146,43 @@ def psg_command(job: dict, args: argparse.Namespace, out_dir: Path) -> list[str]
     return cmd
 
 
+
+def _finalize_job_wavs(tmp_dir: Path, dest: Path, prefix: str) -> int:
+    """Convert one job's WAVs to 16 kHz mono PCM16 under collision-proof names.
+
+    piper-tts writes WAVE_FORMAT_EXTENSIBLE float WAVs that stdlib `wave`
+    (used downstream in augment_music/common) cannot read, and every
+    generate_samples.py invocation names files 0.wav..N.wav — so multiple
+    jobs sharing one output dir silently overwrite each other (this run
+    produced 1000 of 5000 requested positives before the fix). Each job now
+    generates into a private tmp dir and is flattened here with a unique
+    prefix. Returns the number of files finalized.
+    """
+    import shutil
+    import numpy as np
+    from scipy.io import wavfile
+    from scipy.signal import resample_poly
+
+    dest.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for src in sorted(tmp_dir.glob("*.wav")):
+        rate, data = wavfile.read(str(src))
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if data.dtype != np.float32 and data.dtype != np.float64:
+            data = data.astype(np.float32) / max(abs(np.iinfo(data.dtype).min), 1)
+        if rate != 16000:
+            from math import gcd
+            g = gcd(rate, 16000)
+            data = resample_poly(data, 16000 // g, rate // g)
+        pcm = np.clip(data, -1.0, 1.0)
+        wavfile.write(str(dest / f"{prefix}_{src.stem}.wav"), 16000,
+                      (pcm * 32767.0).astype(np.int16))
+        count += 1
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+    return count
+
+
 def main() -> int:
     args = parse_args()
     n_adv = args.n_adversarial if args.n_adversarial is not None else args.n // 10
@@ -180,15 +217,21 @@ def main() -> int:
     t0 = time.time()
     for i, job in enumerate(jobs, 1):
         dest = out_pos if job["kind"] == "positive" else out_adv
-        dest.mkdir(parents=True, exist_ok=True)
-        cmd = psg_command(job, args, dest)
+        tmp = dest.parent / f".tmp_{job['kind']}_{i:02d}"
+        tmp.mkdir(parents=True, exist_ok=True)
+        cmd = psg_command(job, args, tmp)
         print(f"\n[{i}/{len(jobs)}] {job['kind']}: \"{job['text']}\" "
               f"x{job['max_samples']}")
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"   ❌ failed: {result.stderr[-500:]}")
             return 1
-        manifest.append({**job, "output_dir": str(dest)})
+        n_done = _finalize_job_wavs(tmp, dest, f"{job['kind']}{i:02d}")
+        if n_done == 0:
+            print(f"   ❌ job produced no WAVs — treating as failure")
+            return 1
+        print(f"   → {n_done} clips finalized (16k mono PCM16)")
+        manifest.append({**job, "output_dir": str(dest), "n_finalized": n_done})
 
     (out_pos / "generation_manifest.json").write_text(json.dumps({
         "target_phrase": TARGET_PHRASE,

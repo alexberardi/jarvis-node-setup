@@ -9,7 +9,7 @@
 
 pyyaml
 numpy
-scipy
+scipy<1.17  # acoustics needs scipy.special.sph_harm, removed in 1.17
 huggingface_hub
 
 # openWakeWord training extras (per notebooks/automatic_model_training.ipynb
@@ -27,5 +27,8 @@ deep-phonemizer
 
 # .tflite export path in train.py
 tensorflow-cpu
-onnx
+onnx<1.17  # onnx_tf needs onnx.mapping, removed in 1.17
 onnx_tf
+piper-tts  # generate_samples.py imports piper.PiperVoice (needed even at the ded9350 pin)
+tensorflow-probability  # onnx_tf transitive dep, not declared by the abandoned package
+tf-keras  # tensorflow-probability needs standalone keras 2

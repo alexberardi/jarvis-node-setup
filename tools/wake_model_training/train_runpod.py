@@ -71,6 +71,10 @@ POD_CONFIG = {
     "min_memory_in_gb": 32,
     "ports": "22/tcp",
     "docker_args": "",
+    # SECURE cloud: community hosts twice sat >15 min never starting the
+    # container (huge -devel image on slow links) with SSH resets the whole
+    # time. Secure-cloud hosts pull fast and are worth the small premium.
+    "cloud_type": "SECURE",
     # PUBLIC_KEY is injected into the pod's authorized_keys by the runpod
     # pytorch template — this keeps the harness self-contained instead of
     # depending on SSH keys registered in the RunPod account settings
@@ -138,14 +142,25 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def wait_for_pod_ready(runpod, pod_id: str, timeout: int = 300) -> dict:
+def wait_for_pod_ready(runpod, pod_id: str, timeout: int = 1500) -> dict:
+    """Wait for the CONTAINER to be up, not just the pod to be scheduled.
+
+    desiredStatus=RUNNING + mapped ports only means the host accepted the
+    pod — the container may still be pulling the (large) image, during
+    which SSH connects are reset. uptimeInSeconds > 0 is the signal that
+    the container actually started.
+    """
     print(f"   Waiting for pod {pod_id} to be ready...")
     start = time.time()
     while time.time() - start < timeout:
         pod = runpod.get_pod(pod_id)
         status = pod.get("desiredStatus", "unknown")
-        runtime = pod.get("runtime", {})
-        if status == "RUNNING" and runtime and runtime.get("ports"):
+        runtime = pod.get("runtime") or {}
+        # NOTE: runtime.uptimeInSeconds is NOT populated by the SDK's
+        # get_pod query (observed None on a live pod with sshd answering) —
+        # do not gate readiness on it. Ports-mapped + the SSH retry ring in
+        # get_ssh_connection is the real readiness check.
+        if status == "RUNNING" and runtime.get("ports"):
             print(f"   ✅ Pod ready! Status: {status}")
             return pod
         print(f"   ⏳ Status: {status}, waiting...", end="\r")
