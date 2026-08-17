@@ -39,7 +39,11 @@ OPENWAKEWORD_REF = "368c03716d1e92591906a84949bc477f3a834455"  # main, 2025-12-3
 # Synthetic "hey jarvis" positives. The LibriTTS-R multi-speaker checkpoint
 # supports 904 speakers (docs recommend --max-speakers a bit below that).
 PIPER_SAMPLE_GENERATOR_REPO = "https://github.com/rhasspy/piper-sample-generator"
-PIPER_SAMPLE_GENERATOR_REF = "2971426a55072f7d22fec416ca7800df8bd23207"  # master, 2026-03-12
+# ded9350 = last revision with the root-level generate_samples.py interface
+# this pipeline drives. The next commit (1a8c49b "Move to package") restructured
+# into a piper_sample_generator package with a `piper` runtime dependency and a
+# different CLI — repin deliberately if migrating to it.
+PIPER_SAMPLE_GENERATOR_REF = "ded9350"  # pre-package-restructure, 2026-02
 PIPER_TTS_CHECKPOINT_URL = (
     "https://github.com/rhasspy/piper-sample-generator/releases/download/"
     "v2.0.0/en_US-libritts_r-medium.pt"
@@ -107,22 +111,48 @@ SAMPLE_RATE = 16_000
 def read_wav_mono_16k(path: str | Path) -> np.ndarray:
     """Read a WAV file as float32 mono in [-1, 1] at 16 kHz.
 
-    Downmixes multi-channel by averaging. Resamples with polyphase
-    filtering when the source rate differs (48 kHz node/June recordings).
-    Raises ValueError for non-16-bit PCM.
+    Reads via scipy.io.wavfile, which handles WAVE_FORMAT_EXTENSIBLE and
+    float WAVs that stdlib ``wave`` rejects with "unknown format: 65534" —
+    the MIT RIR release and piper-tts output both ship in those flavors
+    (caught live on the first real pod run, 2026-08-17). Falls back to the
+    stdlib reader when scipy is unavailable. Downmixes multi-channel by
+    averaging; resamples with polyphase filtering when the source rate
+    differs (48 kHz node/June recordings).
     """
-    with wave.open(str(path), "rb") as w:
-        n_channels = w.getnchannels()
-        sample_width = w.getsampwidth()
-        rate = w.getframerate()
-        frames = w.readframes(w.getnframes())
+    try:
+        from scipy.io import wavfile
 
-    if sample_width != 2:
-        raise ValueError(f"{path}: expected 16-bit PCM, got {8 * sample_width}-bit")
+        rate, data = wavfile.read(str(path))
+        # Normalize BEFORE any downmix: np.mean() promotes int arrays to
+        # float64, which would defeat a dtype check done afterwards.
+        if np.issubdtype(data.dtype, np.floating):
+            samples = data.astype(np.float32)
+        else:
+            info = np.iinfo(data.dtype)
+            # uint8 WAVs are offset-binary; signed ints divide by |min|.
+            if info.min == 0:
+                samples = (data.astype(np.float32) - (info.max + 1) / 2) / (
+                    (info.max + 1) / 2
+                )
+            else:
+                samples = data.astype(np.float32) / abs(info.min)
+        if samples.ndim > 1:
+            samples = samples.mean(axis=1)
+    except ImportError:
+        with wave.open(str(path), "rb") as w:
+            n_channels = w.getnchannels()
+            sample_width = w.getsampwidth()
+            rate = w.getframerate()
+            frames = w.readframes(w.getnframes())
 
-    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if n_channels > 1:
-        samples = samples.reshape(-1, n_channels).mean(axis=1)
+        if sample_width != 2:
+            raise ValueError(
+                f"{path}: expected 16-bit PCM, got {8 * sample_width}-bit"
+            )
+
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        if n_channels > 1:
+            samples = samples.reshape(-1, n_channels).mean(axis=1)
 
     if rate != SAMPLE_RATE:
         from scipy.signal import resample_poly  # local: keep module import-light
