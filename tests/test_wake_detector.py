@@ -56,6 +56,14 @@ def _reset_wake_gate():
     voice_filters.reset_wake_gate()
 
 
+@pytest.fixture(autouse=True)
+def _quiet_room(monkeypatch):
+    """Default every test to 'no self-playback' so music_control's
+    module-level cached flag can't leak a music threshold profile in
+    from another test file. Music-profile tests re-patch to True."""
+    monkeypatch.setattr(wake_detector, "is_self_playing", lambda: False)
+
+
 def _stable_config(monkeypatch, **overrides):
     """Install a deterministic Config so the test result depends on the
     inputs to current_wake_threshold, not on environmental DB drift."""
@@ -104,6 +112,88 @@ class TestCurrentWakeThreshold:
         )
         assert wake_detector.current_wake_threshold() == 0.4
         assert called == []  # calibrator never consulted
+
+
+# ---------------------------------------------------------------------------
+# Music-mode threshold profile (Layer A) — pure threshold swap during
+# self-playback, no RMS/energy conditions, no trust scores
+# ---------------------------------------------------------------------------
+
+
+class TestMusicThresholdProfile:
+
+    def test_music_profile_during_self_playback(self, monkeypatch):
+        """Self-playback + default config → the music threshold (0.30)
+        with profile 'music'. 0.30 sits above the 0.10–0.18 bleed band
+        and below the loud-music OWW cap (0.14–0.43)."""
+        _stable_config(monkeypatch)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.30)
+        assert profile == "music"
+
+    def test_normal_profile_when_not_self_playing(self, monkeypatch):
+        _stable_config(monkeypatch)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.4)
+        assert profile == "normal"
+
+    def test_music_profile_disabled_by_zero(self, monkeypatch):
+        """wake_word_threshold_music <= 0 disables the profile — the
+        normal threshold applies even during self-playback."""
+        _stable_config(monkeypatch, wake_word_threshold_music=0.0)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.4)
+        assert profile == "normal"
+
+    def test_music_profile_disabled_by_negative(self, monkeypatch):
+        _stable_config(monkeypatch, wake_word_threshold_music=-1.0)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.4)
+        assert profile == "normal"
+
+    def test_music_profile_custom_value(self, monkeypatch):
+        _stable_config(monkeypatch, wake_word_threshold_music=0.25)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.25)
+        assert profile == "music"
+
+    def test_music_profile_overrides_auto_calibrated(self, monkeypatch):
+        """During self-playback the music threshold wins over the
+        auto-calibrated normal threshold — the calibrator's sample set
+        is quiet-room scores and does not describe music conditions."""
+        _stable_config(monkeypatch, wake_word_threshold_auto=True)
+        monkeypatch.setattr(
+            wake_detector, "auto_calibrated_wake_threshold",
+            lambda fallback: 0.27,
+        )
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.30)
+        assert profile == "music"
+
+    def test_float_compat_wrapper_uses_music_value(self, monkeypatch):
+        """current_wake_threshold() (float-only call sites) reflects the
+        same choke point — during self-playback it returns the music
+        threshold."""
+        _stable_config(monkeypatch)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        assert wake_detector.current_wake_threshold() == pytest.approx(0.30)
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +311,100 @@ class TestWakeVerdict:
         )
         assert hasattr(v, "should_fire")
         assert hasattr(v, "effective_threshold")
+
+
+# ---------------------------------------------------------------------------
+# Soft not_for_me cool-down — armed by CC verdicts, overridable by a
+# decisive wake score
+# ---------------------------------------------------------------------------
+
+
+def _fake_config(values):
+    def get_float(key, default):
+        return values.get(key, default)
+    return get_float
+
+
+class TestNotForMeCooldown:
+    """arm_not_for_me_cooldown + the soft-override branch in decide_wake_fire."""
+
+    def test_arm_sets_gate_and_override(self):
+        applied = voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0, config_get_float=_fake_config({}),
+        )
+        assert applied == 20.0
+        assert voice_filters.get_wake_min_next_ts() == pytest.approx(120.0)
+        assert voice_filters.get_wake_gate_override_threshold() == pytest.approx(0.6)
+
+    def test_cluster_escalates(self):
+        cfg = _fake_config({})
+        voice_filters.arm_not_for_me_cooldown(now_mono=100.0, config_get_float=cfg)
+        applied = voice_filters.arm_not_for_me_cooldown(now_mono=110.0, config_get_float=cfg)
+        assert applied == 60.0
+        assert voice_filters.get_wake_min_next_ts() == pytest.approx(170.0)
+
+    def test_events_outside_window_do_not_escalate(self):
+        cfg = _fake_config({})
+        voice_filters.arm_not_for_me_cooldown(now_mono=100.0, config_get_float=cfg)
+        applied = voice_filters.arm_not_for_me_cooldown(now_mono=300.0, config_get_float=cfg)
+        assert applied == 20.0
+
+    def test_zero_quiet_seconds_is_an_opt_out(self):
+        applied = voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0,
+            config_get_float=_fake_config({"not_for_me_quiet_seconds": 0.0}),
+        )
+        assert applied == 0.0
+        assert voice_filters.get_wake_min_next_ts() == 0.0
+        assert voice_filters.get_wake_gate_override_threshold() is None
+
+    def test_arm_never_shortens_an_existing_gate(self):
+        voice_filters._wake_min_next_ts = 500.0
+        voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0,
+            config_get_float=_fake_config({"not_for_me_quiet_seconds": 5.0}),
+        )
+        assert voice_filters.get_wake_min_next_ts() == 500.0
+
+    def test_ambient_grade_score_stays_suppressed_during_cooldown(self):
+        voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0, config_get_float=_fake_config({}),
+        )
+        verdict = wake_detector.decide_wake_fire(
+            score=0.45, threshold=0.4, now_mono=105.0,
+        )
+        assert verdict.should_fire is False
+        # Suppression must not extend the gate.
+        assert voice_filters.get_wake_min_next_ts() == pytest.approx(120.0)
+
+    def test_decisive_score_punches_through_cooldown(self):
+        voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0, config_get_float=_fake_config({}),
+        )
+        verdict = wake_detector.decide_wake_fire(
+            score=0.72, threshold=0.4, now_mono=105.0,
+        )
+        assert verdict.should_fire is True
+        # Fire-through disarms the soft override and re-arms only the
+        # hard 8s debounce.
+        assert voice_filters.get_wake_gate_override_threshold() is None
+        assert voice_filters.get_wake_min_next_ts() == pytest.approx(113.0)
+
+    def test_debounce_stays_hard_no_override(self):
+        # A normal accepted fire arms the 8s debounce with NO override —
+        # a second fire during it must be suppressed even at score 0.99.
+        wake_detector.decide_wake_fire(score=0.9, threshold=0.4, now_mono=100.0)
+        verdict = wake_detector.decide_wake_fire(
+            score=0.99, threshold=0.4, now_mono=103.0,
+        )
+        assert verdict.should_fire is False
+
+    def test_expired_cooldown_clears_stale_override(self):
+        voice_filters.arm_not_for_me_cooldown(
+            now_mono=100.0, config_get_float=_fake_config({}),
+        )
+        verdict = wake_detector.decide_wake_fire(
+            score=0.45, threshold=0.4, now_mono=130.0,
+        )
+        assert verdict.should_fire is True
+        assert voice_filters.get_wake_gate_override_threshold() is None

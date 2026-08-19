@@ -4,10 +4,11 @@ Owns the long-running ``while True`` that drives every wake cycle on
 the node: outer iteration setup (threshold, deques),
 inner per-chunk scoring (resample → openWakeWord predict →
 ``decide_wake_fire``), the alert-drain break-out path, and the
-post-fire orchestration chain (``bus.unsubscribe`` → ``oww.reset``
-in the background → ``pause_active_playback`` → wake-audio capture
-→ ``handle_keyword_detected`` → warmup thread → ``listen`` →
-processing ack → ``send_for_transcription`` → ``follow_up_loop``).
+post-fire orchestration chain (wake-clip write at fire time →
+``bus.unsubscribe`` → ``oww.reset`` in the background →
+``pause_active_playback`` → ``handle_keyword_detected`` → warmup
+thread → ``listen`` → processing ack → ``send_for_transcription``
+→ ``follow_up_loop``).
 
 This module is the orchestrator of the modules that came out of the
 earlier refactor phases — it owns no logic of its own beyond glue
@@ -49,14 +50,21 @@ from core.alert_announcer import (
 )
 from core.audio_bus import AudioBus
 from core.barge_in import BargeInMonitor, oww_lock as _oww_lock
+from core.echo_cancel import (
+    is_active as echo_cancel_is_active,
+    note_capture_chunk as note_echo_cancel_chunk,
+)
 from core.follow_up_loop import follow_up_loop
 from core.music_control import (
+    is_self_playing,
     pause_active_playback,
     resume_active_playback,
+    set_self_playing,
 )
 from core.platform_audio import platform_audio
 from core.vad_thresholds import (
     adaptive_silence_threshold as _adaptive_silence_threshold,
+    auto_pre_wake_vad_threshold as _auto_pre_wake_vad_threshold,
     barge_in_enabled,
     barge_in_energy_threshold,
     barge_in_threshold,
@@ -64,7 +72,7 @@ from core.vad_thresholds import (
 )
 from core.wake_calibration import record_legitimate_wake_score
 from core.wake_detector import (
-    current_wake_threshold,
+    current_wake_threshold_with_profile,
     decide_wake_fire,
     locked_oww_reset,
 )
@@ -77,10 +85,13 @@ from core.wake_response import (
     set_led_transient,
 )
 from core.wake_transcription import (
+    WAKE_CLIP_SECONDS,
     get_last_speaker,
     send_for_transcription,
     try_capture_wake_audio,
+    try_capture_wake_audio_from_frames,
 )
+from core import voice_filters
 from scripts.speech_to_text import listen
 from utils.config_service import Config
 
@@ -128,6 +139,15 @@ def _get_resample_poly():
 _bg_executor: ThreadPoolExecutor | None = None
 _wake_paused: threading.Event | None = None
 
+# Two-stage tentative-wake (duck-assisted completion) rolling cool-down:
+# monotonic timestamp of the last tentative trigger. Module-level (not
+# per-outer-iteration) so the "max one tentative per rolling
+# tentative_wake_cooldown_seconds" guard survives wake cycles — a
+# lyric-induced score dip must not strobe the music with duck/resume
+# pairs across consecutive cycles either. Only the wake-loop thread
+# writes it; tests reset it directly.
+_tentative_last_trigger_ts: float = float("-inf")
+
 
 def set_runtime(
     *,
@@ -167,6 +187,18 @@ def run_wake_loop(
     resample_down = bus.rate // OWW_RATE  # 3 for 48 kHz → 16 kHz
     alert_check_counter = 0
 
+    # Size of the consumed-chunks wake-clip deque: ~WAKE_CLIP_SECONDS of
+    # the bus's chunk cadence (80 ms chunks → 25). Derived from the bus
+    # when it exposes chunk_samples; the OWW frame length otherwise
+    # (test fakes only expose rate).
+    _clip_chunk_samples = getattr(bus, "chunk_samples", None)
+    _clip_chunk_secs = (
+        _clip_chunk_samples / bus.rate
+        if _clip_chunk_samples else _CHUNK_SECONDS
+    )
+
+    global _tentative_last_trigger_ts
+
     while True:
         # Safety net: ensure no stale cancel state from a prior
         # barge-in prevents wake-response or other audio.
@@ -174,8 +206,55 @@ def run_wake_loop(
 
         # Re-read the wake threshold each outer iteration so mobile-app
         # updates apply without a service restart. Using a local also
-        # keeps the inner loop hot path off the disk.
-        wake_threshold = current_wake_threshold()
+        # keeps the inner loop hot path off the disk. The profile
+        # ('normal'|'music') is the Layer-A music threshold swap —
+        # snapshotted here alongside the value for per-fire telemetry.
+        wake_threshold, wake_threshold_profile = (
+            current_wake_threshold_with_profile()
+        )
+
+        # Two-stage tentative-wake (duck-assisted completion) tunables —
+        # read per outer iteration like every other voice-loop knob
+        # (Config.get_* hits disk; NEVER read these per chunk). During
+        # self-playback, a chunk scoring in
+        # [tentative_threshold, wake_threshold) triggers a TENTATIVE
+        # duck: the user is likely mid-phrase ("hey jar–" duck "–vis"),
+        # and once the music drops to duck level the remaining frames
+        # arrive clean, letting the cumulative OWW score complete the
+        # fire that loud music would otherwise cap below threshold.
+        # <= 0 disables the layer entirely.
+        tentative_threshold = Config.get_float(
+            "wake_word_tentative_threshold", 0.20,
+        )
+        tentative_window = Config.get_float(
+            "tentative_wake_window_seconds", 1.6,
+        )
+        tentative_cooldown = Config.get_float(
+            "tentative_wake_cooldown_seconds", 10.0,
+        )
+        # Per-cycle tentative state (pure score comparisons on the hot
+        # path — the only side effects are the bg-executor duck/resume
+        # submits at trigger/expiry, never per chunk).
+        tentative_active = False
+        tentative_started_ts = 0.0
+        tentative_score_peak = 0.0
+        tentative_triggered_cycle = False
+
+        # Consumed-chunks wake-clip deque sizing. Normally
+        # ~WAKE_CLIP_SECONDS of the bus's chunk cadence (80 ms chunks →
+        # 25). When the tentative layer is armed (enabled + self-playback
+        # right now), extend coverage by the tentative window: a fire can
+        # land up to tentative_window after the duck triggered, and the
+        # clip must still contain the FULL phrase including the pre-duck
+        # chunks ("hey jar–"). Bounded: default 2.0 s + 1.6 s = 3.6 s ≈
+        # 45 chunks (~340 KB at 48 kHz mono int16).
+        _tentative_clip_extra = (
+            tentative_window
+            if (tentative_threshold > 0 and is_self_playing()) else 0.0
+        )
+        wake_clip_maxlen = max(1, round(
+            (WAKE_CLIP_SECONDS + _tentative_clip_extra) / _clip_chunk_secs
+        ))
 
         # Small queue (4 * 80ms = 320ms) on the latency-critical wake path.
         # The default 128-deep (~10.24s) drop-oldest FIFO let a sustained
@@ -191,17 +270,26 @@ def run_wake_loop(
         # discriminator would route a suppressed wake into wake handling
         # and silently drop the pending alert.
         fired = False
-        # Pre-wake VAD ring buffer — one bool per 80 ms chunk, last
-        # PRE_WAKE_VAD_FRAMES kept. On wake fire we sum it and report
-        # how many seconds of speech happened in the window before wake.
-        # Fresh per outer iteration so prior interactions don't leak in.
-        pre_wake_speech_frames: deque[bool] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
-        # Parallel RMS-value deque used only for the wake-fire diagnostic
-        # log — lets us see the actual mic baseline so the threshold can
-        # be tuned per room without guessing.
+        # Pre-wake RMS ring buffer — one raw RMS per 80 ms chunk, last
+        # PRE_WAKE_VAD_FRAMES kept. On wake fire the frames are
+        # classified against the (possibly auto-calibrated) speech
+        # threshold and reported as pre_wake_speech_seconds. Fresh per
+        # outer iteration so prior interactions don't leak in. Storing
+        # the raw values (not pre-classified bools) lets the threshold
+        # be computed AT fire time from the same window's ambient floor.
         pre_wake_rms_values: deque[float] = deque(maxlen=PRE_WAKE_VAD_FRAMES)
         pre_wake_vad_threshold: float = _pre_wake_vad_threshold()
         pre_wake_speech_seconds: float | None = None
+        # Every chunk this loop pulls off its queue — INCLUDING chunks
+        # the drain-to-newest pass skips scoring — so the wake clip can
+        # be written from the exact audio OWW fired on. The ring-buffer
+        # snapshot path this replaces cut wake.wav a variable wall-time
+        # after the fire; producer catch-up bursts evicted the wake
+        # phrase by then and the clip came back as post-phrase ambient.
+        wake_clip_frames: deque[bytes] = deque(maxlen=wake_clip_maxlen)
+        # Chunks the drain pass skipped scoring this cycle — logged on
+        # fire so every clip is auto-labeled for the wake-model dataset.
+        drained_chunks_cycle = 0
         try:
             was_paused = False
             _last_skip_log_ts = 0.0
@@ -217,6 +305,7 @@ def run_wake_loop(
                     raw_data = wake_q.get(timeout=0.5)
                 except queue.Empty:
                     continue
+                wake_clip_frames.append(raw_data)
 
                 # Stay CURRENT under a transient over-budget stall: drain any
                 # backlog and keep only the newest chunk. With the shallow
@@ -227,17 +316,23 @@ def run_wake_loop(
                 # fresh contiguous chunks that follow — so the wake word is
                 # never scored across the gap, and we avoid the ~1.3s post-
                 # reset priming blind-spot that frequent skips would create.
+                # Skipped chunks still land in wake_clip_frames: they're
+                # part of the audio stream around the fire even though
+                # they were never scored, and the clip must stay gapless.
                 skipped = 0
                 while True:
                     try:
                         raw_data = wake_q.get_nowait()
+                        wake_clip_frames.append(raw_data)
                         skipped += 1
                     except queue.Empty:
                         break
+                drained_chunks_cycle += skipped
                 if skipped and time.monotonic() - _last_skip_log_ts > 10.0:
                     logger.info(
                         "wake loop dropped stale audio backlog to stay current",
                         skipped_chunks=skipped,
+                        skipped_chunks_cycle=drained_chunks_cycle,
                     )
                     _last_skip_log_ts = time.monotonic()
 
@@ -252,13 +347,17 @@ def run_wake_loop(
                 # state. Without this, residual context from before the
                 # pause (often the wake response audio echoing back)
                 # immediately re-triggers a wake event. Also drop the
-                # pre-wake VAD buffer — frames from before the pause
-                # are no longer "the room before this wake".
+                # pre-wake VAD buffer and the wake-clip frames — audio
+                # from before the pause is no longer "the room before
+                # this wake".
                 if was_paused:
                     with _oww_lock:
                         oww.reset()
-                    pre_wake_speech_frames.clear()
                     pre_wake_rms_values.clear()
+                    wake_clip_frames.clear()
+                    # The CURRENT chunk was appended before this clear
+                    # ran, and it IS about to be scored — keep it.
+                    wake_clip_frames.append(raw_data)
                     was_paused = False
 
                 samples = np.frombuffer(raw_data, dtype=np.int16)
@@ -267,8 +366,17 @@ def run_wake_loop(
                 # the raw 48 kHz samples (before resample/clip) so the
                 # energy reading is unmodified mic input. Tiny cost.
                 rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-                pre_wake_speech_frames.append(rms > pre_wake_vad_threshold)
                 pre_wake_rms_values.append(rms)
+
+                # Echo-cancel silent-capture watchdog feed — reuses this
+                # RMS (the cheapest existing per-chunk signal) to detect
+                # a dead EC source right after engage. The callee never
+                # raises; the extra guard makes EC machinery
+                # categorically unable to kill the wake loop.
+                try:
+                    note_echo_cancel_chunk(rms)
+                except Exception:
+                    pass
 
                 if resample_down > 1:
                     resampled = _get_resample_poly()(samples, up=1, down=resample_down)
@@ -294,25 +402,91 @@ def run_wake_loop(
                 # so we don't double-fire on the next 80 ms chunk of the
                 # same OWW utterance.
                 now_mono = time.monotonic()
+                # ── Tentative-wake bookkeeping (Layer B) ──────────────
+                # Pure comparisons on the hot path. Peak-track while a
+                # tentative window is open; expire it quietly (resume
+                # the music, structured log, NO ack / NO LED work) when
+                # the window lapses without a completing fire.
+                if tentative_active:
+                    if score > tentative_score_peak:
+                        tentative_score_peak = float(score)
+                    if now_mono - tentative_started_ts >= tentative_window:
+                        tentative_active = False
+                        if _bg_executor is not None:
+                            _bg_executor.submit(resume_active_playback)
+                        logger.info(
+                            "tentative wake expired",
+                            score_peak=round(tentative_score_peak, 3),
+                            window=tentative_window,
+                            threshold_used=wake_threshold,
+                            threshold_profile=wake_threshold_profile,
+                            tentative_threshold=tentative_threshold,
+                        )
                 verdict = decide_wake_fire(
                     score=score,
                     threshold=wake_threshold,
                     now_mono=now_mono,
                 )
                 fire_wake = verdict.should_fire
+                if (
+                    not fire_wake
+                    and not tentative_active
+                    and tentative_threshold > 0
+                    and tentative_threshold <= score < wake_threshold
+                    and now_mono - _tentative_last_trigger_ts
+                        >= tentative_cooldown
+                    and is_self_playing()  # cached flag — no pactl here
+                ):
+                    # Score landed in the tentative band during
+                    # self-playback: duck the music NOW and keep scoring.
+                    # A tentative is NOT a fire — no debounce arming, no
+                    # ack, no calibration recording, no LEDs. The
+                    # rolling cool-down (module-level, survives cycles)
+                    # keeps lyric-induced dips from strobing the music.
+                    tentative_active = True
+                    tentative_triggered_cycle = True
+                    tentative_started_ts = now_mono
+                    tentative_score_peak = float(score)
+                    _tentative_last_trigger_ts = now_mono
+                    if _bg_executor is not None:
+                        _bg_executor.submit(pause_active_playback)
+                    logger.info(
+                        "tentative wake triggered",
+                        score=round(float(score), 3),
+                        tentative_threshold=tentative_threshold,
+                        threshold_used=wake_threshold,
+                        threshold_profile=wake_threshold_profile,
+                        window=tentative_window,
+                    )
                 if fire_wake:
                     t_wake_fired = now_mono
+                    # Tentative completion: the fire landed while a
+                    # tentative duck window was open — the music was
+                    # already ducked, so the normal fire path below is
+                    # smoother/faster (its own pause_active_playback
+                    # submit is idempotent against the tentative's; the
+                    # saved-volume guard in music_control prevents
+                    # double-duck). Consume the window either way.
+                    tentative_completed = tentative_active
+                    tentative_active = False
                     # Snapshot the score for the auto-calibrator. The
                     # ``score`` variable will be overwritten when the
                     # outer loop iterates again; we need it later
                     # (after CC's not_for_me verdict) to decide whether
                     # this wake counts as a "legitimate" data point.
                     score_at_wake = float(score)
-                    speech_frames = sum(pre_wake_speech_frames)
-                    pre_wake_speech_seconds = round(
-                        speech_frames * _CHUNK_SECONDS, 2,
-                    )
-                    # Diagnostic RMS stats for threshold calibration.
+                    # Self-playback evidence, snapshotted at fire time so
+                    # every consumer of THIS fire (VAD-calibration
+                    # bypass, silence-threshold bypass, CC payload,
+                    # calibration exclusion) sees one coherent value.
+                    # Cheap cached read — refreshed by the duck's
+                    # sink-input enumeration each wake and set by the
+                    # deferred-play hook; an externally-initiated session
+                    # (AirPlay from a phone with no voice command) lags
+                    # one wake (documented caveat in music_control).
+                    self_playback = is_self_playing()
+                    # Diagnostic RMS stats for threshold calibration —
+                    # also the input to the pre-wake VAD auto-calibrator.
                     if pre_wake_rms_values:
                         rms_sorted = sorted(pre_wake_rms_values)
                         rms_n = len(rms_sorted)
@@ -325,27 +499,128 @@ def run_wake_loop(
                         }
                     else:
                         rms_stats = {}
+                    # Pre-wake speech classification. The static 2500
+                    # default sat above real speech RMS on the prod mic
+                    # (pre_wake_speech_seconds pinned at 0.00 for 14
+                    # days), so by default the threshold auto-calibrates
+                    # off this window's own ambient floor. The static
+                    # value stays the fallback (auto disabled / no
+                    # stats). Logged with its source so the calibration
+                    # is verifiable from Loki per fire.
+                    effective_vad_threshold = pre_wake_vad_threshold
+                    vad_threshold_source = "static"
+                    # Self-playback bypass: during the node's own music
+                    # the pre-wake window is music bleed, so the auto
+                    # calibrator would set its "ambient floor" from the
+                    # music itself and classify pre_wake_speech≈0 — the
+                    # false-wake fingerprint — off a poisoned baseline.
+                    # Keep the static threshold and still SEND the raw
+                    # value; the self_playback flag tells CC the number
+                    # is unreliable rather than us suppressing it here.
+                    if self_playback:
+                        vad_threshold_source = "static_self_playback"
+                    else:
+                        auto_vad_threshold = _auto_pre_wake_vad_threshold(rms_stats)
+                        if auto_vad_threshold is not None:
+                            effective_vad_threshold = auto_vad_threshold
+                            vad_threshold_source = "auto"
+                    speech_frames = sum(
+                        1 for r in pre_wake_rms_values
+                        if r > effective_vad_threshold
+                    )
+                    pre_wake_speech_seconds = round(
+                        speech_frames * _CHUNK_SECONDS, 2,
+                    )
+                    # Per-fire echo-cancel telemetry (peel-back data for
+                    # the EC layer). Guarded read — telemetry must never
+                    # take down a fire.
+                    try:
+                        echo_cancel_active = bool(echo_cancel_is_active())
+                    except Exception:
+                        echo_cancel_active = False
                     logger.info(
                         "Wake fired",
-                        score=round(float(score), 3),
+                        score=round(score_at_wake, 3),
+                        oww_score=round(score_at_wake, 3),
                         pre_wake_speech_seconds=pre_wake_speech_seconds,
                         pre_wake_window_seconds=PRE_WAKE_VAD_WINDOW_SECS,
-                        buffered_frames=len(pre_wake_speech_frames),
-                        vad_threshold=pre_wake_vad_threshold,
+                        buffered_frames=len(pre_wake_rms_values),
+                        vad_threshold=round(effective_vad_threshold, 1),
+                        vad_threshold_source=vad_threshold_source,
+                        vad_threshold_static=pre_wake_vad_threshold,
                         rms_stats=rms_stats,
+                        drained_chunks=drained_chunks_cycle,
+                        self_playback=self_playback,
+                        # Per-fire layer tags: which threshold profile
+                        # admitted this fire (Layer A), whether a
+                        # tentative duck was involved (Layer B), and
+                        # whether PA echo-cancel was engaged (EC layer)
+                        # — so each detection layer can be peeled back
+                        # with data from Loki.
+                        threshold_used=wake_threshold,
+                        threshold_profile=wake_threshold_profile,
+                        tentative_triggered=tentative_triggered_cycle,
+                        tentative_completed=tentative_completed,
+                        echo_cancel_active=echo_cancel_active,
                     )
                     # Lock the per-cycle silence threshold to the ambient
                     # noise floor observed RIGHT before wake. Used below
                     # for the command listen() (and follow-up listens),
                     # so a static config value can't be wrong for the
                     # current room state.
-                    adaptive_silence_threshold = _adaptive_silence_threshold(rms_stats)
+                    #
+                    # Self-playback bypass (post-duck capture hygiene):
+                    # the pre-wake window this calibrates on is the
+                    # PRE-duck LOUD music, but the recording happens over
+                    # ducked (much quieter) music — a threshold lifted to
+                    # a multiple of the music floor would treat the
+                    # user's speech tail as silence-or-noise wrongly.
+                    # Passing None lets listen() fall back to the static
+                    # config default for this recording session.
+                    if self_playback:
+                        adaptive_silence_threshold = None
+                        logger.info(
+                            "Adaptive silence threshold bypassed "
+                            "(self-playback: pre-duck window is music-"
+                            "contaminated; using static default)",
+                            ambient_median_rms=rms_stats.get("median"),
+                        )
+                    else:
+                        adaptive_silence_threshold = _adaptive_silence_threshold(rms_stats)
                     if adaptive_silence_threshold is not None:
                         logger.info(
                             "Adaptive silence threshold",
                             silence_threshold=adaptive_silence_threshold,
                             ambient_median_rms=rms_stats.get("median"),
                         )
+                    # Write the wake clip NOW, synchronously, from the
+                    # exact chunks this loop just scored — before ANY
+                    # post-fire bookkeeping. The old ring-buffer snapshot
+                    # ran a variable wall-time after the fire and
+                    # producer catch-up bursts evicted the wake phrase
+                    # by then (prod clips transcribed as post-phrase
+                    # ambient on real 0.97+ wakes, and wake verification
+                    # then suppressed two REAL commands). The consumed-
+                    # chunks deque can't be evicted: it IS the scored
+                    # audio. Bus snapshot survives as the fallback.
+                    _t_clip_start = time.monotonic()
+                    wake_audio_path = try_capture_wake_audio_from_frames(
+                        wake_clip_frames, bus,
+                    )
+                    wake_clip_source = "consumed_chunks"
+                    if wake_audio_path is None:
+                        wake_audio_path = try_capture_wake_audio(bus)
+                        wake_clip_source = "bus_snapshot_fallback"
+                    _t_clip_end = time.monotonic()
+                    logger.info(
+                        "⏱️ wake-step | wake clip captured",
+                        clip_source=wake_clip_source,
+                        clip_frames=len(wake_clip_frames),
+                        fire_to_clip_ms=int((_t_clip_end - t_wake_fired) * 1000),
+                        clip_write_ms=int((_t_clip_end - _t_clip_start) * 1000),
+                        oww_score=round(score_at_wake, 3),
+                        captured=wake_audio_path is not None,
+                    )
                     fired = True
                     break
         finally:
@@ -361,6 +636,22 @@ def run_wake_loop(
         # suppressed high score still needs to fall through to the alert
         # drain rather than be treated as a wake.
         if not fired:
+            # A tentative duck that was still open when the alert-check
+            # broke the inner loop must not leave the music ducked
+            # through the alert drain and beyond — expire it here.
+            if tentative_active:
+                tentative_active = False
+                if _bg_executor is not None:
+                    _bg_executor.submit(resume_active_playback)
+                logger.info(
+                    "tentative wake expired",
+                    score_peak=round(tentative_score_peak, 3),
+                    window=tentative_window,
+                    threshold_used=wake_threshold,
+                    threshold_profile=wake_threshold_profile,
+                    tentative_threshold=tentative_threshold,
+                    reason="alert_drain_break",
+                )
             try:
                 drain_alert_announcements(
                     bus, command_service, stt_provider, validation_handler,
@@ -400,12 +691,12 @@ def run_wake_loop(
             f"{int((time.monotonic() - _t_duck_start) * 1000)}ms"
         )
 
-        # Snapshot the wake-word audio from the bus *now* — before
-        # handle_keyword_detected plays the TTS ack which can take
-        # 500-1500ms. The bus only holds ~2s of history so any later
-        # snapshot risks falling outside that window. The same
-        # snapshot is reused for every follow-up in this conversation.
-        wake_audio_path = try_capture_wake_audio(bus)
+        # NOTE: wake_audio_path was already written inside the fire
+        # branch above, synchronously from the consumed-chunks deque
+        # (with the bus-ring snapshot as fallback) — before any of the
+        # post-fire bookkeeping could let the producer catch up and
+        # evict the wake phrase. The same clip is reused for every
+        # follow-up in this conversation.
 
         # Initialize ``result`` up-front so the outer ``finally``'s
         # ``result.get("on_response_complete")`` is always safe — without
@@ -524,6 +815,8 @@ def run_wake_loop(
                     pre_wake_speech_seconds=pre_wake_speech_seconds,
                     wake_audio_path=wake_audio_path,
                     wake_confidence=score_at_wake,
+                    self_playback=self_playback,
+                    self_playback_kind="music" if self_playback else None,
                 )
                 # Feed the auto-calibrator: wake scores that produced a
                 # real interaction (not the not_for_me silent abort)
@@ -533,12 +826,28 @@ def run_wake_loop(
                 # false-positive and including it would lower the bar
                 # for genuine false positives.
                 #
-                # not_for_me used to arm a multi-second cooldown gate
-                # here. Removed: a probabilistic verdict shouldn't lock
-                # the room out. TTS is already skipped upstream; the
-                # next wake fires normally.
-                if isinstance(result, dict) and not result.get("not_for_me"):
+                # Self-playback fires are ALSO excluded: OWW scores
+                # during music are scored against a music-degraded
+                # signal, and folding them into the sample set would
+                # poison the auto-threshold (a p20 anchored on music-
+                # time scores drags the threshold toward music-time
+                # false-positive territory for quiet-room wakes).
+                if (
+                    isinstance(result, dict)
+                    and not result.get("not_for_me")
+                    and not self_playback
+                ):
                     record_legitimate_wake_score(score_at_wake)
+                elif isinstance(result, dict) and result.get("not_for_me"):
+                    # CC says the room wasn't talking to us — arm the SOFT
+                    # cool-down so the next sentence of the same side
+                    # conversation can't immediately re-fire wake. A
+                    # deliberate wake still punches through at
+                    # not_for_me_override_threshold (see voice_filters).
+                    voice_filters.arm_not_for_me_cooldown(
+                        now_mono=time.monotonic(),
+                        config_get_float=Config.get_float,
+                    )
                 # Capture TTS-end time RIGHT after send_for_transcription
                 # returns (which is right after speak_result completes).
                 # The follow-up loop uses this to know how far back to look
@@ -634,6 +943,14 @@ def run_wake_loop(
                         )
                     try:
                         on_complete()
+                        # Deferred play just started the node's own
+                        # music — record it so the NEXT fire's
+                        # self-playback snapshot is right even before
+                        # the duck enumeration refreshes the flag. The
+                        # False→True edge also engages the music-time
+                        # capture-PGA profile (we're in the bg executor
+                        # after the turn — outside any recording).
+                        set_self_playing(True, trigger="deferred_play")
                     except Exception as e:
                         logger.warning(
                             "on_response_complete callback raised",

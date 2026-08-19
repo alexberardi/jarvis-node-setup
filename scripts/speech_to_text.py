@@ -179,6 +179,18 @@ def _write_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
         wf.writeframes(b"".join(frames))
 
 
+def write_frames_to_wav(path: str, frames: List[bytes], bus: AudioBus) -> None:
+    """Write raw mic chunks to a WAV in the bus's audio format.
+
+    Public sibling of :func:`_write_wav` for callers that already hold
+    the exact frames they want persisted — the wake loop uses it to
+    write the wake clip from the chunks openWakeWord actually scored
+    (see ``core.wake_transcription.try_capture_wake_audio_from_frames``),
+    instead of re-reading the ring buffer after the fact.
+    """
+    _write_wav(path, frames, bus)
+
+
 def snapshot_bus_to_wav(bus: AudioBus, seconds: float, out_path: str) -> bool:
     """Snapshot the last ``seconds`` of bus audio and write a WAV.
 

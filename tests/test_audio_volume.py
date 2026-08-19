@@ -562,7 +562,9 @@ class TestEnsureOutputBaseline:
         # One sset per control in the baseline tuple — exact value
         # asserted below so we'd catch a typo'd target.
         sset_pairs = [(c[4], c[5]) for c in ssets]
-        assert ("Line", "4") in sset_pairs
+        # Line baseline is +2 dB (control value 2) since the 2026-06-03
+        # analog-headroom tune-down — see _TLV320_OUTPUT_BASELINE_CMDS.
+        assert ("Line", "2") in sset_pairs
         assert ("Line DAC", "115") in sset_pairs
         assert ("PCM", "100%") in sset_pairs
         # HP / HPCOM must be re-muted (drives the JST speaker via Line
@@ -693,3 +695,124 @@ class TestEnsureOutputBaseline:
         audio_volume.ensure_output_baseline()
         ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
         assert ssets, "live heal still happens even if persist fails"
+
+
+# `amixer -c seeed2micvoicec sget 'PGA'` output shape.
+_PGA_SGET_TEMPLATE = (
+    "Simple mixer control 'PGA',0\n"
+    "  Capabilities: cvolume cswitch\n"
+    "  Capture channels: Front Left - Front Right\n"
+    "  Limits: Capture 0 - 119\n"
+    "  Front Left: Capture 58 [{left}%] [29.00dB] [on]\n"
+    "  Front Right: Capture 58 [{right}%] [29.00dB] [on]\n"
+)
+
+
+class TestCapturePga:
+    """Capture PGA primitives backing the self-playback mic-gain profile
+    (music_control lowers the gain to music_pga_percent during the
+    node's own music — the +35.5 dB install-era default clips the ADC
+    during playback, see prds/wake-during-music/findings-2026-06-03.md).
+    """
+
+    def _stub(self, calls, sget_stdout=None, sset_ok=True):
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(APLAY_L_OUTPUT)
+            if cmd[:3] == ["amixer", "-c", "seeed2micvoicec"]:
+                if cmd[3] == "sget" and cmd[4] == "PGA":
+                    if sget_stdout is None:
+                        return _fail()
+                    return _ok(sget_stdout)
+                if cmd[3] == "sset" and cmd[4] == "PGA":
+                    return _ok() if sset_ok else _fail()
+            return _fail()
+        return stub
+
+    def test_get_parses_percent(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(audio_volume, "_run", self._stub(
+            calls, sget_stdout=_PGA_SGET_TEMPLATE.format(left=49, right=49),
+        ))
+        assert audio_volume.get_capture_pga_percent() == 49
+
+    def test_get_takes_max_across_channels(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(audio_volume, "_run", self._stub(
+            calls, sget_stdout=_PGA_SGET_TEMPLATE.format(left=40, right=60),
+        ))
+        assert audio_volume.get_capture_pga_percent() == 60
+
+    def test_get_none_without_seeed_card(self, monkeypatch):
+        only_hdmi = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM\n"
+        )
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(only_hdmi)
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.get_capture_pga_percent() is None
+        assert not any(c[0] == "amixer" for c in calls), \
+            "no amixer traffic when the codec is absent"
+
+    def test_get_none_on_amixer_failure(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            audio_volume, "_run", self._stub(calls, sget_stdout=None),
+        )
+        assert audio_volume.get_capture_pga_percent() is None
+
+    def test_get_none_on_unparseable_output(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            audio_volume, "_run", self._stub(calls, sget_stdout="garbage"),
+        )
+        assert audio_volume.get_capture_pga_percent() is None
+
+    def test_set_issues_sset_with_percent(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(audio_volume, "_run", self._stub(calls))
+        assert audio_volume.set_capture_pga_percent(49) is True
+        ssets = [c for c in calls if len(c) > 3 and c[3] == "sset"]
+        assert ssets == [
+            ["amixer", "-c", "seeed2micvoicec", "sset", "PGA", "49%"],
+        ]
+
+    def test_set_clamps_to_valid_range(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(audio_volume, "_run", self._stub(calls))
+        assert audio_volume.set_capture_pga_percent(150) is True
+        assert audio_volume.set_capture_pga_percent(-5) is True
+        ssets = [c[-1] for c in calls if len(c) > 3 and c[3] == "sset"]
+        assert ssets == ["100%", "0%"]
+
+    def test_set_false_without_seeed_card(self, monkeypatch):
+        only_hdmi = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi [vc4-hdmi], device 0: MAI PCM\n"
+        )
+        calls: list[list[str]] = []
+
+        def stub(cmd, timeout=2.0):
+            calls.append(list(cmd))
+            if cmd[:2] == ["aplay", "-l"]:
+                return _ok(only_hdmi)
+            return _fail()
+
+        monkeypatch.setattr(audio_volume, "_run", stub)
+        assert audio_volume.set_capture_pga_percent(49) is False
+        assert not any(c[0] == "amixer" for c in calls)
+
+    def test_set_false_on_amixer_failure(self, monkeypatch):
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            audio_volume, "_run", self._stub(calls, sset_ok=False),
+        )
+        assert audio_volume.set_capture_pga_percent(49) is False

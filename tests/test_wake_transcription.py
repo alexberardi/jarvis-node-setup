@@ -106,6 +106,51 @@ class TestTryCaptureWakeAudio:
 
 
 # ---------------------------------------------------------------------------
+# try_capture_wake_audio_from_frames — consumed-chunks → WAV (primary path)
+# ---------------------------------------------------------------------------
+
+
+class TestTryCaptureWakeAudioFromFrames:
+
+    def test_frames_written_returns_path(self, monkeypatch):
+        bus = MagicMock()
+        written: dict = {}
+
+        def _write(path, frames, b):
+            written["path"] = path
+            written["frames"] = frames
+
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", _write)
+        result = wake_transcription.try_capture_wake_audio_from_frames(
+            [b"aa", b"bb"], bus,
+        )
+        assert result == str(wake_transcription._WAKE_AUDIO_PATH)
+        assert written["path"] == str(wake_transcription._WAKE_AUDIO_PATH)
+        assert written["frames"] == [b"aa", b"bb"]
+
+    def test_empty_frames_returns_none(self, monkeypatch):
+        bus = MagicMock()
+        write = MagicMock()
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", write)
+        assert wake_transcription.try_capture_wake_audio_from_frames(
+            [], bus,
+        ) is None
+        write.assert_not_called()
+
+    def test_write_raises_returns_none(self, monkeypatch):
+        # Must not raise — the caller falls back to the bus snapshot.
+        bus = MagicMock()
+
+        def boom(*a, **kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(wake_transcription, "write_frames_to_wav", boom)
+        assert wake_transcription.try_capture_wake_audio_from_frames(
+            [b"aa"], bus,
+        ) is None
+
+
+# ---------------------------------------------------------------------------
 # try_build_speaker_audio — concat wake + command WAVs
 # ---------------------------------------------------------------------------
 
@@ -429,6 +474,29 @@ class TestSendForTranscriptionCc:
         assert result == {"reply": "It's 5pm."}
         cs.process_voice_command.assert_called_once()
         cs.speak_result.assert_called_once_with({"reply": "It's 5pm."})
+
+    def test_self_playback_passthrough_to_process_voice_command(
+        self, monkeypatch, _no_concat, _stable_config,
+    ):
+        """self_playback / self_playback_kind flow through untouched to
+        process_voice_command (and from there to the CC payload)."""
+        stt = _stt_returning(TranscriptionResult(text="turn it up"))
+        cs = _command_service_returning({"reply": "ok"})
+        monkeypatch.setattr(
+            wake_transcription, "is_false_wake",
+            lambda text, recording, segments: False,
+        )
+        wake_transcription.send_for_transcription(
+            recording=_recording("/tmp/cmd.wav"),
+            command_service=cs,
+            stt_provider=stt,
+            validation_handler=lambda v: "",
+            self_playback=True,
+            self_playback_kind="music",
+        )
+        kwargs = cs.process_voice_command.call_args.kwargs
+        assert kwargs["self_playback"] is True
+        assert kwargs["self_playback_kind"] == "music"
 
     def test_success_updates_module_speaker_state(self, monkeypatch, _no_concat, _stable_config):
         stt = _stt_returning(TranscriptionResult(

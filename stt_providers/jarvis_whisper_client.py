@@ -43,6 +43,7 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
         audio_path: str,
         *,
         speaker_audio_path: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> TranscriptionResult:
         """Transcribe audio and return speaker identity if available.
 
@@ -51,11 +52,19 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
             speaker_audio_path: Optional separate file used for the
                 speaker-recognition pass (wake-word concat). If omitted,
                 ``audio_path`` is used for both passes.
+            conversation_id: When provided, sent alongside the audio so CC
+                can run wake-clip verification on the leading seconds of
+                the speaker audio and cache the verdict for this
+                conversation's command turn.
 
         Returns:
             TranscriptionResult with text and optional speaker data
         """
-        result = self._call_whisper(audio_path, speaker_audio_path=speaker_audio_path)
+        result = self._call_whisper(
+            audio_path,
+            speaker_audio_path=speaker_audio_path,
+            conversation_id=conversation_id,
+        )
         if result and isinstance(result, dict):
             text = result.get("text", "")
             segments_raw = result.get("segments") or []
@@ -82,6 +91,7 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
         audio_path: str,
         *,
         speaker_audio_path: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Call the whisper transcription endpoint.
 
@@ -104,6 +114,11 @@ class JarvisWhisperClient(IJarvisSpeechToTextProvider):
         try:
             f = open(audio_path, "rb")
             files: Dict[str, Any] = {"file": (audio_path, f, "audio/wav")}
+            if conversation_id:
+                # Plain form field via the files dict ((None, value) makes
+                # requests encode it as a non-file multipart part) — keeps
+                # RestClient.post untouched (its data= kwarg is JSON-only).
+                files["conversation_id"] = (None, conversation_id)
             if speaker_audio_path:
                 try:
                     speaker_file = open(speaker_audio_path, "rb")

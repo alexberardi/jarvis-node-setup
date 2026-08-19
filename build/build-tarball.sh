@@ -76,7 +76,7 @@ fi
 
 echo "==> Installing openwakeword (--no-deps)"
 "${INSTALL_DIR}/.venv/bin/python" -m pip install \
-  openwakeword --no-deps \
+  openwakeword==0.6.0 --no-deps \
   ${PIP_EXTRA_ARGS} \
   --quiet
 
@@ -89,7 +89,10 @@ cp -r /src/jarvis-command-sdk /tmp/jarvis-command-sdk
 # --- Copy application source ---
 echo "==> Copying application source"
 
-# Directories to include in the tarball
+# Directories to include in the tarball.
+# NOTE: `models` also carries models/wake/ — bundled wake-word models that
+# ship with every install (resolved first by core/wake_models.py). Removing
+# it from this list would silently kill bundled wake models in releases.
 SOURCE_DIRS=(
   agents
   alembic

@@ -56,6 +56,46 @@ def pre_wake_vad_threshold() -> float:
     return Config.get_float("pre_wake_vad_rms_threshold", 2500.0)
 
 
+def auto_pre_wake_vad_threshold(rms_stats: dict[str, float]) -> float | None:
+    """Derive a per-fire pre-wake speech threshold from the ambient floor.
+
+    The static ``pre_wake_vad_rms_threshold`` default (2500) sits ABOVE
+    real speech RMS on the prod kitchen mic — ``pre_wake_speech_seconds``
+    reported 0.00/-1.00 for 14 straight days, so CC's not_for_me
+    direction hint ran on a dead signal. Mirrors
+    :func:`adaptive_silence_threshold`: the median of the 5 s pre-wake
+    RMS window is a clean ambient-floor read (the wake word itself is
+    only the last ~0.25 s), and speech runs a multiple of that floor.
+
+    Default ON (``pre_wake_vad_auto``) — unlike silence auto-tune, which
+    refines a working static value, this replaces a provably dead one,
+    so opting OUT is the setting.
+
+    Returns ``None`` to mean "use the static threshold": auto disabled,
+    stats missing, or a non-positive floor.
+
+    Clamp ``[300, 2500]``: below 300 ordinary quiet-room flutter counts
+    as speech (the failure that pushed the original 500 default up);
+    the ceiling equals the static default so auto-calibration can never
+    be MORE deaf than the value it replaces. This tunes evidence fed to
+    CC, not a gate — a wrong threshold here can never suppress a
+    command on its own.
+    """
+    if not Config.get_bool("pre_wake_vad_auto", True):
+        return None
+    if not isinstance(rms_stats, dict):
+        return None
+    floor_rms = rms_stats.get("median")
+    if not isinstance(floor_rms, (int, float)) or floor_rms <= 0:
+        return None
+    multiplier = Config.get_float("pre_wake_vad_auto_multiplier", 3.0)
+    min_threshold = Config.get_int("pre_wake_vad_auto_min", 300)
+    max_threshold = Config.get_int("pre_wake_vad_auto_max", 2500)
+    return float(
+        max(min_threshold, min(max_threshold, floor_rms * multiplier))
+    )
+
+
 def adaptive_silence_threshold(rms_stats: dict[str, float]) -> int | None:
     """Derive a per-cycle silence_threshold from the pre-wake noise floor.
 

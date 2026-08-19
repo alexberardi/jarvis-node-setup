@@ -1,0 +1,7 @@
+# Regenerable pipeline outputs — only code + pins are committed.
+data/
+artifacts/
+piper-sample-generator/
+openwakeword/
+__pycache__/
+*.pyc
