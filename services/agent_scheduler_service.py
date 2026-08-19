@@ -296,6 +296,20 @@ class AgentSchedulerService:
             logger.debug("Running agent", agent=agent.name)
             start_time = time.time()
 
+            # Seed the household home_context (from config.json, injected by CC) so
+            # agents read household info (location, ...) via get_home_context() —
+            # no per-agent location secret, no round-trip to command-center. The
+            # ContextVar propagates across awaits within this run(); agents that spawn
+            # their own threads/tasks fall back to Config.get_dict("home_context").
+            try:
+                from jarvis_command_sdk import set_home_context
+
+                from utils.config_service import Config
+
+                set_home_context(Config.get_dict("home_context"))
+            except Exception:  # noqa: BLE001 — context seeding must never block a run
+                pass
+
             await agent.run()
 
             # Update last run time
