@@ -6,19 +6,23 @@ weekdays, monthly).
 """
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from jarvis_log_client import JarvisLogger
 
 from core.command_response import CommandResponse
 from jarvis_command_sdk import (
+    BlastTier,
     CommandAntipattern,
     CommandExample,
     FastPathPattern,
     FieldSpec,
     IJarvisCommand,
     PreRouteResult,
+    ProposableAction,
     RecordSummary,
+    callback,
 )
 from core.ijarvis_parameter import JarvisParameter
 from core.ijarvis_secret import IJarvisSecret
@@ -91,6 +95,19 @@ _SNOOZE_FOR_RE = re.compile(
 )
 
 
+def _parse_iso_datetime(raw: Any) -> "datetime | None":
+    """Parse an ISO-8601 string to a tz-aware datetime. A naive value (producers
+    should send tz-aware, but be defensive) is treated as UTC so the reminder fires
+    at the intended instant regardless of node locale."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
 class ReminderCommand(IJarvisCommand):
     """Manage reminders: set, list, delete, and snooze."""
 
@@ -157,6 +174,68 @@ class ReminderCommand(IJarvisCommand):
                 description="Snooze duration in minutes (default: 10)",
             ),
         ]
+
+    @property
+    def proposable_actions(self) -> List[ProposableAction]:
+        # Opt a set-a-reminder-at-an-absolute-time action in to being surfaced as a
+        # confirm card by ANY agent (e.g. the drive-time agent's "leave by" proposal).
+        # This declaration IS the capability grant — command-center refuses to
+        # dispatch a callback that isn't listed here. Deliberately ABSOLUTE due_at,
+        # NOT relative_minutes: a card is confirmed LATER than it's proposed, and a
+        # relative offset would drift by however long it sat before the tap.
+        return [
+            ProposableAction(
+                callback="set_at",
+                params=[
+                    JarvisParameter("text", "string", required=True,
+                                    description="What to be reminded about."),
+                    JarvisParameter("due_at_iso", "datetime", required=True,
+                                    description="Absolute ISO-8601 time to fire the reminder."),
+                    JarvisParameter("idempotency_key", "string", required=True,
+                                    description="Stable de-dup key so a retried confirmation does not create a duplicate reminder."),
+                ],
+                card_title="Set a reminder?",
+                confirm_label="Set reminder",
+                editable=["text"],
+                blast_tier=BlastTier.reversible,
+                idempotency_param="idempotency_key",
+            )
+        ]
+
+    @callback("set_at")
+    def set_at(self, data: dict, request_info: RequestInformation) -> CommandResponse:
+        """Set a reminder at an ABSOLUTE time from a confirmed proposable-action card.
+
+        Distinct from the voice ``set`` action because a proposal is tapped later:
+        the time must be a fixed instant, not a relative offset that would drift.
+        Dispatch de-dup is command-center's (the ``idempotency_key``); a confirmed tap
+        creates exactly one reminder for the recognized speaker.
+        """
+        service = get_reminder_service()
+        user_id = request_info.user_id if request_info is not None else None
+        if user_id is None:
+            return CommandResponse.error_response(
+                error_details="Unknown speaker — cannot save a personal reminder.",
+                context_data={"error": "unknown_speaker", "set": False,
+                              "message": "I'm not sure who this reminder is for."},
+            )
+        data = data or {}
+        text = data.get("text")
+        due_at = _parse_iso_datetime(data.get("due_at_iso"))
+        if not text or due_at is None:
+            return CommandResponse.error_response(
+                error_details="set_at requires text and a valid absolute due_at_iso.",
+                context_data={"error": "invalid_params", "set": False,
+                              "message": "I need what to remind you about and when."},
+            )
+        reminder = service.create_reminder(text, due_at, None, user_id=user_id)
+        due_human = ReminderService.format_due_at_human(reminder.due_at)
+        message = f"Reminder set: {text} — {due_human}"
+        return CommandResponse.success_response(
+            context_data={"reminder_id": reminder.reminder_id, "text": text,
+                          "due_at": reminder.due_at, "due_at_human": due_human,
+                          "set": True, "message": message},
+        )
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
