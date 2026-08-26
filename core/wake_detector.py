@@ -73,19 +73,31 @@ def current_wake_threshold_with_profile() -> tuple[float, str]:
     * ``"normal"`` — the static ``wake_word_threshold`` (~0.40), or the
       auto-calibrated value when ``wake_word_threshold_auto`` is on.
 
-    * ``"music"`` — during self-playback (``is_self_playing()``, the
-      cached flag — no pactl round-trip here), the threshold drops to
-      ``wake_word_threshold_music`` (default 0.30). Loud-music physics
-      (June-2026 data): OWW caps at 0.14–0.43 while music plays, so the
-      normal 0.40 discards most real wakes; speaker-bleed-only scores
-      sit at 0.10–0.18. 0.30 sits above the bleed band and harvests the
-      recoverable top of the cap band. This is a pure threshold swap —
-      deliberately NO RMS/energy checks and NO trust scores (the sins
-      of the retired June energy gate; see module docstring). Extra
-      false fires this admits are absorbed by CC verification (clip
-      phrase-match), which is the fail-open backstop. Set
-      ``wake_word_threshold_music`` <= 0 to disable the profile and use
-      the normal threshold during music.
+    * ``"music"`` — OFF BY DEFAULT since 2026-08-26. During self-playback
+      the threshold used to drop to ``wake_word_threshold_music``
+      (formerly 0.30) on June-2026 loud-music physics: OWW caps at
+      0.14–0.43 while music plays, so a 0.40 normal threshold discards
+      most real wakes, and speaker bleed alone sits at 0.10–0.18.
+
+      It did not work out. The design traded false fires for recall on
+      the explicit premise that "extra false fires this admits are
+      absorbed by CC verification (clip phrase-match), which is the
+      fail-open backstop" — but that backstop is advisory
+      (``voice.wake_verification_mode`` ships as ``bias``, and the
+      ``clip_unreliable`` verdict fails open), so nothing ever absorbed
+      them. Measured on the prod kitchen node, 08-16 → 08-26:
+
+        - 47 music-profile fires → approximately ZERO verified wakes
+        - days with the profile active: 12% of fires verified (8/68)
+        - days without it:             69% of fires verified (40/58)
+        - the expected yield from normal-profile fires ALONE on those two
+          days (14.5) already exceeds the 8 actually observed
+
+      One day (08-24) produced 38 music-profile fires against 4 verified
+      wakes across the whole day. So the node no longer overrides the
+      threshold the household chose — waking over loud music is a job for
+      a music-robust wake MODEL, not for a lower bar. The mechanism stays
+      for anyone who sets ``wake_word_threshold_music`` > 0 explicitly.
 
     The profile string is tagged onto the 'Wake fired' structured log
     (``threshold_profile``) so music-profile fires can be peeled apart
@@ -97,7 +109,8 @@ def current_wake_threshold_with_profile() -> tuple[float, str]:
     else:
         normal = static_default
     if is_self_playing():
-        music = Config.get_float("wake_word_threshold_music", 0.30)
+        # Default 0.0 == disabled; see the profile notes above.
+        music = Config.get_float("wake_word_threshold_music", 0.0)
         if music > 0:
             return music, "music"
     return normal, "normal"

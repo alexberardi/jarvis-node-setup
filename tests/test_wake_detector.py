@@ -122,17 +122,52 @@ class TestCurrentWakeThreshold:
 
 class TestMusicThresholdProfile:
 
-    def test_music_profile_during_self_playback(self, monkeypatch):
-        """Self-playback + default config → the music threshold (0.30)
-        with profile 'music'. 0.30 sits above the 0.10–0.18 bleed band
-        and below the loud-music OWW cap (0.14–0.43)."""
+    def test_default_keeps_the_configured_threshold_during_playback(
+        self, monkeypatch
+    ):
+        """OFF BY DEFAULT as of 2026-08-26.
+
+        The profile dropped the threshold to 0.30 during self-playback on
+        the premise that CC clip verification would absorb the extra false
+        fires. Measured on the prod kitchen node (08-16 → 08-26): 47
+        music-profile fires produced approximately ZERO verified wakes.
+        Days with the profile active verified 12% of fires (8/68); days
+        without it verified 69% (40/58) — and the expected yield from the
+        normal-profile fires alone on those two days (14.5) already
+        exceeds the 8 actually observed.
+
+        It bought no recall and cost a flood, so the node now respects the
+        threshold the user chose. Still settable for anyone who wants it.
+        """
         _stable_config(monkeypatch)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        threshold, profile = (
+            wake_detector.current_wake_threshold_with_profile()
+        )
+        assert threshold == pytest.approx(0.4)
+        assert profile == "normal"
+
+    def test_music_profile_still_available_when_explicitly_set(
+        self, monkeypatch
+    ):
+        """The mechanism survives the default change — a household that
+        sets a positive value opts back in."""
+        _stable_config(monkeypatch, wake_word_threshold_music=0.30)
         monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
         threshold, profile = (
             wake_detector.current_wake_threshold_with_profile()
         )
         assert threshold == pytest.approx(0.30)
         assert profile == "music"
+
+    def test_user_threshold_is_respected_at_any_value(self, monkeypatch):
+        """Whatever the user picked is what fires, playback or not — no
+        silent two-thirds cut behind their back."""
+        _stable_config(monkeypatch, wake_word_threshold=0.9)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        assert wake_detector.current_wake_threshold_with_profile() == (
+            pytest.approx(0.9), "normal",
+        )
 
     def test_normal_profile_when_not_self_playing(self, monkeypatch):
         _stable_config(monkeypatch)
@@ -175,7 +210,7 @@ class TestMusicThresholdProfile:
         """During self-playback the music threshold wins over the
         auto-calibrated normal threshold — the calibrator's sample set
         is quiet-room scores and does not describe music conditions."""
-        _stable_config(monkeypatch, wake_word_threshold_auto=True)
+        _stable_config(monkeypatch, wake_word_threshold_music=0.30, wake_word_threshold_auto=True)
         monkeypatch.setattr(
             wake_detector, "auto_calibrated_wake_threshold",
             lambda fallback: 0.27,
@@ -189,11 +224,18 @@ class TestMusicThresholdProfile:
 
     def test_float_compat_wrapper_uses_music_value(self, monkeypatch):
         """current_wake_threshold() (float-only call sites) reflects the
-        same choke point — during self-playback it returns the music
-        threshold."""
-        _stable_config(monkeypatch)
+        same choke point — with the profile explicitly enabled, it returns
+        the music threshold during self-playback."""
+        _stable_config(monkeypatch, wake_word_threshold_music=0.30)
         monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
         assert wake_detector.current_wake_threshold() == pytest.approx(0.30)
+
+    def test_float_compat_wrapper_defaults_to_user_threshold(self, monkeypatch):
+        """And with the profile at its new default, playback no longer
+        changes what the float-only call sites see."""
+        _stable_config(monkeypatch)
+        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
+        assert wake_detector.current_wake_threshold() == pytest.approx(0.4)
 
 
 # ---------------------------------------------------------------------------
