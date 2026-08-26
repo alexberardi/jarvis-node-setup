@@ -56,14 +56,6 @@ def _reset_wake_gate():
     voice_filters.reset_wake_gate()
 
 
-@pytest.fixture(autouse=True)
-def _quiet_room(monkeypatch):
-    """Default every test to 'no self-playback' so music_control's
-    module-level cached flag can't leak a music threshold profile in
-    from another test file. Music-profile tests re-patch to True."""
-    monkeypatch.setattr(wake_detector, "is_self_playing", lambda: False)
-
-
 def _stable_config(monkeypatch, **overrides):
     """Install a deterministic Config so the test result depends on the
     inputs to current_wake_threshold, not on environmental DB drift."""
@@ -115,127 +107,41 @@ class TestCurrentWakeThreshold:
 
 
 # ---------------------------------------------------------------------------
-# Music-mode threshold profile (Layer A) — pure threshold swap during
-# self-playback, no RMS/energy conditions, no trust scores
+# Music-mode threshold profile — REMOVED 2026-08-26
 # ---------------------------------------------------------------------------
 
 
-class TestMusicThresholdProfile:
+class TestNoMusicThresholdProfile:
+    """The music profile is gone; one threshold, whatever the user set.
 
-    def test_default_keeps_the_configured_threshold_during_playback(
-        self, monkeypatch
-    ):
-        """OFF BY DEFAULT as of 2026-08-26.
+    It dropped the bar to 0.30 during self-playback on the premise that CC
+    clip verification would absorb the extra false fires. That backstop is
+    advisory (`bias` mode, and `clip_unreliable` fails open), so nothing
+    absorbed them. Measured on the prod kitchen node 08-16 -> 08-26: 47
+    music-profile fires produced ~ZERO verified wakes — days with the
+    profile verified 12% of fires (8/68) against 69% (40/58) without it,
+    and 08-24 spent 38 extra fires to return 4 verified wakes all day.
+    """
 
-        The profile dropped the threshold to 0.30 during self-playback on
-        the premise that CC clip verification would absorb the extra false
-        fires. Measured on the prod kitchen node (08-16 → 08-26): 47
-        music-profile fires produced approximately ZERO verified wakes.
-        Days with the profile active verified 12% of fires (8/68); days
-        without it verified 69% (40/58) — and the expected yield from the
-        normal-profile fires alone on those two days (14.5) already
-        exceeds the 8 actually observed.
-
-        It bought no recall and cost a flood, so the node now respects the
-        threshold the user chose. Still settable for anyone who wants it.
-        """
+    def test_playback_cannot_change_the_threshold(self, monkeypatch):
+        # wake_detector no longer imports is_self_playing at all — playback
+        # state is not an input to the threshold any more.
+        import core.wake_detector as wd
+        assert not hasattr(wd, "is_self_playing")
         _stable_config(monkeypatch)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.4)
-        assert profile == "normal"
-
-    def test_music_profile_still_available_when_explicitly_set(
-        self, monkeypatch
-    ):
-        """The mechanism survives the default change — a household that
-        sets a positive value opts back in."""
-        _stable_config(monkeypatch, wake_word_threshold_music=0.30)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.30)
-        assert profile == "music"
+        assert wake_detector.current_wake_threshold() == pytest.approx(0.4)
 
     def test_user_threshold_is_respected_at_any_value(self, monkeypatch):
-        """Whatever the user picked is what fires, playback or not — no
-        silent two-thirds cut behind their back."""
         _stable_config(monkeypatch, wake_word_threshold=0.9)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        assert wake_detector.current_wake_threshold_with_profile() == (
-            pytest.approx(0.9), "normal",
-        )
+        assert wake_detector.current_wake_threshold() == pytest.approx(0.9)
 
-    def test_normal_profile_when_not_self_playing(self, monkeypatch):
-        _stable_config(monkeypatch)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.4)
-        assert profile == "normal"
-
-    def test_music_profile_disabled_by_zero(self, monkeypatch):
-        """wake_word_threshold_music <= 0 disables the profile — the
-        normal threshold applies even during self-playback."""
-        _stable_config(monkeypatch, wake_word_threshold_music=0.0)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.4)
-        assert profile == "normal"
-
-    def test_music_profile_disabled_by_negative(self, monkeypatch):
-        _stable_config(monkeypatch, wake_word_threshold_music=-1.0)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.4)
-        assert profile == "normal"
-
-    def test_music_profile_custom_value(self, monkeypatch):
-        _stable_config(monkeypatch, wake_word_threshold_music=0.25)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.25)
-        assert profile == "music"
-
-    def test_music_profile_overrides_auto_calibrated(self, monkeypatch):
-        """During self-playback the music threshold wins over the
-        auto-calibrated normal threshold — the calibrator's sample set
-        is quiet-room scores and does not describe music conditions."""
-        _stable_config(monkeypatch, wake_word_threshold_music=0.30, wake_word_threshold_auto=True)
-        monkeypatch.setattr(
-            wake_detector, "auto_calibrated_wake_threshold",
-            lambda fallback: 0.27,
-        )
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        threshold, profile = (
-            wake_detector.current_wake_threshold_with_profile()
-        )
-        assert threshold == pytest.approx(0.30)
-        assert profile == "music"
-
-    def test_float_compat_wrapper_uses_music_value(self, monkeypatch):
-        """current_wake_threshold() (float-only call sites) reflects the
-        same choke point — with the profile explicitly enabled, it returns
-        the music threshold during self-playback."""
+    def test_music_setting_is_ignored_entirely(self, monkeypatch):
+        """Even a stored value from before the removal has no effect."""
         _stable_config(monkeypatch, wake_word_threshold_music=0.30)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
-        assert wake_detector.current_wake_threshold() == pytest.approx(0.30)
-
-    def test_float_compat_wrapper_defaults_to_user_threshold(self, monkeypatch):
-        """And with the profile at its new default, playback no longer
-        changes what the float-only call sites see."""
-        _stable_config(monkeypatch)
-        monkeypatch.setattr(wake_detector, "is_self_playing", lambda: True)
         assert wake_detector.current_wake_threshold() == pytest.approx(0.4)
+
+    def test_profile_helper_is_gone(self):
+        assert not hasattr(wake_detector, "current_wake_threshold_with_profile")
 
 
 # ---------------------------------------------------------------------------

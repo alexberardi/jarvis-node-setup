@@ -124,8 +124,7 @@ def _isolate_loop(monkeypatch):
 
     # Threshold + config helpers
     monkeypatch.setattr(
-        wake_loop, "current_wake_threshold_with_profile",
-        lambda: (0.5, "normal"),
+        wake_loop, "current_wake_threshold", lambda: 0.5,
     )
     # Reset the tentative-wake rolling cool-down so cases are hermetic.
     monkeypatch.setattr(
@@ -845,7 +844,7 @@ def test_self_playback_fire_excluded_from_wake_calibration(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Layer A telemetry — threshold_used / threshold_profile on 'Wake fired'
+# Per-fire telemetry — threshold_used on 'Wake fired'
 # ---------------------------------------------------------------------------
 
 
@@ -864,9 +863,10 @@ def _log_calls(logger_mock, message: str):
     ]
 
 
-def test_wake_fired_log_tags_normal_threshold_profile(monkeypatch):
-    """Quiet-room fire: 'Wake fired' carries threshold_used +
-    threshold_profile='normal' and the Layer-B fields as False."""
+def test_wake_fired_log_carries_threshold_used(monkeypatch):
+    """Fire telemetry carries the effective threshold and the Layer-B
+    fields as False. threshold_profile is gone with the music profile
+    (2026-08-26) — there is only one threshold to report now."""
     log = MagicMock()
     monkeypatch.setattr(wake_loop, "logger", log)
     fu = MagicMock(side_effect=KeyboardInterrupt())
@@ -880,33 +880,9 @@ def test_wake_fired_log_tags_normal_threshold_profile(monkeypatch):
     assert len(calls) == 1
     kw = calls[0].kwargs
     assert kw["threshold_used"] == pytest.approx(0.5)
-    assert kw["threshold_profile"] == "normal"
+    assert "threshold_profile" not in kw
     assert kw["tentative_triggered"] is False
     assert kw["tentative_completed"] is False
-
-
-def test_wake_fired_log_tags_music_threshold_profile(monkeypatch):
-    """Music-profile fire: the profile string and the effective (music)
-    threshold ride the per-fire telemetry so Layer A can be peeled back
-    with data."""
-    monkeypatch.setattr(
-        wake_loop, "current_wake_threshold_with_profile",
-        lambda: (0.3, "music"),
-    )
-    log = MagicMock()
-    monkeypatch.setattr(wake_loop, "logger", log)
-    fu = MagicMock(side_effect=KeyboardInterrupt())
-    monkeypatch.setattr(wake_loop, "follow_up_loop", fu)
-
-    bus = FakeBus(rate=16000, chunks=[_chunk_bytes(1280)])
-    oww = FakeOWW(scores=[0.35])  # below normal 0.4/0.5, above music 0.3
-    _run(bus, oww)
-
-    calls = _wake_fired_calls(log)
-    assert len(calls) == 1
-    kw = calls[0].kwargs
-    assert kw["threshold_used"] == pytest.approx(0.3)
-    assert kw["threshold_profile"] == "music"
 
 
 # ---------------------------------------------------------------------------

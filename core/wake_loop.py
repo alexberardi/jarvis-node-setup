@@ -72,7 +72,7 @@ from core.vad_thresholds import (
 )
 from core.wake_calibration import record_legitimate_wake_score
 from core.wake_detector import (
-    current_wake_threshold_with_profile,
+    current_wake_threshold,
     decide_wake_fire,
     locked_oww_reset,
 )
@@ -206,12 +206,10 @@ def run_wake_loop(
 
         # Re-read the wake threshold each outer iteration so mobile-app
         # updates apply without a service restart. Using a local also
-        # keeps the inner loop hot path off the disk. The profile
-        # ('normal'|'music') is the Layer-A music threshold swap —
-        # snapshotted here alongside the value for per-fire telemetry.
-        wake_threshold, wake_threshold_profile = (
-            current_wake_threshold_with_profile()
-        )
+        # keeps the inner loop hot path off the disk. One threshold now —
+        # the Layer-A music-profile swap was removed 2026-08-26 (it bought
+        # ~0 real wakes for 47 extra fires; see current_wake_threshold).
+        wake_threshold = current_wake_threshold()
 
         # Two-stage tentative-wake (duck-assisted completion) tunables —
         # read per outer iteration like every other voice-loop knob
@@ -419,7 +417,6 @@ def run_wake_loop(
                             score_peak=round(tentative_score_peak, 3),
                             window=tentative_window,
                             threshold_used=wake_threshold,
-                            threshold_profile=wake_threshold_profile,
                             tentative_threshold=tentative_threshold,
                         )
                 verdict = decide_wake_fire(
@@ -455,7 +452,6 @@ def run_wake_loop(
                         score=round(float(score), 3),
                         tentative_threshold=tentative_threshold,
                         threshold_used=wake_threshold,
-                        threshold_profile=wake_threshold_profile,
                         window=tentative_window,
                     )
                 if fire_wake:
@@ -558,7 +554,6 @@ def run_wake_loop(
                         # — so each detection layer can be peeled back
                         # with data from Loki.
                         threshold_used=wake_threshold,
-                        threshold_profile=wake_threshold_profile,
                         tentative_triggered=tentative_triggered_cycle,
                         tentative_completed=tentative_completed,
                         echo_cancel_active=echo_cancel_active,
@@ -648,7 +643,6 @@ def run_wake_loop(
                     score_peak=round(tentative_score_peak, 3),
                     window=tentative_window,
                     threshold_used=wake_threshold,
-                    threshold_profile=wake_threshold_profile,
                     tentative_threshold=tentative_threshold,
                     reason="alert_drain_break",
                 )
