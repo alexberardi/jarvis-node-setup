@@ -28,6 +28,6 @@ pytz
 pydantic
 dotenv
 fastapi>=0.141.1
-uvicorn>=0.52.3
+uvicorn>=0.52.4
 packaging>=26.3
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82
