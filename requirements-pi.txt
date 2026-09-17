@@ -39,7 +39,9 @@ tqdm
 zeroconf
 manuf
 cryptography>=50.0.0
-sqlcipher3
+# 0.6.2 is the first release with Windows wheels (win32/win_amd64/win_arm64)
+# and the first the aarch64 Pi installs as a wheel rather than a source build.
+sqlcipher3>=0.6.2,<0.7.0
 sqlalchemy
 alembic
 pytz
