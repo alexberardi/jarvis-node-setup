@@ -306,9 +306,12 @@ class RoutineCommand(IJarvisCommand):
 
     def run(self, request_info: RequestInformation, **kwargs: Any) -> CommandResponse:
         routine_name: str = kwargs["routine_name"]
-        routines = _load_routines()
-
-        routine_def = routines.get(routine_name)
+        # A run-now / scheduled run from the server carries the definition it means
+        # (jarvisd, D24), so the node never runs a stale local copy. Without one (voice
+        # trigger, or a server that doesn't send it) look it up locally as before.
+        routine_def: Dict[str, Any] | None = kwargs.get("routine_definition")
+        if not (isinstance(routine_def, dict) and routine_def.get("steps")):
+            routine_def = _load_routines().get(routine_name)
         if not routine_def:
             return CommandResponse.error_response(
                 error_details=f"Unknown routine: {routine_name}",

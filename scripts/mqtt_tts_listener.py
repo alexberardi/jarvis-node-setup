@@ -960,7 +960,12 @@ def handle_routine(details: Dict[str, Any]) -> None:
         logger.info("Executing routine", routine=routine_name, user_id=user_id)
         set_current_user_id(user_id)
         try:
-            response = RoutineCommand().run(ri, routine_name=routine_name)
+            # jarvisd sends the full definition (D24); older servers send only the name.
+            inline = details.get("routine")
+            if isinstance(inline, dict):
+                response = RoutineCommand().run(ri, routine_name=routine_name, routine_definition=inline)
+            else:
+                response = RoutineCommand().run(ri, routine_name=routine_name)
         finally:
             set_current_user_id(None)
 
