@@ -469,39 +469,43 @@ class JarvisCommandCenterClient:
             logger.error("Failed to fetch adapter job status", error=str(e), job_id=job_id)
             return None
 
+    def _node_llm_chat(self, message: str) -> Optional[str]:
+        """POST the prompt to CC's node-authenticated LLM passthrough and return its text.
+
+        Replaces the unauthenticated ``/api/v0/chat`` route, which jarvisd drops
+        (jarvis-server docs/cc D5). Same prompt shape as before: one system message, the
+        live model, temperature 0.
+        """
+        response = RestClient.post(f"{self.base_url}/api/v0/node/llm/chat", {
+            "messages": [
+                {"role": "system", "content": message}
+            ],
+            "model": "live",
+            "temperature": 0,
+        })
+        if not response:
+            return None
+        content = response.get("content") if isinstance(response, dict) else None
+        if not isinstance(content, str):
+            logger.warning("Node LLM chat response missing content", response=str(response)[:200])
+            return None
+        return content
+
     def chat_text(self, message: str) -> Optional[str]:
         """Send a chat message and return raw text content (no Pydantic parsing).
 
         Useful for open-ended questions where the response is plain text.
         """
-        response = RestClient.post(f"{self.base_url}/api/v0/chat", {
-            "messages": [
-                {"role": "system", "content": message}
-            ]
-        })
-
-        if not response:
-            return None
-
-        try:
-            return response["choices"][0]["message"]["content"]
-        except (KeyError, TypeError, IndexError) as e:
-            logger.warning("Failed to extract chat text", error=str(e))
-            return None
+        return self._node_llm_chat(message)
 
     def chat(self, message: str, model: Type[T]) -> Optional[T]:
-        response = RestClient.post(f"{self.base_url}/api/v0/chat", {
-            "messages": [
-                {"role": "system", "content": message}
-            ]
-        })
-        logger.debug("Chat response received", response=response)
+        content = self._node_llm_chat(message)
+        logger.debug("Chat response received", content=content)
 
-        if not response:
+        if content is None:
             return None
 
         try:
-            content = response["choices"][0]["message"]["content"]
             logger.debug("Chat content", content=content)
             return model.model_validate_json(content)
         except (KeyError, ValueError, TypeError) as e:
