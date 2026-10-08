@@ -861,7 +861,37 @@ Server runs on port 8080 (configurable via `JARVIS_PROVISIONING_PORT`).
 - `CONNECTING` - Attempting to connect to home WiFi
 - `REGISTERING` - Registering with command center
 - `PROVISIONED` - Successfully provisioned
-- `ERROR` - Error occurred
+- `ERROR` - Error occurred (see `error_code`)
+
+### Failure recovery + status contract
+
+A failed attempt never strands the node. Once the node has left its hotspot
+(WiFi join onward), any failure — wrong WiFi password, CC 401 on an expired
+provisioning token, CC unreachable, credentials not writable — removes the
+WiFi profile *this attempt* created (a pre-existing `jarvis-<ssid>` profile is
+kept; the new one is staged as `jarvis-<ssid>-new` and only replaces it after
+registration succeeds), restarts the setup hotspot, then reports on
+`GET /api/v1/status`:
+
+| field | meaning |
+|---|---|
+| `state` | stays `ERROR` (older apps already treat it as failure) |
+| `error_code` | `wifi_connect_failed` / `registration_failed` / `config_write_failed` / `credentials_save_failed` / `internal_error` |
+| `error` | human-readable reason, e.g. `Command center rejected registration (HTTP 401): Invalid or expired provisioning token` |
+| `registration_status` | CC's HTTP status when registration was refused, else null |
+| `hotspot_restored` | the setup AP is broadcasting again |
+| `retryable` | the app can `POST /api/v1/provision` again now (with a fresh token) |
+
+`ERROR` is set only *after* the hotspot is back; while recovering the state
+stays `CONNECTING`/`REGISTERING`. Registration retries network errors (~30s)
+and 5xx (3 tries); a 4xx is final. The AP↔STA recovery watcher treats only
+`CONNECTING`/`REGISTERING` as "pairing active" (`is_busy()`), so a stale
+`ERROR` doesn't pin the AP forever.
+
+**The WiFi PSK never goes on a command line** (sudo journals every argv). The
+profile is added without a secret; the PSK reaches `nmcli connection up` via a
+0600 `passwd-file` in `~/.jarvis/` that is deleted right after. Don't
+reintroduce `nmcli dev wifi connect ... password` or `wifi-sec.psk <psk>`.
 
 ### Files
 
