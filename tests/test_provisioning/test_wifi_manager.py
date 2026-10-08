@@ -116,14 +116,16 @@ class TestNetworkManagerWiFi:
             networks = wifi.scan_networks()
             assert networks == []
 
-    def test_connect_calls_nmcli(self, wifi):
-        with patch("subprocess.run") as mock_run:
+    def test_connect_calls_nmcli(self, wifi, tmp_path):
+        with patch("subprocess.run") as mock_run, \
+             patch("provisioning.wifi_manager.get_secret_dir", return_value=tmp_path):
             mock_run.return_value = MagicMock(returncode=0)
             wifi.connect("TestNetwork", "password123")
-            mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
-            assert "nmcli" in args
-            assert "TestNetwork" in args
+            argvs = [c[0][0] for c in mock_run.call_args_list]
+            assert all("nmcli" in a for a in argvs)
+            assert any("TestNetwork" in a for a in argvs)
+            # The PSK must never be on a command line (sudo journals argv).
+            assert not any("password123" in " ".join(a) for a in argvs)
 
     def test_connect_returns_true_on_success(self, wifi):
         with patch("subprocess.run") as mock_run:

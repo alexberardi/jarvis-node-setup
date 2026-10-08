@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import threading
+import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -16,25 +17,29 @@ from typing import Callable
 
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import Response, PlainTextResponse
+from jarvis_log_client import JarvisLogger
 
 from provisioning.models import (
     FactoryResetResponse,
     K2ProvisionRequest,
     K2ProvisionResponse,
     NodeInfo,
+    ProvisioningErrorCode,
     ProvisioningState,
     ProvisionRequest,
     ProvisionResponse,
     ProvisionStatus,
     ScanNetworksResponse,
 )
-from provisioning.registration import register_with_command_center
+from provisioning.registration import register_node
 from provisioning.startup import has_provisioning_marker, is_provisioned, mark_provisioned
 from utils.encryption_utils import save_k2
 from provisioning.state_machine import ProvisioningStateMachine
 from provisioning.wifi_credentials import save_wifi_credentials
 from provisioning.wifi_manager import WiFiManager
 
+
+logger = JarvisLogger(service="jarvis-node")
 
 # Version of the provisioning firmware
 FIRMWARE_VERSION = "1.0.0"
@@ -224,7 +229,8 @@ def _update_config(room: str, command_center_url: str, config_service_url: str |
 
 def create_provisioning_app(
     wifi_manager: WiFiManager,
-    on_provisioned: Callable[[], None] | None = None
+    on_provisioned: Callable[[], None] | None = None,
+    ap_ssid: str | None = None,
 ) -> FastAPI:
     """
     Create the FastAPI provisioning application.
@@ -233,6 +239,9 @@ def create_provisioning_app(
         wifi_manager: WiFi manager implementation (real or simulated)
         on_provisioned: Optional callback when provisioning completes successfully.
                        Used for auto-shutdown when running from main.py.
+        ap_ssid: SSID of the setup hotspot this node broadcasts. A failed
+                 attempt restores it so the app can retry; None disables that
+                 (e.g. simulation, or no AP running).
 
     Returns:
         FastAPI application instance
@@ -323,7 +332,8 @@ def create_provisioning_app(
                     household_id=request.household_id,
                     node_id=request.node_id,
                     provisioning_token=request.provisioning_token,
-                    on_provisioned=_on_provisioned
+                    on_provisioned=_on_provisioned,
+                    ap_ssid=ap_ssid,
                 )
             finally:
                 _provisioning_lock.release()
@@ -399,6 +409,37 @@ def create_provisioning_app(
     return app
 
 
+def _restore_hotspot(wifi_manager: WiFiManager, ap_ssid: str | None) -> bool:
+    """Undo this attempt's WiFi join and bring the setup hotspot back.
+
+    Removes only the WiFi profile the failed attempt created (a profile that
+    existed beforehand is kept), then restarts AP mode so the app can find
+    the node again and resend credentials.
+
+    Returns:
+        True when the hotspot is broadcasting again.
+    """
+    try:
+        wifi_manager.rollback_connection()
+    except Exception as e:  # never let cleanup mask the original failure
+        logger.warning("Rolling back WiFi profile failed", error=str(e))
+
+    if not ap_ssid:
+        logger.warning("No setup hotspot SSID known — cannot restore AP mode")
+        return False
+
+    try:
+        restored = bool(wifi_manager.start_ap_mode(ap_ssid))
+    except Exception as e:
+        logger.error("Restarting setup hotspot failed", error=str(e))
+        return False
+    if restored:
+        logger.info("Setup hotspot restored after failed provisioning", ap_ssid=ap_ssid)
+    else:
+        logger.error("Setup hotspot did not come back after failed provisioning", ap_ssid=ap_ssid)
+    return restored
+
+
 def _run_provisioning(
     wifi_manager: WiFiManager,
     state_machine: ProvisioningStateMachine,
@@ -410,12 +451,20 @@ def _run_provisioning(
     household_id: str,
     node_id: str,
     provisioning_token: str,
-    on_provisioned: Callable[[], None] | None = None
+    on_provisioned: Callable[[], None] | None = None,
+    ap_ssid: str | None = None,
 ) -> None:
     """
     Run the full provisioning flow.
 
     This runs in a background thread.
+
+    Any failure after the node has left its hotspot (WiFi join, registration,
+    saving credentials) is recovered from rather than left stranded: the WiFi
+    profile created by this attempt is removed, the setup hotspot comes back,
+    and GET /api/v1/status reports ``state=ERROR`` with an ``error_code`` and
+    ``retryable=true`` so the app can show the reason and resend credentials
+    with a fresh token. Only success marks the node provisioned.
 
     Args:
         wifi_manager: WiFi manager for network operations
@@ -429,7 +478,47 @@ def _run_provisioning(
         node_id: CC-assigned UUID for this node
         provisioning_token: Short-lived provisioning token from command center
         on_provisioned: Optional callback when provisioning completes successfully
+        ap_ssid: SSID of the setup hotspot to restore if the attempt fails
+            (None when the node isn't running one, e.g. simulation)
     """
+    left_hotspot = False
+
+    def fail(
+        code: ProvisioningErrorCode,
+        error: str,
+        registration_status: int | None = None,
+    ) -> None:
+        logger.error(
+            "Provisioning attempt failed",
+            error_code=code.value,
+            error=error,
+            registration_status=registration_status,
+        )
+        hotspot_restored = False
+        if left_hotspot:
+            # Stay in a busy state while recovering so the AP↔STA recovery
+            # watcher keeps its hands off the radio.
+            state_machine.transition_to(
+                state_machine.state,
+                "Provisioning failed — restoring setup hotspot...",
+            )
+            hotspot_restored = _restore_hotspot(wifi_manager, ap_ssid)
+        # Retry is possible when the app can reach us on the hotspot again,
+        # or when we never left it.
+        retryable = hotspot_restored or not left_hotspot
+        state_machine.set_error(
+            error,
+            code,
+            registration_status=registration_status,
+            retryable=retryable,
+            hotspot_restored=hotspot_restored,
+            message=(
+                "Provisioning failed — reconnect to the node's setup network and try again"
+                if hotspot_restored
+                else "Provisioning failed"
+            ),
+        )
+
     try:
         # Step 1: Save service URLs to config FIRST — even if WiFi fails,
         # the node needs jarvis_config_service_url to discover services
@@ -441,7 +530,7 @@ def _run_provisioning(
         )
 
         if not _update_config(room, command_center_url, config_service_url):
-            state_machine.set_error("Failed to update configuration")
+            fail(ProvisioningErrorCode.CONFIG_WRITE_FAILED, "Failed to update configuration")
             return
 
         # Step 2: Save WiFi credentials
@@ -459,8 +548,11 @@ def _run_provisioning(
             progress=35
         )
 
+        # From here on the hotspot may be gone (the hostapd backend tears it
+        # down before joining), so every failure must restore it.
+        left_hotspot = True
         if not wifi_manager.connect(ssid, password):
-            state_machine.set_error(f"Failed to connect to {ssid}")
+            fail(ProvisioningErrorCode.WIFI_CONNECT_FAILED, f"Failed to connect to {ssid}")
             return
 
         state_machine.transition_to(
@@ -477,23 +569,23 @@ def _run_provisioning(
         )
 
         # Register via command center using provisioning token
-        result = register_with_command_center(
+        result = register_node(
             command_center_url=command_center_url,
             node_id=node_id,
             provisioning_token=provisioning_token,
             room=room,
         )
 
-        if not result:
-            state_machine.set_error("Failed to register with command center")
+        if not result.ok:
+            fail(
+                ProvisioningErrorCode.REGISTRATION_FAILED,
+                result.reason,
+                registration_status=result.status_code,
+            )
             return
 
-        # Save the returned node_key to config
-        returned_node_id = result.get("node_id", node_id)
-        node_key = result.get("node_key")
-        if not node_key:
-            state_machine.set_error("Command center did not return node credentials")
-            return
+        returned_node_id = result.node_id or node_id
+        node_key = result.node_key or ""
 
         # Re-provisioning is a deliberate identity change → overwrite. Fail loud
         # if the write doesn't happen, rather than marking the node provisioned
@@ -501,7 +593,10 @@ def _run_provisioning(
         if not _save_node_credentials(
             returned_node_id, node_key, allow_overwrite=True
         ):
-            state_machine.set_error("Failed to save node credentials to config")
+            fail(
+                ProvisioningErrorCode.CREDENTIALS_SAVE_FAILED,
+                "Failed to save node credentials to config",
+            )
             return
 
         state_machine.transition_to(
@@ -509,6 +604,12 @@ def _run_provisioning(
             "Finalizing...",
             progress=90
         )
+
+        # The new WiFi profile becomes the node's permanent one only now.
+        try:
+            wifi_manager.commit_connection()
+        except Exception as e:
+            logger.warning("Finalising WiFi profile failed", error=str(e))
 
         # Step 5: Mark as provisioned (only after successful registration)
         mark_provisioned()
@@ -522,12 +623,15 @@ def _run_provisioning(
         # Call the completion callback (e.g., to trigger server shutdown)
         if on_provisioned:
             # Small delay to allow status response to be returned
-            import time
             time.sleep(1)
             on_provisioned()
 
     except Exception as e:
-        state_machine.set_error(str(e))
+        try:
+            fail(ProvisioningErrorCode.INTERNAL_ERROR, str(e))
+        except Exception as inner:
+            logger.error("Provisioning failure recovery errored", error=str(inner))
+            state_machine.set_error(str(e), ProvisioningErrorCode.INTERNAL_ERROR)
 
 
 class _CaptivePortalHandler(BaseHTTPRequestHandler):
