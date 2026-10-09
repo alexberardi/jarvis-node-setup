@@ -7,6 +7,12 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
+# Before anything below mutates os.environ: the post-provisioning re-exec
+# restarts from this, so it re-reads the new config.json (utils/reexec_env.py).
+from utils import reexec_env as _reexec_env
+
+_reexec_env.remember_startup_env()
+
 # Reduce default thread stack size from 8 MB to 2 MB.
 # 25 threads × 8 MB = 200 MB virtual address space — too much for Pi Zero
 # (512 MB RAM). 2 MB accommodates native C++ extensions (onnxruntime,
@@ -195,8 +201,10 @@ def _run_provisioning_and_restart() -> None:
 
     if success:
         logger.info("Provisioning complete, restarting main service...")
-        # Re-exec ourselves to start the main service
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Re-exec ourselves to start the main service, with the startup
+        # environment: the inherited one still carries the config URL seeded
+        # from the pre-provisioning config.json (the previous server's).
+        os.execve(sys.executable, [sys.executable] + sys.argv, _reexec_env.env_for_reexec())
     else:
         logger.error("Provisioning server stopped without completing")
         sys.exit(1)
