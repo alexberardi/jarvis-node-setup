@@ -8,9 +8,11 @@ version = "0.3.4"
 description = "Client software for Jarvis voice nodes"
 requires-python = ">=3.10"
 dependencies = [
-    # >=0.4.1 for the command-data create-verb (data_browser_supports_create /
-    # data_browser_create + FieldSpec.create_only) used by _op_create.
-    "jarvis-command-sdk>=0.4.1",
+    # >=0.10.0 for image parameters: execute() coerces tool_call image
+    # arguments to list[JarvisImage] and to_openai_tool_schema() emits the
+    # "x-jarvis-type": "image" marker. (>=0.4.1 was the command-data
+    # create-verb used by _op_create.)
+    "jarvis-command-sdk>=0.10.0",
 ]
 
 [tool.setuptools.packages.find]

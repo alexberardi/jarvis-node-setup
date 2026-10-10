@@ -17,6 +17,7 @@ from constants.config_policy import UPDATE_POLICY_KEYS
 from utils.audio_volume import set_volume_percent
 from utils.config_file import update_config_file
 from utils.config_service import Config
+from utils.image_redaction import redact_for_log, sanitize_tool_output
 from utils.mqtt_credentials import fetch_and_persist_mqtt_credentials
 from core.helpers import get_tts_provider
 from services.config_push_service import process_pending_configs
@@ -900,10 +901,12 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
         finally:
             set_current_user_id(None)
 
-        # Build output from CommandResponse
+        # Build output from CommandResponse. sanitize_tool_output strips any
+        # image bytes a command echoed back (JarvisImage / wire images / bytes)
+        # so they never travel back to the server or into the model context.
         output: Dict[str, Any] = {}
         if response.context_data:
-            output = response.context_data
+            output = sanitize_tool_output(response.context_data)
         if not response.success:
             output["error"] = response.error_details or "Command failed"
         output["success"] = response.success
@@ -917,9 +920,10 @@ def handle_tool_call(details: Dict[str, Any]) -> None:
         _post_tool_call_result(reply_request_id, {"output": output})
 
     except Exception as e:
-        logger.error("Tool call execution failed", command=command_name, error=str(e))
+        error_text: str = redact_for_log(str(e), max_str=1000)
+        logger.error("Tool call execution failed", command=command_name, error=error_text)
         _post_tool_call_result(reply_request_id, {
-            "output": {"error": str(e), "success": False},
+            "output": {"error": error_text, "success": False},
         })
 
 
@@ -2502,7 +2506,8 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
 
     try:
         payload: List[Dict[str, Any]] = json.loads(msg.payload.decode())
-        logger.debug("MQTT message received", payload=payload)
+        # Redacted: tool_call arguments can carry up to 4 x 2 MiB of image base64.
+        logger.debug("MQTT message received", payload=redact_for_log(payload))
     except json.JSONDecodeError:
         logger.warning("Invalid JSON payload in MQTT message")
         return
