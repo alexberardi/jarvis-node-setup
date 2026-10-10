@@ -372,3 +372,125 @@ class TestConfigureSystemdService:
         wrapper._op_configure_systemd_service(payload, package="audacy")
         assert ("enable", "mpd") in calls
         assert ("restart", "mpd") in calls
+
+
+# ── crash-loop guards (2026-10 mpd leak) ────────────────────────────────
+
+
+class TestDropinCrashLoopGuards:
+    """A drop-in that outlives its package must not be able to crash-loop
+    the service (jarvis-dev mpd: 5,067 restarts at ~4 s CPU each)."""
+
+    def test_package_shipped_env_path_becomes_condition(self, wrapper):
+        conf = "/home/pi/.jarvis/packages/audacy/audacy_lib/audacy_shared/audacy_mpd.conf"
+        out = wrapper._render_dropin(
+            {"service": "mpd", "environment": {"MPDCONF": conf,
+                                               "XDG_RUNTIME_DIR": "/run/user/1000"}},
+            package="audacy",
+        )
+        assert f"ConditionPathExists={conf}" in out
+        # Runtime dirs are not package files — never gate on them.
+        assert "ConditionPathExists=/run/user/1000" not in out
+        unit = out.split("[Service]")[0]
+        assert "[Unit]" in unit and "ConditionPathExists=" in unit
+
+    def test_restart_policy_gets_a_start_limit(self, wrapper):
+        out = wrapper._render_dropin(
+            {"service": "mpd", "restart": "on-failure", "restart_sec": 5},
+            package="audacy",
+        )
+        unit = out.split("[Service]")[0]
+        assert "StartLimitIntervalSec=300" in unit
+        assert "StartLimitBurst=5" in unit
+
+    def test_no_restart_no_start_limit(self, wrapper):
+        out = wrapper._render_dropin({"service": "mpd", "run_as": "pi"}, package="audacy")
+        assert "StartLimit" not in out
+
+    def test_enabled_by_package_marker(self, wrapper):
+        out = wrapper._render_dropin({"service": "mpd"}, package="audacy", enabled_by_package=True)
+        assert out.splitlines()[1] == "# jarvis-enabled-by-package: true"
+        assert "jarvis-enabled-by-package" not in wrapper._render_dropin(
+            {"service": "mpd"}, package="audacy",
+        )
+
+
+class TestEnableOwnership:
+    """The wrapper remembers whether IT enabled the unit, so uninstall can
+    undo exactly that (and never disable a unit the user enabled)."""
+
+    def _patch(self, wrapper, tmp_path, monkeypatch, *, is_enabled):
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(wrapper, "_systemctl", lambda *a: calls.append(a))
+        monkeypatch.setattr(wrapper, "_unit_is_enabled", lambda _s: is_enabled)
+        original_path = wrapper.Path
+        monkeypatch.setattr(
+            wrapper, "Path",
+            lambda p: tmp_path if p == "/etc/systemd/system" else original_path(p),
+        )
+        return calls
+
+    def test_marks_dropin_when_wrapper_enabled_the_unit(self, wrapper, tmp_path, monkeypatch):
+        self._patch(wrapper, tmp_path, monkeypatch, is_enabled=False)
+        wrapper._op_configure_systemd_service(
+            {"service": "mpd", "enable": True}, package="audacy",
+        )
+        text = (tmp_path / "mpd.service.d" / "jarvis.conf").read_text()
+        assert "# jarvis-enabled-by-package: true" in text
+
+    def test_does_not_mark_when_unit_was_already_enabled(self, wrapper, tmp_path, monkeypatch):
+        self._patch(wrapper, tmp_path, monkeypatch, is_enabled=True)
+        wrapper._op_configure_systemd_service(
+            {"service": "mpd", "enable": True}, package="audacy",
+        )
+        text = (tmp_path / "mpd.service.d" / "jarvis.conf").read_text()
+        assert "jarvis-enabled-by-package" not in text
+
+    def test_reinstall_keeps_marker_and_is_noop(self, wrapper, tmp_path, monkeypatch):
+        calls = self._patch(wrapper, tmp_path, monkeypatch, is_enabled=False)
+        payload = {"service": "mpd", "enable": True}
+        wrapper._op_configure_systemd_service(payload, package="audacy")
+        calls.clear()
+        monkeypatch.setattr(wrapper, "_unit_is_enabled", lambda _s: True)
+        wrapper._op_configure_systemd_service(payload, package="audacy")
+        assert calls == []
+        text = (tmp_path / "mpd.service.d" / "jarvis.conf").read_text()
+        assert "# jarvis-enabled-by-package: true" in text
+
+
+class TestRemoveUndoesEnable:
+    def _patch(self, wrapper, tmp_path, monkeypatch):
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(wrapper, "_systemctl", lambda *a: calls.append(a))
+        original = wrapper.Path
+        monkeypatch.setattr(
+            wrapper, "Path",
+            lambda p: tmp_path if p == "/etc/systemd/system" else original(p),
+        )
+        return calls
+
+    def test_disables_unit_the_package_enabled(self, wrapper, tmp_path, monkeypatch):
+        d = tmp_path / "mpd.service.d"
+        d.mkdir()
+        (d / "jarvis.conf").write_text(
+            "# managed-by: jarvis-package audacy\n# jarvis-enabled-by-package: true\n[Service]\n"
+        )
+        calls = self._patch(wrapper, tmp_path, monkeypatch)
+        wrapper._op_remove_managed_dropins("audacy")
+        assert not (d / "jarvis.conf").exists()
+        assert calls[0] == ("daemon-reload",)
+        assert ("disable", "--now", "mpd") in calls
+        assert not any(c[0] in ("restart", "try-restart") for c in calls)
+
+    def test_legacy_dropin_uses_try_restart(self, wrapper, tmp_path, monkeypatch):
+        # No ownership marker (written by an older wrapper): don't guess at
+        # disabling; try-restart applies the revert only if it is running
+        # and never starts a unit that was stopped.
+        d = tmp_path / "mpd.service.d"
+        d.mkdir()
+        (d / "jarvis.conf").write_text("# managed-by: jarvis-package audacy\n[Service]\n")
+        calls = self._patch(wrapper, tmp_path, monkeypatch)
+        wrapper._op_remove_managed_dropins("audacy")
+        assert ("try-restart", "mpd") in calls
+        assert ("restart", "mpd") not in calls
+        assert not any(c[0] == "disable" for c in calls)

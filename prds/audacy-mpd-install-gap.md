@@ -192,3 +192,18 @@ systemd unit state. No package-install gap exists for spotify.
   split-mode soak with mpd disabled; audacy just stays broken.
 - A general "Pantry package post-install ops actually ran" verification
   story would be useful but is its own piece of work.
+
+## Follow-up (2026-10-10): the drop-in outlived the package
+
+On jarvis-dev the audacy package was later removed by a factory reset,
+which `rm -rf`'d `~/.jarvis/packages/` without asking the wrapper to
+remove `mpd.service.d/jarvis.conf`. With v0.1.2's `enable: true`, mpd was
+enabled, its `MPDCONF` pointed at a deleted file, and `Restart=on-failure`
++ `RestartSec=5` (systemd's default start limit never trips at that
+interval) restarted it 5,067 times at ~4 s CPU each on a Pi Zero 2 W.
+
+Fixed in node (`fix/mpd-dropin-leak`): factory reset removes every
+package's drop-ins first; the wrapper emits `ConditionPathExists=` for
+package-shipped paths and a start limit when `restart` is set, records
+whether it enabled the unit and undoes that on removal; and the node
+self-heals stale managed drop-ins at boot. See CLAUDE.md invariant 16.
