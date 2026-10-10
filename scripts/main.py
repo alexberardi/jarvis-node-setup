@@ -703,6 +703,20 @@ def main():
         except Exception as e:
             logger.warning("Memory watchdog init failed (non-fatal)", error=str(e))
 
+    # Self-heal systemd drop-ins left behind by Pantry packages that are gone
+    # (or whose shipped config is gone) — e.g. audacy's mpd drop-in after a
+    # factory reset crash-looped mpd every 5 s on jarvis-dev. Uses only the
+    # existing jarvis-post-install sudoers grant; background thread because
+    # the wrapper runs systemctl. See services/post_install_dropins.py.
+    try:
+        from services.post_install_dropins import heal_stale_dropins
+
+        threading.Thread(
+            target=heal_stale_dropins, name="dropin-selfheal", daemon=True,
+        ).start()
+    except Exception as e:
+        logger.warning("Drop-in self-heal not started (non-fatal)", error=str(e))
+
     # MusicAssistantService (utils/music_assistant_service.py) is currently broken
     # against websockets >= 14 (uses removed `ws.closed` attr) and recursively
     # retries forever, pegging CPU on Pi Zeros. Nothing actually calls its

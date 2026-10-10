@@ -14,6 +14,7 @@ from jarvis_log_client import JarvisLogger
 
 from provisioning.startup import clear_provisioned
 from provisioning.wifi_credentials import clear_wifi_credentials
+from services.post_install_dropins import remove_managed_dropins
 from utils.encryption_utils import clear_k2, get_secret_dir
 
 logger = JarvisLogger(service="jarvis-node")
@@ -43,6 +44,8 @@ def factory_reset() -> dict:
       password from the previous install)
     - All Pantry-installed packages (custom commands, agents, protocols, managers, routines)
     - Pantry package metadata (~/.jarvis/packages/)
+    - systemd drop-ins those packages' post_install ops wrote (via the
+      sudoers-gated jarvis-post-install wrapper)
 
     Does NOT remove:
     - K1 master key (Fernet key — reused for encrypting new secrets)
@@ -151,6 +154,20 @@ def _clear_pantry_packages() -> list[str]:
 
     # Remove package metadata and shared libs
     packages_dir = Path.home() / ".jarvis" / "packages"
+
+    # First undo what packages installed system-wide. post_install ops wrote
+    # root-owned systemd drop-ins (e.g. audacy's mpd.service.d/jarvis.conf)
+    # that rmtree can't see; wiping the metadata without this left mpd
+    # pointed at a deleted config, crash-looping every 5 s (jarvis-dev,
+    # 2026-10). The startup self-heal catches anything this misses.
+    if packages_dir.is_dir():
+        for meta in sorted(packages_dir.glob("*.json")):
+            try:
+                if remove_managed_dropins(meta.stem):
+                    cleared.append(f"pantry:dropins:{meta.stem}")
+            except Exception as e:
+                logger.warning("Failed to remove package drop-ins", package=meta.stem, error=str(e))
+
     if packages_dir.is_dir():
         try:
             shutil.rmtree(packages_dir)
