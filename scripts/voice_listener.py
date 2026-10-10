@@ -22,6 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from typing import Iterator
 
+# Must precede any openwakeword import: stubs its training-only
+# custom_verifier_model so scipy/scikit-learn never load (~25 MB).
+import core.oww_import  # noqa: F401,I001
 from openwakeword.model import Model as OWWModel
 
 from jarvis_log_client import JarvisLogger
