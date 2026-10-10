@@ -238,7 +238,20 @@ def start_voice_listener(ma_service):
     KeyboardInterrupt cleanup (stopping the bus, releasing the OWW model)
     stays here — the loop body doesn't need to know about resources it
     didn't create.
+
+    Raises ``ServiceUnresolvedError`` while config-service is unreachable;
+    scripts/main.py retries that forever (once a minute at most). Every
+    resource this function opens must therefore be released on ANY exit —
+    a retry that leaves the AudioBus running leaks a producer thread, a
+    PyAudio instance and an open capture stream per attempt (the Pi 4
+    "Memory growth alarm": +1 thread/min, ~380 MB/h).
     """
+    # Resolve command-center FIRST, before the wake model loads or the mic
+    # opens: with config-service down this is the call that raises, so a
+    # retry costs one failed HTTP probe instead of an ONNX model load plus
+    # a PyAudio init and an open capture stream.
+    command_service = CommandExecutionService()
+
     try:
         # Resolution order (core/wake_models.py): a bundled repo model at
         # models/wake/<name>.onnx wins and never downloads; otherwise the
@@ -296,6 +309,12 @@ def start_voice_listener(ma_service):
                     pass
                 bus = None
             time.sleep(delay)
+        except BaseException:
+            # Not a "mic not ready yet" error: release whatever start()
+            # managed to open, then let the caller handle it.
+            if bus is not None:
+                bus.stop()
+            raise
 
     if bus is None:
         logger.error("No audio device found after retries, giving up",
@@ -307,19 +326,22 @@ def start_voice_listener(ma_service):
     global _audio_bus
     _audio_bus = bus
 
-    command_service = CommandExecutionService()
-    stt_provider = get_stt_provider()
-    validation_handler = make_validation_handler(bus, stt_provider)
-
-    # Pre-warm the LLM's KV cache and processing ack on boot.
-    _bg_executor.submit(run_warmup, command_service, str(uuid.uuid4()), None, {})
-    _bg_executor.submit(fetch_next_processing_ack)
-
-    logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
-                threshold=current_wake_threshold())
-    print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={current_wake_threshold()})")
-
+    # Everything from here on runs with the mic open, so it all sits inside
+    # the try/finally: any exception (e.g. the STT provider or validation
+    # handler failing to resolve a service) must stop the bus before it
+    # propagates to main.py's retry loop.
     try:
+        stt_provider = get_stt_provider()
+        validation_handler = make_validation_handler(bus, stt_provider)
+
+        # Pre-warm the LLM's KV cache and processing ack on boot.
+        _bg_executor.submit(run_warmup, command_service, str(uuid.uuid4()), None, {})
+        _bg_executor.submit(fetch_next_processing_ack)
+
+        logger.info("Waiting for wake word", model=WAKE_WORD_MODEL,
+                    threshold=current_wake_threshold())
+        print(f"Ready — say '{WAKE_WORD_MODEL.replace('_', ' ')}' (threshold={current_wake_threshold()})")
+
         run_wake_loop(
             bus=bus,
             oww=oww,
@@ -331,5 +353,7 @@ def start_voice_listener(ma_service):
     except KeyboardInterrupt:
         logger.info("Stopping voice listener")
     finally:
+        if _audio_bus is bus:
+            _audio_bus = None
         bus.stop()
         del oww
