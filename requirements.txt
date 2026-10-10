@@ -29,7 +29,7 @@ alembic
 pytz
 pydantic
 dotenv
-fastapi>=0.141.1
+fastapi>=0.142.2
 uvicorn>=0.52.3
 packaging>=26.3
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82
