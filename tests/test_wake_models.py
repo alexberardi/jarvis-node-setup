@@ -279,7 +279,11 @@ class TestStartVoiceListenerWiring:
             voice_listener, "_start_keyboard_listener"
         ) as kb, patch.object(
             voice_listener, "AudioBus"
-        ) as bus:
+        ) as bus, patch.object(
+            # Resolved before the wake model loads (see
+            # tests/test_voice_listener_lifecycle.py); not under test here.
+            voice_listener, "CommandExecutionService"
+        ):
             voice_listener.start_voice_listener(None)
 
         prep.assert_called_once()
@@ -311,7 +315,7 @@ class TestStartVoiceListenerWiring:
             voice_listener, "OWWModel", side_effect=RuntimeError("no model")
         ) as oww, patch.object(
             voice_listener, "_start_keyboard_listener"
-        ):
+        ), patch.object(voice_listener, "CommandExecutionService"):
             voice_listener.start_voice_listener(None)
 
         oww.assert_called_once_with(
