@@ -174,39 +174,16 @@ class TestIsFollowUpNoise:
         # Both sides strip ".!,?" from the end before comparing.
         assert is_follow_up_noise("yes.", "yes!") is True
 
-    def test_repeat_with_no_prev_falls_to_single_word_check(self):
-        # prev_text is None — repeat check skipped; single-word path runs.
-        # "hello" is not a valid single-word follow-up → noise.
-        assert is_follow_up_noise("hello", None) is True
-
     @pytest.mark.parametrize("word", [
-        "stop", "pause", "resume", "help", "repeat",
-        "louder", "quieter", "cancel", "continue",
-        # Bare confirmations/denials — CC asks yes/no questions in
-        # follow-up; suppressing the answer strands the exchange.
-        "yes", "no", "yeah", "sure",
+        "kitchen", "Kitchen.", "okay", "hello", "uh",
+        "stop", "yes", "no", "thanks",
     ])
-    def test_each_valid_single_word_passes(self, word):
+    def test_single_words_are_never_noise(self, word):
+        # One-word answers ("Kitchen." to "kitchen or oven?") are real.
         assert is_follow_up_noise(word, None) is False
 
-    def test_invalid_single_word_is_noise(self):
-        # Whisper occasionally emits a lone generic word from noise —
-        # "okay" / "uh" land here. Not in the valid set → noise.
-        assert is_follow_up_noise("okay", None) is True
-        assert is_follow_up_noise("uh", None) is True
-
     def test_multi_word_passes(self):
-        # Anything past one word skips the single-word noise gate.
         assert is_follow_up_noise("turn off the lights", None) is False
-
-    def test_two_words_pass(self):
-        # Two-word follow-ups are treated as real intent.
-        assert is_follow_up_noise("the kitchen", None) is False
-
-    def test_punct_stripped_for_valid_word_match(self):
-        # Trailing punctuation is stripped before the valid-set lookup.
-        assert is_follow_up_noise("stop.", None) is False
-        assert is_follow_up_noise("pause!", None) is False
 
     def test_different_text_with_prev_is_not_repeat_noise(self):
         # Real follow-ups distinct from the previous transcription pass
