@@ -191,3 +191,63 @@ class TestDisabledIds:
         )
         assert result is not None
         assert result.arguments == {}
+
+
+class TestExtendedDateQuestions:
+    """Date questions beyond "what day is it" are answered without the model.
+
+    Before this, "what day is it tomorrow", "what year is it" and "how many days
+    until Christmas" fell through to the LLM, which answered with the time of day
+    or invented a date.
+    """
+
+    # Wednesday 28 January 2026, 15:45 in the machine's own timezone. The command calls
+    # ``datetime.now().astimezone()``, which converts to the local zone, so building the
+    # fixed time in a fixed foreign zone would shift the date on machines far from it.
+    FIXED = datetime(2026, 1, 28, 15, 45).astimezone()
+
+    def _answer(self, cmd, phrase, now=None):
+        with patch("commands.timezone_command.datetime") as mock_dt:
+            mock_dt.now.return_value = now or self.FIXED
+            result = cmd.pre_route(phrase)
+        assert result is not None, f"No match for {phrase!r}"
+        assert result.spoken_response, f"no spoken answer for {phrase!r}"
+        return result.spoken_response
+
+    @pytest.mark.parametrize("phrase,expected", [
+        ("what day is it tomorrow", "Tomorrow is Thursday, January 29."),
+        ("what's tomorrow's date", "Tomorrow is Thursday, January 29."),
+        ("what day is tomorrow", "Tomorrow is Thursday, January 29."),
+        ("what day was it yesterday", "Yesterday was Tuesday, January 27."),
+        ("what was the date yesterday", "Yesterday was Tuesday, January 27."),
+        ("what was yesterday's date", "Yesterday was Tuesday, January 27."),
+        ("what is the date yesterday", "Yesterday was Tuesday, January 27."),
+        ("what year is it", "It's 2026."),
+        ("what month is it", "It's January."),
+        ("what day of the week is it", "It's Wednesday, January 28."),
+        ("is it the weekend", "No, it's Wednesday."),
+    ])
+    def test_answers(self, cmd, phrase, expected):
+        assert self._answer(cmd, phrase) == expected
+
+    @pytest.mark.parametrize("phrase", ["what was the weather yesterday", "what was the score yesterday"])
+    def test_other_what_was_questions_are_not_claimed(self, cmd, phrase):
+        result = cmd.pre_route(phrase)
+        assert result is None or not result.spoken_response
+
+    def test_weekend_yes_on_a_saturday(self, cmd):
+        saturday = datetime(2026, 1, 31, 10, 0).astimezone()
+        assert self._answer(cmd, "is it the weekend", saturday) == "Yes, it's the weekend."
+
+    @pytest.mark.parametrize("now,expected", [
+        (datetime(2026, 12, 1, 9, 0).astimezone(), "It's 24 days until Christmas."),
+        (datetime(2026, 12, 24, 9, 0).astimezone(), "Christmas is tomorrow."),
+        (datetime(2026, 12, 25, 9, 0).astimezone(), "Christmas is today."),
+        (datetime(2026, 12, 26, 9, 0).astimezone(), "It's 364 days until Christmas."),
+    ])
+    def test_days_until_christmas(self, cmd, now, expected):
+        assert self._answer(cmd, "how many days until christmas", now) == expected
+
+    def test_plain_time_questions_are_unaffected(self, cmd):
+        result = cmd.pre_route("what time is it")
+        assert result is not None and result.spoken_response is None
