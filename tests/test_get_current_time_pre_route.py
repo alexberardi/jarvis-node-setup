@@ -217,7 +217,10 @@ class TestExtendedDateQuestions:
     @pytest.mark.parametrize("phrase,expected", [
         ("what day is it tomorrow", "Tomorrow is Thursday, January 29."),
         ("what's tomorrow's date", "Tomorrow is Thursday, January 29."),
-        ("what day was it yesterday", None),  # not a supported phrasing: must not match
+        ("what day is tomorrow", "Tomorrow is Thursday, January 29."),
+        ("what day was it yesterday", "Yesterday was Tuesday, January 27."),
+        ("what was the date yesterday", "Yesterday was Tuesday, January 27."),
+        ("what was yesterday's date", "Yesterday was Tuesday, January 27."),
         ("what is the date yesterday", "Yesterday was Tuesday, January 27."),
         ("what year is it", "It's 2026."),
         ("what month is it", "It's January."),
@@ -225,10 +228,12 @@ class TestExtendedDateQuestions:
         ("is it the weekend", "No, it's Wednesday."),
     ])
     def test_answers(self, cmd, phrase, expected):
-        if expected is None:
-            assert cmd.pre_route(phrase) is None or not cmd.pre_route(phrase).spoken_response
-            return
         assert self._answer(cmd, phrase) == expected
+
+    @pytest.mark.parametrize("phrase", ["what was the weather yesterday", "what was the score yesterday"])
+    def test_other_what_was_questions_are_not_claimed(self, cmd, phrase):
+        result = cmd.pre_route(phrase)
+        assert result is None or not result.spoken_response
 
     def test_weekend_yes_on_a_saturday(self, cmd):
         saturday = datetime(2026, 1, 31, 10, 0).astimezone()

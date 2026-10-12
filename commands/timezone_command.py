@@ -115,6 +115,10 @@ _DATE_FAST_PATH_RE = (
     r"|what(?:'?s|\s+is)\s+(?:today|tomorrow|yesterday)(?:'?s)?\s+date"
     r"|what\s+day\s+(?:is\s+it|is\s+today|(?:is|are)\s+we)(?:\s+(?:today|tomorrow|yesterday))?"
     r"|what\s+day\s+of\s+the\s+week(?:\s+is\s+it)?(?:\s+(?:today|tomorrow|yesterday))?"
+    r"|what\s+day\s+is\s+(?:tomorrow|yesterday)"
+    r"|what\s+day\s+was\s+(?:it\s+)?yesterday"
+    r"|what\s+was\s+(?:the\s+date\s+)?yesterday(?:'?s)?(?:\s+date)?"
+    r"|what\s+was\s+(?:the\s+)?date\s+yesterday"
     r"|what\s+(?:year|month)\s+is\s+it(?:\s+now)?"
     r"|what\s+(?:year|month)\s+are\s+we\s+in"
     r"|how\s+many\s+(?:days|sleeps)\s+(?:until|till|to)\s+christmas"
@@ -149,7 +153,7 @@ def _date_reply(voice_command: str, now: datetime) -> str | None:
         return f"It's {now.year}."
     if re.search(r"\bwhat month\b", text):
         return f"It's {now.strftime('%B')}."
-    if re.search(r"\bwhat(?:'s| is)? (?:the )?(?:date|day)\b|\bwhat day\b|\bwhat(?:'s| is) (?:today|tomorrow|yesterday)", text):
+    if re.search(r"\bwhat(?:'s| is)? (?:the )?(?:date|day)\b|\bwhat day\b|\bwhat(?:'s| is) (?:today|tomorrow|yesterday)|\bwhat was\b", text):
         if "tomorrow" in text:
             return f"Tomorrow is {fmt(now + timedelta(days=1))}."
         if "yesterday" in text:
