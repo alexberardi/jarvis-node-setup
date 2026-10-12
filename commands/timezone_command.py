@@ -4,8 +4,9 @@ Timezone command for Jarvis.
 Returns the current time in a specified location/timezone.
 """
 
+import re
 from typing import Any, List
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from jarvis_command_sdk import (
@@ -104,6 +105,57 @@ LOCATION_TIMEZONE_MAP = {
     "argentina": "America/Argentina/Buenos_Aires",
     "buenos aires": "America/Argentina/Buenos_Aires",
 }
+
+
+# Date questions answered without the LLM. The fast path used to cover only "what day is it" / "what's the date".
+# Everything else ("what day is it tomorrow", "what year is it", "how many days until Christmas") fell through to the
+# model, which answered with the time of day or invented a date.
+_DATE_FAST_PATH_RE = (
+    r"^\s*(?:what(?:'?s|\s+is)?\s+(?:the\s+)?(?:date|day)(?:\s+(?:today|tomorrow|yesterday))?"
+    r"|what(?:'?s|\s+is)\s+(?:today|tomorrow|yesterday)(?:'?s)?\s+date"
+    r"|what\s+day\s+(?:is\s+it|is\s+today|(?:is|are)\s+we)(?:\s+(?:today|tomorrow|yesterday))?"
+    r"|what\s+day\s+of\s+the\s+week(?:\s+is\s+it)?(?:\s+(?:today|tomorrow|yesterday))?"
+    r"|what\s+(?:year|month)\s+is\s+it(?:\s+now)?"
+    r"|what\s+(?:year|month)\s+are\s+we\s+in"
+    r"|how\s+many\s+(?:days|sleeps)\s+(?:until|till|to)\s+christmas"
+    r"|is\s+it\s+(?:the\s+)?weekend(?:\s+today)?)\s*[?.!]*$"
+)
+
+
+def _date_reply(voice_command: str, now: datetime) -> str | None:
+    """Spoken answer for a date question, or None when the request is not one."""
+    text = re.sub(r"[^a-z' ]", " ", (voice_command or "").lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text or not re.match(_DATE_FAST_PATH_RE, text):
+        return None
+
+    def fmt(d: datetime) -> str:
+        return f"{d.strftime('%A, %B')} {d.day}"
+
+    if re.search(r"\b(?:days|sleeps) (?:until|till|to) christmas\b", text):
+        today = now.date()
+        xmas = today.replace(month=12, day=25)
+        if xmas < today:
+            xmas = xmas.replace(year=today.year + 1)
+        n = (xmas - today).days
+        if n == 0:
+            return "Christmas is today."
+        if n == 1:
+            return "Christmas is tomorrow."
+        return f"It's {n} days until Christmas."
+    if re.search(r"\bis it (?:the )?weekend\b", text):
+        return "Yes, it's the weekend." if now.weekday() >= 5 else f"No, it's {now.strftime('%A')}."
+    if re.search(r"\bwhat year\b", text):
+        return f"It's {now.year}."
+    if re.search(r"\bwhat month\b", text):
+        return f"It's {now.strftime('%B')}."
+    if re.search(r"\bwhat(?:'s| is)? (?:the )?(?:date|day)\b|\bwhat day\b|\bwhat(?:'s| is) (?:today|tomorrow|yesterday)", text):
+        if "tomorrow" in text:
+            return f"Tomorrow is {fmt(now + timedelta(days=1))}."
+        if "yesterday" in text:
+            return f"Yesterday was {fmt(now - timedelta(days=1))}."
+        return f"It's {fmt(now)}."
+    return None
 
 
 class TimezoneCommand(IJarvisCommand):
@@ -254,7 +306,7 @@ class TimezoneCommand(IJarvisCommand):
                 id="get_current_time.local_date",
                 description="Bypass LLM for local date/day queries ('what day is it', 'what's today's date')",
                 example="what day is it",
-                regex=r"^\s*(?:what\s+day\s+is\s+(?:it|today)|what(?:'?s|\s+is)?\s+(?:the\s+)?date|what(?:'?s|\s+is)?\s+today(?:'?s)?\s+date|what\s+day\s+(?:is|are)\s+we)\s*[?.!]*$",
+                regex=_DATE_FAST_PATH_RE,
                 handler="_fp_date_local",
             ),
         ]
@@ -274,8 +326,11 @@ class TimezoneCommand(IJarvisCommand):
         # so we override the spoken response here and let run() still compute
         # structured fields for any downstream consumer.
         now = datetime.now().astimezone()
-        date_str = f"{now.strftime('%A, %B')} {now.day}"
-        return PreRouteResult(arguments={}, spoken_response=f"It's {date_str}.")
+        reply = _date_reply(voice_command, now)
+        if reply is None:
+            date_str = f"{now.strftime('%A, %B')} {now.day}"
+            reply = f"It's {date_str}."
+        return PreRouteResult(arguments={}, spoken_response=reply)
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the timezone command"""
@@ -329,7 +384,10 @@ class TimezoneCommand(IJarvisCommand):
             # Keep it terse — the user asked for the time, not the calendar
             # date. Trimming the day/month off the spoken response saves
             # ~3s of TTS playback per query.
-            if location == "local":
+            _date = _date_reply(getattr(request_info, "voice_command", ""), current_time) if location == "local" else None
+            if _date:
+                context_data["message"] = _date
+            elif location == "local":
                 context_data["message"] = f"It's {time_str}."
             else:
                 context_data["message"] = (
