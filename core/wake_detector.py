@@ -42,6 +42,18 @@ from utils.config_service import Config
 logger = JarvisLogger(service="jarvis-node")
 
 
+def _wake_debounce_seconds() -> float:
+    """Same-utterance debounce after an accepted wake, in seconds.
+
+    Config key ``wake_debounce_secs`` (default: ``voice_filters._WAKE_DEBOUNCE_SEC``,
+    8.0). The default swallows a repeat request made within a few seconds of an
+    answer, so a quicker household can lower it. It exists only to stop
+    openWakeWord firing twice on one "Hey Jarvis", which a second or so covers,
+    so values below 0.5 are raised to 0.5.
+    """
+    return max(0.5, Config.get_float("wake_debounce_secs", _WAKE_DEBOUNCE_SEC))
+
+
 # ---------------------------------------------------------------------------
 # Threshold + oww-reset helpers
 # ---------------------------------------------------------------------------
@@ -165,7 +177,7 @@ def decide_wake_fire(
                     cooldown_remaining_sec=round(cooldown_remaining, 2),
                 )
                 voice_filters._wake_gate_override_threshold = None
-                voice_filters._wake_min_next_ts = now_mono + _WAKE_DEBOUNCE_SEC
+                voice_filters._wake_min_next_ts = now_mono + _wake_debounce_seconds()
             elif cooldown_remaining > 0:
                 fire_wake = False
                 if score > 0.3:
@@ -181,7 +193,7 @@ def decide_wake_fire(
                 # cleared with it.
                 voice_filters._wake_gate_override_threshold = None
                 voice_filters._wake_min_next_ts = (
-                    now_mono + _WAKE_DEBOUNCE_SEC
+                    now_mono + _wake_debounce_seconds()
                 )
 
     return WakeVerdict(

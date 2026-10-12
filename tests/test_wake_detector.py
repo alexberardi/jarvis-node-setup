@@ -251,6 +251,42 @@ class TestDecideWakeFireDebounceGate:
 # ---------------------------------------------------------------------------
 
 
+class TestConfigurableDebounce:
+    """``wake_debounce_secs`` sets how long an accepted wake blocks the next one."""
+
+    def _fire(self, monkeypatch, **floats):
+        # Real Config.get_float falls through to the default for unknown keys.
+        monkeypatch.setattr(
+            wake_detector.Config, "get_float",
+            lambda key, default: floats.get(key, default),
+        )
+        verdict = wake_detector.decide_wake_fire(score=0.45, threshold=0.4, now_mono=100.0)
+        assert verdict.should_fire is True
+        return voice_filters.get_wake_min_next_ts()
+
+    def test_default_is_unchanged(self, monkeypatch):
+        assert self._fire(monkeypatch) == pytest.approx(108.0)
+
+    def test_configured_value_is_used(self, monkeypatch):
+        assert self._fire(monkeypatch, wake_debounce_secs=3.0) == pytest.approx(103.0)
+
+    @pytest.mark.parametrize("configured", [0.0, 0.1, -5.0])
+    def test_values_below_the_floor_are_raised(self, monkeypatch, configured):
+        # Never so short that one "Hey Jarvis" can fire twice on consecutive chunks.
+        assert self._fire(monkeypatch, wake_debounce_secs=configured) == pytest.approx(100.5)
+
+    def test_configured_value_also_applies_after_the_soft_override(self, monkeypatch):
+        monkeypatch.setattr(
+            wake_detector.Config, "get_float",
+            lambda key, default: 2.0 if key == "wake_debounce_secs" else default,
+        )
+        voice_filters._wake_min_next_ts = 130.0
+        voice_filters._wake_gate_override_threshold = 0.5
+        verdict = wake_detector.decide_wake_fire(score=0.9, threshold=0.4, now_mono=100.0)
+        assert verdict.should_fire is True
+        assert voice_filters.get_wake_min_next_ts() == pytest.approx(102.0)
+
+
 class TestWakeVerdict:
 
     def test_verdict_carries_decision_metadata(self):
