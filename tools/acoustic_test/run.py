@@ -49,7 +49,7 @@ import time
 import urllib.request
 from typing import Any
 
-from tools.acoustic_test.log_parser import classify, parse_node_log, parse_server_log
+from tools.acoustic_test.log_parser import classify, estimate_clock_offset, parse_node_log, parse_server_log
 
 DEFAULT_VOICES = ["WilliamNeural", "NatashaNeural", "DarrenNeural", "AnnetteNeural", "NeilNeural", "KimNeural"]
 
@@ -95,13 +95,35 @@ def run_command(cfg: Config, target: str, command: str, timeout: float = 30.0) -
     return done.stdout
 
 
+_clock_offsets: dict[str, float] = {}
+
+
+def clock_offset(cfg: Config, target: str) -> float:
+    """Seconds to add to this machine's clock to get ``target``'s (0 when it is this machine).
+
+    ``docker logs --since`` is evaluated on the machine that holds the container, so using this machine's clock
+    loses or duplicates log lines when the two clocks differ.
+    """
+    if not target:
+        return 0.0
+    if target not in _clock_offsets:
+        before = time.time()
+        remote = run_command(cfg, target, "date +%s", timeout=15).strip()
+        after = time.time()
+        _clock_offsets[target] = estimate_clock_offset(float(remote), before, after) if remote.isdigit() else 0.0
+    return _clock_offsets[target]
+
+
 def node_log(cfg: Config, since: float) -> str:
-    cmd = f"docker logs --since {int(since)} {shlex.quote(cfg.node_container)} 2>&1"
+    """The node's log since ``since`` (this machine's epoch, converted to the node's clock)."""
+    node_since = since + clock_offset(cfg, cfg.node_ssh)
+    cmd = f"docker logs --since {int(node_since)} {shlex.quote(cfg.node_container)} 2>&1"
     return run_command(cfg, cfg.node_ssh, cmd)
 
 
 def server_log(cfg: Config, since: float) -> str:
-    cmd = (f"docker logs --since {int(since)} {shlex.quote(cfg.server_container)} 2>&1 | "
+    server_since = since + clock_offset(cfg, cfg.server_ssh)
+    cmd = (f"docker logs --since {int(server_since)} {shlex.quote(cfg.server_container)} 2>&1 | "
            "grep -E 'Router predicted|Streaming path|CLIENT TOOL|SERVER TOOL|wake-verify|llm_stream_first_token|Returning'")
     return run_command(cfg, cfg.server_ssh, cmd)
 

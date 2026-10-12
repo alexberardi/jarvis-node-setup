@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from tools.acoustic_test.log_parser import classify, line_timestamp, parse_node_log, parse_server_log
+from tools.acoustic_test.log_parser import (
+    classify,
+    estimate_clock_offset,
+    line_timestamp,
+    parse_node_log,
+    parse_server_log,
+)
 from tools.acoustic_test.mic_level import parse_levels
 
 # Lines as the node logs them for one answered turn.
@@ -98,3 +104,36 @@ def test_mic_levels():
     text = "[Parsed_volumedetect_0 @ 0x1] mean_volume: -32.4 dB\n[Parsed_volumedetect_0 @ 0x1] max_volume: -19.4 dB\n"
     assert parse_levels(text) == ("-32.4", "-19.4")
     assert parse_levels("") == ("?", "?")
+
+
+class TestExpectedSilence:
+    """Chatter (expect_answer false) must be reported by what the node did with it."""
+
+    def test_answered_chatter_is_a_false_answer(self):
+        r = parse_node_log(ANSWERED)
+        r["expect_answer"] = False
+        assert classify(r) == "false_answer"
+
+    def test_unwoken_chatter_is_ignored(self):
+        assert classify({"woke": False, "expect_answer": False}) == "ignored"
+
+    def test_woken_but_dropped_chatter_is_ignored(self):
+        assert classify({"woke": True, "path": "not_for_me", "expect_answer": False}) == "ignored"
+
+    def test_errors_stay_errors(self):
+        assert classify({"error": "speaker: down", "expect_answer": False}) == "error"
+
+    def test_missing_expect_answer_defaults_to_expecting_one(self):
+        assert classify({"woke": False}) == "miss"
+        assert classify({"woke": True, "path": "not_for_me"}) == "dropped"
+
+
+class TestClockOffset:
+    def test_remote_ahead(self):
+        assert estimate_clock_offset(1010.0, 99.0, 101.0) == pytest.approx(910.0)
+
+    def test_remote_behind(self):
+        assert estimate_clock_offset(95.0, 100.0, 102.0) == pytest.approx(-6.0)
+
+    def test_same_clock(self):
+        assert estimate_clock_offset(100.5, 100.0, 101.0) == pytest.approx(0.0)

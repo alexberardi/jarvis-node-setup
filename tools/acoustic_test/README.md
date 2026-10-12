@@ -25,9 +25,21 @@ echo '["what time is it", "set a timer for ten minutes", {"utt": "did you feed t
   | python -m tools.acoustic_test.run --out runs.jsonl --volume 0.3
 ```
 
-An item with `"wake": ""` is chatter that should **not** be answered; it is reported as `miss` (no wake) or `answered`
-(a false answer). Verdicts per phrase are `answered`, `miss` (the wake model did not fire), `dropped` (woke, but the
-request was judged not addressed to the node) or `error`.
+Verdicts for a phrase that should be answered: `answered`, `miss` (the wake model did not fire), `dropped` (woke, but
+the request was judged not addressed to the node) or `error`.
+
+An item with `"wake": ""` is chatter that should **not** be answered. It is `ignored` when the node did not answer it
+(not woken, or woken and dropped) and **`false_answer`** when it did answer. The summary line counts each verdict.
+
+## Media path and clocks
+
+- The speaker has to fetch the generated speech from somewhere it can reach. By default the tool uses Home Assistant
+  Cloud's address (`remote_domain`), because a Cast device cannot fetch from a LAN HTTP address. That default needs Home
+  Assistant Cloud; set `HA_MEDIA_BASE_URL` to an address your speaker can reach (for example an HTTPS reverse proxy on the
+  LAN) to keep the audio local.
+- Log windows (`docker logs --since`) are computed on the machine that holds the container. The tool measures that
+  machine's clock offset once per target and corrects for it, so clock skew between the controller and the node does not
+  lose log lines.
 
 ## Reading the results
 

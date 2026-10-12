@@ -97,12 +97,28 @@ def parse_server_log(text: str) -> dict[str, Any]:
     return result
 
 
+def estimate_clock_offset(remote_epoch: float, local_before: float, local_after: float) -> float:
+    """Seconds to add to a local epoch to get the remote machine's clock.
+
+    The remote ``date +%s`` was read somewhere between the two local readings, so the midpoint is used.
+    """
+    return remote_epoch - (local_before + local_after) / 2
+
+
 def classify(result: dict[str, Any]) -> str:
-    """One verdict per turn: ``error``, ``miss`` (no wake), ``dropped`` or ``answered``."""
+    """One verdict per turn.
+
+    A phrase that should be answered (``expect_answer`` true, the default) is ``answered``, ``miss`` (the wake
+    model did not fire), ``dropped`` (woke, judged not addressed to the node) or ``error``. A chatter line that
+    must NOT be answered (``expect_answer`` false) is ``false_answer`` if it was answered and ``ignored``
+    otherwise (not woken for, or woken and dropped).
+    """
     if result.get("error"):
         return "error"
-    if not result.get("woke"):
-        return "miss"
-    if result.get("path") == "not_for_me":
-        return "dropped"
-    return "answered"
+    woke = bool(result.get("woke"))
+    answered = woke and result.get("path") != "not_for_me"
+    if result.get("expect_answer", True):
+        if not woke:
+            return "miss"
+        return "answered" if answered else "dropped"
+    return "false_answer" if answered else "ignored"
