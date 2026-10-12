@@ -318,6 +318,13 @@ def listen(
         max_seconds=max_record_secs,
     )
 
+    # ``listen_onset_wait_secs`` (default 0 = off): do not let end-of-speech silence stop the
+    # recording until speech has been heard in the LIVE frames, for up to this many seconds.
+    # Without it, someone who pauses after the wake word is cut off before they start speaking.
+    onset_wait_frames = int(Config.get_float("listen_onset_wait_secs", 0.0) / chunk_secs)
+    history_chunks = int(history_secs / chunk_secs) if history_secs > 0 else 0
+    onset_seen = False
+
     q = bus.subscribe(subscriber_name, history_secs=history_secs)
     frames: List[bytes] = []
     silence_frames = 0
@@ -378,7 +385,16 @@ def listen(
             else:
                 silence_frames = 0
 
-            if silence_frames >= silence_frames_threshold and frame_count >= min_frames:
+            if frame_count >= history_chunks and rms >= silence_threshold:
+                onset_seen = True
+            # With the onset wait off (<= 0) the silence stop is always allowed, as before.
+            onset_ok = (
+                onset_seen
+                or onset_wait_frames <= 0
+                or (frame_count - history_chunks) >= onset_wait_frames
+            )
+
+            if silence_frames >= silence_frames_threshold and frame_count >= min_frames and onset_ok:
                 logger.debug("Silence detected, stopping recording", silence_duration=silence_duration)
                 break
 
