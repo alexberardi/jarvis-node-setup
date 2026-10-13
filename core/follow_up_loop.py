@@ -16,7 +16,7 @@ The four guard layers in order:
      fast; long silences with eventual noise are almost certainly
      ambient.
   3. **Follow-up noise** (:func:`is_follow_up_noise` from
-     ``core.conversation_filters``) — short/repeated transcripts that
+     ``core.conversation_filters``) — exact-repeat transcripts that
      slip past ``is_non_speech``. Two consecutive noise hits
      (``MAX_CONSECUTIVE_NOISE``) end the loop.
   4. **Self-echo** (:func:`looks_like_self_echo`) — checks the captured
