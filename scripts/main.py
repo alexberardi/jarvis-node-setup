@@ -7,6 +7,12 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
+# Before anything below mutates os.environ: the post-provisioning re-exec
+# restarts from this, so it re-reads the new config.json (utils/reexec_env.py).
+from utils import reexec_env as _reexec_env
+
+_reexec_env.remember_startup_env()
+
 # Reduce default thread stack size from 8 MB to 2 MB.
 # 25 threads × 8 MB = 200 MB virtual address space — too much for Pi Zero
 # (512 MB RAM). 2 MB accommodates native C++ extensions (onnxruntime,
@@ -195,8 +201,10 @@ def _run_provisioning_and_restart() -> None:
 
     if success:
         logger.info("Provisioning complete, restarting main service...")
-        # Re-exec ourselves to start the main service
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Re-exec ourselves to start the main service, with the startup
+        # environment: the inherited one still carries the config URL seeded
+        # from the pre-provisioning config.json (the previous server's).
+        os.execve(sys.executable, [sys.executable] + sys.argv, _reexec_env.env_for_reexec())
     else:
         logger.error("Provisioning server stopped without completing")
         sys.exit(1)
@@ -694,6 +702,20 @@ def main():
             ).start()
         except Exception as e:
             logger.warning("Memory watchdog init failed (non-fatal)", error=str(e))
+
+    # Self-heal systemd drop-ins left behind by Pantry packages that are gone
+    # (or whose shipped config is gone) — e.g. audacy's mpd drop-in after a
+    # factory reset crash-looped mpd every 5 s on jarvis-dev. Uses only the
+    # existing jarvis-post-install sudoers grant; background thread because
+    # the wrapper runs systemctl. See services/post_install_dropins.py.
+    try:
+        from services.post_install_dropins import heal_stale_dropins
+
+        threading.Thread(
+            target=heal_stale_dropins, name="dropin-selfheal", daemon=True,
+        ).start()
+    except Exception as e:
+        logger.warning("Drop-in self-heal not started (non-fatal)", error=str(e))
 
     # MusicAssistantService (utils/music_assistant_service.py) is currently broken
     # against websockets >= 14 (uses removed `ws.closed` attr) and recursively

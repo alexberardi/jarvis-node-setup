@@ -6,6 +6,12 @@ to_openai_tool_schema() and SDK-only (Pantry) commands that don't.
 
 from typing import Any, Dict, List, Tuple
 
+try:
+    from jarvis_command_sdk.image import image_tool_schema, is_image_param_type
+except ImportError:  # jarvis-command-sdk < 0.10.0 has no image parameters
+    image_tool_schema = None  # type: ignore[assignment]
+    is_image_param_type = None  # type: ignore[assignment]
+
 
 def build_tool_schemas(
     commands: Dict[str, Any],
@@ -51,7 +57,15 @@ def _build_schema_from_sdk_command(cmd: Any) -> Tuple[Dict[str, Any], Dict[str, 
     properties: Dict[str, Any] = {}
     required: List[str] = []
     for param in params:
-        prop = _param_type_to_json_schema(param.param_type if hasattr(param, "param_type") else "string")
+        param_type = param.param_type if hasattr(param, "param_type") else "string"
+        if is_image_param_type is not None and is_image_param_type(param_type):
+            # Photo numbers + the "x-jarvis-type": "image" marker the server
+            # uses to swap numbers for the attached photos' bytes.
+            properties[param.name] = image_tool_schema(param.description)
+            if param.required:
+                required.append(param.name)
+            continue
+        prop = _param_type_to_json_schema(param_type)
         prop["description"] = param.description or param.name
         if hasattr(param, "enum_values") and param.enum_values:
             prop["enum"] = param.enum_values

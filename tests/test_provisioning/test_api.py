@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from provisioning.api import create_provisioning_app
 from provisioning.models import ProvisioningState
+from provisioning.registration import RegistrationResult
 from provisioning.wifi_manager import SimulatedWiFi
 from utils.encryption_utils import get_k2, has_k2, initialize_encryption_key
 
@@ -365,8 +366,8 @@ class TestProvisioningFlowTokenAuth:
         with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
             with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
                 with patch("provisioning.api._update_config", return_value=True):
-                    with patch("provisioning.api.register_with_command_center") as mock_reg:
-                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+                    with patch("provisioning.api.register_node") as mock_reg:
+                        mock_reg.return_value = RegistrationResult(ok=True, node_id="node-uuid-123", node_key="key-abc")
 
                         response = client.post("/api/v1/provision", json={
                             "wifi_ssid": "HomeNetwork",
@@ -393,8 +394,8 @@ class TestProvisioningFlowTokenAuth:
         with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
             with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
                 with patch("provisioning.api._update_config", return_value=True):
-                    with patch("provisioning.api.register_with_command_center") as mock_reg:
-                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+                    with patch("provisioning.api.register_node") as mock_reg:
+                        mock_reg.return_value = RegistrationResult(ok=True, node_id="node-uuid-123", node_key="key-abc")
 
                         client.post("/api/v1/provision", json={
                             "wifi_ssid": "HomeNetwork",
@@ -417,8 +418,8 @@ class TestProvisioningFlowTokenAuth:
         with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
             with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
                 with patch("provisioning.api._update_config", return_value=True):
-                    with patch("provisioning.api.register_with_command_center") as mock_reg:
-                        mock_reg.return_value = {"node_id": "node-uuid-123", "node_key": "key-abc"}
+                    with patch("provisioning.api.register_node") as mock_reg:
+                        mock_reg.return_value = RegistrationResult(ok=True, node_id="node-uuid-123", node_key="key-abc")
 
                         client.post("/api/v1/provision", json={
                             "wifi_ssid": "HomeNetwork",
@@ -441,8 +442,8 @@ class TestProvisioningFlowTokenAuth:
         with patch("provisioning.wifi_credentials.get_secret_dir", return_value=tmp_path):
             with patch("provisioning.startup.get_secret_dir", return_value=tmp_path):
                 with patch("provisioning.api._update_config", return_value=True):
-                    with patch("provisioning.api.register_with_command_center") as mock_reg:
-                        mock_reg.return_value = None  # Registration failed
+                    with patch("provisioning.api.register_node") as mock_reg:
+                        mock_reg.return_value = RegistrationResult(ok=False, error_kind="token_rejected", status_code=401)  # Registration failed
 
                         response = client.post("/api/v1/provision", json={
                             "wifi_ssid": "HomeNetwork",

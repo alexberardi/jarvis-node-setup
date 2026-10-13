@@ -31,20 +31,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-# scipy.signal lazy-imported below (see voice_listener.py for rationale).
-_resample_poly = None
 from jarvis_log_client import JarvisLogger
-
-
-def _get_resample_poly():
-    global _resample_poly
-    if _resample_poly is None:
-        from scipy.signal import resample_poly  # noqa: E402
-        _resample_poly = resample_poly
-    return _resample_poly
 
 from core.audio_bus import AudioBus
 from core.platform_audio import platform_audio
+from core.resample import decimate_int16
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -256,8 +247,7 @@ class BargeInMonitor:
                         )
                     # Resample + score OWW to keep LSTM primed, but skip trigger check
                     if self._needs_resample:
-                        resampled = _get_resample_poly()(samples, up=1, down=self._resample_ratio)
-                        samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+                        samples = decimate_int16(samples, self._resample_ratio)
                     with oww_lock:
                         self._oww.predict(samples)
                     continue
@@ -274,8 +264,7 @@ class BargeInMonitor:
                     )
 
                 if self._needs_resample:
-                    resampled = _get_resample_poly()(samples, up=1, down=self._resample_ratio)
-                    samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+                    samples = decimate_int16(samples, self._resample_ratio)
 
                 with oww_lock:
                     predictions = self._oww.predict(samples)

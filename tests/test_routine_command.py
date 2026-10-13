@@ -694,3 +694,52 @@ class TestDefaultSeeding:
 
         assert len(routines) == len(defaults)
         mock_repo.save.assert_not_called()
+
+
+# ===================================================================
+# Inline definitions from the server (jarvisd, D24)
+# ===================================================================
+
+class TestInlineRoutineDefinition:
+    """A server run carries the routine definition; the node runs it instead of a local copy."""
+
+    def _run(self, routine_cmd, local: dict, **kwargs) -> tuple[CommandResponse, MagicMock, MagicMock]:
+        weather_cmd = MagicMock()
+        weather_cmd.execute.return_value = _weather_response()
+        device_cmd = MagicMock()
+        device_cmd.execute.return_value = _device_response()
+        discovery = MagicMock()
+        discovery.get_command.side_effect = {"get_weather": weather_cmd, "control_device": device_cmd}.get
+        with (
+            patch("commands.routine_command._load_routines", return_value=local),
+            patch("commands.routine_command.get_command_discovery_service", return_value=discovery),
+            patch("commands.routine_command.JarvisCommandCenterClient") as client_cls,
+        ):
+            client_cls.return_value.chat_text.return_value = "Done."
+            resp = routine_cmd.run(_make_request_info(), routine_name="good_morning", **kwargs)
+        return resp, weather_cmd, device_cmd
+
+    def test_inline_definition_wins_over_local(self, routine_cmd, custom_routines):
+        inline = {"steps": [{"command": "get_weather", "args": {}, "label": "weather"}],
+                  "response_instruction": "Just the weather."}
+        resp, weather_cmd, device_cmd = self._run(routine_cmd, custom_routines, routine_definition=inline)
+        assert resp.success is True
+        weather_cmd.execute.assert_called_once()
+        device_cmd.execute.assert_not_called()  # the stale local copy's light step did not run
+
+    def test_inline_definition_without_a_local_copy(self, routine_cmd):
+        inline = {"steps": [{"command": "get_weather", "args": {}, "label": "weather"}]}
+        resp, weather_cmd, _ = self._run(routine_cmd, {}, routine_definition=inline)
+        assert resp.success is True
+        weather_cmd.execute.assert_called_once()
+
+    def test_unusable_inline_definition_falls_back_to_local(self, routine_cmd, custom_routines):
+        resp, weather_cmd, device_cmd = self._run(routine_cmd, custom_routines, routine_definition={"steps": []})
+        assert resp.success is True
+        weather_cmd.execute.assert_called_once()
+        device_cmd.execute.assert_called_once()
+
+    def test_no_inline_definition_uses_local(self, routine_cmd):
+        resp, _, _ = self._run(routine_cmd, {})
+        assert resp.success is False
+        assert "Unknown routine" in resp.error_details

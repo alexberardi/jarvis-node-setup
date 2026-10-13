@@ -92,6 +92,7 @@ from core.wake_transcription import (
     try_capture_wake_audio_from_frames,
 )
 from core import voice_filters
+from core.resample import decimate_int16
 from scripts.speech_to_text import listen
 from utils.config_service import Config
 
@@ -119,20 +120,6 @@ PRE_WAKE_VAD_FRAMES: int = max(1, int(PRE_WAKE_VAD_WINDOW_SECS / _CHUNK_SECONDS)
 # of queue.get timeout per empty pull, this is ~5 s wall-clock. Module
 # constant so tests can shorten it.
 _ALERT_CHECK_INTERVAL: int = 60
-
-
-# scipy.signal is lazy-imported on the first audio chunk — see the
-# note at the top of scripts/voice_listener.py.
-_resample_poly = None
-
-
-def _get_resample_poly():
-    """Lazy-import scipy.signal.resample_poly on first audio chunk."""
-    global _resample_poly
-    if _resample_poly is None:
-        from scipy.signal import resample_poly  # noqa: E402
-        _resample_poly = resample_poly
-    return _resample_poly
 
 
 # Runtime deps injected from voice_listener at module init.
@@ -377,8 +364,9 @@ def run_wake_loop(
                     pass
 
                 if resample_down > 1:
-                    resampled = _get_resample_poly()(samples, up=1, down=resample_down)
-                    samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+                    # numpy-only, same filter as scipy's resample_poly
+                    # (scipy cost ~60 MB RSS in this process).
+                    samples = decimate_int16(samples, resample_down)
 
                 with _oww_lock:
                     predictions = oww.predict(samples)

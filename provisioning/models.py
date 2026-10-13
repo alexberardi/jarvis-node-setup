@@ -18,6 +18,19 @@ class ProvisioningState(str, Enum):
     ERROR = "ERROR"               # Error occurred
 
 
+class ProvisioningErrorCode(str, Enum):
+    """Machine-readable reason a provisioning attempt ended in ERROR.
+
+    Reported in GET /api/v1/status ``error_code`` alongside ``state: ERROR``
+    (state stays ERROR so apps that predate error_code still show a failure).
+    """
+    CONFIG_WRITE_FAILED = "config_write_failed"          # couldn't write config.json
+    WIFI_CONNECT_FAILED = "wifi_connect_failed"          # couldn't join the home WiFi
+    REGISTRATION_FAILED = "registration_failed"          # CC refused / unreachable
+    CREDENTIALS_SAVE_FAILED = "credentials_save_failed"  # registered, but couldn't persist node key
+    INTERNAL_ERROR = "internal_error"                    # unexpected exception
+
+
 class NodeInfo(BaseModel):
     """Response for GET /api/v1/info - node identification and capabilities."""
     node_id: str = Field(..., description="Unique node identifier (e.g., jarvis-a1b2c3d4)")
@@ -68,6 +81,21 @@ class ProvisionStatus(BaseModel):
     message: str = Field(..., description="Human-readable status message")
     progress_percent: int = Field(default=0, ge=0, le=100, description="Progress percentage")
     error: Optional[str] = Field(default=None, description="Error message if state is ERROR")
+    error_code: Optional[ProvisioningErrorCode] = Field(
+        default=None, description="Machine-readable failure reason when state is ERROR"
+    )
+    registration_status: Optional[int] = Field(
+        default=None,
+        description="HTTP status command center returned when registration failed (e.g. 401)",
+    )
+    retryable: bool = Field(
+        default=False,
+        description="True when the app can resend POST /api/v1/provision (with a fresh token) now",
+    )
+    hotspot_restored: bool = Field(
+        default=False,
+        description="True when the node has left the home WiFi and is broadcasting its setup hotspot again",
+    )
 
 
 class K2ProvisionRequest(BaseModel):

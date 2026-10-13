@@ -39,7 +39,9 @@ tqdm
 zeroconf
 manuf
 cryptography>=50.0.0
-sqlcipher3
+# 0.6.2 is the first release with Windows wheels (win32/win_amd64/win_arm64)
+# and the first the aarch64 Pi installs as a wheel rather than a source build.
+sqlcipher3>=0.6.2,<0.7.0
 sqlalchemy
 alembic
 pytz
@@ -52,4 +54,4 @@ packaging>=26.3
 
 # Local jarvis packages (relative to /home/pi/projects/)
 jarvis-log-client @ git+https://github.com/alexberardi/jarvis-log-client.git@c2f8e82
-jarvis-config-client @ git+https://github.com/alexberardi/jarvis-config-client.git@fea99b556e2ac09a67101bd5e18af1dd4c923e4f
+jarvis-config-client @ git+https://github.com/alexberardi/jarvis-config-client.git@40a21f90a5c1f580ac785156134f635916209381

@@ -47,7 +47,16 @@ class ValidationRequest(BaseModel):
     question: str = Field(..., description="The question to ask the user")
     parameter_name: str = Field(..., description="The parameter the validation will satisfy")
     options: Optional[List[str]] = Field(None, description="Optional list of choices for the user")
-    tool_call_id: str = Field(..., description="The tool call id this validation should satisfy")
+    # Optional to match the server: command-center declares this Optional[str]=None
+    # (app/response_models/voice_command_response.py) and emits null whenever the
+    # validation came from a SERVER tool — _check_for_validation does
+    # result.get("tool_call_id"), and server-tool results carry no id.
+    #
+    # Declaring it required here rejected the whole 202 in model_validate before
+    # jarvis_command_center_client could reach its own `if not tool_call_id:
+    # tool_call_id = "validation-response"` fallback, so every validation turn
+    # died as "Failed to parse 202 response".
+    tool_call_id: Optional[str] = Field(None, description="The tool call id this validation should satisfy")
 
 
 class RequestInformationResponse(BaseModel):

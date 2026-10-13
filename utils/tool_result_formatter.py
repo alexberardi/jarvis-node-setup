@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from datetime import datetime, date
 from core.command_response import CommandResponse
+from utils.image_redaction import sanitize_tool_output
 
 
 def _serialize_for_json(obj: Any) -> Any:
@@ -45,7 +46,10 @@ def format_tool_result(
 
     # Promote "message" to top level so it's the first thing the LLM
     # reads — small models get confused parsing nested JSON.
-    context = _serialize_for_json(result.context_data) if result.context_data else None
+    context = (
+        _serialize_for_json(sanitize_tool_output(result.context_data))
+        if result.context_data else None
+    )
     if isinstance(context, dict) and "message" in context:
         output["message"] = context.pop("message")
 

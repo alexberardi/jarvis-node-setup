@@ -316,3 +316,115 @@ class TestRegisterWithCommandCenter:
             called_url = mock_client.post.call_args[0][0]
             assert called_url == "http://10.0.0.1:7703/api/v0/nodes/register"
             assert "//" not in called_url.split("://")[1]
+
+
+def _client_returning(*outcomes):
+    """Patch httpx.Client so successive posts return/raise ``outcomes``."""
+    mock_client = MagicMock()
+    mock_client.__enter__ = MagicMock(return_value=mock_client)
+    mock_client.__exit__ = MagicMock(return_value=False)
+    mock_client.post.side_effect = list(outcomes)
+    return mock_client
+
+
+def _resp(status: int, body=None, text: str = "") -> MagicMock:
+    r = MagicMock()
+    r.status_code = status
+    if isinstance(body, Exception):
+        r.json.side_effect = body
+    else:
+        r.json.return_value = body
+    r.text = text
+    return r
+
+
+class TestRegisterNodeResult:
+    """register_node reports *why* registration failed so the app can show it."""
+
+    def _call(self, mock_client):
+        from provisioning.registration import register_node
+
+        with patch("provisioning.registration.httpx.Client", return_value=mock_client), \
+             patch("provisioning.registration.time.sleep") as mock_sleep:
+            result = register_node("http://cc:7703", "node-1", "tok-SECRET-123", "kitchen")
+        return result, mock_sleep
+
+    def test_success(self):
+        client = _client_returning(_resp(201, {"node_id": "node-1", "node_key": "k"}))
+        result, _ = self._call(client)
+        assert result.ok and result.node_key == "k" and result.reason == ""
+
+    def test_401_is_token_rejected_with_cc_detail_and_no_retry(self):
+        client = _client_returning(
+            _resp(401, {"detail": "Invalid or expired provisioning token"})
+        )
+        result, sleep = self._call(client)
+        assert not result.ok
+        assert result.error_kind == "token_rejected"
+        assert result.status_code == 401
+        assert result.detail == "Invalid or expired provisioning token"
+        assert result.reason == (
+            "Command center rejected registration (HTTP 401): "
+            "Invalid or expired provisioning token"
+        )
+        assert client.post.call_count == 1
+        sleep.assert_not_called()
+
+    def test_other_4xx_is_rejected_without_retry(self):
+        client = _client_returning(_resp(409, ValueError("no json"), text="already registered"))
+        result, sleep = self._call(client)
+        assert result.error_kind == "rejected"
+        assert result.detail == "already registered"
+        assert client.post.call_count == 1
+
+    def test_5xx_is_retried_then_succeeds(self):
+        client = _client_returning(
+            _resp(503, {"detail": "starting"}),
+            _resp(201, {"node_id": "node-1", "node_key": "k"}),
+        )
+        result, sleep = self._call(client)
+        assert result.ok
+        assert client.post.call_count == 2
+        assert sleep.call_count == 1
+
+    def test_5xx_gives_up_after_retries(self):
+        from provisioning.registration import _SERVER_ERROR_RETRIES
+
+        client = _client_returning(*[_resp(500, {"detail": "db down"})] * _SERVER_ERROR_RETRIES)
+        result, _ = self._call(client)
+        assert not result.ok
+        assert result.error_kind == "server_error"
+        assert result.status_code == 500
+        assert client.post.call_count == _SERVER_ERROR_RETRIES
+
+    def test_network_error_after_retries_is_network_error(self):
+        from provisioning.registration import _CONNECT_RETRIES
+
+        client = _client_returning(*[httpx.ConnectError("refused")] * _CONNECT_RETRIES)
+        result, _ = self._call(client)
+        assert result.error_kind == "network_error"
+        assert result.status_code is None
+        assert result.reason.startswith("Could not reach command center")
+
+    def test_timeout_is_retried_as_network_error(self):
+        client = _client_returning(
+            httpx.ReadTimeout("slow"),
+            _resp(201, {"node_id": "node-1", "node_key": "k"}),
+        )
+        result, sleep = self._call(client)
+        assert result.ok
+        assert sleep.call_count == 1
+
+    def test_2xx_without_node_key_is_bad_response(self):
+        client = _client_returning(_resp(201, {"node_id": "node-1"}))
+        result, _ = self._call(client)
+        assert not result.ok
+        assert result.error_kind == "bad_response"
+
+    def test_token_never_logged(self):
+        client = _client_returning(_resp(401, {"detail": "nope"}))
+        with patch("provisioning.registration.logger") as mock_logger:
+            self._call(client)
+        assert mock_logger.method_calls
+        for call in mock_logger.method_calls:
+            assert "SECRET-123" not in repr(call)

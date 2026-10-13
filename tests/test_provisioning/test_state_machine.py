@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from provisioning.models import ProvisioningState
+from provisioning.models import ProvisioningErrorCode, ProvisioningState
 from provisioning.state_machine import ProvisioningStateMachine
 
 
@@ -227,3 +227,51 @@ class TestThreadSafety:
             t.join()
 
         assert len(errors) == 0, f"Concurrency errors: {errors}"
+
+
+class TestErrorDetails:
+    """Error details reported to the app on GET /api/v1/status."""
+
+    def test_set_error_records_code_and_recovery_fields(self):
+        sm = ProvisioningStateMachine()
+        sm.set_error(
+            "HTTP 401",
+            ProvisioningErrorCode.REGISTRATION_FAILED,
+            registration_status=401,
+            retryable=True,
+            hotspot_restored=True,
+        )
+        status = sm.get_status()
+        assert status["error_code"] == ProvisioningErrorCode.REGISTRATION_FAILED
+        assert status["registration_status"] == 401
+        assert status["retryable"] is True
+        assert status["hotspot_restored"] is True
+
+    def test_default_error_code_is_internal(self):
+        sm = ProvisioningStateMachine()
+        sm.set_error("boom")
+        assert sm.error_code == ProvisioningErrorCode.INTERNAL_ERROR
+
+    def test_new_attempt_clears_error_details(self):
+        sm = ProvisioningStateMachine()
+        sm.set_error("x", ProvisioningErrorCode.WIFI_CONNECT_FAILED,
+                     registration_status=401, retryable=True, hotspot_restored=True)
+        sm.transition_to(ProvisioningState.CONNECTING, "again")
+        status = sm.get_status()
+        assert status["error"] is None
+        assert status["error_code"] is None
+        assert status["registration_status"] is None
+        assert status["retryable"] is False
+        assert status["hotspot_restored"] is False
+
+    def test_is_busy_only_while_connecting_or_registering(self):
+        sm = ProvisioningStateMachine()
+        assert sm.is_busy() is False
+        sm.transition_to(ProvisioningState.CONNECTING, "c")
+        assert sm.is_busy() is True
+        sm.transition_to(ProvisioningState.REGISTERING, "r")
+        assert sm.is_busy() is True
+        sm.set_error("e")
+        assert sm.is_busy() is False
+        sm.transition_to(ProvisioningState.PROVISIONED, "p")
+        assert sm.is_busy() is False

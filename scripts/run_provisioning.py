@@ -125,7 +125,11 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
     on_provisioned = _trigger_shutdown if auto_shutdown else None
 
     # Create and run the app
-    app = create_provisioning_app(wifi_manager, on_provisioned=on_provisioned)
+    # ap_ssid lets a failed attempt (bad password, expired token, CC down)
+    # bring the hotspot back instead of stranding the node on home WiFi.
+    app = create_provisioning_app(
+        wifi_manager, on_provisioned=on_provisioned, ap_ssid=ap_ssid
+    )
 
     # Start captive portal server on port 80 so iOS/Android detect "internet"
     # and don't fall back to cellular (which makes 192.168.4.1 unreachable).
@@ -155,13 +159,14 @@ def run_provisioning_server(auto_shutdown: bool = False) -> bool:
         from provisioning.startup import has_provisioning_marker
         if ap_ssid is not None and has_provisioning_marker():
             from provisioning.recovery_watcher import start_recovery_watcher
-            from provisioning.models import ProvisioningState
 
             sm = app.state.provisioning_state_machine
 
             def _is_pairing_active() -> bool:
-                # Anything past idle AP_MODE means a phone is mid-flow.
-                return sm.state != ProvisioningState.AP_MODE
+                # A phone is mid-flow while an attempt is CONNECTING or
+                # REGISTERING. A finished-but-failed attempt (ERROR, hotspot
+                # restored) is idle again — it must not pin the AP forever.
+                return sm.is_busy()
 
             start_recovery_watcher(
                 recovery_shutdown_event,

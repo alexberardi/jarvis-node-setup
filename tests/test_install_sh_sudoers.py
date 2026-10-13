@@ -135,3 +135,15 @@ class TestSudoersHeredoc:
             f"jarvis-alsa-store sudoers line must not include `*` "
             f"(wrapper takes no args) — got: {line!r}"
         )
+
+
+class TestSudoersNmcli:
+    def test_nmcli_grant_present(self):
+        """WiFi provisioning runs `sudo -n nmcli connection add|up ... passwd-file`.
+
+        Polkit on Trixie refuses `nmcli connection add` for the service user,
+        and the PSK reaches nmcli only through a passwd-file (never argv, which
+        sudo journals). Both depend on this NOPASSWD grant.
+        """
+        body = _render_sudoers_heredoc()
+        assert re.search(r"NOPASSWD:\s*/usr/bin/nmcli\s*$", body, re.MULTILINE), body

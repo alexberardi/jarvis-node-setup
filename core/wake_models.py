@@ -113,6 +113,7 @@ def prepare_wake_model(
     if autodownload_enabled:
         # Lazy import: keeps this module importable without the audio /
         # onnx stack (same reason core/voice_filters.py exists).
+        import core.oww_import  # noqa: F401  (keeps scipy/sklearn out)
         import openwakeword.utils
 
         openwakeword.utils.download_models(model_names=[name])

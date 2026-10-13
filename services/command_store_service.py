@@ -23,6 +23,7 @@ import yaml
 from jarvis_log_client import JarvisLogger
 
 from core.command_manifest import CommandManifest
+from services.post_install_dropins import remove_managed_dropins
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -826,9 +827,10 @@ def _run_post_install(manifest: CommandManifest, package_name: str) -> None:
         )
 
 
-def _remove_post_install_dropins(package_name: str) -> None:
-    """Best-effort: invoke the sudoers-gated wrapper to remove drop-ins
-    this package previously wrote (matched by managed-by marker).
+def _remove_post_install_dropins(package_name: str) -> bool:
+    """Best-effort: ask the sudoers-gated wrapper to remove drop-ins this
+    package previously wrote (matched by managed-by marker). The wrapper
+    also disables a unit the package's install enabled.
 
     Config-file edits (set_config_file_value) are NOT auto-reverted —
     no straightforward way to do that without recording originals, and
@@ -836,29 +838,9 @@ def _remove_post_install_dropins(package_name: str) -> None:
     safer default. Operators can hand-revert from .bak files if needed.
 
     Never raises — uninstall must succeed even if the wrapper isn't
-    installed or systemctl is unavailable.
+    installed or systemctl is unavailable. See services/post_install_dropins.
     """
-    if not _POST_INSTALL_WRAPPER_PATH.exists():
-        return
-    try:
-        result = subprocess.run(
-            ["sudo", str(_POST_INSTALL_WRAPPER_PATH),
-             "--package", package_name, "remove-managed-dropins"],
-            capture_output=True, text=True, timeout=30.0,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        logger.warning("post_install dropin removal skipped", error=str(e))
-        return
-    if result.returncode != 0:
-        logger.warning(
-            "post_install dropin removal failed",
-            package=package_name,
-            stderr=(result.stderr or "").strip()[:300],
-        )
-        return
-    out = (result.stdout or "").strip()
-    if out:
-        logger.info("post_install dropins removed", package=package_name, detail=out)
+    return remove_managed_dropins(package_name)
 
 
 def _snapshot_installed_dists() -> set[tuple[str, str]]:

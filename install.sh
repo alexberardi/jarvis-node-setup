@@ -395,6 +395,21 @@ switch_audio_to_pulseaudio() {
     changed=1
   fi
 
+  # A per-user mask (~/.config/systemd/user/pulseaudio.* -> /dev/null, e.g.
+  # left by a hand `systemctl --user mask` while debugging) beats the
+  # system-wide enable above: PulseAudio never starts, the asound.conf
+  # "output" PCM has nothing to talk to, and every TTS reply is silent while
+  # the rest of the voice pipeline looks healthy (jarvis-dev, 2026-09-19 to
+  # 2026-10-08). The node needs PulseAudio, so a mask is always wrong.
+  local user_units="${SERVICE_HOME}/.config/systemd/user"
+  for unit in pulseaudio.socket pulseaudio.service; do
+    if [ "$(readlink "$user_units/$unit" 2>/dev/null)" = "/dev/null" ]; then
+      rm -f "$user_units/$unit"
+      warn "Removed a per-user mask on $unit ($user_units)"
+      changed=1
+    fi
+  done
+
   if [ "$changed" -eq 1 ]; then
     info "Audio stack switched: PipeWire masked, PulseAudio enabled"
     NEEDS_REBOOT=1
@@ -428,6 +443,53 @@ unload-module module-suspend-on-idle
     printf '%s' "$content" > "$cfg_file"
     sync
     info "PulseAudio autosuspend disabled (${cfg_file})"
+  fi
+}
+
+# --- Give PulseAudio the HAT as a fixed playback sink ---
+# The node captures from the HAT directly (asound.conf dsnoop) and plays
+# through PulseAudio (asound.conf "output" PCM). Left to module-udev-detect,
+# the HAT goes to whichever side opens it first at boot:
+#   * PulseAudio first: it takes the capture PCM too, dsnoop can't open the
+#     mic and the node hears silence (jarvis-dev, 2026-09-19);
+#   * jarvis-node first: udev-detect skips the busy card, PulseAudio has only
+#     auto_null and every TTS reply goes nowhere (jarvis-dev, 2026-10-08).
+# So udev-detect leaves the HAT alone (PULSE_IGNORE) and a default.pa.d
+# drop-in opens only its playback device, under a fixed sink name. That
+# never competes with the node's capture and doesn't depend on boot order.
+#
+# rate=48000 is required: the codec runs playback and capture from one
+# clock, and a sink opened at PulseAudio's default 44.1 kHz makes the node's
+# 48 kHz capture fail with "Invalid sample rate" (the mic stays dead).
+# The card id matches asound.conf's hw:CARD= pin.
+HAT_CARD_ID="seeed2micvoicec"
+
+configure_pulseaudio_hat_sink() {
+  if [ "$SKIP_AUDIO" -eq 1 ]; then
+    return
+  fi
+  local rule_file="/etc/udev/rules.d/89-jarvis-hat-pulse-ignore.rules"
+  local rule="SUBSYSTEM==\"sound\", KERNEL==\"card*\", ATTR{id}==\"${HAT_CARD_ID}\", ENV{PULSE_IGNORE}=\"1\""
+  if [ ! -f "$rule_file" ] || [ "$(cat "$rule_file")" != "$rule" ]; then
+    mkdir -p "$(dirname "$rule_file")"
+    printf '%s\n' "$rule" > "$rule_file"
+    sync
+    udevadm control --reload 2>/dev/null || true
+    info "PulseAudio udev-detect leaves the HAT alone (${rule_file})"
+    NEEDS_REBOOT=1
+  fi
+
+  local cfg_dir="/etc/pulse/default.pa.d"
+  local cfg_file="${cfg_dir}/97-jarvis-hat-sink.pa"
+  local content=".nofail
+load-module module-alsa-sink device=hw:CARD=${HAT_CARD_ID},DEV=0 sink_name=jarvis_output rate=48000 tsched=0
+set-default-sink jarvis_output"
+  mkdir -p "$cfg_dir"
+  if [ ! -f "$cfg_file" ] || [ "$(cat "$cfg_file")" != "$content" ]; then
+    printf '%s\n' "$content" > "$cfg_file"
+    sync
+    info "PulseAudio HAT sink pinned as jarvis_output at 48 kHz (${cfg_file})"
+    NEEDS_REBOOT=1
   fi
 }
 
@@ -2138,6 +2200,7 @@ main() {
   configure_bluetooth_class
   switch_audio_to_pulseaudio
   configure_pulseaudio_no_suspend
+  configure_pulseaudio_hat_sink
   configure_pulseaudio_stream_restore
   configure_vm_swappiness
   configure_persistent_journald

@@ -128,6 +128,10 @@ Multi-step workflows (tool calls):
 11. **Many results files (`*_results.json`, `round*_*.json`) at the repo root are experiment artifacts.** They're not tracked test data. Don't reorganize them without checking with the user — some experiments are still being referenced.
 12. **Don't talk to whisper/tts directly.** Always proxy through CC's `/api/v0/media/*`. Direct calls would bypass auth context headers (household_id, member_ids) that voice recognition + speaker resolution depend on.
 13. **Pi nodes run PulseAudio, not PipeWire** — even though Pi OS Trixie defaults to PipeWire 1.4.2 + pipewire-pulse + wireplumber. PipeWire's `libspa-bluez5` plugin silently fails to register A2DP Sink (UUID `0000110b`) MediaEndpoints with BlueZ; only Audio Source endpoints get registered, regardless of `bluez5.roles` config. Verified with `dbus-send --system / GetManagedObjects | grep MediaEndpoint`: every endpoint shows UUID `0000110a` only. Net effect: no `a2dp-sink` card profile is exposed, phone→Pi A2DP music routing is broken. `install.sh:switch_audio_to_pulseaudio` system-masks `pipewire.{socket,service}`, `pipewire-pulse.{socket,service}`, `wireplumber.service` via `/etc/systemd/user/*` symlinks to `/dev/null` and enables `pulseaudio.{socket,service}`. The package list explicitly installs BOTH `pulseaudio` AND `pulseaudio-module-bluetooth` because of this — they are NOT no-ops on Pi nodes, do not "clean them up" thinking PipeWire-pulse covers it. Companion fix in `install.sh:configure_bluetooth_class` writes `Class = 0x240404` to `/etc/bluetooth/main.conf` so iOS classifies the Pi as an audio device rather than "Computer" (otherwise iOS hides it from the audio-output picker). That fix originally lived in `setup/pi.sh:178-186` and didn't migrate when the prod installer was forked off.
+14. **PulseAudio gets the HAT's playback only, at 48 kHz, under a fixed name.** The node captures from the HAT through ALSA dsnoop (`asound.conf`) and plays through PulseAudio. Left to `module-udev-detect`, whoever opens the HAT first at boot wins: PulseAudio first takes the mic too (node hears silence), the node first leaves PulseAudio with only `auto_null` (TTS silent). `install.sh:configure_pulseaudio_hat_sink` writes a udev `PULSE_IGNORE` rule for `seeed2micvoicec` and `/etc/pulse/default.pa.d/97-jarvis-hat-sink.pa` (`module-alsa-sink … sink_name=jarvis_output rate=48000`). **Keep `rate=48000`**: playback and capture share the codec clock, and a 44.1 kHz sink makes the node's 48 kHz capture fail with "Invalid sample rate". `switch_audio_to_pulseaudio` also removes a per-user `systemctl --user mask` of PulseAudio, which silently beats the system-wide enable. Never "fix" a stolen mic by masking PulseAudio.
+15. **Image parameters carry megabytes; never log them.** A command can declare `JarvisParameter("photos", "image")` (jarvis-command-sdk ≥ 0.10.0). In an MQTT `tool_call`, its argument is `[{"mime": "image/jpeg"|"image/png"|"image/webp", "data": "<base64>"}]` (≤ 4, each ≤ 2 MiB decoded, so a payload can reach ~11 MB). The SDK's `execute()` turns that into `list[JarvisImage]` before `run()`; the node only passes `arguments` through. `utils/image_redaction.py` keeps the bytes out of logs (`redact_for_log`: used on the `on_message` payload debug log and on tool_call exception text) and out of results (`sanitize_tool_output`: used on the tool_call output and in `tool_result_formatter`). The tool_call log lines print argument **keys** only, so keep them that way. The tool schema reported by `report_tools` / `client_tools` comes from `to_openai_tool_schema()` verbatim and carries `"x-jarvis-type": "image"` on image properties, which is how the server knows to swap photo numbers for bytes. Don't filter schema keys on the way out.
+16. **Package `post_install` drop-ins live outside `~/.jarvis/packages` and must be removed explicitly.** `configure_systemd_service` ops make the root-owned `/usr/local/sbin/jarvis-post-install` write `/etc/systemd/system/<svc>.service.d/jarvis.conf`, first line `# managed-by: jarvis-package <name>`. Deleting package files never removes it: every path that drops a package must call `services/post_install_dropins.remove_managed_dropins(name)` *before* the metadata goes (uninstall does; `factory_reset._clear_pantry_packages` does). A leaked one crash-looped mpd on jarvis-dev every 5 s (5,067 restarts) after a factory reset wiped audacy, leaving `MPDCONF` pointed at a deleted file. Guards: the wrapper adds `ConditionPathExists=` for each environment path under `.jarvis/packages/` (stale unit skips instead of failing) and a 5-starts-per-300-s `StartLimitBurst` whenever `restart` is set; it marks `# jarvis-enabled-by-package: true` when *it* enabled the unit, and removal then runs `disable --now` (otherwise `try-restart`). At boot, `heal_stale_dropins` (background thread in `main.py`) removes managed drop-ins whose package metadata or package-shipped path is missing. It uses only the existing `jarvis-post-install *` sudoers grant; no new privilege.
+17. **The wake process must never import scipy or scikit-learn.** They cost ~77 MB RSS in the always-on node process (measured on the Pi 4: 285 → 207 MB idle-listening). Two things keep them out: `core/oww_import.py` stubs `openwakeword.custom_verifier_model` (training-only; `openwakeword/__init__.py` imports it eagerly and it pulls both libraries) and must be imported before any `openwakeword` import; and 48 → 16 kHz decimation uses `core/resample.decimate_int16` (numpy, the same `firwin(20·down+1, 1/down, kaiser 5.0)` filter as `scipy.signal.resample_poly`, bit-identical int16 output on the test clips) instead of scipy. `tests/test_oww_import.py` enforces both, including lazy imports. scipy/scikit-learn are still in the requirements files (dev tests compare against scipy; `install.sh` one-off snippets `import openwakeword` without the stub); dropping them is a separate change.
 
 ---
 
@@ -143,6 +147,7 @@ Multi-step workflows (tool calls):
 | openWakeWord model missing | Wake word detection disabled; node falls back to keyboard listener (when running with a TTY) or starts mute |
 | Provisioning not yet done | Node starts in AP mode (jarvis-XXXX WiFi); user pairs via mobile |
 | Package install fails mid-way | Partial files left in `commands/custom_commands/`; remove via `command_store.py remove` |
+| Package's systemd drop-in outlives it (service crash-loops on a missing config) | Self-healed at node boot (`services/post_install_dropins.py`); manual: `sudo /usr/local/sbin/jarvis-post-install --package <name> remove-managed-dropins` |
 
 ---
 
@@ -655,7 +660,7 @@ ssh -t pi@<dev-node>.local "sudo systemctl restart jarvis-node"
 
 ## Wake Word Detection
 
-Uses [openWakeWord](https://github.com/dscripka/openWakeWord) for local, no-cloud wake-word detection. The model name is configured via the `wake_word_model` setting (defaults to `hey_jarvis`). Model resolution is bundled-first (`core/wake_models.py`): a repo model at `models/wake/<name>.onnx` wins (ships in the release tarball, so it survives every update with no restore/autodownload — see `models/wake/README.md` for the file contract), otherwise the package-resident path applies. For package-resident models, download is **opt-in** since v0.1.130 (`wake_word_model_autodownload_enabled`, default off) — those models live inside the venv, so `install.sh:restore_wake_models` copies them forward from the `.bak` install on every update (they'd otherwise be lost to the venv rebuild and wake word would silently die). Audio captured from the mic at 48kHz is downsampled to 16kHz (the model's expected input rate) before scoring — see `scripts/voice_listener.py` for the loop, and `core/barge_in.py` for the parallel barge-in detector that listens during TTS playback.
+Uses [openWakeWord](https://github.com/dscripka/openWakeWord) for local, no-cloud wake-word detection. The model name is configured via the `wake_word_model` setting (defaults to `hey_jarvis`). Model resolution is bundled-first (`core/wake_models.py`): a repo model at `models/wake/<name>.onnx` wins (ships in the release tarball, so it survives every update with no restore/autodownload — see `models/wake/README.md` for the file contract), otherwise the package-resident path applies. For package-resident models, download is **opt-in** since v0.1.130 (`wake_word_model_autodownload_enabled`, default off) — those models live inside the venv, so `install.sh:restore_wake_models` copies them forward from the `.bak` install on every update (they'd otherwise be lost to the venv rebuild and wake word would silently die). Audio captured from the mic at 48kHz is downsampled to 16kHz (the model's expected input rate) before scoring by `core/resample.decimate_int16` (numpy-only, same filter as scipy's `resample_poly`; see invariant 17) — see `scripts/voice_listener.py` for the loop, and `core/barge_in.py` for the parallel barge-in detector that listens during TTS playback.
 
 ## Dependencies
 
@@ -861,7 +866,37 @@ Server runs on port 8080 (configurable via `JARVIS_PROVISIONING_PORT`).
 - `CONNECTING` - Attempting to connect to home WiFi
 - `REGISTERING` - Registering with command center
 - `PROVISIONED` - Successfully provisioned
-- `ERROR` - Error occurred
+- `ERROR` - Error occurred (see `error_code`)
+
+### Failure recovery + status contract
+
+A failed attempt never strands the node. Once the node has left its hotspot
+(WiFi join onward), any failure — wrong WiFi password, CC 401 on an expired
+provisioning token, CC unreachable, credentials not writable — removes the
+WiFi profile *this attempt* created (a pre-existing `jarvis-<ssid>` profile is
+kept; the new one is staged as `jarvis-<ssid>-new` and only replaces it after
+registration succeeds), restarts the setup hotspot, then reports on
+`GET /api/v1/status`:
+
+| field | meaning |
+|---|---|
+| `state` | stays `ERROR` (older apps already treat it as failure) |
+| `error_code` | `wifi_connect_failed` / `registration_failed` / `config_write_failed` / `credentials_save_failed` / `internal_error` |
+| `error` | human-readable reason, e.g. `Command center rejected registration (HTTP 401): Invalid or expired provisioning token` |
+| `registration_status` | CC's HTTP status when registration was refused, else null |
+| `hotspot_restored` | the setup AP is broadcasting again |
+| `retryable` | the app can `POST /api/v1/provision` again now (with a fresh token) |
+
+`ERROR` is set only *after* the hotspot is back; while recovering the state
+stays `CONNECTING`/`REGISTERING`. Registration retries network errors (~30s)
+and 5xx (3 tries); a 4xx is final. The AP↔STA recovery watcher treats only
+`CONNECTING`/`REGISTERING` as "pairing active" (`is_busy()`), so a stale
+`ERROR` doesn't pin the AP forever.
+
+**The WiFi PSK never goes on a command line** (sudo journals every argv). The
+profile is added without a secret; the PSK reaches `nmcli connection up` via a
+0600 `passwd-file` in `~/.jarvis/` that is deleted right after. Don't
+reintroduce `nmcli dev wifi connect ... password` or `wifi-sec.psk <psk>`.
 
 ### Files
 

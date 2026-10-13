@@ -17,24 +17,13 @@ Three independent decisions live here, each pure logic over text:
     ``core.voice_filters.is_non_speech``. Runs only in follow-up where
     we're skeptical about whether audio was directed at the device.
     Catches exact repeats across iterations (Whisper hallucinating the
-    same phrase from similar ambient noise) and lone non-command words.
+    same phrase from similar ambient noise). One-word answers ("Kitchen.")
+    are real answers and always pass.
 """
 
 from __future__ import annotations
 
 import re
-
-
-# Words that are valid as standalone single-word follow-ups (control
-# verbs the LLM doesn't need to disambiguate, plus bare confirmations/
-# denials — CC asks yes/no questions in follow-up and suppressing the
-# one-word answer strands the exchange). Used by the follow-up loop's
-# local noise gate, not by is_non_speech.
-_VALID_FOLLOW_UP_WORDS: set[str] = {
-    "stop", "pause", "resume", "help", "repeat",
-    "louder", "quieter", "cancel", "continue",
-    "yes", "no", "yeah", "sure",
-}
 
 
 _ECHO_STOPWORDS: set[str] = {
@@ -101,30 +90,18 @@ def extract_assistant_text(result: dict | None) -> str:
 def is_follow_up_noise(text: str, prev_text: str | None) -> bool:
     """Detect ambient noise Whisper transcribed as speech during follow-up.
 
-    More conservative than ``is_non_speech`` — this only runs in the
-    follow-up loop where we're skeptical about whether audio was directed
-    at the device. Catches two patterns:
-
-    1. **Exact repeat** — Whisper hallucinating the same phrase from
-       similar ambient noise on consecutive iterations.
-    2. **Lone word** — Single generic words that aren't valid commands.
-       Real follow-ups are almost never one isolated word.
+    Only an exact repeat of the previous transcription counts: Whisper
+    hallucinating the same phrase from similar ambient noise on consecutive
+    iterations. Lone words are never dropped — "Kitchen." is a real answer
+    to "kitchen or oven?".
     """
     if not text:
         return True
 
-    stripped = text.strip()
-    lowered = stripped.lower().rstrip(".!,?")
-    words = lowered.split()
-
-    # Exact repeat of previous transcription
     if prev_text:
+        lowered = text.strip().lower().rstrip(".!,?")
         prev_lowered = prev_text.strip().lower().rstrip(".!,?")
         if lowered == prev_lowered:
             return True
-
-    # Single word not in the valid-command set
-    if len(words) == 1 and lowered not in _VALID_FOLLOW_UP_WORDS:
-        return True
 
     return False

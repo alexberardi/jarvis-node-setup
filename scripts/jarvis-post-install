@@ -64,6 +64,25 @@ _DROPIN_FILENAME = "jarvis.conf"
 # wrote, scoped to a specific package.
 _MANAGED_BY_PREFIX = "# managed-by: jarvis-package "
 
+# Second marker line, present only when THIS wrapper ran `systemctl enable`
+# (the unit was not enabled before). Uninstall then runs `disable --now`
+# instead of a restart, undoing exactly what the package did and never
+# disabling a unit the user had enabled themselves.
+_ENABLED_BY_PACKAGE_MARKER = "# jarvis-enabled-by-package: true"
+
+# Crash-loop guard for any drop-in that sets Restart=. systemd's default
+# limit (5 starts / 10 s) never trips with RestartSec=5, so a broken
+# drop-in restarts forever (jarvis-dev mpd, 2026-10: 5,067 restarts).
+# 5 starts / 300 s stops it within a minute.
+_START_LIMIT_INTERVAL_SEC = 300
+_START_LIMIT_BURST = 5
+
+# Environment values under a jarvis packages dir are files the package
+# ships; they vanish when the package does. Each becomes a
+# ConditionPathExists= so a drop-in that outlives its package makes the
+# unit skip cleanly (inactive, condition failed) instead of crash-looping.
+_PACKAGE_PATH_MARKER = "/.jarvis/packages/"
+
 
 def _die(msg: str, code: int = 2) -> "None":
     print(f"jarvis-post-install: {msg}", file=sys.stderr)
@@ -119,7 +138,7 @@ def _atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
 # ── op: configure-systemd-service ───────────────────────────────────────
 
 
-def _render_dropin(payload: dict, package: str) -> str:
+def _render_dropin(payload: dict, package: str, enabled_by_package: bool = False) -> str:
     """Render a systemd drop-in (.conf in *.service.d/) from a payload dict.
 
     Supported keys (all optional except `service`, which is validated by the
@@ -131,6 +150,11 @@ def _render_dropin(payload: dict, package: str) -> str:
       after       — list[str], rendered as After= in [Unit]
       restart     — Restart= value (e.g. "on-failure")
       restart_sec — RestartSec= seconds
+
+    Derived, not configurable (crash-loop guards):
+      ConditionPathExists= for each environment value that is a file under
+        a jarvis packages dir; StartLimitIntervalSec=/StartLimitBurst= in
+        [Unit] whenever restart is set.
     """
     unit_lines: list[str] = []
     service_lines: list[str] = []
@@ -173,12 +197,21 @@ def _render_dropin(payload: dict, package: str) -> str:
             # Escape any embedded double quotes — Environment=" ... " syntax.
             escaped = v.replace("\\", "\\\\").replace("\"", "\\\"")
             service_lines.append(f'Environment="{k}={escaped}"')
+            if (
+                v.startswith("/")
+                and _PACKAGE_PATH_MARKER in v
+                and os.path.normpath(v) == v
+                and "\n" not in v
+            ):
+                unit_lines.append(f"ConditionPathExists={v}")
 
     restart = payload.get("restart")
     if restart:
         if not isinstance(restart, str) or not re.match(r"^[a-z-]+$", restart):
             _die(f"invalid restart: {restart!r}")
         service_lines.append(f"Restart={restart}")
+        unit_lines.append(f"StartLimitIntervalSec={_START_LIMIT_INTERVAL_SEC}")
+        unit_lines.append(f"StartLimitBurst={_START_LIMIT_BURST}")
 
     restart_sec = payload.get("restart_sec")
     if restart_sec is not None:
@@ -187,6 +220,8 @@ def _render_dropin(payload: dict, package: str) -> str:
         service_lines.append(f"RestartSec={restart_sec}")
 
     parts: list[str] = [f"{_MANAGED_BY_PREFIX}{package}"]
+    if enabled_by_package:
+        parts.append(_ENABLED_BY_PACKAGE_MARKER)
     if unit_lines:
         parts.append("[Unit]")
         parts.extend(unit_lines)
@@ -223,18 +258,28 @@ def _op_configure_systemd_service(payload: dict, package: str) -> None:
         _die(f"invalid enable: must be a bool, got {type(enable_raw).__name__}")
     enable = bool(enable_raw)
 
-    rendered = _render_dropin(payload, package)
+    current: str | None = None
+    if dropin_path.exists():
+        try:
+            current = dropin_path.read_text()
+        except OSError:
+            current = ""
+
+    # Did (or will) this wrapper be the one that enabled the unit? Keep the
+    # ownership marker across re-installs; otherwise only claim it when the
+    # unit isn't enabled yet.
+    enabled_by_package = enable and (
+        (current is not None and _ENABLED_BY_PACKAGE_MARKER in current.splitlines())
+        or not _unit_is_enabled(service)
+    )
+    rendered = _render_dropin(payload, package, enabled_by_package=enabled_by_package)
 
     # Idempotency: if content matches what we'd write AND the unit is already
     # enabled (when requested), skip the daemon-reload and restart entirely
     # so re-installs are quiet no-ops. The enable check costs ~50ms but
     # without it a reinstall on an already-enabled unit re-runs systemctl
     # restart and daemon-reload for no reason.
-    if dropin_path.exists():
-        try:
-            current = dropin_path.read_text()
-        except OSError:
-            current = ""
+    if current is not None:
         if current == rendered and (not enable or _unit_is_enabled(service)):
             print(f"configure-systemd-service: {service} already up to date")
             return
@@ -411,9 +456,11 @@ def _op_remove_managed_dropins(package: str) -> None:
 
     Scans /etc/systemd/system/*.service.d/*.conf for files whose first
     non-empty line is the marker `# managed-by: jarvis-package <name>`.
-    Each matching file is removed; systemctl daemon-reload runs once at
-    the end, and each affected service is restarted so it picks up the
-    revert to package-default behavior.
+    Each matching file is removed and systemctl daemon-reload runs once.
+    Then, per affected service: if the drop-in carried the
+    enabled-by-package marker, `systemctl disable --now` (undo the
+    install's enable); otherwise `try-restart`, which applies the revert
+    to a running unit and never starts a stopped one.
 
     This op takes no payload — just the --package arg. Idempotent: if no
     drop-ins match (uninstall on a package that never wrote any), the op
@@ -427,6 +474,7 @@ def _op_remove_managed_dropins(package: str) -> None:
     marker = f"{_MANAGED_BY_PREFIX}{package}"
     removed: list[str] = []
     affected_services: list[str] = []
+    disable_services: set[str] = set()
 
     for service_dir in sorted(dropin_root.glob("*.service.d")):
         for dropin in sorted(service_dir.glob("*.conf")):
@@ -437,6 +485,10 @@ def _op_remove_managed_dropins(package: str) -> None:
             if not first_line or first_line[0].strip() != marker:
                 continue
             try:
+                owned_enable = _ENABLED_BY_PACKAGE_MARKER in dropin.read_text().splitlines()
+            except OSError:
+                owned_enable = False
+            try:
                 dropin.unlink()
             except OSError as e:
                 print(f"remove-managed-dropins: failed to remove {dropin}: {e}",
@@ -446,25 +498,30 @@ def _op_remove_managed_dropins(package: str) -> None:
             service_name = service_dir.name[: -len(".service.d")]
             if service_name not in affected_services:
                 affected_services.append(service_name)
+            if owned_enable:
+                disable_services.add(service_name)
 
     if not removed:
         print(f"remove-managed-dropins: no drop-ins for package {package!r}")
         return
 
-    # Reload + restart affected services so they revert to package defaults.
+    # Reload, then undo the enable we own, or re-apply package defaults.
     _systemctl("daemon-reload")
+    actions: list[str] = []
     for svc in affected_services:
+        args = ("disable", "--now", svc) if svc in disable_services else ("try-restart", svc)
         try:
-            _systemctl("restart", svc)
+            _systemctl(*args)
+            actions.append(f"{args[0]} {svc}")
         except SystemExit:
-            # systemctl restart can fail if the service is in a bad state;
-            # we've already removed our drop-in, so partial success is fine.
-            print(f"remove-managed-dropins: warn — restart {svc} failed (continuing)",
+            # The service may be in a bad state; our drop-in is already
+            # gone, so partial success is fine.
+            print(f"remove-managed-dropins: warn — {' '.join(args)} failed (continuing)",
                   file=sys.stderr)
 
     print(
-        f"remove-managed-dropins: removed {len(removed)} drop-in(s) for {package!r}, "
-        f"restarted: {', '.join(affected_services)}"
+        f"remove-managed-dropins: removed {len(removed)} drop-in(s) for {package!r}; "
+        f"{', '.join(actions) or 'no service actions'}"
     )
 
 

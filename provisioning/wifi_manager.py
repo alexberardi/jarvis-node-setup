@@ -14,12 +14,15 @@ Use scan_and_cache() before start_ap_mode(), then scan_networks() returns cached
 
 import os
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Protocol
 
 from jarvis_log_client import JarvisLogger
 
 from provisioning.models import NetworkInfo
+from utils.encryption_utils import get_secret_dir
 
 logger = JarvisLogger(service="jarvis-node")
 
@@ -69,6 +72,202 @@ def clear_network_cache() -> None:
     _cache_populated = False
 
 
+# --- nmcli profile connect (shared by the nmcli-backed managers) -----------
+#
+# The WiFi PSK must NEVER appear in an argv. ``sudo`` logs every command line
+# to the journal (``COMMAND=/usr/bin/nmcli ... password <psk>``) and any user
+# can read argv from /proc while the process runs. So the profile is created
+# without a secret and the PSK is handed to ``nmcli connection up`` through a
+# 0600 ``passwd-file``. nmcli answers NetworkManager's secret request from
+# that file and, because the psk is system-owned (psk-flags 0), NM persists it
+# into the root-only keyfile — so autoconnect after reboot keeps working.
+
+_PSK_FILE_PREFIX = ".nm-psk-"
+_PROFILE_PREFIX = "jarvis-"
+_STAGED_SUFFIX = "-new"
+
+
+def _profile_name_for(ssid: str) -> str:
+    return f"{_PROFILE_PREFIX}{ssid[:20]}"
+
+
+def _key_mgmt_for(ssid: str) -> str:
+    """WPA3-only (SAE) networks need key-mgmt ``sae``; everything else ``wpa-psk``.
+
+    Uses the pre-AP scan cache (the only scan available while in AP mode).
+    Mixed WPA2/WPA3 networks accept wpa-psk.
+    """
+    for net in get_cached_networks():
+        if net.ssid != ssid:
+            continue
+        sec = net.security.upper()
+        if "WPA3" in sec and "WPA2" not in sec and "WPA1" not in sec:
+            return "sae"
+    return "wpa-psk"
+
+
+def _psk_file_dir() -> Path:
+    """Directory for the transient passwd-file: the node's 0700 secret dir."""
+    d = get_secret_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return d
+
+
+def _write_psk_file(password: str) -> Path:
+    """Write an nmcli passwd-file (0600) holding the PSK; caller must delete it."""
+    d = _psk_file_dir()
+    # Sweep files a crashed earlier attempt may have left behind.
+    for stale in d.glob(f"{_PSK_FILE_PREFIX}*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    fd, path = tempfile.mkstemp(prefix=_PSK_FILE_PREFIX, dir=str(d))
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, f"802-11-wireless-security.psk:{password}\n".encode())
+    finally:
+        os.close(fd)
+    return Path(path)
+
+
+class _NmcliProfileConnector:
+    """Connect via an explicit nmcli profile, keeping the PSK off every argv.
+
+    Tracks what the last attempt created so a failed provisioning attempt can
+    be rolled back (``rollback_connection``) without touching a profile that
+    existed before, and a successful one can be finalised
+    (``commit_connection``).
+    """
+
+    _interface: str
+    _use_sudo: bool = False
+
+    def _nm(self, args: list[str]) -> list[str]:
+        cmd = ["nmcli", *args]
+        return _priv(cmd) if self._use_sudo else cmd
+
+    def _run_nm(
+        self, args: list[str], timeout: float
+    ) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            self._nm(args), capture_output=True, text=True, timeout=timeout
+        )
+
+    def _profile_exists(self, name: str) -> bool:
+        try:
+            return self._run_nm(["connection", "show", "id", name], 10).returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def _delete_profile(self, name: str) -> bool:
+        try:
+            return self._run_nm(["connection", "delete", "id", name], 10).returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def _connect_with_profile(self, ssid: str, password: str) -> bool:
+        """Create (or stage) a profile for ``ssid`` and bring it up.
+
+        The profile is created with autoconnect off so NetworkManager can't
+        race our explicit ``up`` with a secret-less auto-activation;
+        ``commit_connection`` turns autoconnect on once registration worked.
+        """
+        self._attempt_profile = None
+        self._replaces_profile = None
+
+        target = _profile_name_for(ssid)
+        name = target
+        if self._profile_exists(target):
+            # Keep the pre-existing profile intact until registration
+            # succeeds: stage the new one beside it.
+            name = f"{target}{_STAGED_SUFFIX}"
+            self._replaces_profile = target
+            # A stale staged profile can only be a leftover of an earlier
+            # failed attempt — never user data.
+            self._delete_profile(name)
+
+        add_args = [
+            "connection", "add",
+            "type", "wifi",
+            "con-name", name,
+            "ifname", self._interface,
+            "ssid", ssid,
+            "connection.autoconnect", "no",
+        ]
+        if password:
+            # No wifi-sec.psk here: the secret arrives via passwd-file below.
+            add_args += [
+                "wifi-sec.key-mgmt", _key_mgmt_for(ssid),
+                "wifi-sec.psk-flags", "0",
+            ]
+
+        try:
+            result = self._run_nm(add_args, 15)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+        if result.returncode != 0:
+            logger.warning("nmcli connection add failed", stderr=result.stderr.strip())
+            return False
+        self._attempt_profile = name
+
+        psk_file: Optional[Path] = None
+        try:
+            up_args = ["connection", "up", "id", name]
+            if password:
+                psk_file = _write_psk_file(password)
+                up_args += ["passwd-file", str(psk_file)]
+            result = self._run_nm(up_args, 45)
+            if result.returncode == 0:
+                return True
+            logger.warning("nmcli connection up failed", stderr=result.stderr.strip())
+            return False
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.warning("nmcli connection up errored", error=str(e))
+            return False
+        finally:
+            if psk_file is not None:
+                try:
+                    psk_file.unlink()
+                except FileNotFoundError:
+                    pass
+
+    def rollback_connection(self) -> None:
+        name = getattr(self, "_attempt_profile", None)
+        if not name:
+            return
+        if self._delete_profile(name):
+            logger.info("Removed WiFi profile from failed provisioning attempt", profile=name)
+        else:
+            logger.warning("Could not remove WiFi profile from failed attempt", profile=name)
+        self._attempt_profile = None
+        self._replaces_profile = None
+
+    def commit_connection(self) -> None:
+        name = getattr(self, "_attempt_profile", None)
+        old = getattr(self, "_replaces_profile", None)
+        if name:
+            # Priority 999 matches what install.sh pins on the active profile:
+            # the network the user just provisioned must win autoconnect.
+            modify = [
+                "connection", "modify", "id", name,
+                "connection.autoconnect", "yes",
+                "connection.autoconnect-priority", "999",
+            ]
+            if old:
+                self._delete_profile(old)
+                modify += ["connection.id", old]
+            try:
+                result = self._run_nm(modify, 10)
+                if result.returncode != 0:
+                    logger.warning("Could not finalise WiFi profile",
+                                   profile=name, stderr=result.stderr.strip())
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                logger.warning("Could not finalise WiFi profile", profile=name)
+        self._attempt_profile = None
+        self._replaces_profile = None
+
+
 class WiFiManager(Protocol):
     """Protocol for WiFi management operations."""
 
@@ -105,6 +304,26 @@ class WiFiManager(Protocol):
         """
         ...
 
+    def rollback_connection(self) -> None:
+        """
+        Undo the WiFi profile created by the most recent ``connect``.
+
+        Deletes the profile only if that attempt created it; a profile that
+        existed before the attempt is left untouched. Called when the
+        provisioning attempt fails after (or during) the WiFi join, so a
+        retry starts clean and the node's previous WiFi still works.
+        """
+        ...
+
+    def commit_connection(self) -> None:
+        """
+        Make the most recent ``connect`` attempt's profile the permanent one.
+
+        Called after registration succeeds. When the attempt had to stage its
+        profile next to a pre-existing one, the old profile is replaced.
+        """
+        ...
+
     def get_current_ssid(self) -> Optional[str]:
         """Get the SSID of the currently connected network, if any."""
         ...
@@ -131,8 +350,13 @@ class WiFiManager(Protocol):
         ...
 
 
-class NetworkManagerWiFi:
+class NetworkManagerWiFi(_NmcliProfileConnector):
     """Real WiFi implementation using NetworkManager (nmcli)."""
+
+    def __init__(self, interface: str = "wlan0") -> None:
+        self._interface = interface
+        self._attempt_profile: Optional[str] = None
+        self._replaces_profile: Optional[str] = None
 
     def _do_scan(self) -> list[NetworkInfo]:
         """Perform actual WiFi scan using nmcli."""
@@ -206,18 +430,8 @@ class NetworkManagerWiFi:
         return networks
 
     def connect(self, ssid: str, password: str) -> bool:
-        """Connect to a WiFi network using nmcli."""
-        try:
-            # First, try to connect using existing connection profile
-            result = subprocess.run(
-                ["nmcli", "dev", "wifi", "connect", ssid, "password", password],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
+        """Connect to a WiFi network using an nmcli profile (PSK via passwd-file)."""
+        return self._connect_with_profile(ssid, password)
 
     def get_current_ssid(self) -> Optional[str]:
         """Get the current connected WiFi SSID."""
@@ -309,7 +523,7 @@ class NetworkManagerWiFi:
             return False
 
 
-class HostapdWiFiManager:
+class HostapdWiFiManager(_NmcliProfileConnector):
     """
     WiFi manager using hostapd and dnsmasq for AP mode.
 
@@ -346,6 +560,13 @@ class HostapdWiFiManager:
         self._nm_was_running = False
         self._wpa_was_running = False
         self._dnsmasq_was_running = False
+        self._attempt_profile: Optional[str] = None
+        self._replaces_profile: Optional[str] = None
+
+    # nmcli profile operations go through sudo -n: NetworkManager's polkit on
+    # Trixie rejects `nmcli connection add` ("Insufficient privileges") for
+    # the service user. /etc/sudoers.d/jarvis-node grants NOPASSWD nmcli.
+    _use_sudo = True
 
     def _stop_network_services(self) -> None:
         """Stop NetworkManager, wpa_supplicant, and dnsmasq to release the interface."""
@@ -385,7 +606,6 @@ class HostapdWiFiManager:
         subprocess.run(_priv(["pkill", "-9", "wpa_supplicant"]), capture_output=True)
 
         # Give services time to stop
-        import time
         time.sleep(1)
 
     def _restore_network_services(self) -> None:
@@ -410,7 +630,6 @@ class HostapdWiFiManager:
             logger.info(f"Started dnsmasq: rc={result.returncode}")
 
         # Give NetworkManager time to reconnect
-        import time
         time.sleep(2)
 
     def _generate_hostapd_config(self, ssid: str, interface: str, channel: int) -> str:
@@ -520,18 +739,24 @@ log-dhcp
     def connect(self, ssid: str, password: str) -> bool:
         """Connect to a WiFi network using nmcli.
 
-        After AP mode teardown, NetworkManager needs time to start scanning.
-        This method waits for NM to detect the target SSID before attempting
-        to connect, with a total timeout of 60 seconds.
-        """
-        import time
+        After AP mode teardown, NetworkManager needs time to start scanning,
+        so wait (up to 60s) for it to see the target SSID first. The PSK is
+        never put on a command line — see ``_NmcliProfileConnector``.
 
+        Goes straight to an explicit profile: ``nmcli dev wifi connect``
+        fails on Trixie with "key-mgmt: property is missing" and, worse,
+        needs the PSK in argv.
+        """
         # Stop AP mode first if active
         if self._ap_active:
             self.stop_ap_mode()
 
-        # Wait for NetworkManager to detect the target network
-        deadline = time.monotonic() + 60
+        self._wait_for_ssid(ssid, timeout=60)
+        return self._connect_with_profile(ssid, password)
+
+    def _wait_for_ssid(self, ssid: str, timeout: float) -> bool:
+        """Poll nmcli until ``ssid`` shows up in a scan, or ``timeout`` passes."""
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 scan_result = subprocess.run(
@@ -541,71 +766,12 @@ log-dhcp
                     timeout=15
                 )
                 if ssid in scan_result.stdout:
-                    break
+                    return True
             except (subprocess.TimeoutExpired, FileNotFoundError):
                 pass
             logger.info(f"Waiting for NetworkManager to find '{ssid}'...")
             time.sleep(3)
-
-        # Try simple connect first.
-        # nmcli connection-modifying calls go through _priv (sudo -n) because
-        # NetworkManager's polkit on Trixie rejects "Insufficient privileges"
-        # for `nmcli connection add` when the caller is in `netdev` but not
-        # explicitly granted by polkit rules. install.sh adds the NOPASSWD
-        # sudo grant; this matches what _priv handles for hostapd/dnsmasq.
-        try:
-            result = subprocess.run(
-                _priv(["nmcli", "dev", "wifi", "connect", ssid, "password", password]),
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                return True
-            logger.warning(f"nmcli connect failed: {result.stderr.strip()}")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-        # Fallback: create a full connection profile with explicit security.
-        # Newer NetworkManager (Trixie) requires key-mgmt to be set explicitly.
-        logger.info("Retrying with explicit WPA-PSK connection profile...")
-        conn_name = f"jarvis-{ssid[:20]}"
-        try:
-            # Remove any stale profile with this name
-            subprocess.run(
-                _priv(["nmcli", "connection", "delete", conn_name]),
-                capture_output=True, timeout=10
-            )
-            result = subprocess.run(
-                _priv([
-                    "nmcli", "connection", "add",
-                    "type", "wifi",
-                    "con-name", conn_name,
-                    "ifname", self._interface,
-                    "ssid", ssid,
-                    "wifi-sec.key-mgmt", "wpa-psk",
-                    "wifi-sec.psk", password,
-                ]),
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-            if result.returncode != 0:
-                logger.warning(f"nmcli connection add failed: {result.stderr.strip()}")
-                return False
-
-            result = subprocess.run(
-                _priv(["nmcli", "connection", "up", conn_name]),
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                return True
-            logger.warning(f"nmcli connection up failed: {result.stderr.strip()}")
-            return False
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
+        return False
 
     def get_current_ssid(self) -> Optional[str]:
         """Get the current connected WiFi SSID."""
@@ -640,7 +806,6 @@ log-dhcp
         5. Start hostapd process
         6. Start dnsmasq process
         """
-        import time
 
         try:
             dnsmasq_conf = self._config_dir / "dnsmasq.conf"
@@ -796,7 +961,6 @@ log-dhcp
             if result.returncode == 0:
                 logger.warning("hostapd still running, force killing...")
                 subprocess.run(_priv(["killall", "-9", "hostapd"]), capture_output=True)
-                import time
                 time.sleep(1)
 
             self._ap_active = False
@@ -853,6 +1017,13 @@ class SimulatedWiFi:
             self._ap_mode_active = False
             return True
         return False
+
+    def rollback_connection(self) -> None:
+        """Simulate removing the profile from a failed attempt."""
+        self._connected_ssid = None
+
+    def commit_connection(self) -> None:
+        """Nothing to finalise in simulation."""
 
     def get_current_ssid(self) -> Optional[str]:
         """Return the simulated connected SSID."""
