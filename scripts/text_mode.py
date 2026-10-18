@@ -155,6 +155,13 @@ async def startup() -> None:
     except Exception as e:
         logger.warning("Encryption key init failed (non-fatal)", error=str(e))
 
+    # Logger backend (SDK get_logger -> JarvisLogger)
+    try:
+        from services.logger_backend import init_logger_backend
+        init_logger_backend()
+    except Exception as e:
+        logger.warning("Logger backend init failed (non-fatal)", error=str(e))
+
     # Storage backend (required for SDK JarvisStorage)
     try:
         from services.storage_backend import init_storage_backend

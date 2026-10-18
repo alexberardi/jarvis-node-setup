@@ -9,14 +9,14 @@ from typing import List
 from enum import Enum
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
+    RequestInformation,
 )
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.command_response import CommandResponse
-from core.request_information import RequestInformation
 
 
 class Operation(Enum):

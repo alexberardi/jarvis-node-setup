@@ -543,6 +543,14 @@ def main():
     # Run DB migrations before anything that needs the database
     _run_db_migrations()
 
+    # Register SDK logger backend (commands' get_logger -> JarvisLogger, so
+    # their logs keep reaching jarvis-logs; no DB dependency)
+    try:
+        from services.logger_backend import init_logger_backend
+        init_logger_backend()
+    except Exception as e:
+        logger.warning("Logger backend init failed, command logs go to stdlib logging", error=str(e))
+
     # Register SDK storage backend (must be after DB migrations)
     try:
         from services.storage_backend import init_storage_backend

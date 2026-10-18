@@ -10,28 +10,47 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-from jarvis_log_client import JarvisLogger
+from commands._sdk_logging import LazyLogger
 
-from clients.jarvis_command_center_client import JarvisCommandCenterClient
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     DataBrowserMode,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisParameter,
+    IJarvisSecret,
+    JarvisParameter,
+    JarvisStorage,
     PreRouteResult,
+    RequestInformation,
 )
-from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
-from db import SessionLocal
-from repositories.command_data_repository import CommandDataRepository
-from utils.command_discovery_service import get_command_discovery_service
-from utils.service_discovery import get_command_center_url
 
-logger = JarvisLogger(service="jarvis-node")
+
+# The CC client and the discovery services are node-only, so they are
+# imported at call time (same module attribute names, for callers and tests).
+def JarvisCommandCenterClient(*args: Any, **kwargs: Any) -> Any:
+    from clients.jarvis_command_center_client import JarvisCommandCenterClient as _Client
+    return _Client(*args, **kwargs)
+
+
+def get_command_center_url() -> str | None:
+    from utils.service_discovery import get_command_center_url as _get_url
+    return _get_url()
+
+
+def get_command_discovery_service() -> Any:
+    from utils.command_discovery_service import get_command_discovery_service as _get_discovery
+    return _get_discovery()
+
+
+logger = LazyLogger("jarvis-node")
 
 _COMMAND_NAME = "routine"
+
+# Routines the user edited (mobile) or that were seeded, in the node DB via the
+# SDK storage backend (no backend registered: defaults + Pantry files only).
+_storage = JarvisStorage(_COMMAND_NAME)
 
 _LENGTH_INSTRUCTIONS: Dict[str, str] = {
     "short": "Respond in 2-4 spoken sentences, conversational tone.",
@@ -92,25 +111,19 @@ def _load_routines() -> Dict[str, Dict[str, Any]]:
 
     # Layer DB-stored routines on top (user edits via mobile take priority)
     try:
-        db = SessionLocal()
-        try:
-            repo = CommandDataRepository(db)
-            rows = repo.get_all(_COMMAND_NAME)
+        rows = _storage.get_all()
 
-            for row in rows:
-                key = row.pop("_data_key", None)
-                row.pop("_expires_at", None)
-                if key:
-                    routines[key] = row
+        for row in rows:
+            key = row.pop("_data_key", None)
+            row.pop("_expires_at", None)
+            if key:
+                routines[key] = row
 
-            # Seed defaults + custom routines into DB if not present
-            for name, definition in routines.items():
-                existing = repo.get(_COMMAND_NAME, name)
-                if existing is None:
-                    repo.save(_COMMAND_NAME, name, definition)
-
-        finally:
-            db.close()
+        # Seed defaults + custom routines into DB if not present
+        for name, definition in routines.items():
+            existing = _storage.get(name)
+            if existing is None:
+                _storage.save(name, definition)
     except Exception as e:
         logger.warning("Failed to load routines from DB, using file-based", error=str(e))
 
@@ -119,22 +132,12 @@ def _load_routines() -> Dict[str, Dict[str, Any]]:
 
 def save_routine(name: str, definition: Dict[str, Any]) -> None:
     """Save or update a routine in the local database."""
-    db = SessionLocal()
-    try:
-        repo = CommandDataRepository(db)
-        repo.save(_COMMAND_NAME, name, definition)
-    finally:
-        db.close()
+    _storage.save(name, definition)
 
 
 def delete_routine(name: str) -> bool:
     """Delete a routine from the local database."""
-    db = SessionLocal()
-    try:
-        repo = CommandDataRepository(db)
-        return repo.delete(_COMMAND_NAME, name)
-    finally:
-        db.close()
+    return _storage.delete(name)
 
 
 # ---------------------------------------------------------------------------

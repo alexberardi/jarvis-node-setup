@@ -4,26 +4,19 @@ from typing import Any, Dict, List, Optional
 
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisParameter,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
 )
-from core.command_response import CommandResponse
-from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
 
-try:
-    from jarvis_log_client import JarvisLogger
-except ImportError:
-    import logging
-    class JarvisLogger:  # type: ignore[no-redef]
-        def __init__(self, **kw): self._log = logging.getLogger(kw.get("service", __name__))
-        def info(self, msg, **kw): self._log.info(msg)
-        def warning(self, msg, **kw): self._log.warning(msg)
-        def error(self, msg, **kw): self._log.error(msg)
-        def debug(self, msg, **kw): self._log.debug(msg)
+from commands._sdk_logging import LazyLogger
 
-logger = JarvisLogger(service="cmd.tell_joke")
+
+logger = LazyLogger("cmd.tell_joke")
 
 
 # --- Pre-route patterns ---

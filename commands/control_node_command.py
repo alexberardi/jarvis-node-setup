@@ -15,20 +15,31 @@ from typing import List
 
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
+    RequestInformation,
 )
 
-from core.command_response import CommandResponse
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
-from utils.audio_volume import (
-    adjust_volume_percent,
-    set_muted,
-    set_volume_percent,
-)
+
+
+# utils.audio_volume is node-only, so it is imported at call time.
+def adjust_volume_percent(delta: int) -> int | None:
+    from utils.audio_volume import adjust_volume_percent as _adjust
+    return _adjust(delta)
+
+
+def set_muted(muted: bool) -> bool:
+    from utils.audio_volume import set_muted as _set_muted
+    return _set_muted(muted)
+
+
+def set_volume_percent(pct: int) -> bool:
+    from utils.audio_volume import set_volume_percent as _set
+    return _set(pct)
 
 
 # --- Pre-route patterns ---

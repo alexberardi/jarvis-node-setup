@@ -7,17 +7,23 @@ Sets timers that run in the background and announce via TTS when complete.
 import re
 from typing import List
 
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
+    RequestInformation,
 )
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
-from services.timer_service import get_timer_service
+
+
+def get_timer_service():
+    """The node's timer service, imported lazily (node-only)."""
+    from services.timer_service import get_timer_service as _get_timer_service
+    return _get_timer_service()
+
 
 # --- Pre-route constants ---
 

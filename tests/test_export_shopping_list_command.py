@@ -723,7 +723,7 @@ class TestRunMessages:
             "I sent your shopping list to your phone — 1 item."
         )
 
-    @pytest.mark.parametrize("reason", ["http_error", "no_cc_url", "import_error"])
+    @pytest.mark.parametrize("reason", ["http_error", "no_cc_url", "import_error", "no_backend"])
     def test_post_failure_maps_to_spoken_error(
         self,
         command: ExportShoppingListCommand,
@@ -1378,3 +1378,48 @@ class TestMessageContract:
     ) -> None:
         response = command.export_selected({"selected": []}, request_info)
         assert response.context_data.get("message")
+
+
+class TestPostInboxItemViaSdk:
+    """_post_inbox_item goes through the SDK's JarvisInbox (go-pi-node §5.2)."""
+
+    @pytest.fixture
+    def inbox_backend(self):
+        from jarvis_command_sdk import inbox as sdk_inbox
+
+        previous = sdk_inbox.get_inbox_backend()
+        backend = MagicMock(spec=sdk_inbox.InboxBackend)
+        backend.post_inbox_item.return_value = "ok"
+        sdk_inbox.set_inbox_backend(backend)
+        yield backend
+        sdk_inbox.set_inbox_backend(previous)
+
+    def test_payload_passes_through_verbatim(self, inbox_backend) -> None:
+        payload = {
+            "title": "Ready — 2 items",
+            "summary": "Tap to review",
+            "body": "- milk\n- eggs",
+            "category": "interactive_list",
+            "metadata": {"sections": [{"id": "a"}]},
+            "user_id": 7,
+            "create_push_notification": True,
+            "target_type": "user",
+        }
+        assert ExportShoppingListCommand._post_inbox_item(dict(payload)) == "ok"
+        args, kwargs = inbox_backend.post_inbox_item.call_args
+        assert args == ("export_shopping_list",)
+        assert kwargs == payload
+
+    def test_backend_failure_tag_is_returned(self, inbox_backend) -> None:
+        inbox_backend.post_inbox_item.return_value = "no_cc_url"
+        assert ExportShoppingListCommand._post_inbox_item({"title": "t"}) == "no_cc_url"
+
+    def test_no_backend(self) -> None:
+        from jarvis_command_sdk import inbox as sdk_inbox
+
+        previous = sdk_inbox.get_inbox_backend()
+        sdk_inbox.set_inbox_backend(None)
+        try:
+            assert ExportShoppingListCommand._post_inbox_item({"title": "t"}) == "no_backend"
+        finally:
+            sdk_inbox.set_inbox_backend(previous)
