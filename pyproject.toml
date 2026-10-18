@@ -9,7 +9,8 @@ description = "Client software for Jarvis voice nodes"
 requires-python = ">=3.10"
 dependencies = [
     # >=0.13.0 for get_logger/set_logger_backend (commands log through the
-    # SDK; the node registers services.logger_backend). >=0.10.0 for image
+    # SDK; the node registers services.logger_backend) and for inbox
+    # Attachment (NodeInboxBackend uploads attachments). >=0.10.0 for image
     # parameters: execute() coerces tool_call image arguments to
     # list[JarvisImage] and to_openai_tool_schema() emits the
     # "x-jarvis-type": "image" marker. (>=0.4.1 was the command-data
