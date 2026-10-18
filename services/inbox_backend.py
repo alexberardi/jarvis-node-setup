@@ -224,25 +224,26 @@ class NodeInboxBackend(InboxBackend):
                     resp = rest_client._get_session().post(
                         url, data=att.data, headers=headers, timeout=_UPLOAD_TIMEOUT
                     )
-            except OSError as e:
-                # requests.ConnectionError is an OSError too; a file that
-                # vanished between stat and open is not worth retrying.
-                if not isinstance(e, requests.ConnectionError):
-                    logger.error(
-                        "inbox attachment unreadable",
-                        command=command_name, filename=att.filename, error=str(e),
-                    )
-                    return "invalid"
+            except requests.ConnectionError as e:
                 logger.warning(
                     "inbox attachment upload failed",
                     command=command_name, attempt=attempt, error=str(e),
                 )
             except requests.RequestException as e:
+                # Caught before OSError: every requests error is an OSError,
+                # and a timeout must not be blamed on the file.
                 logger.error(
                     "inbox attachment upload failed",
                     command=command_name, attempt=attempt, error=str(e),
                 )
                 return "http_error"
+            except OSError as e:
+                # The file vanished between stat and open: not worth retrying.
+                logger.error(
+                    "inbox attachment unreadable",
+                    command=command_name, filename=att.filename, error=str(e),
+                )
+                return "invalid"
             else:
                 status = resp.status_code
                 if 200 <= status < 300:

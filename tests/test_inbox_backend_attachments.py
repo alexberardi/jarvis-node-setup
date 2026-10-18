@@ -191,6 +191,19 @@ class TestRetries:
         assert result == "http_error"
         assert get_session.return_value.post.call_count == 3
 
+    def test_read_timeout_is_http_error_not_unreadable(
+        self, jarvisd, png_path, _quiet_logger
+    ):
+        # requests errors are OSErrors too; a timeout must not blame the file.
+        with patch("clients.rest_client.RestClient._get_session") as get_session:
+            get_session.return_value.post.side_effect = requests.ReadTimeout("slow")
+            result = _post([Attachment(path=png_path, mime="image/png")])
+        assert result == "http_error"
+        assert get_session.return_value.post.call_count == 1
+        messages = [c.args[0] for c in _quiet_logger.error.call_args_list]
+        assert "inbox attachment upload failed" in messages
+        assert "inbox attachment unreadable" not in messages
+
 
 class TestRejections:
     @pytest.mark.parametrize(
