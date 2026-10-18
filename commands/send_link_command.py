@@ -11,15 +11,19 @@ whole household, neither of which is what the user asked for.
 
 from typing import Any, List
 
-from jarvis_command_sdk import CommandExample, IJarvisCommand
-from jarvis_log_client import JarvisLogger
+from jarvis_command_sdk import (
+    CommandExample,
+    CommandResponse,
+    IJarvisCommand,
+    IJarvisParameter,
+    IJarvisSecret,
+    JarvisParameter,
+    RequestInformation,
+)
+from commands._sdk_logging import LazyLogger
 
-from core.command_response import CommandResponse
-from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
 
-logger = JarvisLogger(service="jarvis-node")
+logger = LazyLogger("jarvis-node")
 
 
 class SendLinkCommand(IJarvisCommand):

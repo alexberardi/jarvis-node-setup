@@ -5,35 +5,57 @@ Reminders persist across restarts and support recurrence (daily, weekly,
 weekdays, monthly).
 """
 
+from __future__ import annotations
+
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from jarvis_log_client import JarvisLogger
+from commands._sdk_logging import LazyLogger
 
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     BlastTier,
+    callback,
     CommandAntipattern,
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     FieldSpec,
     IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
     ProposableAction,
     RecordSummary,
-    callback,
-)
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
-from services.reminder_service import (
-    get_reminder_service,
-    has_explicit_time,
-    ReminderService,
+    RequestInformation,
 )
 
-logger = JarvisLogger(service="jarvis-node")
+
+# services.reminder_service is node-only, so it is imported at call time.
+# ReminderService stays reachable as a module attribute (PEP 562 __getattr__)
+# for callers and tests that use commands.reminder_command.ReminderService.
+def _reminder_service_cls():
+    from services.reminder_service import ReminderService
+    return ReminderService
+
+
+def get_reminder_service():
+    from services.reminder_service import get_reminder_service as _get
+    return _get()
+
+
+def has_explicit_time(*args: Any, **kwargs: Any) -> bool:
+    from services.reminder_service import has_explicit_time as _has_explicit_time
+    return _has_explicit_time(*args, **kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ReminderService":
+        return _reminder_service_cls()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+logger = LazyLogger("jarvis-node")
 
 _ALL_ACTIONS = ["set", "list", "delete", "snooze"]
 
@@ -229,7 +251,7 @@ class ReminderCommand(IJarvisCommand):
                               "message": "I need what to remind you about and when."},
             )
         reminder = service.create_reminder(text, due_at, None, user_id=user_id)
-        due_human = ReminderService.format_due_at_human(reminder.due_at)
+        due_human = _reminder_service_cls().format_due_at_human(reminder.due_at)
         message = f"Reminder set: {text} — {due_human}"
         return CommandResponse.success_response(
             context_data={"reminder_id": reminder.reminder_id, "text": text,
@@ -239,7 +261,7 @@ class ReminderCommand(IJarvisCommand):
 
     @property
     def required_secrets(self) -> List[IJarvisSecret]:
-        from core.ijarvis_secret import JarvisSecret
+        from jarvis_command_sdk import JarvisSecret
         return [
             JarvisSecret(
                 "REMINDER_PUSH_NOTIFICATIONS",
@@ -313,7 +335,7 @@ class ReminderCommand(IJarvisCommand):
     def display_summary(self, record: dict) -> RecordSummary:
         text = record.get("text") or "Reminder"
         due_at = record.get("due_at")
-        subtitle = ReminderService.format_due_at_human(due_at) if due_at else None
+        subtitle = _reminder_service_cls().format_due_at_human(due_at) if due_at else None
         recurrence = record.get("recurrence")
         if recurrence and subtitle:
             subtitle = f"{subtitle} • {recurrence}"
@@ -571,7 +593,7 @@ class ReminderCommand(IJarvisCommand):
                 wait_for_input=True,
             )
 
-        due_at = ReminderService.resolve_due_at(date_keys, time_str, relative_minutes)
+        due_at = _reminder_service_cls().resolve_due_at(date_keys, time_str, relative_minutes)
         if due_at is None:
             return CommandResponse.error_response(
                 error_details="When should I remind you? Please specify a date, time, or duration.",
@@ -584,7 +606,7 @@ class ReminderCommand(IJarvisCommand):
             )
 
         reminder = service.create_reminder(text, due_at, recurrence, user_id=user_id)
-        due_human = ReminderService.format_due_at_human(reminder.due_at)
+        due_human = _reminder_service_cls().format_due_at_human(reminder.due_at)
 
         recurrence_str = f" ({recurrence})" if recurrence else ""
         message = f"Reminder set: {text} — {due_human}{recurrence_str}"
@@ -637,7 +659,7 @@ class ReminderCommand(IJarvisCommand):
                 "reminder_id": r.reminder_id,
                 "text": r.text,
                 "due_at": r.due_at,
-                "due_at_human": ReminderService.format_due_at_human(r.due_at),
+                "due_at_human": _reminder_service_cls().format_due_at_human(r.due_at),
                 "recurrence": r.recurrence,
             }
             for r in reminders
@@ -724,7 +746,7 @@ class ReminderCommand(IJarvisCommand):
                 error_details="Failed to snooze the reminder.",
             )
 
-        snooze_human = ReminderService.format_due_at_human(snoozed.snooze_until) if snoozed.snooze_until else f"in {minutes} minutes"
+        snooze_human = _reminder_service_cls().format_due_at_human(snoozed.snooze_until) if snoozed.snooze_until else f"in {minutes} minutes"
 
         return CommandResponse.success_response(
             context_data={

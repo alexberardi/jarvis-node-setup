@@ -9,11 +9,14 @@ duplicate control_device commands.
 import asyncio
 from typing import Any, Dict, List
 
-from core.command_response import CommandResponse
-from jarvis_command_sdk import CommandExample, IJarvisCommand
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
+from jarvis_command_sdk import (
+    CommandExample,
+    CommandResponse,
+    IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
+    RequestInformation,
+)
 
 try:
     from jarvis_command_sdk import resolve_color

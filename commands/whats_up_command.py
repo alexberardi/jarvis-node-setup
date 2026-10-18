@@ -26,24 +26,40 @@ import json
 import re
 from typing import Any, Dict, List
 
-from jarvis_log_client import JarvisLogger
+from commands._sdk_logging import LazyLogger
 
-from clients.jarvis_command_center_client import JarvisCommandCenterClient
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisParameter,
+    IJarvisSecret,
+    JarvisParameter,
     PreRouteResult,
+    RequestInformation,
     ValidationResult,
 )
-from core.ijarvis_parameter import IJarvisParameter, JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
-from services.alert_queue_service import get_alert_queue_service
-from utils.service_discovery import get_command_center_url
 
-logger = JarvisLogger(service="jarvis-node")
+
+# The CC client, alert queue and service discovery are node-only, so they are
+# imported at call time (same module attribute names, for callers and tests).
+def JarvisCommandCenterClient(*args: Any, **kwargs: Any) -> Any:
+    from clients.jarvis_command_center_client import JarvisCommandCenterClient as _Client
+    return _Client(*args, **kwargs)
+
+
+def get_command_center_url() -> str | None:
+    from utils.service_discovery import get_command_center_url as _get_url
+    return _get_url()
+
+
+def get_alert_queue_service() -> Any:
+    from services.alert_queue_service import get_alert_queue_service as _get_queue
+    return _get_queue()
+
+
+logger = LazyLogger("jarvis-node")
 
 _TRIGGER_PHRASES = [
     "what's up",

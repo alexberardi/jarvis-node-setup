@@ -31,29 +31,30 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from jarvis_log_client import JarvisLogger
+from commands._sdk_logging import LazyLogger
 
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
+    callback,
     CommandAntipattern,
     CommandExample,
+    CommandResponse,
     DataBrowserMode,
     FastPathPattern,
     IJarvisCommand,
+    IJarvisSecret,
     InteractiveAction,
     InteractiveList,
     InteractiveRow,
     InteractiveSection,
+    JarvisInbox,
+    JarvisParameter,
     JarvisStorage,
     PreRouteResult,
-    callback,
+    RequestInformation,
 )
 from commands.todo_list_command import _item_key, _spoken_join
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
 
-logger = JarvisLogger(service="jarvis-node")
+logger = LazyLogger("jarvis-node")
 
 STORAGE_NAME = "todo_list"
 
@@ -342,31 +343,12 @@ class ExportTodoListCommand(IJarvisCommand):
 
     @staticmethod
     def _post_inbox_item(payload: Dict[str, Any]) -> str:
-        """Return ``"ok"`` on success, or a short failure reason string.
+        """Post through the SDK inbox; ``"ok"`` or a short failure reason string.
 
         Discriminated tags (not bool) so run() can map each failure mode to a
         distinct voice response.
         """
-        try:
-            from clients.rest_client import RestClient
-            from utils.service_discovery import get_command_center_url
-        except ImportError as e:
-            logger.error("export_todo_list import failed", error=str(e))
-            return "import_error"
-
-        cc_url = get_command_center_url()
-        if not cc_url:
-            logger.error("export_todo_list: get_command_center_url returned empty")
-            return "no_cc_url"
-
-        result = RestClient.post(
-            f"{cc_url}/api/v0/node/inbox-item",
-            data=payload,
-            timeout=5,
-        )
-        if result is None:
-            return "http_error"
-        return "ok"
+        return JarvisInbox("export_todo_list").post(**payload)
 
     def _post_failure_response(self, post_result: str, user_id: int) -> CommandResponse:
         if post_result == "no_cc_url":
@@ -375,12 +357,15 @@ class ExportTodoListCommand(IJarvisCommand):
         elif post_result == "import_error":
             message = "I can't export the list — the send module isn't loaded."
             details = (
-                "ImportError in _post_inbox_item — clients.rest_client or "
+                "ImportError in the inbox backend — clients.rest_client or "
                 "utils.service_discovery missing"
             )
+        elif post_result == "no_backend":
+            message = "I can't export the list — the send module isn't loaded."
+            details = "no SDK inbox backend registered"
         else:
             message = "I couldn't reach the server right now."
-            details = "RestClient.post returned None (HTTP error, timeout, or unreachable)"
+            details = f"inbox post failed ({post_result}: HTTP error, timeout, or unreachable)"
 
         logger.error("export_todo_list failed", reason=post_result, user_id=user_id)
         return CommandResponse.error_response(

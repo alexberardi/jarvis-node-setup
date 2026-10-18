@@ -14,24 +14,24 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from jarvis_log_client import JarvisLogger
+from commands._sdk_logging import LazyLogger
 
-from core.command_response import CommandResponse
 from jarvis_command_sdk import (
     CommandAntipattern,
     CommandExample,
+    CommandResponse,
     FastPathPattern,
     FieldSpec,
     IJarvisCommand,
+    IJarvisSecret,
+    JarvisParameter,
     JarvisStorage,
     PreRouteResult,
     RecordSummary,
+    RequestInformation,
 )
-from core.ijarvis_parameter import JarvisParameter
-from core.ijarvis_secret import IJarvisSecret
-from core.request_information import RequestInformation
 
-logger = JarvisLogger(service="jarvis-node")
+logger = LazyLogger("jarvis-node")
 
 STORAGE_NAME = "shopping_list"
 

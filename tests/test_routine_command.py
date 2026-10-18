@@ -1,10 +1,13 @@
 """Tests for RoutineCommand — voice routines (good morning, good night, etc.)."""
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from core.command_response import CommandResponse
 from jarvis_command_sdk import PreRouteResult
+from jarvis_command_sdk import storage as sdk_storage
+from jarvis_command_sdk.storage import StorageBackend
 from core.request_information import RequestInformation
 
 
@@ -638,6 +641,52 @@ class TestBriefingPreRoute:
 # Default seeding tests
 # ===================================================================
 
+class _MemoryStorage(StorageBackend):
+    """In-memory SDK storage backend shaped like the node's (rows carry _data_key)."""
+
+    def __init__(self, rows: dict[str, dict]):
+        self.rows = {k: dict(v) for k, v in rows.items()}
+        self.saves: list[tuple[str, str]] = []
+
+    def save(self, command_name, data_key, data, expires_at=None):
+        self.saves.append((command_name, data_key))
+        self.rows[data_key] = {**data, "_data_key": data_key}
+
+    def get(self, command_name, data_key):
+        row = self.rows.get(data_key)
+        return dict(row) if row is not None else None
+
+    def get_all(self, command_name):
+        return [dict(r) for r in self.rows.values()]
+
+    def delete(self, command_name, data_key):
+        return self.rows.pop(data_key, None) is not None
+
+    def delete_all(self, command_name):
+        n = len(self.rows)
+        self.rows.clear()
+        return n
+
+    def get_secret(self, key, scope, user_id=None):
+        return None
+
+    def set_secret(self, key, value, scope, value_type="string", user_id=None):
+        pass
+
+    def delete_secret(self, key, scope, user_id=None):
+        pass
+
+
+@contextmanager
+def _storage_backend(backend):
+    previous = sdk_storage._backend
+    sdk_storage.set_backend(backend)
+    try:
+        yield
+    finally:
+        sdk_storage.set_backend(previous)
+
+
 class TestDefaultSeeding:
     """Verify new defaults are merged into existing DB without overwriting."""
 
@@ -650,14 +699,9 @@ class TestDefaultSeeding:
             "response_instruction": "Custom instruction.",
         }
 
-        mock_db = MagicMock()
-        mock_repo = MagicMock()
-        mock_repo.get_all.return_value = [dict(existing_row)]
+        storage = _MemoryStorage({"good_morning": dict(existing_row)})
 
-        with (
-            patch("commands.routine_command.SessionLocal", return_value=mock_db),
-            patch("commands.routine_command.CommandDataRepository", return_value=mock_repo),
-        ):
+        with _storage_backend(storage):
             from commands.routine_command import _load_routines
             routines = _load_routines()
 
@@ -667,7 +711,7 @@ class TestDefaultSeeding:
         # good_morning should use the custom instruction, not overwrite
         assert routines["good_morning"]["response_instruction"] == "Custom instruction."
         # morning_briefing should have been saved to repo
-        save_calls = {call[0][1] for call in mock_repo.save.call_args_list}
+        save_calls = {key for _command, key in storage.saves}
         assert "morning_briefing" in save_calls
         # good_morning should NOT have been re-saved
         assert "good_morning" not in save_calls
@@ -681,19 +725,22 @@ class TestDefaultSeeding:
             row["_data_key"] = name
             rows.append(row)
 
-        mock_db = MagicMock()
-        mock_repo = MagicMock()
-        mock_repo.get_all.return_value = rows
+        storage = _MemoryStorage({row["_data_key"]: row for row in rows})
 
-        with (
-            patch("commands.routine_command.SessionLocal", return_value=mock_db),
-            patch("commands.routine_command.CommandDataRepository", return_value=mock_repo),
-        ):
+        with _storage_backend(storage):
             from commands.routine_command import _load_routines
             routines = _load_routines()
 
         assert len(routines) == len(defaults)
-        mock_repo.save.assert_not_called()
+        assert storage.saves == []
+
+    def test_no_storage_backend_uses_defaults(self, routine_cmd):
+        """Without a storage backend (SDK alone), routines are the file-based ones."""
+        with _storage_backend(None):
+            from commands.routine_command import _load_routines
+            routines = _load_routines()
+
+        assert routines.keys() == routine_cmd._default_routines().keys()
 
 
 # ===================================================================
