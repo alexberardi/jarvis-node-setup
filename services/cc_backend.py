@@ -3,9 +3,10 @@
 Both reach command-center as the node: the URL comes from service discovery
 (``get_command_center_url``, as the commands resolved it before) and
 RestClient adds the node's auth header. ``chat_text`` goes through
-JarvisCommandCenterClient (CC's node-authenticated LLM passthrough). Discovery
-and the client are looked up on every call, so tests that patch them still
-apply.
+JarvisCommandCenterClient (CC's node-authenticated LLM passthrough). The
+clients and discovery are imported and looked up on every call: registering
+then needs no HTTP client (``requests``) importable, and tests that patch them
+still apply.
 
 Registered once at startup via:
     from services.cc_backend import init_cc_backend, init_llm_backend
@@ -22,13 +23,12 @@ from jarvis_command_sdk.llm import LLMBackend, set_llm_backend
 
 from jarvis_log_client import JarvisLogger
 
-from clients import jarvis_command_center_client, rest_client
-from utils import service_discovery
-
 logger = JarvisLogger(service="jarvis-node")
 
 
 def _cc_url() -> str | None:
+    from utils import service_discovery
+
     url = service_discovery.get_command_center_url()
     if not url:
         logger.error("command-center URL not found by service discovery")
@@ -43,6 +43,7 @@ class NodeCCHttpBackend(CCHttpBackend):
         cc_url = _cc_url()
         if cc_url is None:
             return None
+        from clients import rest_client
         return rest_client.RestClient.post(f"{cc_url}/{path.lstrip('/')}", data=json)
 
 
@@ -53,6 +54,7 @@ class NodeLLMBackend(LLMBackend):
         cc_url = _cc_url()
         if cc_url is None:
             return None
+        from clients import jarvis_command_center_client
         client = jarvis_command_center_client.JarvisCommandCenterClient(cc_url)
         return client.chat_text(prompt)
 

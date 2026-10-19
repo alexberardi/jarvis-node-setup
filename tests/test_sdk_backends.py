@@ -7,6 +7,8 @@ registers all five with the SDK.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -70,6 +72,18 @@ class TestInit:
             assert init_command_backends() == ["timer"]
         assert get_timer_backend() is None
         assert isinstance(get_llm_backend(), NodeLLMBackend)
+
+    def test_registers_without_the_http_client_importable(self):
+        # CI installs no `requests`: registering must not import the node clients.
+        code = (
+            "import sys; sys.modules['requests'] = None\n"
+            "from services.command_backends import init_command_backends\n"
+            "print(init_command_backends())\n"
+        )
+        out = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
+                             capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip().splitlines()[-1] == "[]"
 
     @pytest.mark.parametrize("script", ["scripts/main.py", "scripts/text_mode.py"])
     def test_startup_scripts_register_them(self, script):
