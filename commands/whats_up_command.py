@@ -39,24 +39,12 @@ from jarvis_command_sdk import (
     PreRouteResult,
     RequestInformation,
     ValidationResult,
+    alerts_count,
+    alerts_flush,
+    alerts_pending,
+    alerts_remove,
+    llm_chat_text,
 )
-
-
-# The CC client, alert queue and service discovery are node-only, so they are
-# imported at call time (same module attribute names, for callers and tests).
-def JarvisCommandCenterClient(*args: Any, **kwargs: Any) -> Any:
-    from clients.jarvis_command_center_client import JarvisCommandCenterClient as _Client
-    return _Client(*args, **kwargs)
-
-
-def get_command_center_url() -> str | None:
-    from utils.service_discovery import get_command_center_url as _get_url
-    return _get_url()
-
-
-def get_alert_queue_service() -> Any:
-    from services.alert_queue_service import get_alert_queue_service as _get_queue
-    return _get_queue()
 
 
 logger = LazyLogger("jarvis-node")
@@ -191,8 +179,7 @@ class WhatsUpCommand(IJarvisCommand):
         # "notifications" but isn't a "what's up" — treat it as dismiss.
         if self._DISMISS_FAST_PATH_ID not in disabled_pattern_ids:
             if _DISMISS_RE.search(text) and not _DISMISS_NEGATION_RE.search(text):
-                queue = get_alert_queue_service()
-                dropped = queue.flush()
+                dropped = alerts_flush()
                 logger.info(
                     "Pre-routed check_alerts.dismiss",
                     alert_count=len(dropped),
@@ -217,12 +204,11 @@ class WhatsUpCommand(IJarvisCommand):
         if not matched:
             return None
 
-        queue = get_alert_queue_service()
-        if queue.count() == 0:
+        if alerts_count() == 0:
             # No alerts — fall through to LLM for casual "what's up" reply
             return None
 
-        alerts = queue.flush()
+        alerts = alerts_flush()
         alerts_data = [a.to_dict() for a in alerts]
         logger.info("Pre-routed check_alerts", alert_count=len(alerts_data))
 
@@ -253,7 +239,7 @@ class WhatsUpCommand(IJarvisCommand):
         # covers an LLM-hallucinated {"dismissed": true} — "Cleared." must
         # never be a lie that leaves the queue populated.
         if self._truthy(kwargs.get("dismissed")) or self._truthy(kwargs.get("dismiss")):
-            dropped = get_alert_queue_service().flush()
+            dropped = alerts_flush()
             if dropped:
                 logger.info("check_alerts dismiss", alert_count=len(dropped))
             return CommandResponse.success_response(
@@ -281,8 +267,7 @@ class WhatsUpCommand(IJarvisCommand):
         # Answering "No pending alerts." unconditionally here left queued
         # alerts (and a purple LED) behind — the exact "purple with no
         # alerts" interaction observed in the field.
-        queue = get_alert_queue_service()
-        pending = queue.get_pending()
+        pending = alerts_pending()
         if not pending:
             return CommandResponse.success_response(
                 context_data={"message": "No pending alerts."},
@@ -293,7 +278,7 @@ class WhatsUpCommand(IJarvisCommand):
         # Consume only what we read, and only after composition produced a
         # message (it has a non-LLM fallback) — a crash above must not
         # silently destroy the queue.
-        queue.remove_ids([a.id for a in pending])
+        alerts_remove([a.id for a in pending])
 
         return CommandResponse.success_response(
             context_data={"message": composed},
@@ -312,9 +297,7 @@ class WhatsUpCommand(IJarvisCommand):
         )
 
         try:
-            cc_url = get_command_center_url()
-            client = JarvisCommandCenterClient(cc_url)
-            composed = client.chat_text(prompt)
+            composed = llm_chat_text(prompt)
             if composed:
                 composed = re.sub(r"<think>.*?</think>\s*", "", composed, flags=re.DOTALL)
                 return composed.strip()

@@ -14,6 +14,10 @@ from core.request_information import RequestInformation
 from services.timer_service import TimerService
 
 
+# Commands reach node services through the SDK backends, as on the node.
+pytestmark = pytest.mark.usefixtures("node_command_backends")
+
+
 @pytest.fixture
 def timer_command():
     """Create a TimerCommand instance"""
@@ -108,6 +112,16 @@ class TestTimerCommandRun:
         assert response.context_data["duration_seconds"] == 300
         assert response.context_data["timer_id"] is not None
         assert "5 minutes" in response.context_data["duration_text"]
+
+    def test_run_timer_not_set_is_error(self, timer_command, mock_request_info):
+        """No timer backend (or the node failed to set it): an error, not a fake confirmation"""
+        from jarvis_command_sdk.timer import set_timer_backend
+
+        set_timer_backend(None)
+        response = timer_command.run(mock_request_info, duration_seconds=300)
+
+        assert response.success is False
+        assert response.context_data["error"] == "timer_unavailable"
 
     def test_run_with_label(self, timer_command, mock_request_info, fresh_timer_service):
         """Test timer creation with label"""

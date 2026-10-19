@@ -16,13 +16,12 @@ from jarvis_command_sdk import (
     JarvisParameter,
     PreRouteResult,
     RequestInformation,
+    timer_cancel,
+    timer_clear_all,
+    timer_find_by_label,
+    timer_get,
+    timer_list_active,
 )
-
-
-def get_timer_service():
-    """The node's timer service, imported lazily (node-only)."""
-    from services.timer_service import get_timer_service as _get_timer_service
-    return _get_timer_service()
 
 
 # --- Pre-route patterns ---
@@ -195,10 +194,9 @@ class CancelTimerCommand(IJarvisCommand):
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the cancel timer command"""
-        timer_service = get_timer_service()
         label = kwargs.get("label")
 
-        active_timers = timer_service.get_active_timers()
+        active_timers = timer_list_active()
 
         # No active timers
         if not active_timers:
@@ -213,7 +211,7 @@ class CancelTimerCommand(IJarvisCommand):
 
         # Cancel all timers
         if label and label.lower() == "all":
-            count = timer_service.clear_all()
+            count = timer_clear_all()
             return CommandResponse.success_response(
                 context_data={
                     "cancelled": True,
@@ -225,10 +223,10 @@ class CancelTimerCommand(IJarvisCommand):
 
         # Cancel by label
         if label:
-            timer_id = timer_service.find_timer_by_label(label)
+            timer_id = timer_find_by_label(label)
             if timer_id:
-                timer_info = timer_service.get_timer(timer_id)
-                timer_service.cancel_timer(timer_id)
+                timer_info = timer_get(timer_id)
+                timer_cancel(timer_id)
                 return CommandResponse.success_response(
                     context_data={
                         "cancelled": True,
@@ -258,7 +256,7 @@ class CancelTimerCommand(IJarvisCommand):
         if len(active_timers) == 1:
             # Only one timer - cancel it
             timer = active_timers[0]
-            timer_service.cancel_timer(timer["timer_id"])
+            timer_cancel(timer["timer_id"])
             timer_label = timer.get("label")
             if timer_label:
                 message = f"Cancelled the {timer_label} timer"

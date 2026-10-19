@@ -183,6 +183,13 @@ async def startup() -> None:
     except Exception as e:
         logger.warning("Signals backend init failed (non-fatal)", error=str(e))
 
+    # Command backends (SDK timer/audio/alerts/CC/LLM helpers)
+    try:
+        from services.command_backends import init_command_backends
+        init_command_backends()
+    except Exception as e:
+        logger.warning("Command backends init failed (non-fatal)", error=str(e))
+
     # Register built-in commands (seeds command_registry table)
     try:
         from utils.command_discovery_service import CommandDiscoveryService
