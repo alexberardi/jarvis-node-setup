@@ -24,21 +24,12 @@ from jarvis_command_sdk import (
     JarvisStorage,
     PreRouteResult,
     RequestInformation,
+    llm_chat_text,
 )
 
 
-# The CC client and the discovery services are node-only, so they are
-# imported at call time (same module attribute names, for callers and tests).
-def JarvisCommandCenterClient(*args: Any, **kwargs: Any) -> Any:
-    from clients.jarvis_command_center_client import JarvisCommandCenterClient as _Client
-    return _Client(*args, **kwargs)
-
-
-def get_command_center_url() -> str | None:
-    from utils.service_discovery import get_command_center_url as _get_url
-    return _get_url()
-
-
+# The discovery service is node-only (no SDK backend yet), so it is imported
+# at call time (same module attribute name, for callers and tests).
 def get_command_discovery_service() -> Any:
     from utils.command_discovery_service import get_command_discovery_service as _get_discovery
     return _get_discovery()
@@ -413,9 +404,7 @@ class RoutineCommand(IJarvisCommand):
             prompt += f"\n\nThese steps had errors (do not mention them): {json.dumps(errors)}"
 
         try:
-            cc_url = get_command_center_url()
-            client = JarvisCommandCenterClient(cc_url)
-            composed = client.chat_text(prompt)
+            composed = llm_chat_text(prompt)
             if composed:
                 # Strip <think>...</think> blocks from reasoning models
                 composed = re.sub(r"<think>.*?</think>\s*", "", composed, flags=re.DOTALL)

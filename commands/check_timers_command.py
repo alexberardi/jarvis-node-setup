@@ -16,13 +16,10 @@ from jarvis_command_sdk import (
     JarvisParameter,
     PreRouteResult,
     RequestInformation,
+    timer_find_by_label,
+    timer_get,
+    timer_list_active,
 )
-
-
-def get_timer_service():
-    """The node's timer service, imported lazily (node-only)."""
-    from services.timer_service import get_timer_service as _get_timer_service
-    return _get_timer_service()
 
 
 # --- Pre-route patterns ---
@@ -183,10 +180,9 @@ class CheckTimersCommand(IJarvisCommand):
 
     def run(self, request_info: RequestInformation, **kwargs) -> CommandResponse:
         """Execute the check timers command"""
-        timer_service = get_timer_service()
         label = kwargs.get("label")
 
-        active_timers = timer_service.get_active_timers()
+        active_timers = timer_list_active()
 
         # No active timers
         if not active_timers:
@@ -202,9 +198,9 @@ class CheckTimersCommand(IJarvisCommand):
 
         # Check specific timer by label
         if label:
-            timer_id = timer_service.find_timer_by_label(label)
+            timer_id = timer_find_by_label(label)
             if timer_id:
-                timer_info = timer_service.get_timer(timer_id)
+                timer_info = timer_get(timer_id)
                 if timer_info:
                     remaining = timer_info.get("remaining_seconds", 0)
                     remaining_text = self._format_remaining(remaining)

@@ -14,6 +14,7 @@ refuses every top-level module except the standard library,
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -63,4 +64,32 @@ def test_command_imports_with_sdk_only(module: str) -> None:
     assert result.returncode == 0 and result.stdout.strip() == "OK", (
         f"{module} needs more than jarvis-command-sdk to import:\n"
         f"{result.stderr.strip().splitlines()[-1] if result.stderr.strip() else result.stdout}"
+    )
+
+
+# Commands whose node services now have an SDK backend (timer, audio control,
+# alert queue, CC LLM): they must reach them through the SDK helpers, not
+# through a call-time import of the node module. Each entry lists the node
+# modules the command may still import lazily (no SDK backend for them yet).
+_BACKEND_COMMANDS = {
+    "timer_command": set(),
+    "cancel_timer_command": set(),
+    "check_timers_command": set(),
+    "control_node_command": set(),
+    "whats_up_command": set(),
+    "routine_command": {"utils.command_discovery_service", "services.secret_service"},
+}
+_NODE_IMPORT_RE = re.compile(
+    r"^\s*(?:from|import)\s+((?:core|services|utils|db|clients|repositories)(?:\.\w+)*)",
+    re.MULTILINE,
+)
+
+
+@pytest.mark.parametrize("name", sorted(_BACKEND_COMMANDS))
+def test_command_uses_sdk_backends_not_node_modules(name: str) -> None:
+    source = (REPO_ROOT / "commands" / f"{name}.py").read_text()
+    imported = set(_NODE_IMPORT_RE.findall(source))
+    assert imported <= _BACKEND_COMMANDS[name], (
+        f"commands/{name}.py imports node modules {sorted(imported - _BACKEND_COMMANDS[name])}; "
+        "use the jarvis_command_sdk helpers (timer_*, audio_*, alerts_*, llm_chat_text)"
     )

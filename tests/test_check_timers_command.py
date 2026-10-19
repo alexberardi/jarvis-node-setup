@@ -14,6 +14,10 @@ from core.request_information import RequestInformation
 from services.timer_service import TimerService
 
 
+# Commands reach node services through the SDK backends, as on the node.
+pytestmark = pytest.mark.usefixtures("node_command_backends")
+
+
 @pytest.fixture
 def check_command():
     """Create a CheckTimersCommand instance"""

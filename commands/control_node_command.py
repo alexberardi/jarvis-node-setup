@@ -22,24 +22,10 @@ from jarvis_command_sdk import (
     JarvisParameter,
     PreRouteResult,
     RequestInformation,
+    audio_adjust_volume_percent,
+    audio_set_muted,
+    audio_set_volume_percent,
 )
-
-
-
-# utils.audio_volume is node-only, so it is imported at call time.
-def adjust_volume_percent(delta: int) -> int | None:
-    from utils.audio_volume import adjust_volume_percent as _adjust
-    return _adjust(delta)
-
-
-def set_muted(muted: bool) -> bool:
-    from utils.audio_volume import set_muted as _set_muted
-    return _set_muted(muted)
-
-
-def set_volume_percent(pct: int) -> bool:
-    from utils.audio_volume import set_volume_percent as _set
-    return _set(pct)
 
 
 # --- Pre-route patterns ---
@@ -301,7 +287,7 @@ class ControlNodeCommand(IJarvisCommand):
 
         if action in ("volume_up", "volume_down"):
             delta = _STEP_DEFAULT if action == "volume_up" else -_STEP_DEFAULT
-            new = adjust_volume_percent(delta)
+            new = audio_adjust_volume_percent(delta)
             if new is None:
                 return CommandResponse.error_response(
                     error_details="Could not read current volume.",
@@ -331,7 +317,7 @@ class ControlNodeCommand(IJarvisCommand):
                     context_data={"action": action, "parameters_received": kwargs},
                 )
             target = max(0, min(100, target))
-            if not set_volume_percent(target):
+            if not audio_set_volume_percent(target):
                 return CommandResponse.error_response(
                     error_details="Failed to set volume.",
                     context_data={"action": action, "target_percent": target},
@@ -347,7 +333,7 @@ class ControlNodeCommand(IJarvisCommand):
 
         if action in ("mute", "unmute"):
             muted = action == "mute"
-            if not set_muted(muted):
+            if not audio_set_muted(muted):
                 return CommandResponse.error_response(
                     error_details=f"Failed to {action}.",
                     context_data={"action": action},

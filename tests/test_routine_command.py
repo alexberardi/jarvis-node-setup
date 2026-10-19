@@ -15,6 +15,10 @@ from core.request_information import RequestInformation
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Commands reach node services through the SDK backends, as on the node.
+pytestmark = pytest.mark.usefixtures("node_command_backends")
+
+
 def _make_request_info(voice_command: str = "good morning") -> RequestInformation:
     return RequestInformation(
         voice_command=voice_command,
@@ -242,7 +246,8 @@ class TestSubCommandExecution:
         with (
             patch("commands.routine_command._load_routines", return_value=routines),
             patch("commands.routine_command.get_command_discovery_service", return_value=mock_discovery),
-            patch("commands.routine_command.JarvisCommandCenterClient") as mock_client_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as mock_client_cls,
         ):
             mock_client = MagicMock()
             mock_client.chat_text.return_value = chat_text_return
@@ -393,8 +398,8 @@ class TestLLMComposition:
     def test_happy_path_chat_text(self, routine_cmd):
         """chat_text returns composed text."""
         with (
-            patch("commands.routine_command.get_command_center_url", return_value="http://localhost:7703"),
-            patch("commands.routine_command.JarvisCommandCenterClient") as mock_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as mock_cls,
         ):
             mock_client = MagicMock()
             mock_client.chat_text.return_value = "Good morning! It's sunny."
@@ -415,8 +420,8 @@ class TestLLMComposition:
     def test_fallback_when_chat_text_fails(self, routine_cmd):
         """When chat_text returns None, fall back to concatenation."""
         with (
-            patch("commands.routine_command.get_command_center_url", return_value="http://localhost:7703"),
-            patch("commands.routine_command.JarvisCommandCenterClient") as mock_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as mock_cls,
         ):
             mock_client = MagicMock()
             mock_client.chat_text.return_value = None
@@ -437,8 +442,8 @@ class TestLLMComposition:
     def test_fallback_extracts_message_from_nested(self, routine_cmd):
         """Fallback pulls 'message' from context_data dicts."""
         with (
-            patch("commands.routine_command.get_command_center_url", return_value="http://localhost:7703"),
-            patch("commands.routine_command.JarvisCommandCenterClient") as mock_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as mock_cls,
         ):
             mock_client = MagicMock()
             mock_client.chat_text.return_value = None
@@ -479,7 +484,8 @@ class TestRoutineStorage:
         with (
             patch("commands.routine_command._load_routines", return_value=routines),
             patch("commands.routine_command.get_command_discovery_service"),
-            patch("commands.routine_command.JarvisCommandCenterClient"),
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient"),
         ):
             result = routine_cmd.run(_make_request_info(), routine_name="empty")
             assert result.success is False
@@ -545,7 +551,8 @@ class TestBriefingType:
         with (
             patch("commands.routine_command._load_routines", return_value=routines),
             patch("commands.routine_command.get_command_discovery_service", return_value=mock_discovery),
-            patch("commands.routine_command.JarvisCommandCenterClient") as mock_client_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as mock_client_cls,
         ):
             mock_client = MagicMock()
             mock_client.chat_text.return_value = chat_text_return
@@ -760,7 +767,8 @@ class TestInlineRoutineDefinition:
         with (
             patch("commands.routine_command._load_routines", return_value=local),
             patch("commands.routine_command.get_command_discovery_service", return_value=discovery),
-            patch("commands.routine_command.JarvisCommandCenterClient") as client_cls,
+            patch("utils.service_discovery.get_command_center_url", return_value="http://localhost:7703"),
+            patch("clients.jarvis_command_center_client.JarvisCommandCenterClient") as client_cls,
         ):
             client_cls.return_value.chat_text.return_value = "Done."
             resp = routine_cmd.run(_make_request_info(), routine_name="good_morning", **kwargs)

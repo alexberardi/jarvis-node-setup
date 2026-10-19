@@ -16,13 +16,8 @@ from jarvis_command_sdk import (
     JarvisParameter,
     PreRouteResult,
     RequestInformation,
+    timer_set,
 )
-
-
-def get_timer_service():
-    """The node's timer service, imported lazily (node-only)."""
-    from services.timer_service import get_timer_service as _get_timer_service
-    return _get_timer_service()
 
 
 # --- Pre-route constants ---
@@ -291,9 +286,16 @@ class TimerCommand(IJarvisCommand):
                     }
                 )
 
-            # Set the timer
-            timer_service = get_timer_service()
-            timer_id = timer_service.set_timer(duration_seconds, label)
+            # Set the timer (None: no timer backend, or the node failed to set it)
+            timer_id = timer_set(duration_seconds, label)
+            if timer_id is None:
+                return CommandResponse.error_response(
+                    error_details="Timer error: the timer could not be set",
+                    context_data={
+                        "error": "timer_unavailable",
+                        "parameters_received": kwargs
+                    }
+                )
 
             # Format duration for response
             duration_text = self._format_duration(duration_seconds)

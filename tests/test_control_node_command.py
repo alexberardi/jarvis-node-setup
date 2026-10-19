@@ -159,7 +159,7 @@ class TestPreRouteNoMatch:
 
 class TestRunVolumeUpDown:
     def test_volume_up(self, cmd, mock_request_info, monkeypatch):
-        monkeypatch.setattr(mod, "adjust_volume_percent", lambda d: 60 if d == 10 else None)
+        monkeypatch.setattr(mod, "audio_adjust_volume_percent", lambda d: 60 if d == 10 else None)
         response = cmd.run(mock_request_info, action="volume_up")
         assert response.success is True
         assert response.context_data["volume_percent"] == 60
@@ -169,14 +169,14 @@ class TestRunVolumeUpDown:
         def fake(delta):
             seen["delta"] = delta
             return 40
-        monkeypatch.setattr(mod, "adjust_volume_percent", fake)
+        monkeypatch.setattr(mod, "audio_adjust_volume_percent", fake)
         response = cmd.run(mock_request_info, action="volume_down")
         assert response.success is True
         assert seen["delta"] == -10
         assert response.context_data["volume_percent"] == 40
 
     def test_volume_up_unreadable(self, cmd, mock_request_info, monkeypatch):
-        monkeypatch.setattr(mod, "adjust_volume_percent", lambda d: None)
+        monkeypatch.setattr(mod, "audio_adjust_volume_percent", lambda d: None)
         response = cmd.run(mock_request_info, action="volume_up")
         assert response.success is False
 
@@ -186,7 +186,7 @@ class TestRunSetVolume:
         # Regression for the "set to 70 → speaks 71" round-trip drift bug.
         # The response must echo the value the user asked for, not whatever
         # comes back from ALSA after curving.
-        monkeypatch.setattr(mod, "set_volume_percent", lambda p: True)
+        monkeypatch.setattr(mod, "audio_set_volume_percent", lambda p: True)
         response = cmd.run(mock_request_info, action="set_volume", target_percent=70)
         assert response.success is True
         assert response.context_data["volume_percent"] == 70
@@ -197,7 +197,7 @@ class TestRunSetVolume:
         def fake_set(p):
             seen["target"] = p
             return True
-        monkeypatch.setattr(mod, "set_volume_percent", fake_set)
+        monkeypatch.setattr(mod, "audio_set_volume_percent", fake_set)
         response = cmd.run(mock_request_info, action="set_volume", target_percent=150)
         assert seen["target"] == 100
         assert response.success is True
@@ -205,7 +205,7 @@ class TestRunSetVolume:
 
     def test_clamps_below_zero(self, cmd, mock_request_info, monkeypatch):
         seen = {}
-        monkeypatch.setattr(mod, "set_volume_percent", lambda p: seen.setdefault("t", p) or True)
+        monkeypatch.setattr(mod, "audio_set_volume_percent", lambda p: seen.setdefault("t", p) or True)
         cmd.run(mock_request_info, action="set_volume", target_percent=-5)
         assert seen["t"] == 0
 
@@ -222,20 +222,20 @@ class TestRunSetVolume:
 class TestRunMute:
     def test_mute_calls_set_muted_true(self, cmd, mock_request_info, monkeypatch):
         seen = {}
-        monkeypatch.setattr(mod, "set_muted", lambda m: seen.setdefault("muted", m) or True)
+        monkeypatch.setattr(mod, "audio_set_muted", lambda m: seen.setdefault("muted", m) or True)
         response = cmd.run(mock_request_info, action="mute")
         assert response.success is True
         assert seen["muted"] is True
 
     def test_unmute_calls_set_muted_false(self, cmd, mock_request_info, monkeypatch):
         seen = {}
-        monkeypatch.setattr(mod, "set_muted", lambda m: seen.setdefault("muted", m) or True)
+        monkeypatch.setattr(mod, "audio_set_muted", lambda m: seen.setdefault("muted", m) or True)
         response = cmd.run(mock_request_info, action="unmute")
         assert response.success is True
         assert seen["muted"] is False
 
     def test_failure_propagates(self, cmd, mock_request_info, monkeypatch):
-        monkeypatch.setattr(mod, "set_muted", lambda m: False)
+        monkeypatch.setattr(mod, "audio_set_muted", lambda m: False)
         response = cmd.run(mock_request_info, action="mute")
         assert response.success is False
 

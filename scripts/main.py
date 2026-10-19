@@ -572,6 +572,14 @@ def main():
     except Exception as e:
         logger.warning("Signals backend init failed, producers cannot emit signals", error=str(e))
 
+    # Register SDK command backends (timer, audio control, alert queue, CC HTTP,
+    # LLM): built-in commands reach node services only through these
+    try:
+        from services.command_backends import init_command_backends
+        init_command_backends()
+    except Exception as e:
+        logger.warning("Command backends init failed, timer/volume/alert commands degrade", error=str(e))
+
     # Provisioning gate (skip in development mode). Three distinct cases —
     # conflating them stranded the prod kitchen node on 2026-07-05:
     #   1. No marker → fresh node → plain AP provisioning mode.

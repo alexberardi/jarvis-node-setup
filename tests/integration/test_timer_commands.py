@@ -14,6 +14,10 @@ from commands.check_timers_command import CheckTimersCommand
 from core.command_response import CommandResponse
 
 
+# Commands reach node services through the SDK backends, as on the node.
+pytestmark = pytest.mark.usefixtures("node_command_backends")
+
+
 @pytest.fixture
 def timer_cmd():
     """TimerCommand instance."""
@@ -59,7 +63,7 @@ class TestSetTimer:
         """
         request_info = request_info_factory("set a timer for 30 seconds")
         
-        with patch("commands.timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = timer_cmd.run(
                 request_info,
                 duration_seconds=30,
@@ -76,7 +80,7 @@ class TestSetTimer:
         """
         request_info = request_info_factory("set a 5 minute pasta timer")
         
-        with patch("commands.timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = timer_cmd.run(
                 request_info,
                 duration_seconds=300,
@@ -134,7 +138,7 @@ class TestSetTimer:
         """
         request_info = request_info_factory("set a timer for 90 seconds")
         
-        with patch("commands.timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = timer_cmd.run(
                 request_info,
                 duration_seconds=90,
@@ -164,7 +168,7 @@ class TestCancelTimer:
             {"timer_id": "timer-1", "label": "pasta", "remaining_seconds": 120}
         ]
         
-        with patch("commands.cancel_timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = cancel_timer_cmd.run(
                 request_info,
                 label="pasta",
@@ -184,7 +188,7 @@ class TestCancelTimer:
             {"timer_id": "timer-2", "label": "eggs", "remaining_seconds": 60},
         ]
         
-        with patch("commands.cancel_timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = cancel_timer_cmd.run(
                 request_info,
                 label="all",
@@ -201,7 +205,7 @@ class TestCancelTimer:
         mock_timer_service.get_active_timers.return_value = []
         mock_timer_service.cancel_timer.return_value = False
         
-        with patch("commands.cancel_timer_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = cancel_timer_cmd.run(
                 request_info,
                 label="pizza",
@@ -236,7 +240,7 @@ class TestCheckTimers:
             "remaining_seconds": 180
         }
 
-        with patch("commands.check_timers_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = check_timers_cmd.run(
                 request_info,
                 label="pasta",
@@ -256,7 +260,7 @@ class TestCheckTimers:
             {"timer_id": "timer-2", "label": "eggs", "remaining_seconds": 60},
         ]
         
-        with patch("commands.check_timers_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = check_timers_cmd.run(request_info)
 
             assert response.success is True
@@ -269,7 +273,7 @@ class TestCheckTimers:
         request_info = request_info_factory("any timers running")
         mock_timer_service.get_active_timers.return_value = []
         
-        with patch("commands.check_timers_command.get_timer_service", return_value=mock_timer_service):
+        with patch("services.timer_service.get_timer_service", return_value=mock_timer_service):
             response = check_timers_cmd.run(request_info)
 
             assert response.success is True
