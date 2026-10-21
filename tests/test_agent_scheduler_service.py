@@ -74,6 +74,16 @@ def fresh_scheduler():
     AgentSchedulerService._instance = None
 
 
+@pytest.fixture(autouse=True)
+def inject_mock():
+    """Stand-in for RestClient.inject_memories so no test talks to jarvisd."""
+    with patch(
+        "services.agent_scheduler_service.RestClient.inject_memories",
+        return_value={"injected": 0, "updated": 0, "deduplicated": 0, "errors": []},
+    ) as mock:
+        yield mock
+
+
 class TestAgentSchedulerServiceCreation:
     """Test service instantiation"""
 
@@ -493,3 +503,85 @@ class TestAutoDisableOnConsecutiveFailures:
         asyncio.run(run_three())
 
         mock_repo.set_enabled.assert_not_called()
+
+
+class _NotInContextAgent(MockAgent):
+    @property
+    def include_in_context(self) -> bool:
+        return False
+
+
+class TestInjectCustomAgentContext:
+    """After a refresh, a custom agent's get_context_data() goes to jarvisd as
+    memory facts (POST /memories/inject), not only into the agent payload."""
+
+    NESTED = {
+        "today": {"high": 72, "conditions": "sunny"},
+        "forecast": [{"day": "Tue", "high": 70}],
+        "last_error": None,
+    }
+
+    def _run(self, scheduler, agent):
+        asyncio.run(scheduler._run_agent_safe(agent))
+
+    def test_custom_agent_context_is_injected_as_facts(self, fresh_scheduler, inject_mock):
+        agent = MockAgent(name="weather", interval=1800)
+        agent._context_data = self.NESTED
+
+        self._run(fresh_scheduler, agent)
+
+        inject_mock.assert_called_once()
+        items = inject_mock.call_args.args[0]
+        assert [(i["key"], i["content"]) for i in items] == [
+            ("agent:weather:forecast[0].day", "weather: forecast: 1: day: Tue"),
+            ("agent:weather:forecast[0].high", "weather: forecast: 1: high: 70"),
+            ("agent:weather:today.conditions", "weather: today: conditions: sunny"),
+            ("agent:weather:today.high", "weather: today: high: 72"),
+        ]
+        assert {i["ttl_hours"] for i in items} == {1.0}
+        assert {i["source"] for i in items} == {"agent:weather"}
+        assert {i["category"] for i in items} == {"agent_context"}
+        # Payload context cache is unchanged.
+        assert fresh_scheduler.get_aggregated_context()["weather"] == self.NESTED
+
+    def test_payload_agents_are_not_injected(self, fresh_scheduler, inject_mock):
+        for name in ("home_assistant", "device_agent"):
+            agent = MockAgent(name=name)
+            agent._context_data = {"devices": [{"id": "light.x"}]}
+            self._run(fresh_scheduler, agent)
+
+        inject_mock.assert_not_called()
+
+    def test_agents_not_in_context_are_not_injected(self, fresh_scheduler, inject_mock):
+        agent = _NotInContextAgent(name="reminder_agent")
+        agent._context_data = {"due": ["x"]}
+
+        self._run(fresh_scheduler, agent)
+
+        inject_mock.assert_not_called()
+
+    def test_empty_context_is_not_injected(self, fresh_scheduler, inject_mock):
+        agent = MockAgent(name="quiet")
+        agent._context_data = {"last_error": None}
+
+        self._run(fresh_scheduler, agent)
+
+        inject_mock.assert_not_called()
+
+    @patch("services.agent_scheduler_service.AgentRegistryRepository")
+    @patch("services.agent_scheduler_service.SessionLocal")
+    def test_failed_run_is_not_injected(self, _sl, _repo, fresh_scheduler, inject_mock):
+        self._run(fresh_scheduler, _BoomAgent(name="cranky"))
+
+        inject_mock.assert_not_called()
+
+    def test_inject_failure_does_not_count_as_agent_failure(self, fresh_scheduler, inject_mock):
+        inject_mock.side_effect = RuntimeError("jarvisd down")
+        agent = MockAgent(name="weather")
+        agent._context_data = self.NESTED
+
+        self._run(fresh_scheduler, agent)
+
+        assert "weather" not in fresh_scheduler._consecutive_failures
+        assert "weather" in fresh_scheduler._last_run
+        assert fresh_scheduler.get_aggregated_context()["weather"] == self.NESTED
