@@ -240,7 +240,7 @@ async def connect_services(request: Request):
     auth_url = ""
     cc_url = ""
     for svc in services_data.get("services", []):
-        url = svc.get("url") or f"{svc['scheme']}://{svc['host']}:{svc['port']}"
+        url = svc.get("url") or f"{svc.get('scheme', 'http')}://{svc['host']}:{svc['port']}{svc.get('path') or ''}"
         if svc["name"] == "jarvis-auth":
             auth_url = url.rstrip("/")
         elif svc["name"] == "jarvis-command-center":

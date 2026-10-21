@@ -77,7 +77,7 @@ def init() -> bool:
     except ImportError:
         logger.error("jarvis-config-client not installed — cannot discover services")
         return False
-    except (OSError, RuntimeError) as e:
+    except Exception as e:  # a malformed /services answer must not stop the node booting
         logger.error("Failed to initialize service discovery: %s", e)
         return False
 
