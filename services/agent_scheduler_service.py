@@ -17,9 +17,11 @@ from typing import Any, Dict, Optional
 
 from jarvis_log_client import JarvisLogger
 
+from clients.rest_client import RestClient
 from core.ijarvis_agent import IJarvisAgent
 from db import SessionLocal
 from repositories.agent_registry_repository import AgentRegistryRepository
+from services.agent_context_facts import PAYLOAD_AGENTS, build_memory_items
 from services.alert_queue_service import AlertQueueService
 from utils.agent_discovery_service import get_agent_discovery_service
 
@@ -325,6 +327,7 @@ class AgentSchedulerService:
                 context = agent.get_context_data()
                 with self._context_lock:
                     self._context_cache[agent.name] = context
+                await self._inject_context_facts(agent, context)
 
             # Collect alerts from the agent
             if self._alert_queue is not None:
@@ -354,6 +357,23 @@ class AgentSchedulerService:
 
             if streak >= self.AUTO_DISABLE_AFTER_FAILURES:
                 self._auto_disable_agent(agent.name, last_error=str(e), streak=streak)
+
+    async def _inject_context_facts(self, agent: IJarvisAgent, context: Dict[str, Any]) -> None:
+        """Send a custom agent's context to jarvisd as memory facts.
+
+        jarvisd reads only home_assistant/device_agent from the agent payload;
+        every other agent's context reaches the LLM through /memories/inject.
+        A failure here is logged and never counts against the agent's run.
+        """
+        if agent.name in PAYLOAD_AGENTS:
+            return
+        try:
+            items = build_memory_items(agent.name, context, agent.schedule.interval_seconds)
+            if not items:
+                return
+            await asyncio.to_thread(RestClient.inject_memories, items)
+        except Exception as e:  # noqa: BLE001 — injection must never fail a run
+            logger.warning("Failed to inject agent context facts", agent=agent.name, error=str(e))
 
     def _auto_disable_agent(self, agent_name: str, *, last_error: str, streak: int) -> None:
         """Trip the registry's enabled flag to 0 after a failure streak.

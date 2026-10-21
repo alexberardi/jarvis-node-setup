@@ -2,8 +2,11 @@
 
 Runs every 5 minutes. Discovers all IJarvisCommands AND IJarvisDeviceProtocols
 with ``requires_background_refresh`` enabled, checks each provider's
-``TOKEN_EXPIRES_AT_<PROVIDER>`` secret, and performs a standard OAuth2
-refresh_token grant when the token is within the refresh window.
+``TOKEN_EXPIRES_AT_<PROVIDER>`` secret, and refreshes the token when it is
+within the refresh window: through the component's own ``refresh_token()``
+when it overrides the SDK default, otherwise with a standard OAuth2
+refresh_token grant. A refresh only the user can fix flags the provider for
+re-authentication (``command_auth``).
 
 Deduplicates by provider so components sharing the same OAuth provider
 (e.g. multiple Google commands) only trigger one refresh per cycle.
@@ -168,11 +171,13 @@ class TokenRefreshAgent(IJarvisAgent):
             return
 
         results: list[str] = []
+        refreshed = failed = False
         for uid in user_ids:
             try:
                 if self._needs_refresh(auth.provider, auth.refresh_interval_seconds, user_id=uid):
                     logger.info("Refreshing token", provider=auth.provider, user_id=uid)
                     ok = self._do_refresh(auth, source, user_id=uid)
+                    refreshed, failed = refreshed or ok, failed or not ok
                     results.append(f"u{uid}:ok" if ok else f"u{uid}:failed")
                 else:
                     results.append(f"u{uid}:fresh")
@@ -181,7 +186,11 @@ class TokenRefreshAgent(IJarvisAgent):
                     "Token refresh error",
                     provider=auth.provider, user_id=uid, error=str(e),
                 )
+                failed = True
                 results.append(f"u{uid}:error")
+        # The flag is per provider: clear it only when no owner failed.
+        if refreshed and not failed:
+            _clear_reauth(auth.provider)
         self._last_results[auth.provider] = ", ".join(results)
 
     def _needs_refresh(
@@ -221,12 +230,23 @@ class TokenRefreshAgent(IJarvisAgent):
     def _do_refresh(
         self, auth: AuthenticationConfig, source: Any, user_id: int | None = None
     ) -> bool:
-        """Perform OAuth2 refresh_token grant and store new tokens.
+        """Refresh the provider's token and store the new tokens.
+
+        Uses the source's own ``refresh_token()`` when it overrides the SDK
+        default (non-standard refresh flows); otherwise performs the standard
+        OAuth2 refresh_token grant on the shared HTTP client.
 
         When ``user_id`` is given the refresh token is read from that user's
         row and the refreshed tokens are stored back under their identity
-        (the SDK ContextVar is set around store_auth_values)."""
-        if not auth.refresh_token_secret_key or not auth.exchange_url:
+        (the SDK ContextVar is set around the override and store_auth_values).
+
+        A refresh that can't succeed without the user (no refresh token, the
+        provider rejects it, no access token back) flags the provider for
+        re-authentication; transient failures are retried next cycle. An
+        integration-scoped success clears the flag; user-scoped providers
+        clear it in ``_refresh_provider_for_users``."""
+        override = _overrides_refresh_token(source)
+        if not auth.refresh_token_secret_key or not (auth.exchange_url or override):
             logger.warning("Missing refresh config", provider=auth.provider)
             return False
 
@@ -240,34 +260,21 @@ class TokenRefreshAgent(IJarvisAgent):
             refresh_tok = get_secret_value(auth.refresh_token_secret_key, "integration")
         if not refresh_tok:
             logger.warning("No refresh token stored", provider=auth.provider, user_id=user_id)
+            _flag_reauth(auth.provider, "No refresh token stored")
             return False
 
-        payload: dict[str, str] = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_tok,
-            "client_id": auth.client_id,
-        }
-        if auth.client_secret:
-            payload["client_secret"] = auth.client_secret
-
-        try:
-            resp = self._http_client().post(auth.exchange_url, data=payload)
-            resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-        except Exception as e:
-            logger.error("Refresh request failed", provider=auth.provider, error=str(e))
+        if override:
+            tokens = self._refresh_via_source(auth, source, refresh_tok, user_id)
+        else:
+            tokens = self._refresh_via_grant(auth, refresh_tok)
+        if tokens is None:
             return False
-
-        access_token: str | None = data.get("access_token")
-        if not access_token:
-            logger.error("No access_token in refresh response", provider=auth.provider)
-            return False
+        access_token, new_refresh, expires_in = tokens
 
         # Store tokens via the source's store_auth_values. The ContextVar
         # carries the token owner so user-scoped writes resolve their rows
         # (no-op for integration-scoped sources).
         values: dict[str, str] = {"access_token": access_token}
-        new_refresh: str | None = data.get("refresh_token")
         if new_refresh:
             values["refresh_token"] = new_refresh
 
@@ -280,7 +287,6 @@ class TokenRefreshAgent(IJarvisAgent):
             set_current_user_id(None)
 
         # Update expiry timestamp
-        expires_in = data.get("expires_in")
         if expires_in:
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
             if user_id is not None:
@@ -297,11 +303,109 @@ class TokenRefreshAgent(IJarvisAgent):
                     "integration",
                 )
 
+        if user_id is None:
+            _clear_reauth(auth.provider)
+
         logger.info(
             "Token refreshed",
             provider=auth.provider, user_id=user_id, expires_in=expires_in,
         )
         return True
 
+    def _refresh_via_grant(
+        self, auth: AuthenticationConfig, refresh_tok: str
+    ) -> tuple[str, str | None, Any] | None:
+        """Standard OAuth2 refresh_token grant on the shared client."""
+        payload: dict[str, str] = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_tok,
+            "client_id": auth.client_id,
+        }
+        if auth.client_secret:
+            payload["client_secret"] = auth.client_secret
+
+        try:
+            resp = self._http_client().post(auth.exchange_url, data=payload)
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+        except httpx.HTTPStatusError as e:
+            logger.error("Refresh request failed", provider=auth.provider, error=str(e))
+            # 400 (invalid_grant: revoked or expired) / 401 (bad client):
+            # only the user reconnecting fixes it. 5xx / 429 are transient.
+            if e.response.status_code in (400, 401):
+                _flag_reauth(auth.provider, f"Refresh rejected ({e.response.status_code})")
+            return None
+        except Exception as e:
+            logger.error("Refresh request failed", provider=auth.provider, error=str(e))
+            return None
+
+        access_token: str | None = data.get("access_token")
+        if not access_token:
+            logger.error("No access_token in refresh response", provider=auth.provider)
+            _flag_reauth(auth.provider, "No access token in refresh response")
+            return None
+        return access_token, data.get("refresh_token"), data.get("expires_in")
+
+    def _refresh_via_source(
+        self,
+        auth: AuthenticationConfig,
+        source: Any,
+        refresh_tok: str,
+        user_id: int | None,
+    ) -> tuple[str, str | None, Any] | None:
+        """Call the source's overridden ``refresh_token()`` (as its owner)."""
+        from jarvis_command_sdk import set_current_user_id
+
+        set_current_user_id(user_id)
+        try:
+            bundle = source.refresh_token(
+                refresh_token=refresh_tok, client_secret=auth.client_secret
+            )
+        except Exception as e:
+            # A raise is a bug or a transient fault in the override; the
+            # SDK contract for "refresh failed" is returning None.
+            logger.error("refresh_token() override raised", provider=auth.provider, error=str(e))
+            return None
+        finally:
+            set_current_user_id(None)
+
+        access_token = getattr(bundle, "access_token", None) if bundle else None
+        if not access_token:
+            logger.error("refresh_token() override returned no token", provider=auth.provider)
+            _flag_reauth(auth.provider, "Token refresh failed")
+            return None
+        return access_token, bundle.refresh_token, bundle.expires_in
+
     def get_context_data(self) -> Dict[str, Any]:
         return {}
+
+
+def _overrides_refresh_token(source: Any) -> bool:
+    """Whether the source's class overrides the SDK's default refresh_token().
+
+    Checked on the class so a MagicMock or a device protocol (which has no
+    such hook) uses the standard grant."""
+    from jarvis_command_sdk import IJarvisCommand
+
+    method = getattr(type(source), "refresh_token", None)
+    return callable(method) and method is not IJarvisCommand.refresh_token
+
+
+# The command_auth table is keyed per provider, not per user: one user's
+# failed refresh flags the whole provider until it's reconnected.
+def _flag_reauth(provider: str, error: str) -> None:
+    try:
+        from services.command_auth_service import set_needs_auth
+
+        set_needs_auth(provider, error)
+    except Exception as e:
+        logger.warning("Failed to flag provider for re-auth", provider=provider, error=str(e))
+
+
+def _clear_reauth(provider: str) -> None:
+    try:
+        from services.command_auth_service import clear_auth_flag
+
+        clear_auth_flag(provider)
+    except Exception as e:
+        logger.warning("Failed to clear re-auth flag", provider=provider, error=str(e))

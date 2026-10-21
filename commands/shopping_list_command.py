@@ -129,10 +129,7 @@ class ShoppingListCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Manage the household shopping list: add items, read the list, "
-            "check items off, remove items, or clear it. "
-            "Use for 'add milk to the shopping list', 'what's on the grocery list'. "
-            "NOT for time-based reminders ('remind me to buy milk tomorrow') or playlists."
+            "Add to, read, check off or clear the shopping list."
         )
 
     @property
@@ -148,32 +145,26 @@ class ShoppingListCommand(IJarvisCommand):
             JarvisParameter(
                 "action", "string", required=True,
                 description=(
-                    "add=put items on the list, read=say what's on the list, "
-                    "check_off=mark items as bought, remove=delete items, clear=delete everything"
+                    None
                 ),
                 enum_values=_ALL_ACTIONS,
             ),
             JarvisParameter(
                 "items", "array<string>", required=False,
                 description=(
-                    "Item names. Always a list, even for one item "
-                    "(required for add, check_off, and remove)"
+                    "Item names"
                 ),
             ),
             JarvisParameter(
                 "regular", "bool", required=False,
                 description=(
-                    "Set true ONLY when the user says the items are regulars/"
-                    "staples/always-buy items ('add milk as a regular', "
-                    "'make diapers a regular')"
+                    "Only when the user says regular or staple"
                 ),
             ),
             JarvisParameter(
                 "scope", "string", required=False,
                 description=(
-                    "For clear: 'trip' (default) removes one-off items and puts "
-                    "regulars back on the list unchecked; 'everything' wipes the "
-                    "whole list including regulars"
+                    "For clear: trip (default) or everything"
                 ),
                 enum_values=["trip", "everything"],
             ),

@@ -171,7 +171,7 @@ class TimezoneCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Current time/date, locally or in a city/state/country. Use for 'what time is it?', 'what day is it?', 'what time is it in Tokyo?'. Not for weather — use get_weather."
+        return "Time and date somewhere else ('what time is it in Tokyo'). Local time and date are in the calendar above."
 
     @property
     def allow_direct_answer(self) -> bool:
@@ -191,7 +191,7 @@ class TimezoneCommand(IJarvisCommand):
                 "location",
                 "string",
                 required=False,
-                description="City, state, or country name (e.g., 'Tokyo', 'California', 'London'). Omit for local time."
+                description="City, country or IANA time zone"
             )
         ]
 

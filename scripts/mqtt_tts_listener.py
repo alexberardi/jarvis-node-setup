@@ -1558,6 +1558,7 @@ def _pull_auth_credentials(provider: str) -> None:
         result["_base_url"] = result["base_url"]
 
     from jarvis_command_sdk import set_current_user_id
+    from services.command_auth_service import clear_auth_flag_quietly
 
     # Find the command that owns this provider and store credentials
     service = get_command_discovery_service()
@@ -1574,6 +1575,7 @@ def _pull_auth_credentials(provider: str) -> None:
                 cmd.store_auth_values(result)
             finally:
                 set_current_user_id(None)
+            clear_auth_flag_quietly(provider)
             return
 
     # No command matched — check device families
@@ -1593,6 +1595,7 @@ def _pull_auth_credentials(provider: str) -> None:
                 family.store_auth_values(result)
             finally:
                 set_current_user_id(None)
+            clear_auth_flag_quietly(provider)
             # Refresh discovery cache so next scan includes this family
             family_service.refresh()
             return

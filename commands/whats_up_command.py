@@ -95,7 +95,7 @@ class WhatsUpCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Check and deliver pending background alerts (news, calendar, etc.)."
+        return "Read out or dismiss pending alerts (news, calendar)."
 
     @property
     def keywords(self) -> List[str]:
@@ -108,13 +108,13 @@ class WhatsUpCommand(IJarvisCommand):
                 "alerts_json",
                 "string",
                 required=False,
-                description="JSON-encoded alert data (set by pre-route, not user).",
+                description="Set by the system, not the user",
             ),
             JarvisParameter(
                 "dismiss",
                 "boolean",
                 required=False,
-                description="Set true when the user wants alerts/notifications cleared or dismissed without hearing them.",
+                description="Clear them without reading",
             ),
         ]
 

@@ -124,6 +124,28 @@ def _build_secrets_list(
     return result
 
 
+def _load_auth_statuses() -> dict[str, Any]:
+    """Re-auth flags from the command_auth table, by provider."""
+    try:
+        from services.command_auth_service import get_all_auth_statuses
+
+        return {st.provider: st for st in get_all_auth_statuses()}
+    except Exception as e:
+        logger.warning("Failed to read command auth statuses", error=str(e))
+        return {}
+
+
+def _add_auth_status(
+    entry: dict[str, Any], auth_dict: dict[str, Any], statuses: dict[str, Any]
+) -> None:
+    """Mark an entry that needs (re)connecting (e.g. its token refresh was
+    rejected) so the app can ask the user to reconnect."""
+    status = statuses.get(auth_dict.get("provider"))
+    entry["needs_auth"] = bool(status and status.needs_auth)
+    if status and status.needs_auth and status.auth_error:
+        entry["auth_error"] = status.auth_error
+
+
 def build_snapshot(include_values: bool = False, user_id: int | None = None) -> dict[str, Any]:
     """Build a plain (unencrypted) settings snapshot from all discovered commands.
 
@@ -166,6 +188,8 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
     except Exception as e:
         logger.warning("Failed to read disabled fast paths", error=str(e))
 
+    auth_statuses = _load_auth_statuses()
+
     command_entries: list[dict[str, Any]] = []
     for cmd in commands.values():
         # command_name is the entry's primary key — if it can't be read, we
@@ -207,6 +231,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                 auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
                 if auth_dict:
                     cmd_entry["authentication"] = auth_dict
+                _add_auth_status(cmd_entry, auth_dict, auth_statuses)
 
             params = g.get(lambda: cmd.parameters, [], "parameters")
             if params:
@@ -340,6 +365,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                     auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
                     if auth_dict:
                         family_entry["authentication"] = auth_dict
+                    _add_auth_status(family_entry, auth_dict, auth_statuses)
                 setup_guide = g.get(
                     lambda: getattr(family, "setup_guide", None), None, "setup_guide"
                 )
@@ -412,6 +438,7 @@ def build_snapshot(include_values: bool = False, user_id: int | None = None) -> 
                     auth_dict = g.get(lambda: auth_obj.to_dict(), None, "authentication")
                     if auth_dict:
                         mgr_entry["authentication"] = auth_dict
+                    _add_auth_status(mgr_entry, auth_dict, auth_statuses)
 
                 if g.errors:
                     mgr_entry["_errors"] = g.errors

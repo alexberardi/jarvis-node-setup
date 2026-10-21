@@ -40,9 +40,7 @@ class AnswerQuestionCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Answer a general knowledge question about stable facts, definitions, "
-            "history, science, geography, math, or biographies. NOT for current events, "
-            "live scores, or time-sensitive information."
+            "Answer a general-knowledge question (facts, history, science, definitions). Not for news, scores or anything live."
         )
 
     @property
@@ -54,7 +52,7 @@ class AnswerQuestionCommand(IJarvisCommand):
         return [
             JarvisParameter(
                 "query", "string", required=True,
-                description="The knowledge question to answer.",
+                description=None,
             ),
         ]
 
