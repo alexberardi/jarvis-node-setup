@@ -390,6 +390,7 @@ def _dispatch_auth(provider: str, config_data: dict[str, str]) -> None:
                 command=cmd.command_name,
             )
             cmd.store_auth_values(config_data)
+            _clear_reauth_flag(provider)
             return
 
     # No command matched — check device families
@@ -406,9 +407,17 @@ def _dispatch_auth(provider: str, config_data: dict[str, str]) -> None:
                 family=family.protocol_name,
             )
             family.store_auth_values(config_data)
+            _clear_reauth_flag(provider)
             return
 
     logger.warning("No command or device family found for auth provider", provider=provider)
+
+
+def _clear_reauth_flag(provider: str) -> None:
+    """Fresh credentials arrived: the provider no longer needs re-auth."""
+    from services.command_auth_service import clear_auth_flag_quietly
+
+    clear_auth_flag_quietly(provider)
 
 
 def _dispatch_secrets(config_data: dict[str, str]) -> None:

@@ -923,6 +923,61 @@ class TestDeviceFamiliesInSnapshot:
         assert family["authentication"]["provider"] == "nest"
 
 
+class TestSnapshotAuthStatus:
+    """Entries with authentication carry the command_auth re-auth flag (#404)."""
+
+    def _snapshot_with_family(self, mock_discovery, mock_family_discovery, statuses):
+        from services.command_auth_service import CommandAuthStatus
+
+        mock_discovery.return_value.get_all_commands.return_value = {}
+        mock_auth = MagicMock()
+        mock_auth.to_dict.return_value = {"type": "oauth", "provider": "nest"}
+        nest = _make_mock_family(
+            protocol_name="nest", friendly_name="Google Nest", description="Nest",
+            connection_type="cloud", supported_domains=["climate"], authentication=mock_auth,
+        )
+        mock_family_discovery.return_value.get_all_families_for_snapshot.return_value = {"nest": nest}
+        rows = [CommandAuthStatus(p, needs, err, None, None) for p, needs, err in statuses]
+        with patch("services.command_auth_service.get_all_auth_statuses", return_value=rows):
+            return build_snapshot()["device_families"][0]
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_flagged_provider_needs_auth(self, mock_discovery, _secret, mock_family_discovery):
+        family = self._snapshot_with_family(
+            mock_discovery, mock_family_discovery, [("nest", True, "Refresh rejected (400)")]
+        )
+        assert family["needs_auth"] is True
+        assert family["auth_error"] == "Refresh rejected (400)"
+
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    def test_unflagged_provider_does_not(self, mock_discovery, _secret, mock_family_discovery):
+        family = self._snapshot_with_family(
+            mock_discovery, mock_family_discovery, [("spotify", True, "x"), ("nest", False, None)]
+        )
+        assert family["needs_auth"] is False
+        assert "auth_error" not in family
+
+    @patch("services.settings_snapshot_service.get_command_discovery_service")
+    @patch("services.settings_snapshot_service.get_device_family_discovery_service")
+    @patch("services.settings_snapshot_service.get_secret_value")
+    def test_command_entry_carries_flag(self, _secret, mock_family_discovery, mock_discovery):
+        from services.command_auth_service import CommandAuthStatus
+
+        cmd = _make_mock_command("get_calendar_events", "Calendar", [])
+        cmd.authentication = MagicMock()
+        cmd.authentication.to_dict.return_value = {"type": "oauth", "provider": "google"}
+        mock_discovery.return_value.get_all_commands.return_value = {"get_calendar_events": cmd}
+        mock_family_discovery.return_value.get_all_families_for_snapshot.return_value = {}
+        rows = [CommandAuthStatus("google", True, "Token refresh failed", None, None)]
+        with patch("services.command_auth_service.get_all_auth_statuses", return_value=rows):
+            entry = build_snapshot()["commands"][0]
+        assert entry["needs_auth"] is True
+        assert entry["auth_error"] == "Token refresh failed"
+
 class TestEncryptSnapshot:
     """Tests for encrypt_snapshot()."""
 
