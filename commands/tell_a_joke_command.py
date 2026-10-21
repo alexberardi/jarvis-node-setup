@@ -198,8 +198,7 @@ class TellAJokeCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Tell a clean, family-friendly joke with an optional topic. "
-            "Riffs a fresh joke off random style examples on every invocation."
+            "Tell a joke."
         )
 
     @property
@@ -255,7 +254,7 @@ class TellAJokeCommand(IJarvisCommand):
                 "string",
                 required=False,
                 default=None,
-                description="Optional topic; omit for a random joke.",
+                description="Optional",
             ),
         ]
 

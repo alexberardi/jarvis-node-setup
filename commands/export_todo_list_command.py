@@ -112,9 +112,7 @@ class ExportTodoListCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Send the to-do list to your phone as an interactive checklist you "
-            "can check off and tap Save to sync back. Use for 'send my to-do "
-            "list to my phone', 'export the to-do list'."
+            "Send the to-do list to the user's phone, only when asked to send or export it."
         )
 
     @property
