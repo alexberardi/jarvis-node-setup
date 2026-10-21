@@ -57,13 +57,12 @@ class TimerCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Set a background timer with optional label (extract from 'egg timer'→label=egg, 'timer for laundry'→label=laundry). Convert spoken time to seconds (5min=300, 1hr30min=5400)."
+        return "Countdown timer for a length of time ('5 minutes', 'an hour'). Not for a clock time, date or alarm: use reminder."
 
     @property
     def keywords(self) -> List[str]:
         return [
-            "timer", "set timer", "alarm",
-            "countdown", "wake me", "notify me"
+            "timer", "set timer", "countdown", "notify me"
         ]
 
     @property
@@ -73,13 +72,13 @@ class TimerCommand(IJarvisCommand):
                 "duration_seconds",
                 "int",
                 required=True,
-                description="Duration in seconds. 1min=60, 1hr=3600. Sum compound times."
+                description="Total seconds"
             ),
             JarvisParameter(
                 "label",
                 "string",
                 required=False,
-                description="Short name for what the timer is for. Extract from 'X timer' or 'timer for X' (e.g., 'nap timer' → label='nap', 'timer for pasta' → label='pasta')."
+                description="What it's for, e.g. 'pasta'"
             ),
         ]
 
