@@ -153,11 +153,7 @@ class TodoListCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Manage the household to-do list: add tasks, read the list, mark "
-            "tasks done or not done, remove tasks, or clear it. "
-            "Use for 'add call the dentist to my to-do list', 'mark the laundry "
-            "done on my to-do list', 'what's on my to-do list'. "
-            "NOT for time-based reminders ('remind me to call mom at 5')."
+            "Add to, read, complete or clear the to-do list. Not for timed reminders."
         )
 
     @property
@@ -173,26 +169,20 @@ class TodoListCommand(IJarvisCommand):
             JarvisParameter(
                 "action", "string", required=True,
                 description=(
-                    "add=put tasks on the list, read=say what's on the list, "
-                    "complete=mark tasks done, uncomplete=mark tasks not done, "
-                    "remove=delete tasks, clear=delete everything"
+                    None
                 ),
                 enum_values=_ALL_ACTIONS,
             ),
             JarvisParameter(
                 "tasks", "array<string>", required=False,
                 description=(
-                    "Task phrases. Always a list, even for one task "
-                    "(required for add, complete, uncomplete, and remove). "
-                    "Each entry is a whole task — do not split a single task "
-                    "on 'and' ('call mom and dad' is one task)"
+                    "Whole tasks; don't split on 'and'"
                 ),
             ),
             JarvisParameter(
                 "scope", "string", required=False,
                 description=(
-                    "For clear: 'all' (default) removes every task; 'completed' "
-                    "removes only the tasks already marked done"
+                    "For clear: all or completed"
                 ),
                 enum_values=["all", "completed"],
             ),

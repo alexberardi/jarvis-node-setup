@@ -169,12 +169,20 @@ def wait_for_command_center() -> bool:
     state — callers log and continue on False; MQTT/heartbeat/voice all
     retry at runtime.
 
+    Prefers the discovered URL; the stored one is the fallback.
+
     Returns:
         True when CC answered within the window, False otherwise.
     """
     import time
 
-    url = _get_command_center_url()
+    url = ""
+    try:
+        from utils.service_discovery import get_command_center_url
+        url = get_command_center_url() or ""
+    except Exception:
+        url = ""
+    url = url or _get_command_center_url()
     if not url:
         logger.warning("No command center URL configured — skipping boot grace wait")
         return False

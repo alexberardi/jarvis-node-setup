@@ -107,6 +107,31 @@ def test_lan_override_is_per_service(discovery, monkeypatch):
     assert mod.get_whisper_url() == "https://whisper.cloud:443"        # not overridden
 
 
+# ── Path URLs (single-port servers) ──────────────────────────────────────────
+
+
+def test_command_center_path_url_returned_unchanged(discovery):
+    """A single-port server answers http://host:7700/<prefix>; the node must
+    use that URL verbatim — no stripping, no rewriting."""
+    mod, services = discovery
+    services["command-center"] = "http://h:7700/cc"
+    assert mod.get_command_center_url() == "http://h:7700/cc"
+
+
+def test_init_returns_false_when_config_client_raises_keyerror(monkeypatch):
+    """A malformed /services answer (client raises an unexpected error) must
+    not stop the node booting: init() swallows it and reports False."""
+    def _raise(*a, **k):
+        raise KeyError("bad services answer")
+
+    fake = types.ModuleType("jarvis_config_client")
+    fake.init = _raise
+    monkeypatch.setitem(sys.modules, "jarvis_config_client", fake)
+    monkeypatch.delenv("JARVIS_CONFIG_URL", raising=False)
+    monkeypatch.setattr(sd, "_get_from_json_config", lambda key: None)
+    assert sd.init() is False
+
+
 # ── No localhost/JSON fallback — fail loud ───────────────────────────────────
 
 

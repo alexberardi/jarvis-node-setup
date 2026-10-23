@@ -161,7 +161,7 @@ class MeasurementConversionCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Convert units: distance, volume, weight, temperature. Explicit conversions ONLY — weather unit preferences (Celsius/Fahrenheit) should use get_weather."
+        return "Convert units (distance, volume, weight, temperature). Always use it; don't convert in your head."
     
     @property
     def keywords(self) -> List[str]:
@@ -174,10 +174,10 @@ class MeasurementConversionCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("value", "float", required=False, description="Numeric value to convert; defaults to 1 if not specified."),
-            JarvisParameter("from_unit", "string", required=True, description="Source unit name (e.g., 'miles', 'cups', 'pounds', 'celsius')."),
-            JarvisParameter("to_unit", "string", required=True, description="Target unit name (e.g., 'kilometers', 'liters', 'kilograms', 'fahrenheit')."),
-            JarvisParameter("category", "string", required=False, description="Optional hint: 'distance', 'volume', 'weight', or 'temperature'.")
+            JarvisParameter("value", "float", required=False, description="Default 1"),
+            JarvisParameter("from_unit", "string", required=True, description=None),
+            JarvisParameter("to_unit", "string", required=True, description=None),
+            JarvisParameter("category", "string", required=False, description=None)
         ]
     
     @property

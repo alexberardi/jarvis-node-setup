@@ -64,11 +64,13 @@ class CalculatorCommand(IJarvisCommand):
     
     @property
     def description(self) -> str:
-        return "Perform two-number arithmetic operations: addition, subtraction, multiplication, or division."
+        return "Arithmetic on two numbers. Always use it; don't compute in your head."
     
     @property
     def allow_direct_answer(self) -> bool:
-        return True
+        # Measured 2026-10-20 (jarvis-server scripts/toolbench): allowed a direct answer, models did
+        # the maths themselves, sometimes wrongly. Always call the tool.
+        return False
 
     @property
     def keywords(self) -> List[str]:
@@ -80,9 +82,9 @@ class CalculatorCommand(IJarvisCommand):
     @property
     def parameters(self) -> List[JarvisParameter]:
         return [
-            JarvisParameter("num1", "float", required=True, description="First number."),
-            JarvisParameter("num2", "float", required=True, description="Second number."),
-            JarvisParameter("operation", "string", required=True, description="Operation: must be exactly 'add', 'subtract', 'multiply', or 'divide' (no synonyms).", enum_values=["add", "subtract", "multiply", "divide"])
+            JarvisParameter("num1", "float", required=True, description=None),
+            JarvisParameter("num2", "float", required=True, description=None),
+            JarvisParameter("operation", "string", required=True, description=None, enum_values=["add", "subtract", "multiply", "divide"])
         ]
 
     @property

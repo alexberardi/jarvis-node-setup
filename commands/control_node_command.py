@@ -92,9 +92,7 @@ class ControlNodeCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Control the speaker node itself: volume up/down, set volume to "
-            "a percent, or mute/unmute. Use this for the device's own audio "
-            "output, NOT for smart-home devices (use control_device for those)."
+            "This speaker's own volume or mute. Smart-home devices: control_device."
         )
 
     @property
@@ -112,8 +110,7 @@ class ControlNodeCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "What to do: 'volume_up' (relative +), 'volume_down' "
-                    "(relative -), 'set_volume' (absolute), 'mute', or 'unmute'."
+                    None
                 ),
                 enum_values=["volume_up", "volume_down", "set_volume", "mute", "unmute"],
             ),
@@ -122,9 +119,7 @@ class ControlNodeCommand(IJarvisCommand):
                 "int",
                 required=False,
                 description=(
-                    "Required only when action='set_volume'. Absolute volume "
-                    "as 0-100 percent. If the user said a 0-10 number "
-                    "without '%', multiply by 10 (5 → 50)."
+                    "For set_volume, 0-100 (a 0-10 number x10)"
                 ),
             ),
         ]

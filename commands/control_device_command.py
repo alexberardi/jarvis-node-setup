@@ -52,11 +52,7 @@ class ControlDeviceCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Control a smart home device: turn on/off, play, pause, volume, lock, unlock. "
-            "MUST be used for any request to turn on, turn off, play, pause, or control "
-            "a physical device (TV, light, speaker, lock, thermostat). "
-            "Common actions: turn_on, turn_off, play, pause, volume_up, volume_down, "
-            "next, previous, lock, unlock."
+            "Control a smart-home device: lights, TV, speakers, locks, thermostat (on, off, play, volume, lock, temperature, colour)."
         )
 
     @property
@@ -75,7 +71,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "device_name",
                 "string",
                 required=True,
-                description="Name of the device to control (e.g. 'Apple TV', 'living room light').",
+                description="Friendly name, e.g. 'front door', 'kitchen light'",
                 options_source="devices",
             ),
             JarvisParameter(
@@ -83,9 +79,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "Action to perform: turn_on, turn_off, play, pause, "
-                    "volume_up, volume_down, next, previous, lock, unlock, "
-                    "set_temperature, set_mode, set_brightness, set_color."
+                    None
                 ),
                 enum_values=[
                     "turn_on", "turn_off", "play", "pause",
@@ -98,7 +92,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "entity_id",
                 "string",
                 required=False,
-                description="Entity ID from the device list (e.g. 'light.office'). Pass if shown in context.",
+                description="Entity id, e.g. lock.front_door, if known",
                 options_source="entities",
             ),
             JarvisParameter(
@@ -106,9 +100,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description=(
-                    "Value for the action. Examples: temperature in degrees for set_temperature (e.g. '69'), "
-                    "mode name for set_mode (e.g. 'heat', 'cool', 'off'), "
-                    "brightness percentage for set_brightness (e.g. '50')."
+                    "Number or mode for set_* actions"
                 ),
             ),
             JarvisParameter(
@@ -116,8 +108,7 @@ class ControlDeviceCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description=(
-                    "Color for set_color: a color name (e.g. 'green', 'blue', 'warm white', 'purple') "
-                    "or an 'r,g,b' triple. Required when action is set_color."
+                    "For set_color: name or 'r,g,b'"
                 ),
             ),
         ]

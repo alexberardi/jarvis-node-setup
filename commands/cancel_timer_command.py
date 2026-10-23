@@ -55,7 +55,7 @@ class CancelTimerCommand(IJarvisCommand):
 
     @property
     def description(self) -> str:
-        return "Cancel timer by label, 'all' to cancel all, or omit label for single timer."
+        return "Cancel or stop a timer ('cancel the pasta timer')."
 
     @property
     def keywords(self) -> List[str]:
@@ -72,8 +72,7 @@ class CancelTimerCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description=(
-                    "Label of timer to cancel. Use 'all' to cancel all timers. "
-                    "If omitted and only one timer exists, cancels that one."
+                    "Its label, 'all', or empty for the only one"
                 )
             ),
         ]

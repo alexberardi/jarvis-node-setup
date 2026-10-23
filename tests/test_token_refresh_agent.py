@@ -5,7 +5,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+from jarvis_command_sdk import IJarvisCommand, TokenBundle
 
 from agents.token_refresh_agent import TokenRefreshAgent
 from core.ijarvis_authentication import AuthenticationConfig
@@ -19,12 +21,14 @@ def mock_deferred_modules():
     mock_secret.set_secret = MagicMock()
 
     mock_cmd_discovery = MagicMock()
+    mock_auth_service = MagicMock()
     mock_family_discovery = MagicMock()
     mock_family_discovery.get_device_family_discovery_service.return_value.get_all_families.return_value = {}
 
     modules = {
         "services.secret_service": mock_secret,
         "db": MagicMock(),
+        "services.command_auth_service": mock_auth_service,
         "utils.command_discovery_service": mock_cmd_discovery,
         "utils.device_family_discovery_service": mock_family_discovery,
     }
@@ -33,12 +37,18 @@ def mock_deferred_modules():
             "secret_service": mock_secret,
             "cmd_discovery": mock_cmd_discovery,
             "family_discovery": mock_family_discovery,
+            "auth_service": mock_auth_service,
         }
 
 
 @pytest.fixture
 def mock_secret_service(mock_deferred_modules):
     return mock_deferred_modules["secret_service"]
+
+
+@pytest.fixture
+def mock_auth_service(mock_deferred_modules):
+    return mock_deferred_modules["auth_service"]
 
 
 @pytest.fixture
@@ -444,3 +454,242 @@ class TestPerUserRefresh:
             asyncio.get_event_loop().run_until_complete(agent.run())
 
         assert agent._last_results["test_provider"] == "u1:error, u2:ok"
+
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "https://example.com/token")
+    return httpx.HTTPStatusError(
+        f"{status}", request=req, response=httpx.Response(status, request=req)
+    )
+
+
+def _client_raising(exc: Exception) -> MagicMock:
+    client = MagicMock()
+    client.post.return_value.raise_for_status.side_effect = exc
+    return client
+
+
+class _OverridingSource:
+    """A component with a non-standard refresh flow (overrides the SDK hook)."""
+
+    def __init__(self, bundle: TokenBundle | None) -> None:
+        self.bundle = bundle
+        self.calls: list[dict] = []
+        self.stored: list[dict] = []
+        self.user_seen: list[int | None] = []
+
+    def refresh_token(self, *, refresh_token: str, client_secret: str | None = None,
+                      timeout_seconds: float = 15.0) -> TokenBundle | None:
+        from jarvis_command_sdk.context import get_current_user_id
+
+        self.user_seen.append(get_current_user_id())
+        self.calls.append({"refresh_token": refresh_token, "client_secret": client_secret})
+        return self.bundle
+
+    def store_auth_values(self, values: dict) -> None:
+        self.stored.append(values)
+
+
+class _InheritingSource:
+    """A component that inherits the SDK's default refresh_token()."""
+
+    refresh_token = IJarvisCommand.refresh_token
+
+    def __init__(self) -> None:
+        self.store_auth_values = MagicMock()
+
+
+class TestRefreshTokenOverride:
+    def test_override_is_called_instead_of_standard_grant(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        source = _OverridingSource(TokenBundle("new-access", "new-refresh", 3600, {}))
+        client = MagicMock()
+
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, source) is True
+
+        assert source.calls == [{"refresh_token": "old-refresh", "client_secret": None}]
+        client.post.assert_not_called()
+        assert source.stored == [{"access_token": "new-access", "refresh_token": "new-refresh"}]
+        key, _value, scope = mock_secret_service.set_secret.call_args.args
+        assert (key, scope) == ("TOKEN_EXPIRES_AT_TEST_PROVIDER", "integration")
+
+    def test_override_runs_under_token_owner(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        source = _OverridingSource(TokenBundle("new-access", None, None, {}))
+
+        assert agent._do_refresh(mock_auth_config, source, user_id=7) is True
+
+        assert source.user_seen == [7]
+        assert source.stored == [{"access_token": "new-access"}]
+        mock_secret_service.set_secret.assert_not_called()
+
+    def test_override_works_without_exchange_url(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service
+    ):
+        mock_auth_config.exchange_url = None
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        source = _OverridingSource(TokenBundle("new-access", None, 60, {}))
+
+        assert agent._do_refresh(mock_auth_config, source) is True
+
+    def test_inherited_default_uses_shared_http_client(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        source = _InheritingSource()
+        client = MagicMock()
+        client.post.return_value.json.return_value = {"access_token": "a", "expires_in": 60}
+
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, source) is True
+
+        client.post.assert_called_once()
+        source.store_auth_values.assert_called_once_with({"access_token": "a"})
+
+    def test_override_returning_none_flags_reauth(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        source = _OverridingSource(None)
+
+        assert agent._do_refresh(mock_auth_config, source) is False
+
+        mock_auth_service.set_needs_auth.assert_called_once()
+        assert mock_auth_service.set_needs_auth.call_args.args[0] == "test_provider"
+        assert source.stored == []
+
+    def test_override_raising_is_not_flagged(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        with patch.object(_OverridingSource, "refresh_token", side_effect=RuntimeError("boom")):
+            assert agent._do_refresh(mock_auth_config, _OverridingSource(None)) is False
+
+        mock_auth_service.set_needs_auth.assert_not_called()
+
+
+class TestFailedRefreshAsksForReauth:
+    def test_rejected_refresh_token_flags_reauth(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        client = _client_raising(_status_error(400))
+
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+
+        mock_auth_service.set_needs_auth.assert_called_once()
+        assert mock_auth_service.set_needs_auth.call_args.args[0] == "test_provider"
+        mock_auth_service.clear_auth_flag.assert_not_called()
+
+    def test_unauthorized_flags_reauth(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        with patch.object(agent, "_http_client", return_value=_client_raising(_status_error(401))):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+        mock_auth_service.set_needs_auth.assert_called_once()
+
+    def test_server_error_is_not_flagged(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        with patch.object(agent, "_http_client", return_value=_client_raising(_status_error(503))):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+        mock_auth_service.set_needs_auth.assert_not_called()
+
+    def test_connection_error_is_not_flagged(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        client = MagicMock()
+        client.post.side_effect = httpx.ConnectError("no route")
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+        mock_auth_service.set_needs_auth.assert_not_called()
+
+    def test_missing_access_token_flags_reauth(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        client = MagicMock()
+        client.post.return_value.json.return_value = {"error": "invalid_grant"}
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+        mock_auth_service.set_needs_auth.assert_called_once()
+
+    def test_no_stored_refresh_token_flags_reauth(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = None
+        assert agent._do_refresh(mock_auth_config, MagicMock()) is False
+        mock_auth_service.set_needs_auth.assert_called_once()
+
+    def test_success_clears_reauth_flag(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        client = MagicMock()
+        client.post.return_value.json.return_value = {"access_token": "a"}
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is True
+        mock_auth_service.clear_auth_flag.assert_called_once_with("test_provider")
+        mock_auth_service.set_needs_auth.assert_not_called()
+
+    def test_flag_store_failure_does_not_break_refresh(
+        self, agent: TokenRefreshAgent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "old-refresh"
+        mock_auth_service.clear_auth_flag.side_effect = RuntimeError("db locked")
+        client = MagicMock()
+        client.post.return_value.json.return_value = {"access_token": "a"}
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock()) is True
+
+
+class TestPerUserReauthFlag:
+    """command_auth is per provider: a user-scoped provider's flag is cleared
+    only when every owner refreshed, never by another owner's success."""
+
+    def _run(self, agent, mock_auth_config, mock_secret_service, outcomes: dict[int, bool]):
+        from types import SimpleNamespace
+
+        cmd = MagicMock()
+        cmd.authentication = mock_auth_config
+        cmd.all_possible_secrets = [SimpleNamespace(key="TEST_REFRESH_TOKEN", scope="user")]
+        mock_secret_service.get_all_secrets = MagicMock(return_value=[
+            SimpleNamespace(key="TEST_REFRESH_TOKEN", user_id=uid, value=f"rt{uid}")
+            for uid in outcomes
+        ])
+        with (
+            patch("utils.command_discovery_service.get_command_discovery_service") as mock_discovery,
+            patch("utils.device_family_discovery_service.get_device_family_discovery_service") as mock_families,
+            patch.object(agent, "_needs_refresh", return_value=True),
+            patch.object(agent, "_do_refresh", side_effect=lambda a, s, user_id=None: outcomes[user_id]),
+        ):
+            mock_discovery.return_value.get_all_commands.return_value = {"cmd": cmd}
+            mock_families.return_value.get_all_families.return_value = {}
+            asyncio.run(agent.run())
+
+    def test_all_owners_ok_clears_flag(self, agent, mock_auth_config, mock_secret_service, mock_auth_service):
+        self._run(agent, mock_auth_config, mock_secret_service, {1: True, 2: True})
+        mock_auth_service.clear_auth_flag.assert_called_once_with("test_provider")
+
+    def test_one_owner_failed_keeps_flag(self, agent, mock_auth_config, mock_secret_service, mock_auth_service):
+        self._run(agent, mock_auth_config, mock_secret_service, {1: False, 2: True})
+        mock_auth_service.clear_auth_flag.assert_not_called()
+
+    def test_user_refresh_does_not_clear_flag_itself(
+        self, agent, mock_auth_config, mock_secret_service, mock_auth_service
+    ):
+        mock_secret_service.get_secret_value.return_value = "rt1"
+        client = MagicMock()
+        client.post.return_value.json.return_value = {"access_token": "a"}
+        with patch.object(agent, "_http_client", return_value=client):
+            assert agent._do_refresh(mock_auth_config, MagicMock(), user_id=1) is True
+        mock_auth_service.clear_auth_flag.assert_not_called()
