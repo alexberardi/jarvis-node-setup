@@ -27,9 +27,7 @@ class ChatCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Use for casual conversation: greetings, small talk, opinions, open-ended chat. "
-            "Put YOUR friendly conversational reply in the `message` parameter — do NOT echo "
-            "the user's words. For facts use answer_question, for current events use search_web."
+            "Chat: small talk and greetings. Put your own spoken reply in message. Facts: answer_question."
         )
 
     @property
@@ -54,9 +52,7 @@ class ChatCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "YOUR natural-language reply to the user (not the user's words). "
-                    "Example: if the user says 'how are you?', set message to 'Doing well, thanks!' — "
-                    "NOT 'how are you?'. This string is spoken aloud exactly as written."
+                    "Your reply, spoken as written (not the user's words)"
                 ),
             ),
         ]

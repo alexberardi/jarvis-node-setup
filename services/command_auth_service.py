@@ -105,6 +105,19 @@ def clear_auth_flag(provider: str) -> None:
         session.commit()
 
 
+def clear_auth_flag_quietly(provider: str) -> None:
+    """clear_auth_flag() for callers that just stored fresh credentials:
+    a failure to record it is logged, never raised over the store."""
+    try:
+        clear_auth_flag(provider)
+    except Exception as e:
+        from jarvis_log_client import JarvisLogger
+
+        JarvisLogger(service="jarvis-node").warning(
+            "Failed to clear re-auth flag", provider=provider, error=str(e)
+        )
+
+
 def get_all_auth_statuses() -> list[CommandAuthStatus]:
     """Get auth status for all tracked providers.
 

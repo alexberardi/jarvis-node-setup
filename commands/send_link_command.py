@@ -36,11 +36,7 @@ class SendLinkCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Send a link (URL) to the speaker's phone as a push notification "
-            "they can tap to open in their browser. Use as a follow-up when the "
-            "user asks to be sent / texted / shared an article, recipe, search "
-            "result, or any other link returned by a previous tool. Requires "
-            "speaker recognition — fails if Jarvis can't identify who's asking."
+            "Send a link from an earlier result to the user's phone. Never invent a URL."
         )
 
     @property
@@ -59,9 +55,7 @@ class SendLinkCommand(IJarvisCommand):
                 "string",
                 required=True,
                 description=(
-                    "Full http/https URL to send. Pull this from a previous "
-                    "tool result in the conversation history — do NOT invent "
-                    "or guess URLs."
+                    None
                 ),
             ),
             JarvisParameter(
@@ -69,8 +63,7 @@ class SendLinkCommand(IJarvisCommand):
                 "string",
                 required=False,
                 description=(
-                    "Short title shown in the push notification (e.g. article "
-                    "headline). Defaults to 'Link from Jarvis'."
+                    None
                 ),
             ),
         ]

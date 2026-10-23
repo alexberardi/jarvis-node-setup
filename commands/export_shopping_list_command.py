@@ -211,9 +211,7 @@ class ExportShoppingListCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Send the shopping list to the configured store (e.g. Walmart) as "
-            "a tappable cart link on your phone. Use for 'send my shopping "
-            "list to walmart', 'export the shopping list'."
+            "Send the shopping list to the store as a cart link, only when asked to send or export it."
         )
 
     @property

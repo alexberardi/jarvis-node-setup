@@ -45,15 +45,7 @@ class ActOnItemsCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Act on one or more items the user was just shown in a 'RECENTLY SHOWN' "
-            "list — for example mark emails read, draft a reply, archive, or send an "
-            "article. Use this ONLY when the user refers back to items they were just "
-            "shown ('those', 'them', 'all of them', 'the first one', 'number 3', "
-            "'the one from ABC'). Set 'action' to the verb (e.g. 'mark_read') and "
-            "'ref_ids' to the ids of the referenced items, taken verbatim from the "
-            "bracketed [id] next to each item in the RECENTLY SHOWN block. Never "
-            "invent ids — only use ids that appear in that list, and only actions "
-            "that are listed as valid for those items."
+            "Act on items from the RECENTLY SHOWN list when the user refers back to them ('those', 'the first one'). Use only ids and actions shown there."
         )
 
     @property
@@ -74,9 +66,7 @@ class ActOnItemsCommand(IJarvisCommand):
                 param_type="string",
                 required=True,
                 description=(
-                    "The action verb to perform, e.g. 'mark_read', 'draft_reply', "
-                    "'send_full_article'. Must be one of the actions listed as valid "
-                    "for the referenced items in the RECENTLY SHOWN block."
+                    "A verb listed as valid for those items"
                 ),
             ),
             JarvisParameter(
@@ -84,9 +74,7 @@ class ActOnItemsCommand(IJarvisCommand):
                 param_type="array<string>",
                 required=True,
                 description=(
-                    "The ids of the items to act on, taken verbatim from the bracketed "
-                    "[id] next to each item in the RECENTLY SHOWN list. For 'those' / "
-                    "'all of them', include every id in the list."
+                    "Ids from the [id] tags; all for 'all of them'"
                 ),
             ),
         ]

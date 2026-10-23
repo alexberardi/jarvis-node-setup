@@ -140,9 +140,7 @@ class ReminderCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Set, list, delete, or snooze reminders. "
-            "Use for 'remind me to...', 'what reminders do I have', 'cancel/delete reminder', 'snooze'. "
-            "NOT for timers or countdowns — use set_timer for those."
+            "Reminders and alarms at a clock time or date ('at 7am', 'wake me up at 6', 'tomorrow at noon'); also list, delete or snooze them. Not for a length of time: use set_timer."
         )
 
     @property
@@ -150,6 +148,8 @@ class ReminderCommand(IJarvisCommand):
         return [
             "remind", "reminder", "reminders", "remind me",
             "don't forget", "remember to", "snooze",
+            # Alarms are reminders at a clock time; set_timer is for lengths of time (2026-10-20).
+            "alarm", "wake me",
         ]
 
     @property
@@ -157,43 +157,43 @@ class ReminderCommand(IJarvisCommand):
         return [
             JarvisParameter(
                 "action", "string", required=True,
-                description="set=create reminder, list=show reminders, delete=cancel, snooze=delay",
+                description=None,
                 enum_values=_ALL_ACTIONS,
             ),
             JarvisParameter(
                 "text", "string", required=False,
-                description="What to be reminded about (required for 'set', optional for 'delete'/'snooze' as fuzzy match)",
+                description="What to remind about",
             ),
             JarvisParameter(
                 "resolved_datetimes", "array<datetime>", required=False,
-                description="Date keys like 'today', 'tomorrow', 'next_monday', 'morning', 'tomorrow_evening'. Server resolves to dates.",
+                description="Date keys, e.g. tomorrow, next_monday",
             ),
             JarvisParameter(
                 "time", "string", required=False,
-                description="Explicit time in HH:MM 24h format (e.g., '15:00' for 3 PM)",
+                description="HH:MM, 24h",
             ),
             JarvisParameter(
                 "relative_minutes", "int", required=False,
-                description="Minutes from now (e.g., 30 for 'in 30 minutes', 120 for 'in 2 hours')",
+                description="Minutes from now",
             ),
             JarvisParameter(
                 "recurrence", "string", required=False,
-                description="Repeat schedule",
+                description=None,
                 enum_values=_RECURRENCE_VALUES,
             ),
             JarvisParameter(
                 "filter", "string", required=False,
-                description="For list action: 'all' (default), 'today', 'recurring'",
+                description=None,
                 enum_values=["all", "today", "recurring"],
             ),
             JarvisParameter(
                 "scope", "string", required=False,
-                description="For delete action: 'one' (default) or 'all'",
+                description=None,
                 enum_values=["one", "all"],
             ),
             JarvisParameter(
                 "minutes", "int", required=False,
-                description="Snooze duration in minutes (default: 10)",
+                description="Snooze length",
             ),
         ]
 

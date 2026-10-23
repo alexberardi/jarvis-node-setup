@@ -179,6 +179,55 @@ class TestWaitForCommandCenter:
                 mock_sleep.assert_not_called()
 
 
+class TestWaitPrefersDiscovery:
+    """The boot grace wait prefers the discovered URL; the stored one is the
+    fallback (single-port servers move services to http://host:7700/<prefix>)."""
+
+    def test_prefers_discovered_url_over_stored(self, temp_secret_dir, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"jarvis_command_center_api_url": "http://h:7703"}')
+        env = {k: v for k, v in os.environ.items() if k != "COMMAND_CENTER_URL"}
+        env["CONFIG_PATH"] = str(config_file)
+
+        with patch("utils.service_discovery.get_command_center_url",
+                   return_value="http://h:7700/cc"):
+            with patch("provisioning.startup._can_reach_command_center",
+                       return_value=True) as mock_reach:
+                with patch("time.sleep"):
+                    with patch.dict(os.environ, env, clear=True):
+                        assert wait_for_command_center() is True
+                        assert mock_reach.call_args_list[0].args[0] == "http://h:7700/cc"
+
+    def test_falls_back_to_stored_when_discovery_raises(self, temp_secret_dir, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"jarvis_command_center_api_url": "http://h:7703"}')
+        env = {k: v for k, v in os.environ.items() if k != "COMMAND_CENTER_URL"}
+        env["CONFIG_PATH"] = str(config_file)
+
+        with patch("utils.service_discovery.get_command_center_url",
+                   side_effect=RuntimeError("unresolved")):
+            with patch("provisioning.startup._can_reach_command_center",
+                       return_value=True) as mock_reach:
+                with patch("time.sleep"):
+                    with patch.dict(os.environ, env, clear=True):
+                        assert wait_for_command_center() is True
+                        assert mock_reach.call_args_list[0].args[0] == "http://h:7703"
+
+    def test_falls_back_to_stored_when_discovery_returns_none(self, temp_secret_dir, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"jarvis_command_center_api_url": "http://h:7703"}')
+        env = {k: v for k, v in os.environ.items() if k != "COMMAND_CENTER_URL"}
+        env["CONFIG_PATH"] = str(config_file)
+
+        with patch("utils.service_discovery.get_command_center_url", return_value=None):
+            with patch("provisioning.startup._can_reach_command_center",
+                       return_value=True) as mock_reach:
+                with patch("time.sleep"):
+                    with patch.dict(os.environ, env, clear=True):
+                        assert wait_for_command_center() is True
+                        assert mock_reach.call_args_list[0].args[0] == "http://h:7703"
+
+
 class TestCommandCenterUrl:
     """Test command center URL resolution (via the grace wait)."""
 

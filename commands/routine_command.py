@@ -150,8 +150,7 @@ class RoutineCommand(IJarvisCommand):
     @property
     def description(self) -> str:
         return (
-            "Execute a multi-step voice routine (e.g. good morning, good night). "
-            "Runs sub-commands and composes a natural spoken response."
+            "Run a named routine (good morning, good night)."
         )
 
     @property
@@ -170,7 +169,7 @@ class RoutineCommand(IJarvisCommand):
                 "routine_name",
                 "string",
                 required=True,
-                description="Name of the routine to execute (e.g. good_morning, good_night).",
+                description="e.g. good_morning",
             ),
         ]
 
