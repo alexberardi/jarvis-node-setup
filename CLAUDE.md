@@ -532,6 +532,8 @@ Device protocols handle discovery and control for a device manufacturer/API.
 They're used by the `control_device` command.
 
 ```python
+from typing import Any
+
 from jarvis_command_sdk import (
     IJarvisDeviceProtocol, DiscoveredDevice, DeviceControlResult,
     IJarvisButton, JarvisSecret, JarvisStorage,
@@ -566,14 +568,25 @@ class MyProtocol(IJarvisDeviceProtocol):
             cloud_id="device-123",        # Cloud API identifier
         )]
 
-    async def control(self, device: DiscoveredDevice, action: str, params: dict | None = None) -> DeviceControlResult:
-        # Send control command to device
+    async def control(self, ip, action: str, data: dict | None = None, **kwargs: Any) -> DeviceControlResult:
+        # The node passes the DiscoveredDevice itself where the SDK says ip, and the
+        # action's context (entity_id, brightness, color, rgb, ...) as data.
+        device: DiscoveredDevice = ip
         return DeviceControlResult(success=True, entity_id=device.entity_id, action=action)
 
-    async def get_state(self, device: DiscoveredDevice) -> dict:
-        # Query current state
+    async def get_state(self, ip: str, **kwargs: Any) -> dict[str, Any] | None:
+        # Called with keywords: ip (the device's local_ip), entity_id, cloud_id,
+        # mac_address, model. Look the device up by entity_id or cloud_id.
+        entity_id: str = kwargs.get("entity_id", "")
         return {"is_on": True, "brightness": 80}
 ```
+
+**`get_state` takes `(ip, **kwargs)`, not a `DiscoveredDevice`.** That's the SDK's
+signature (`IJarvisDeviceProtocol.get_state`) and how both nodes call it. An earlier version
+of this example showed `get_state(self, device)`, and the packages written from it (Apple,
+LIFX, Kasa, Schlage, SimpliSafe, Home Connect) failed every state read on the Python node
+with "unexpected keyword argument 'ip'". The Go node's sidecar now passes the device to such a
+`get_state` as a fallback (jarvis-server #526), but write the SDK form.
 
 **Key patterns:**
 - Use `asyncio.to_thread()` to wrap sync API calls (see Schlage, SimpliSafe)
