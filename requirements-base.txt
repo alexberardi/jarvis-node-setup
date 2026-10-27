@@ -12,7 +12,7 @@ sqlcipher3>=0.6.4,<0.7.0
 cryptography>=50.0.2
 pydantic
 python-dotenv
-fastapi>=0.143.3
+fastapi>=0.162.0
 uvicorn>=0.54.0
 packaging>=26.3
 pytz
