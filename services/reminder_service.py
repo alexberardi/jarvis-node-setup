@@ -453,9 +453,9 @@ class ReminderService:
     ) -> datetime | None:
         """Resolve date parameters to a tz-aware UTC datetime.
 
-        All date math runs in the system's local timezone (the node's
-        ``datetime.now().astimezone()``) so "3 PM tomorrow" means 3 PM in the
-        user's clock, not 3 PM UTC.
+        All date math runs on the node's local wall clock, so "3 PM tomorrow"
+        means 3 PM in the user's clock, not 3 PM UTC, with the UTC offset in
+        force on that date (DST), not today's.
 
         Priority:
         1. date_keys + time (if both provided)
@@ -464,10 +464,9 @@ class ReminderService:
         4. relative_minutes
         5. None (caller should error)
         """
-        # Local "now" with the system tz attached. We do all arithmetic in
-        # local time, then convert to UTC at the end for storage.
-        local_now = datetime.now().astimezone()
-        local_tz = local_now.tzinfo
+        # Naive local wall time. We do all arithmetic in it, then convert to
+        # UTC at the end, so each date gets its own offset (not today's).
+        local_now = datetime.now()
 
         # Parse explicit time (HH:MM)
         hour, minute = None, None
@@ -524,7 +523,6 @@ class ReminderService:
             local_due = datetime(
                 target_date.year, target_date.month, target_date.day,
                 resolved_hour, minute or 0,
-                tzinfo=local_tz,
             )
             return local_due.astimezone(timezone.utc)
 
@@ -547,7 +545,15 @@ class ReminderService:
 
     @staticmethod
     def _next_occurrence(current_due: datetime, recurrence: str | None) -> datetime:
-        """Calculate the next occurrence for a recurring reminder."""
+        """Calculate the next occurrence for a recurring reminder: the same local
+        wall time, so a daily 9 AM stays 9 AM across a DST change."""
+        if current_due.tzinfo is None:
+            current_due = current_due.replace(tzinfo=timezone.utc)
+        local = current_due.astimezone().replace(tzinfo=None)
+        return ReminderService._next_local(local, recurrence).astimezone(timezone.utc)
+
+    @staticmethod
+    def _next_local(current_due: datetime, recurrence: str | None) -> datetime:
         if recurrence == "daily":
             return current_due + timedelta(days=1)
         elif recurrence == "weekly":

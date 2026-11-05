@@ -445,3 +445,38 @@ class TestReminderData:
         assert data.is_recurring is False
         data.recurrence = "daily"
         assert data.is_recurring is True
+
+
+@pytest.fixture
+def new_york(monkeypatch: pytest.MonkeyPatch):
+    """Run with the node's clock in America/New_York (DST ended 2026-11-01 02:00)."""
+    import time
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+class TestDaylightSaving:
+    def test_daily_keeps_local_time_across_fall_back(self, new_york, service: ReminderService) -> None:
+        due = datetime(2026, 10, 31, 13, 0, tzinfo=timezone.utc)  # 9:00 EDT
+        reminder = service.create_reminder("walk the dogs", due, recurrence="daily")
+        service.mark_announced(reminder.reminder_id)
+        new_due = datetime.fromisoformat(service.get_reminder(reminder.reminder_id).due_at)
+        assert new_due == datetime(2026, 11, 1, 14, 0, tzinfo=timezone.utc)  # 9:00 EST
+
+    def test_weekly_keeps_local_time_across_spring_forward(self, service: ReminderService, new_york) -> None:
+        due = datetime(2026, 3, 2, 14, 0)  # Monday 9:00 EST, naive UTC
+        assert service._next_occurrence(due, "weekly") == datetime(2026, 3, 9, 13, 0, tzinfo=timezone.utc)
+
+    def test_date_after_change_uses_that_dates_offset(self, new_york) -> None:
+        class FrozenNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc).astimezone(tz) if tz else datetime(2026, 10, 30, 8, 0)
+
+        # Friday Oct 30 (EDT): "next Monday at 9" is Nov 2, after the change.
+        with patch("services.reminder_service.datetime", FrozenNow):
+            due = ReminderService.resolve_due_at(["next_monday"], "09:00")
+        assert due == datetime(2026, 11, 2, 14, 0, tzinfo=timezone.utc)  # 9:00 EST
